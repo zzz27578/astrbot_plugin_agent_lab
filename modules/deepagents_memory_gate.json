@@ -1,0 +1,13 @@
+{
+  "module_id": "deepagents_memory_gate_adapter",
+  "name": "Deep Agents Memory Gate Adapter",
+  "source": "Deep Agents memory",
+  "description": "把长期记忆文件化、候选回流和后台记忆整理思路接入 Agent Lab 的 MemoryGate。",
+  "prompt": "可选模块：Deep Agents Memory Gate Adapter。长期记忆只能作为白名单材料进入任务上下文；任务结束后输出 memory_candidates；不得把闲聊碎片当作任务事实。",
+  "links": [
+    "https://docs.langchain.com/oss/python/deepagents/long-term-memory"
+  ],
+  "capabilities": ["memory_gate", "memory_candidates", "background_memory"],
+  "requires": ["memory_gate"]
+}
+

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -12,6 +14,8 @@ class AgentModule:
     description: str
     prompt: str
     links: list[str]
+    capabilities: list[str] | None = None
+    requires: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -21,7 +25,24 @@ class AgentModule:
             "description": self.description,
             "prompt": self.prompt,
             "links": self.links,
+            "capabilities": self.capabilities or [],
+            "requires": self.requires or [],
         }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "AgentModule":
+        return cls(
+            module_id=str(payload.get("module_id") or "").strip(),
+            name=str(payload.get("name") or "").strip(),
+            source=str(payload.get("source") or "").strip(),
+            description=str(payload.get("description") or "").strip(),
+            prompt=str(payload.get("prompt") or "").strip(),
+            links=[str(item) for item in payload.get("links", []) if str(item).strip()],
+            capabilities=[
+                str(item) for item in payload.get("capabilities", []) if str(item).strip()
+            ],
+            requires=[str(item) for item in payload.get("requires", []) if str(item).strip()],
+        )
 
 
 DEFAULT_MODULES: dict[str, AgentModule] = {
@@ -110,8 +131,22 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
 
 
 class ModuleRegistry:
-    def __init__(self) -> None:
+    def __init__(self, *module_dirs: Path) -> None:
         self._modules = dict(DEFAULT_MODULES)
+        packaged = Path(__file__).resolve().parents[1] / "modules"
+        for directory in (packaged, *module_dirs):
+            self.load_dir(directory)
+
+    def load_dir(self, directory: Path) -> None:
+        if not directory.exists():
+            return
+        for path in sorted(directory.glob("*.json")):
+            try:
+                module = AgentModule.from_dict(json.loads(path.read_text(encoding="utf-8")))
+            except Exception:
+                continue
+            if module.module_id:
+                self._modules[module.module_id] = module
 
     def list_modules(self) -> list[dict[str, Any]]:
         return [module.to_dict() for module in self._modules.values()]
@@ -128,4 +163,3 @@ class ModuleRegistry:
         if not chunks:
             return ""
         return "[Agent Lab Modules]\n" + "\n".join(f"- {chunk}" for chunk in chunks)
-

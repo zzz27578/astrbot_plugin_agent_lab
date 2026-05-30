@@ -102,7 +102,16 @@ class AgentSpec:
         "你在 Agent Mode 中工作。先读取任务状态，再执行一个有限步骤，随后总结并写回状态。"
     )
     plugin_overrides: dict[str, bool] = field(default_factory=dict)
-    enabled_tools: list[str] = field(default_factory=list)
+    enabled_tools: list[str] = field(
+        default_factory=lambda: [
+            "astrbot_file_read_tool",
+            "astrbot_grep_tool",
+            "astrbot_file_write_tool",
+            "astrbot_file_edit_tool",
+            "astrbot_execute_shell",
+            "astrbot_execute_python",
+        ]
+    )
     enabled_skills: list[str] = field(default_factory=list)
     module_ids: list[str] = field(
         default_factory=lambda: [
@@ -237,4 +246,3 @@ class TaskState:
             if key in payload:
                 setattr(base, key, payload[key])
         return base
-

@@ -23,6 +23,8 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 ## 可用工具
 
 - `agent_lab_enter_mode`：创建任务状态并进入 Agent Mode。
+- `agent_lab_read_state`：读取当前任务状态。心跳醒来或长任务继续前必须先用。
+- `agent_lab_update_state`：写回当前进度、观察、下一步和阻塞点。每轮结束前必须用。
 - `agent_lab_tick`：推进当前任务一轮。
 - `agent_lab_request_approval`：危险操作前请求审批。
 - `agent_lab_set_heartbeat`：为长任务开启/关闭心跳。
@@ -35,7 +37,7 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 1. 读取并复盘当前任务状态。
 2. 明确本轮只推进一个有限工作单元。
 3. 工具调用后总结观察结果。
-4. 写回进度、下一步、阻塞点。
+4. 调用 `agent_lab_update_state` 写回进度、下一步、阻塞点。
 5. 判断是否完成、暂停、请求审批或需要心跳。
 
 ## 审批规则
@@ -74,4 +76,3 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 - 关键修改/结果。
 - 遗留问题。
 - 可回流长期记忆候选。
-

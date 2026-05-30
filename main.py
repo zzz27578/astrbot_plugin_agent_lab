@@ -8,7 +8,7 @@ from typing import Any
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
-from astrbot.api.star import Context, Star, StarTools
+from astrbot.api.star import Context, Star, StarTools, register
 
 try:
     from quart import jsonify, request
@@ -17,6 +17,7 @@ except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
     request = None
 
 from .agent_lab import AgentLabStorage, AgentSpec, ApprovalRequest, TaskState
+from .agent_lab.hooks import AgentLabRunHooks
 from .agent_lab.models import now_iso
 from .agent_lab.modules import ModuleRegistry
 from .agent_lab.prompts import (
@@ -29,7 +30,53 @@ from .agent_lab.summarizer import AgentSummarizer
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
+PLUGIN_VERSION = "v0.1.0"
+PLUGIN_AUTHOR = "zzz27578 & Codex"
+PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人 Agent Mode。"
 SKILL_NAME = "agent-mode"
+
+BUILTIN_TOOL_CATALOG = [
+    {
+        "name": "astrbot_file_read_tool",
+        "description": "Read files from the current AstrBot computer-use workspace.",
+        "risk": "safe",
+    },
+    {
+        "name": "astrbot_grep_tool",
+        "description": "Search files with ripgrep in the current workspace.",
+        "risk": "safe",
+    },
+    {
+        "name": "astrbot_file_write_tool",
+        "description": "Write UTF-8 text files in the workspace.",
+        "risk": "work",
+    },
+    {
+        "name": "astrbot_file_edit_tool",
+        "description": "Edit files by replacing exact text.",
+        "risk": "work",
+    },
+    {
+        "name": "astrbot_execute_shell",
+        "description": "Execute shell commands via AstrBot Computer Use.",
+        "risk": "work",
+    },
+    {
+        "name": "astrbot_execute_python",
+        "description": "Execute Python in local runtime.",
+        "risk": "work",
+    },
+    {
+        "name": "astrbot_execute_ipython",
+        "description": "Execute Python in sandbox/IPython runtime.",
+        "risk": "work",
+    },
+    {
+        "name": "future_task",
+        "description": "AstrBot proactive future task tool.",
+        "risk": "work",
+    },
+]
 
 
 def _cfg(config: Any, key: str, default: Any = None) -> Any:
@@ -56,12 +103,13 @@ def _message_tail(event: AstrMessageEvent, command_name: str) -> str:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
+@register(PLUGIN_NAME, PLUGIN_AUTHOR, PLUGIN_DESC, PLUGIN_VERSION)
 class AgentLabPlugin(Star):
     def __init__(self, context: Context, config: Any = None):
         super().__init__(context)
         self.config = config or {}
         self.storage = AgentLabStorage(StarTools.get_data_dir(PLUGIN_NAME))
-        self.modules = ModuleRegistry()
+        self.modules = ModuleRegistry(self.storage.modules_dir)
         self.guard = SessionPluginGuard()
         self.summarizer = AgentSummarizer(
             context,
@@ -134,6 +182,83 @@ class AgentLabPlugin(Star):
             request_heartbeat=need_heartbeat,
             source="tool",
             risk_level=risk_level,
+        )
+
+    @filter.llm_tool(name="agent_lab_read_state")
+    async def agent_lab_read_state(self, event: AstrMessageEvent, format: str = "summary") -> str:
+        """读取当前 Agent Mode 任务状态。心跳或长任务继续前必须先读状态。
+
+        Args:
+            format(string): summary 或 markdown。summary 返回短摘要，markdown 返回完整任务存档。
+        """
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            return "当前没有 active task。"
+        if format == "markdown":
+            return self.storage.render_markdown(task)
+        return (
+            f"task_id: {task.task_id}\n"
+            f"status: {task.status}\n"
+            f"root_goal: {task.root_goal}\n"
+            f"completion_conditions: {task.completion_conditions}\n"
+            f"entry_summary: {self._compact_text(task.entry_summary or task.task_brief, 1600)}\n"
+            f"current_summary: {task.current_summary or '-'}\n"
+            f"last_confirmed_progress: {task.last_confirmed_progress or '-'}\n"
+            f"next_step: {task.next_step or '-'}\n"
+            f"last_observation: {self._compact_text(task.last_observation, 1200) or '-'}\n"
+            f"pending_approvals: {len(task.pending_approvals())}\n"
+            f"state_path: {self.storage.task_markdown_path(task.umo, task.task_id)}"
+        )
+
+    @filter.llm_tool(name="agent_lab_update_state")
+    async def agent_lab_update_state(
+        self,
+        event: AstrMessageEvent,
+        current_summary: str = "",
+        progress: str = "",
+        next_step: str = "",
+        last_observation: str = "",
+        status: str = "running",
+        blocker: str = "",
+        need_heartbeat: bool = False,
+    ) -> str:
+        """写回当前任务状态。每轮执行结束前都应调用。
+
+        Args:
+            current_summary(string): 当前任务现状摘要。
+            progress(string): 本轮确认进度，必须具体。
+            next_step(string): 下一步行动。
+            last_observation(string): 工具输出、测试结果或观察摘要。
+            status(string): running、paused、blocked、completed 之一。
+            blocker(string): 当前阻塞点；没有则留空。
+            need_heartbeat(boolean): 是否建议开启心跳。
+        """
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            return "当前没有 active task。"
+        if current_summary.strip():
+            task.current_summary = current_summary.strip()
+        if progress.strip():
+            task.last_confirmed_progress = progress.strip()
+            task.add_log("progress", progress.strip())
+        if next_step.strip():
+            task.next_step = next_step.strip()
+        if last_observation.strip():
+            task.last_observation = last_observation.strip()
+        if blocker.strip():
+            count = task.add_blocker(blocker.strip(), last_observation.strip())
+            if count >= task.heartbeat.max_repeated_failures:
+                task.status = "blocked"
+                await self._disable_heartbeat(task)
+        elif status in ("running", "paused", "blocked", "completed"):
+            task.status = status
+        if need_heartbeat and not task.heartbeat.enabled and task.heartbeat.allowed:
+            # Record the recommendation; user/tool can call agent_lab_set_heartbeat.
+            task.add_log("heartbeat_recommended", "Agent judged this task needs heartbeat.")
+        self.storage.save_task(task)
+        return (
+            f"task_state 已更新：status={task.status}, next_step={task.next_step or '-'}, "
+            f"heartbeat={'on' if task.heartbeat.enabled else 'off'}"
         )
 
     @filter.llm_tool(name="agent_lab_tick")
@@ -362,6 +487,7 @@ class AgentLabPlugin(Star):
                 tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120)),
                 llm_compress_keep_recent=int(_cfg(self.config, "llm_compress_keep_recent", 6)),
                 truncate_turns=int(_cfg(self.config, "truncate_turns", 2)),
+                agent_hooks=AgentLabRunHooks(self.storage, task.umo, task.task_id),
             )
             text = (getattr(resp, "completion_text", "") or "").strip()
             task.last_observation = text[-4000:] if text else "本轮没有返回文本。"
@@ -532,6 +658,13 @@ class AgentLabPlugin(Star):
     def _build_toolset(self, spec: AgentSpec):
         tmgr = self.context.get_llm_tool_manager()
         internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
+        essential = {
+            "agent_lab_read_state",
+            "agent_lab_update_state",
+            "agent_lab_request_approval",
+            "agent_lab_set_heartbeat",
+            "agent_lab_finish",
+        }
         if not spec.enabled_tools:
             toolset = tmgr.get_full_tool_set()
             for name in internal_block:
@@ -539,6 +672,10 @@ class AgentLabPlugin(Star):
                     toolset.remove_tool(name)
                 except Exception:
                     pass
+            for name in essential:
+                tool = tmgr.get_func(name)
+                if tool:
+                    toolset.add_tool(tool)
             return toolset
         from astrbot.core.agent.tool import ToolSet
 
@@ -546,7 +683,18 @@ class AgentLabPlugin(Star):
         for name in spec.enabled_tools:
             if name in internal_block:
                 continue
-            tool = tmgr.get_func(name)
+            try:
+                tool = tmgr.get_func(name)
+            except Exception as exc:
+                logger.warning("[AgentLab] cannot resolve tool %s: %s", name, exc)
+                continue
+            if tool:
+                toolset.add_tool(tool)
+        for name in essential:
+            try:
+                tool = tmgr.get_func(name)
+            except Exception:
+                tool = None
             if tool:
                 toolset.add_tool(tool)
         return toolset
@@ -666,13 +814,30 @@ class AgentLabPlugin(Star):
 
     def _tool_rows(self) -> list[dict[str, Any]]:
         rows = []
+        seen = set()
         for tool in self.context.get_llm_tool_manager().func_list:
+            seen.add(tool.name)
             rows.append(
                 {
                     "name": tool.name,
                     "active": getattr(tool, "active", True),
                     "description": getattr(tool, "description", ""),
                     "handler_module_path": getattr(tool, "handler_module_path", ""),
+                    "source": "registered",
+                    "risk": "unknown",
+                }
+            )
+        for item in BUILTIN_TOOL_CATALOG:
+            if item["name"] in seen:
+                continue
+            rows.append(
+                {
+                    "name": item["name"],
+                    "active": False,
+                    "description": item["description"],
+                    "handler_module_path": "astrbot.core.tools",
+                    "source": "builtin_catalog",
+                    "risk": item["risk"],
                 }
             )
         return rows

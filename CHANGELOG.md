@@ -12,4 +12,7 @@
 - Added plugin Page for WebUI testing and visualization.
 - Added `agent-mode` Skill.
 - Added built-in module registry for checkpoint, approval, heartbeat, memory, handoff, and flow adapters.
-
+- Added explicit `agent_lab_read_state` and `agent_lab_update_state` tools.
+- Added Agent run hooks to log tool start/end/done events into task_state.
+- Added packaged module manifests for LangGraph, OpenAI Agents, Deep Agents, CrewAI, and Microsoft Agent Framework adapters.
+- Added AstrBot builtin Computer Use tool catalog and default coding tool profile.

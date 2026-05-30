@@ -1,0 +1,14 @@
+{
+  "module_id": "langgraph_checkpoint_adapter",
+  "name": "LangGraph Checkpoint Adapter",
+  "source": "LangGraph persistence / durable execution",
+  "description": "把 LangGraph 的 checkpoint/thread 思路映射为 Agent Lab task_state，用于恢复、回放和长期任务。",
+  "prompt": "可选模块：LangGraph Checkpoint Adapter。若接入 LangGraph，thread_id 必须映射为 task_id；每个 checkpoint 的摘要必须写回 Agent Lab task_state；interrupt/resume 必须映射为审批或心跳恢复。",
+  "links": [
+    "https://docs.langchain.com/oss/python/langgraph/persistence",
+    "https://docs.langchain.com/oss/python/langgraph/durable-execution"
+  ],
+  "capabilities": ["checkpoint", "resume", "durable_execution"],
+  "requires": ["checkpoint_state"]
+}
+

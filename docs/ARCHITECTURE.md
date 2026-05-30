@@ -11,6 +11,8 @@ flowchart TD
     Spec --> Guard["Session Plugin Guard"]
     Spec --> Tools["Tools / Skills Profile"]
     State --> Runner["tool_loop_agent Tick"]
+    Runner --> StateTools["agent_lab_read_state / update_state"]
+    StateTools --> State
     Runner --> Approval{"危险操作?"}
     Approval -->|需要审批| Pending["Pending Approval"]
     Approval -->|已授权| Observe["Observe Result"]
@@ -56,3 +58,15 @@ AstrBot SubAgentOrchestrator 负责把 subagent 变成 handoff tool。它适合�
 
 所以 Agent Lab 作为主 runtime，subagent/handoff 作为模块。
 
+## 显式读写状态
+
+Agent Lab 不只在 tick 结束后自动保存最终回复，还暴露两个内部工具：
+
+```text
+agent_lab_read_state
+agent_lab_update_state
+```
+
+长任务和心跳醒来时，Agent 应先读状态，再执行，然后用 `agent_lab_update_state` 写回进度、观察、下一步和阻塞点。
+
+同时 `AgentLabRunHooks` 会记录工具开始、工具结束和 agent done 事件，作为审计日志写进 `progress_log`。

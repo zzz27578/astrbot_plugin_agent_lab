@@ -63,6 +63,8 @@ data/plugins/astrbot_plugin_agent_lab/
 插件会注入 Agent Mode 协议，并安装 `agent-mode` Skill。bot 可以在合适场景调用：
 
 - `agent_lab_enter_mode`
+- `agent_lab_read_state`
+- `agent_lab_update_state`
 - `agent_lab_tick`
 - `agent_lab_request_approval`
 - `agent_lab_set_heartbeat`
@@ -89,7 +91,14 @@ AgentSpec 是用户手搓 Agent 的核心配置：
     "某记忆注入插件": false,
     "小窝 memo": true
   },
-  "enabled_tools": [],
+  "enabled_tools": [
+    "astrbot_file_read_tool",
+    "astrbot_grep_tool",
+    "astrbot_file_write_tool",
+    "astrbot_file_edit_tool",
+    "astrbot_execute_shell",
+    "astrbot_execute_python"
+  ],
   "enabled_skills": [],
   "module_ids": [
     "checkpoint_state",
@@ -130,6 +139,19 @@ data/plugin_data/astrbot_plugin_agent_lab/
 -> 判断完成/审批/心跳/阻塞
 ```
 
+默认 Agent 会尝试启用 AstrBot 常用 Computer Use 工具：
+
+```text
+astrbot_file_read_tool
+astrbot_grep_tool
+astrbot_file_write_tool
+astrbot_file_edit_tool
+astrbot_execute_shell
+astrbot_execute_python
+```
+
+如果当前 AstrBot 未启用对应 runtime，工具解析会被跳过或由 AstrBot 自身返回权限/运行时错误。
+
 ## WebUI
 
 插件 Page 用于第一版功能测试和可视化验收：
@@ -137,6 +159,32 @@ data/plugin_data/astrbot_plugin_agent_lab/
 - 查看 Agents、Tasks、Plugins、Tools、Skills、Modules。
 - 用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档。
 - 后续可扩展成完整可视化 workflow builder。
+
+## 模块系统
+
+Agent Lab 会加载两类模块：
+
+```text
+modules/*.json
+data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
+```
+
+也就是说，用户可以把外部 agent 方案写成模块 manifest 放进插件数据目录，不用改主框架代码。
+
+模块 manifest 示例：
+
+```json
+{
+  "module_id": "my_memory_adapter",
+  "name": "My Memory Adapter",
+  "source": "custom",
+  "description": "把我的记忆系统接入 MemoryGate。",
+  "prompt": "模块注入给 Agent 的行为协议。",
+  "links": ["https://example.com"],
+  "capabilities": ["memory"],
+  "requires": ["memory_gate"]
+}
+```
 
 ## 内置模块
 
@@ -148,11 +196,17 @@ data/plugin_data/astrbot_plugin_agent_lab/
 - `memory_gate`：借鉴 Deep Agents long-term memory，把任务记忆和日常记忆分层。
 - `handoff_adapter`：兼容 AstrBot 子代理和 OpenAI handoff 思路。
 - `flow_adapter`：为 CrewAI/Microsoft 风格 workflow 留接口。
+- `langgraph_checkpoint_adapter`：LangGraph checkpoint/thread 接入规范。
+- `openai_agents_guardrails_adapter`：OpenAI Agents tools/guardrails/handoffs 接入规范。
+- `deepagents_memory_gate_adapter`：长期记忆文件化与回流规范。
+- `crewai_flow_adapter`：CrewAI Flow 接入规范。
+- `microsoft_agent_framework_adapter`：Microsoft Agent Framework 中间件/工作流接入规范。
 
 参考：
 
 - AstrBot Agent Runner: https://github.com/AstrBotDevs/AstrBot/blob/master/docs/en/use/agent-runner.md
 - LangGraph persistence: https://docs.langchain.com/oss/python/langgraph/persistence
+- OpenAI Agents: https://openai.github.io/openai-agents-python/agents/
 - OpenAI Agents guardrails: https://openai.github.io/openai-agents-python/guardrails/
 - OpenAI Agents handoffs: https://openai.github.io/openai-agents-python/handoffs/
 - CrewAI Flows: https://docs.crewai.com/en/concepts/flows
@@ -166,6 +220,7 @@ data/plugin_data/astrbot_plugin_agent_lab/
 - 插件后端可运行。
 - AgentSpec/TaskState 可持久化。
 - 命令、LLM 工具、WebUI Page、心跳、审批、入口/出口摘要均已落地。
+- Agent 能在 tick 中显式读写 task_state，并通过 hooks 记录工具调用。
 - 外部方案以模块形式内置为可扩展收束口。
 
 后续可以继续增强：
@@ -176,3 +231,15 @@ data/plugin_data/astrbot_plugin_agent_lab/
 - 对接外部 memory store。
 - 对接 LangGraph/CrewAI/OpenAI Agents SDK 作为可选 runner adapter。
 
+## 本地自检
+
+```bash
+python -m compileall -q .
+python scripts/smoke_test.py
+```
+
+如果要检查 AstrBot API 兼容性，可把 AstrBot 源码加入 `PYTHONPATH` 后导入：
+
+```bash
+PYTHONPATH=/path/to/AstrBot/.. python -c "import astrbot_plugin_agent_lab.main"
+```

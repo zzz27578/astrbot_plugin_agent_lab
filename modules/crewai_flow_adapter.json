@@ -1,0 +1,14 @@
+{
+  "module_id": "crewai_flow_adapter",
+  "name": "CrewAI Flow Adapter",
+  "source": "CrewAI Flows",
+  "description": "为后续可视化工作流提供 start/listen/router/kickoff 的映射规范。",
+  "prompt": "可选模块：CrewAI Flow Adapter。复杂任务可拆为 Plan -> Execute -> Observe -> Review -> Archive；第一版仍由线性 tick 执行，所有 flow 节点必须回写 task_state。",
+  "links": [
+    "https://docs.crewai.com/en/concepts/flows",
+    "https://docs.crewai.com/en/concepts/tasks"
+  ],
+  "capabilities": ["workflow", "flow", "visualization"],
+  "requires": ["flow_adapter"]
+}
+

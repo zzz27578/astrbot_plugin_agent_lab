@@ -26,6 +26,8 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 
 可用工具：
 - agent_lab_enter_mode：进入 Agent Mode，创建任务状态。
+- agent_lab_read_state：读取当前任务状态。
+- agent_lab_update_state：写回当前进度、观察、下一步和阻塞点。
 - agent_lab_tick：推进当前任务一轮。
 - agent_lab_request_approval：危险操作前请求审批。
 - agent_lab_set_heartbeat：为长任务开启或关闭心跳。
@@ -34,7 +36,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 核心原则：
 1. Agent Mode 不是失忆。进入时要把刚才商量的计划压缩成 task_brief。
 2. 任务连续性以 task_state 为唯一真实来源，不凭旧上下文脑补进度。
-3. 每轮执行必须先复盘现状，再做有限步骤，再总结下一步。
+3. 每轮执行必须先用 agent_lab_read_state 复盘现状，再做有限步骤，再用 agent_lab_update_state 写回状态。
 4. 删除、重置、部署、改全局配置、读取密钥等危险动作前，先主动说明影响并请求用户同意。
 5. 用户取消时立即停止，不得自行恢复。
 """.strip()
@@ -72,7 +74,7 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 - pending_approvals: {approval_text}
 
 [Heartbeat Contract]
-如果这是心跳唤醒，第一步必须读取并相信 task_state；本轮只推进有限工作单元；结束时必须用 agent_lab_tick 或自然语言总结当前现状、下一步、是否阻塞。
+如果这是心跳唤醒，第一步必须读取并相信 task_state；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。
 
 [Approval Contract]
 普通读取、创建任务记录、小范围明确文件写入、运行测试无需审批。删除、批量覆盖、git reset/clean、部署/重启服务、密钥读取、数据库破坏性变更、全局插件/系统配置修改必须先请求审批。
@@ -90,11 +92,10 @@ def build_tick_prompt(task: TaskState, reason: str = "") -> str:
 1. 复盘当前 task_state。
 2. 判断是否存在未审批的危险操作；若有，先等待审批。
 3. 只推进一个有限工作单元。
-4. 输出本轮完成了什么、观察到什么、下一步是什么、是否需要心跳。
+4. 调用 agent_lab_update_state 写回本轮完成了什么、观察到什么、下一步是什么、是否需要心跳。
 5. 若任务完成，调用 agent_lab_finish；若需要审批，调用 agent_lab_request_approval。
 
 当前任务 ID：{task.task_id}
 根目标：{task.root_goal}
 下一步：{task.next_step or "请根据 task_state 判断"}
 """.strip()
-

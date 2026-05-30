@@ -8,6 +8,17 @@ Agent Lab 模块是把外部 agent 能力接入 AstrBot Agent Mode 的兼容层�
 2. **Tool Module**：注册 AstrBot LLM tools 或 MCP tools。
 3. **Runner Adapter**：把外部框架作为可选执行器，但仍回写 Agent Lab task_state。
 
+## 加载位置
+
+Agent Lab 会自动加载：
+
+```text
+modules/*.json
+data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
+```
+
+前者用于插件内置模块，后者用于用户本地扩展。相同 `module_id` 后加载者会覆盖前者。
+
 ## 最小模块字段
 
 ```json
@@ -22,6 +33,8 @@ Agent Lab 模块是把外部 agent 能力接入 AstrBot Agent Mode 的兼容层�
   "requires": []
 }
 ```
+
+模块只负责声明协议、能力和适配要求。真正执行可以通过 AstrBot tools、MCP、skills、外部服务或 runner adapter 完成。
 
 ## 接入原则
 
@@ -44,6 +57,12 @@ interrupt -> approval pending
 resume -> heartbeat tick
 ```
 
+验收标准：
+
+- 不直接把 LangGraph 内部上下文塞进普通 AstrBot prompt。
+- 每次 checkpoint 摘要必须同步到 Agent Lab task_state。
+- interrupt 必须转为 Agent Lab approval 或 blocked 状态。
+
 ### OpenAI Agents Adapter
 
 映射：
@@ -55,6 +74,12 @@ handoffs -> handoff_adapter
 guardrails -> approval_guard
 sessions -> TaskState
 ```
+
+验收标准：
+
+- guardrails 结果必须进入 approval/blocker 日志。
+- handoff 返回必须进入 progress_log。
+- runner 结束后必须生成 exit_summary。
 
 ### CrewAI Flow Adapter
 
@@ -68,6 +93,12 @@ kickoff -> tick
 plot -> WebUI workflow visualization
 ```
 
+验收标准：
+
+- 每个 flow 节点必须有 node_id、输入、输出、状态。
+- 节点状态必须能序列化进 task_state。
+- 人工审批节点必须使用 Agent Lab approval。
+
 ### Microsoft Agent Framework Adapter
 
 映射：
@@ -79,3 +110,8 @@ workflows -> future visual workflow
 context providers -> MemoryGate
 ```
 
+验收标准：
+
+- middleware 不得绕过 Agent Lab 审批。
+- context provider 输出必须经过 MemoryGate 过滤。
+- MCP 工具必须声明危险等级。

@@ -1,0 +1,13 @@
+{
+  "module_id": "microsoft_agent_framework_adapter",
+  "name": "Microsoft Agent Framework Adapter",
+  "source": "Microsoft Agent Framework",
+  "description": "把 middleware、workflow、context provider、MCP 工具接入 Agent Lab 的模块规范。",
+  "prompt": "可选模块：Microsoft Agent Framework Adapter。middleware 映射为 Agent Lab guard；context provider 映射为 MemoryGate；workflow state 映射为 task_state；MCP 工具必须声明危险等级。",
+  "links": [
+    "https://learn.microsoft.com/en-us/agent-framework/overview/"
+  ],
+  "capabilities": ["middleware", "workflow", "context_provider", "mcp"],
+  "requires": ["approval_guard", "memory_gate", "flow_adapter"]
+}
+

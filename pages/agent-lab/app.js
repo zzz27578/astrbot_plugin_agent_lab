@@ -66,7 +66,9 @@ function render() {
     ...(state.tools || []).map((item) => {
       const whiteList = new Set(currentAgent.enabled_tools || []);
       const active = whiteList.size === 0 ? item.active : whiteList.has(item.name);
-      const el = pill(`${active ? "开" : "关"} · ${item.name}`, active);
+      const meta = item.risk ? ` · ${item.risk}` : "";
+      const source = item.source === "builtin_catalog" ? " · builtin" : "";
+      const el = pill(`${active ? "开" : "关"} · ${item.name}${meta}${source}`, active);
       el.addEventListener("click", () => {
         const next = new Set(currentAgent.enabled_tools || []);
         if (next.has(item.name)) next.delete(item.name);

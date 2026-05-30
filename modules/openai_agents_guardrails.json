@@ -1,0 +1,15 @@
+{
+  "module_id": "openai_agents_guardrails_adapter",
+  "name": "OpenAI Agents Guardrails Adapter",
+  "source": "OpenAI Agents SDK",
+  "description": "把 Agents SDK 的 tools、handoffs、guardrails、sessions 概念映射到 AgentSpec 和 TaskState。",
+  "prompt": "可选模块：OpenAI Agents Guardrails Adapter。外部 guardrail 不得绕过 Agent Lab 审批；handoff 结果必须写回 task_state；sessions 必须映射到 task_id 或 umo。",
+  "links": [
+    "https://openai.github.io/openai-agents-python/agents/",
+    "https://openai.github.io/openai-agents-python/guardrails/",
+    "https://openai.github.io/openai-agents-python/handoffs/"
+  ],
+  "capabilities": ["guardrails", "handoffs", "sessions", "tools"],
+  "requires": ["approval_guard", "handoff_adapter"]
+}
+
