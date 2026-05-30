@@ -142,11 +142,13 @@ class AgentLabStorage:
         for root in roots:
             if not root.exists():
                 continue
-            for path in sorted(root.glob("task_*.json")):
-                try:
-                    tasks.append(TaskState.from_dict(self._read_json(path)))
-                except Exception:
-                    continue
+            path = root / "active_task.json"
+            if not path.exists():
+                continue
+            try:
+                tasks.append(TaskState.from_dict(self._read_json(path)))
+            except Exception:
+                continue
         return tasks
 
     def list_archives(self, umo: str | None = None) -> list[TaskState]:

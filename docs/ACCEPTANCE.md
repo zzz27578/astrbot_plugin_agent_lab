@@ -26,7 +26,7 @@ Expected WebUI:
 
 - Shows Agents.
 - Agents can be selected, duplicated, created, and marked as default.
-- Shows Tasks.
+- Shows active Tasks only.
 - Shows Archives.
 - Shows Task Review with tick/heartbeat/finish/cancel actions.
 - Shows Plugins.
@@ -52,6 +52,7 @@ Expected:
 - `status` shows task id, goal, next step, state file path.
 - `tick` calls the model/tool loop and updates task markdown.
 - `finish` archives task and restores session plugin config.
+- Finished task is removed from Tasks and appears in Archives.
 
 ## State Continuity Checks
 

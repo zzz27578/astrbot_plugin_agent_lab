@@ -66,10 +66,14 @@ def main() -> None:
         loaded = store.load_active_task("test:private:1")
         assert loaded is not None
         assert loaded.task_id == task.task_id
+        active = store.list_tasks("test:private:1")
+        assert len(active) == 1
+        assert active[0].task_id == task.task_id
 
         archive = store.archive_task(loaded)
         assert archive.exists()
         assert not store.active_task_path("test:private:1").exists()
+        assert store.list_tasks("test:private:1") == []
         archived = store.list_archives("test:private:1")
         assert len(archived) == 1
         assert archived[0].task_id == task.task_id

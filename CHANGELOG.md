@@ -21,3 +21,4 @@
 - Added WebUI Task Review, approval resolution, cancel flow, Archives, module toggles, and policy controls.
 - Added multi-AgentSpec selection, duplication, creation, default-agent switching, and selected-Agent task starts.
 - Added WebUI custom module editor and `/modules` API for saving adapter manifests.
+- Limited WebUI Tasks/state task listing to active tasks; finished and cancelled tasks live under Archives.

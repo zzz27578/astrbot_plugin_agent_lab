@@ -161,7 +161,7 @@ astrbot_execute_python
 
 插件 Page 用于第一版功能测试和可视化验收：
 
-- 查看 Agents、Tasks、Plugins、Tools、Skills、Modules。
+- 查看 Agents、Active Tasks、Archives、Plugins、Tools、Skills、Modules。
 - 用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档。
 - 在 Task Review 中查看当前任务状态、处理审批、直接推进/结束任务。
 - 查看 Archives，确认任务退出后已经归档。
