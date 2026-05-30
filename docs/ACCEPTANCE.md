@@ -7,12 +7,14 @@ Use this checklist to verify Agent Lab inside a real AstrBot instance.
 ```text
 python -m compileall -q .
 python scripts/smoke_test.py
+python scripts/runtime_smoke_test.py
 ```
 
 Expected:
 
 - Python compile succeeds.
 - Smoke test prints `Agent Lab smoke test passed.`
+- Runtime smoke test prints `Agent Lab runtime smoke test passed.` when AstrBot SDK/source is importable.
 
 ## Install Checks
 
@@ -180,5 +182,5 @@ Expected:
 
 - First version supports private chat only.
 - WebUI is a functional test console, not yet a full workflow builder.
-- External frameworks are module manifests/specs, not embedded full runtimes yet.
+- External frameworks are module manifests/specs and adapter contracts, not embedded full runtimes yet.
 - Real shell/file/browser capability depends on AstrBot Computer Use runtime and permissions.

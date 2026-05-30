@@ -249,6 +249,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 ```bash
 python -m compileall -q .
 python scripts/smoke_test.py
+python scripts/runtime_smoke_test.py
 ```
 
 如果要检查 AstrBot API 兼容性，可把 AstrBot 源码加入 `PYTHONPATH` 后导入：
