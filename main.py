@@ -343,6 +343,7 @@ class AgentLabPlugin(Star):
         spec = self.storage.get_agent()
         task = self.storage.load_active_task(event.unified_msg_origin)
         if task:
+            spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or spec.to_dict())
             modules_prompt = self._build_task_extensions_prompt(spec)
             req.system_prompt += "\n\n" + build_task_system_prompt(
                 spec, task, modules_prompt
