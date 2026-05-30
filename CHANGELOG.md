@@ -17,3 +17,5 @@
 - Added packaged module manifests for LangGraph, OpenAI Agents, Deep Agents, CrewAI, and Microsoft Agent Framework adapters.
 - Added AstrBot builtin Computer Use tool catalog and default coding tool profile.
 - Added morning acceptance checklist.
+- Added mode-aware natural-language decision protocol synchronized through Skill and runtime prompts.
+- Added WebUI Task Review, approval resolution, cancel flow, Archives, module toggles, and policy controls.

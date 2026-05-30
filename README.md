@@ -159,8 +159,10 @@ astrbot_execute_python
 插件 Page 用于第一版功能测试和可视化验收：
 
 - 查看 Agents、Tasks、Plugins、Tools、Skills、Modules。
-- 用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档。
-- 编辑触发模式、任务提示词、插件开关、工具白名单和任务专用 skills。
+- 用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档。
+- 在 Task Review 中查看当前任务状态、处理审批、直接推进/结束任务。
+- 查看 Archives，确认任务退出后已经归档。
+- 编辑触发模式、记忆/审批/心跳策略、任务提示词、插件开关、工具白名单、任务专用 skills 和模块协议。
 - 后续可扩展成完整可视化 workflow builder。
 
 ## 模块系统
@@ -233,6 +235,8 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 - 更细的工具权限守卫。
 - 对接外部 memory store。
 - 对接 LangGraph/CrewAI/OpenAI Agents SDK 作为可选 runner adapter。
+
+外部方案接入规范见 [docs/ADAPTER_GUIDE.md](docs/ADAPTER_GUIDE.md)。
 
 ## 本地自检
 

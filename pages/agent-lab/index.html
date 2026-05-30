@@ -27,8 +27,17 @@
           <div id="tasks" class="list"></div>
         </article>
 
+        <article class="panel">
+          <h2>Archives</h2>
+          <div id="archives" class="list"></div>
+        </article>
+
         <article class="panel wide">
           <h2>AgentSpec 编辑器</h2>
+          <label class="check">
+            <input id="agent-enabled" type="checkbox" />
+            启用 Agent
+          </label>
           <label>
             名称
             <input id="agent-name" />
@@ -41,6 +50,35 @@
               <option value="smart">smart</option>
               <option value="always">always</option>
             </select>
+          </label>
+          <label>
+            记忆模式
+            <select id="memory-mode">
+              <option value="inherit">inherit</option>
+              <option value="task_filtered">task_filtered</option>
+              <option value="strict">strict</option>
+            </select>
+          </label>
+          <label>
+            审批模式
+            <select id="approval-mode">
+              <option value="observe">observe</option>
+              <option value="work">work</option>
+              <option value="high_risk_review">high_risk_review</option>
+              <option value="delegated">delegated</option>
+            </select>
+          </label>
+          <label>
+            心跳模式
+            <select id="heartbeat-mode">
+              <option value="off">off</option>
+              <option value="manual">manual</option>
+              <option value="auto">auto</option>
+            </select>
+          </label>
+          <label class="check">
+            <input id="heartbeat-allowed" type="checkbox" />
+            允许心跳
           </label>
           <label>
             System Prompt
@@ -75,6 +113,12 @@
           <pre id="result"></pre>
         </article>
 
+        <article class="panel wide">
+          <h2>Task Review</h2>
+          <div id="task-review" class="task-review"></div>
+          <div id="approvals" class="approval-list"></div>
+        </article>
+
         <article class="panel">
           <h2>Plugins</h2>
           <p class="hint">点击切换当前 Agent 的任务模式开关，保存后生效。</p>
@@ -95,6 +139,7 @@
 
         <article class="panel wide">
           <h2>Modules</h2>
+          <p class="hint">点击切换当前 Agent 的模块协议，保存后生效。</p>
           <div id="modules" class="module-grid"></div>
         </article>
       </section>

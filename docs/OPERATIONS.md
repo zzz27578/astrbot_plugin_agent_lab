@@ -45,6 +45,8 @@ Agent Lab should be considered healthy when:
 - `agent_lab_update_state` can write progress and next step.
 - `/agentlab finish` moves a copy to `archives/`.
 - WebUI `state` API returns agents/tasks/plugins/tools/skills/modules.
+- WebUI Task Review can tick, toggle heartbeat, resolve approvals, finish, and cancel.
+- WebUI Archives shows completed or cancelled tasks.
 
 Local repository smoke test:
 

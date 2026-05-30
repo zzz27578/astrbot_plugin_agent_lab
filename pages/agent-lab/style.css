@@ -91,6 +91,16 @@ h2 {
   background: #fafbfc;
 }
 
+.row {
+  cursor: pointer;
+}
+
+.row.selected,
+.module.active {
+  border-color: #9dc5f2;
+  background: #f1f7ff;
+}
+
 .row span {
   display: block;
   margin-top: 3px;
@@ -127,6 +137,16 @@ label {
   font-weight: 650;
 }
 
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.check input {
+  width: auto;
+}
+
 input,
 textarea,
 select {
@@ -154,10 +174,59 @@ button {
   cursor: pointer;
 }
 
+.secondary {
+  background: #526075;
+}
+
+.danger {
+  background: #9f3131;
+}
+
 .actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.task-review dl {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 8px 12px;
+  margin: 0 0 14px;
+}
+
+.task-review dt {
+  color: #6c7684;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.task-review dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.approval-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.approval {
+  border: 1px solid #ead7a1;
+  border-radius: 6px;
+  padding: 12px;
+  background: #fffaf0;
+}
+
+.approval p {
+  margin: 6px 0;
+}
+
+.approval small {
+  display: block;
+  margin-bottom: 10px;
+  color: #6c7684;
 }
 
 pre {

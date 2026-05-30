@@ -93,7 +93,7 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
         source="Deep Agents / task memory split",
         description="把日常记忆和任务记忆分层，入口摘要进入，出口摘要回流。",
         links=[
-            "https://docs.langchain.com/oss/python/deepagents/long-term-memory",
+            "https://docs.langchain.com/oss/python/deepagents/memory",
         ],
         prompt=(
             "模块：Memory Gate。保持人格连续，但普通长期记忆不得覆盖 task_state、工具结果和项目事实；"
@@ -119,7 +119,7 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
         source="CrewAI Flows / Microsoft Agent Framework workflows",
         description="为后续可视化工作流预留顺序、条件、审批节点。",
         links=[
-            "https://docs.crewai.com/concepts/flows",
+            "https://docs.crewai.com/en/concepts/flows",
             "https://learn.microsoft.com/en-us/agent-framework/overview/",
         ],
         prompt=(

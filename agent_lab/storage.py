@@ -119,6 +119,21 @@ class AgentLabStorage:
                     continue
         return tasks
 
+    def list_archives(self, umo: str | None = None) -> list[TaskState]:
+        roots = [self.archives_dir / _safe_hash(umo)] if umo else list(self.archives_dir.glob("*"))
+        tasks: list[TaskState] = []
+        for root in roots:
+            if not root.exists():
+                continue
+            for path in sorted(root.glob("task_*.json")):
+                try:
+                    task = TaskState.from_dict(self._read_json(path))
+                    task.archive_path = task.archive_path or str(path.with_suffix(".md"))
+                    tasks.append(task)
+                except Exception:
+                    continue
+        return tasks
+
     def render_markdown(self, task: TaskState) -> str:
         approvals = task.pending_approvals()
         lines = [

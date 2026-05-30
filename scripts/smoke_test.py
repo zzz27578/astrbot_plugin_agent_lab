@@ -42,6 +42,9 @@ def main() -> None:
         archive = store.archive_task(loaded)
         assert archive.exists()
         assert not store.active_task_path("test:private:1").exists()
+        archived = store.list_archives("test:private:1")
+        assert len(archived) == 1
+        assert archived[0].task_id == task.task_id
 
     print("Agent Lab smoke test passed.")
 

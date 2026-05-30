@@ -169,6 +169,8 @@ class AgentLabPlugin(Star):
             need_heartbeat(boolean): 是否需要为长任务开启心跳。
         """
         spec = self.storage.get_agent()
+        if not spec.enabled:
+            return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用，或选择另一个 AgentSpec。"
         if spec.trigger_mode in ("manual", "confirm") and not user_confirmed:
             return (
                 "需要先向用户确认：是否进入 Agent Mode？请说明将创建任务状态、"
@@ -349,6 +351,8 @@ class AgentLabPlugin(Star):
                 spec, task, modules_prompt
             )
         else:
+            if not spec.enabled:
+                return
             req.system_prompt += "\n\n" + build_agent_mode_policy(spec)
 
     async def _handle_command(self, event: AstrMessageEvent, tail: str) -> str:
@@ -419,6 +423,8 @@ class AgentLabPlugin(Star):
             return "当前会话已有 active task。请先 /agentlab finish 或 /agentlab cancel。"
 
         spec = self.storage.get_agent()
+        if not spec.enabled:
+            return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用后再进入 Agent Mode。"
         session_plugin_snapshot = await self.guard.apply_overrides(
             umo, spec.plugin_overrides
         )
@@ -760,13 +766,16 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/start", self.api_task_start, ["POST"], "Start task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/tick", self.api_task_tick, ["POST"], "Tick task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/finish", self.api_task_finish, ["POST"], "Finish task")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/cancel", self.api_task_cancel, ["POST"], "Cancel task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/heartbeat", self.api_task_heartbeat, ["POST"], "Toggle heartbeat")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/approval", self.api_task_approval, ["POST"], "Resolve approval")
 
     async def api_state(self):
         return jsonify(
             {
                 "agents": [item.to_dict() for item in self.storage.list_agents()],
                 "tasks": [item.to_dict() for item in self.storage.list_tasks()],
+                "archives": [item.to_dict() for item in self.storage.list_archives()],
                 "plugins": self._plugin_rows(),
                 "tools": self._tool_rows(),
                 "skills": self._skill_rows(),
@@ -821,6 +830,19 @@ class AgentLabPlugin(Star):
         )
         return jsonify({"ok": True, "message": msg})
 
+    async def api_task_cancel(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        event = self._make_cron_event(str(payload.get("umo") or ""), "Agent Lab WebUI cancel")
+        if event is None:
+            return jsonify({"ok": False, "error": "cannot create event"})
+        msg = await self._finish_task(
+            event,
+            "cancelled",
+            str(payload.get("reason") or "WebUI requested cancel."),
+            str(payload.get("memory_candidates") or ""),
+        )
+        return jsonify({"ok": True, "message": msg})
+
     async def api_task_heartbeat(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "")
@@ -834,6 +856,16 @@ class AgentLabPlugin(Star):
             await self._disable_heartbeat(task)
             self.storage.save_task(task)
             msg = "heartbeat disabled"
+        return jsonify({"ok": True, "message": msg})
+
+    async def api_task_approval(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        umo = str(payload.get("umo") or "")
+        approval_id = str(payload.get("approval_id") or "")
+        approved = bool(payload.get("approved", False))
+        if not umo or not approval_id:
+            return jsonify({"ok": False, "error": "umo and approval_id are required"})
+        msg = self._resolve_approval(umo, approval_id, approved, "webui")
         return jsonify({"ok": True, "message": msg})
 
     def _plugin_rows(self) -> list[dict[str, Any]]:

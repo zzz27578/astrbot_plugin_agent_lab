@@ -26,6 +26,8 @@ Expected WebUI:
 
 - Shows Agents.
 - Shows Tasks.
+- Shows Archives.
+- Shows Task Review with tick/heartbeat/finish/cancel actions.
 - Shows Plugins.
 - Shows Tools, including builtin catalog tools such as `astrbot_execute_shell`.
 - Shows Skills.
@@ -118,17 +120,36 @@ In Agent Lab Page:
 
 1. Change Agent name.
 2. Change trigger mode.
-3. Toggle a plugin.
-4. Toggle a tool.
-5. Toggle a skill.
-6. Save AgentSpec.
-7. Refresh.
+3. Change memory/approval/heartbeat modes.
+4. Toggle a plugin.
+5. Toggle a tool.
+6. Toggle a skill.
+7. Toggle a module.
+8. Save AgentSpec.
+9. Refresh.
 
 Expected:
 
 - Changes persist.
 - New task uses AgentSpec snapshot.
 - Selected skills are shown in the Agent Mode runtime prompt for task ticks.
+- Selected modules are shown in the Agent Mode runtime prompt for task ticks.
+
+## WebUI Review Checks
+
+Create a task from WebUI or private chat, then use Task Review:
+
+1. Select a task.
+2. Click `Tick`.
+3. Toggle heartbeat.
+4. Resolve a pending approval if one exists.
+5. Finish or cancel the task.
+
+Expected:
+
+- Task Review updates after each action.
+- Finished/cancelled task appears in Archives.
+- `archives/<umo_hash>/task_<id>.md` exists.
 
 ## Known Limits In v0.1.0
 
