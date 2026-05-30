@@ -21,6 +21,24 @@ def main() -> None:
     assert "openai_agents_guardrails_adapter" in module_ids
 
     with TemporaryDirectory() as tmp:
+        registry = ModuleRegistry(Path(tmp))
+        saved = registry.save_custom_module(
+            {
+                "module_id": "custom module!",
+                "name": "Custom Module",
+                "source": "smoke",
+                "description": "custom module smoke",
+                "prompt": "模块：Custom Module。",
+                "links": ["https://example.com"],
+                "capabilities": ["test"],
+                "requires": ["checkpoint_state"],
+            }
+        )
+        assert saved.module_id == "custom_module"
+        assert registry.get("custom_module") is not None
+        assert (Path(tmp) / "custom_module.json").exists()
+
+    with TemporaryDirectory() as tmp:
         store = AgentLabStorage(Path(tmp))
         spec = store.ensure_defaults()
         assert "astrbot_execute_shell" in spec.enabled_tools

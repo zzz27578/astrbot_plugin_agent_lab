@@ -156,6 +156,24 @@ Expected:
 - Finished/cancelled task appears in Archives.
 - `archives/<umo_hash>/task_<id>.md` exists.
 
+## Module Editor Checks
+
+In the Modules panel:
+
+1. Select an existing module.
+2. Click `复制为自定义`.
+3. Change `Module ID`, description, prompt, links, capabilities, and requires.
+4. Click `保存模块`.
+5. Refresh.
+6. Enable the saved module for the selected AgentSpec and save AgentSpec.
+
+Expected:
+
+- Custom module appears in Modules.
+- `data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json` exists.
+- New task snapshot includes the selected custom module.
+- Tick runtime prompt includes the custom module prompt.
+
 ## Known Limits In v0.1.0
 
 - First version supports private chat only.

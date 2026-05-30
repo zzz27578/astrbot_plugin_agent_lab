@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -132,9 +133,14 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
 
 class ModuleRegistry:
     def __init__(self, *module_dirs: Path) -> None:
+        self.module_dirs = [Path(item) for item in module_dirs]
+        self._modules: dict[str, AgentModule] = {}
+        self.reload()
+
+    def reload(self) -> None:
         self._modules = dict(DEFAULT_MODULES)
         packaged = Path(__file__).resolve().parents[1] / "modules"
-        for directory in (packaged, *module_dirs):
+        for directory in (packaged, *self.module_dirs):
             self.load_dir(directory)
 
     def load_dir(self, directory: Path) -> None:
@@ -149,7 +155,7 @@ class ModuleRegistry:
                 self._modules[module.module_id] = module
 
     def list_modules(self) -> list[dict[str, Any]]:
-        return [module.to_dict() for module in self._modules.values()]
+        return [self._modules[module_id].to_dict() for module_id in sorted(self._modules)]
 
     def get(self, module_id: str) -> AgentModule | None:
         return self._modules.get(module_id)
@@ -163,3 +169,30 @@ class ModuleRegistry:
         if not chunks:
             return ""
         return "[Agent Lab Modules]\n" + "\n".join(f"- {chunk}" for chunk in chunks)
+
+    def save_custom_module(self, payload: dict[str, Any]) -> AgentModule:
+        if not self.module_dirs:
+            raise ValueError("No custom module directory configured.")
+        module = AgentModule.from_dict(payload)
+        module.module_id = _normalize_module_id(module.module_id)
+        if not module.module_id:
+            raise ValueError("module_id is required.")
+        if not module.name:
+            module.name = module.module_id
+        custom_dir = self.module_dirs[0]
+        custom_dir.mkdir(parents=True, exist_ok=True)
+        path = custom_dir / f"{module.module_id}.json"
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(
+            json.dumps(module.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+        self.reload()
+        return self._modules[module.module_id]
+
+
+def _normalize_module_id(module_id: str) -> str:
+    module_id = re.sub(r"\s+", "_", str(module_id or "").strip())
+    module_id = re.sub(r"[^A-Za-z0-9_.-]", "", module_id)
+    return module_id[:80]

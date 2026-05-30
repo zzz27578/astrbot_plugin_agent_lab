@@ -167,6 +167,7 @@ astrbot_execute_python
 - 查看 Archives，确认任务退出后已经归档。
 - 新建、复制、选择 AgentSpec，并设置默认 Agent。
 - 编辑触发模式、记忆/审批/心跳策略、任务提示词、插件开关、工具白名单、任务专用 skills 和模块协议。
+- 审查、复制、新建并保存自定义模块 manifest 到 `plugin_data/modules`。
 - 后续可扩展成完整可视化 workflow builder。
 
 ## 模块系统
@@ -178,7 +179,7 @@ modules/*.json
 data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 ```
 
-也就是说，用户可以把外部 agent 方案写成模块 manifest 放进插件数据目录，不用改主框架代码。
+也就是说，用户可以把外部 agent 方案写成模块 manifest 放进插件数据目录，不用改主框架代码。WebUI 的 Modules 面板也可以直接复制内置模块、编辑字段并保存为自定义模块。
 
 模块 manifest 示例：
 

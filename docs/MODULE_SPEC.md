@@ -19,6 +19,14 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 
 前者用于插件内置模块，后者用于用户本地扩展。相同 `module_id` 后加载者会覆盖前者。
 
+WebUI 的 Modules 面板可以直接新建模块，或把内置模块复制为自定义模块后保存。保存结果会写入：
+
+```text
+data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json
+```
+
+`module_id` 会被规范化为字母、数字、下划线、点和连字符组成的短 ID。
+
 ## 最小模块字段
 
 ```json

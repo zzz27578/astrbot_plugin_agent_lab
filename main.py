@@ -770,6 +770,7 @@ class AgentLabPlugin(Star):
             return
         self.context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "Agent Lab state")
         self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST"], "Agent specs")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/modules", self.api_modules, ["GET", "POST"], "Agent modules")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/start", self.api_task_start, ["POST"], "Start task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/tick", self.api_task_tick, ["POST"], "Tick task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/finish", self.api_task_finish, ["POST"], "Finish task")
@@ -808,6 +809,16 @@ class AgentLabPlugin(Star):
                 "agents": [item.to_dict() for item in self.storage.list_agents()],
             }
         )
+
+    async def api_modules(self):
+        if request.method == "POST":
+            payload = await request.get_json(force=True, silent=True) or {}
+            try:
+                module = self.modules.save_custom_module(payload)
+            except Exception as exc:
+                return jsonify({"ok": False, "error": str(exc)})
+            return jsonify({"ok": True, "module": module.to_dict()})
+        return jsonify({"modules": self.modules.list_modules()})
 
     async def api_task_start(self):
         payload = await request.get_json(force=True, silent=True) or {}

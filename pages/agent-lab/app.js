@@ -6,6 +6,9 @@ let currentAgent = null;
 let selectedTaskId = "";
 let selectedAgentId = "";
 let draftAgent = null;
+let selectedModuleId = "";
+let currentModule = null;
+let draftModule = null;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -65,6 +68,16 @@ function render() {
   $("heartbeat-allowed").checked = currentAgent.heartbeat_policy.allowed !== false;
   $("system-prompt").value = currentAgent.system_prompt || "";
   $("task-prompt").value = currentAgent.task_prompt || "";
+  const modules = state.modules || [];
+  if (modules.length && !modules.some((mod) => mod.module_id === selectedModuleId)) {
+    selectedModuleId = modules[0].module_id;
+  }
+  currentModule = clone(
+    draftModule ||
+      modules.find((mod) => mod.module_id === selectedModuleId) ||
+      modules[0] ||
+      {},
+  );
 
   const agentRows = agents.map((agent) => {
     const isDefault = agent.agent_id === defaultAgentId;
@@ -152,22 +165,21 @@ function render() {
     }),
   );
   $("modules").replaceChildren(
-    ...(state.modules || []).map((mod) => {
+    ...modules.map((mod) => {
       const selected = new Set(currentAgent.module_ids || []);
       const active = selected.has(mod.module_id);
       const el = document.createElement("div");
       el.className = `module ${active ? "active" : ""}`;
       el.innerHTML = `<strong>${escapeHtml(mod.name)}</strong><p>${escapeHtml(mod.description)}</p><small>${escapeHtml(mod.source)}</small>`;
       el.addEventListener("click", () => {
-        const next = new Set(currentAgent.module_ids || []);
-        if (next.has(mod.module_id)) next.delete(mod.module_id);
-        else next.add(mod.module_id);
-        currentAgent.module_ids = Array.from(next);
-        renderFromCurrentAgent();
+        draftModule = null;
+        selectedModuleId = mod.module_id;
+        render();
       });
       return el;
     }),
   );
+  renderModuleEditor();
   renderTaskReview();
 }
 
@@ -182,6 +194,17 @@ function renderFromCurrentAgent() {
     state = { ...state, agents };
   }
   render();
+}
+
+function renderModuleEditor() {
+  $("module-id").value = currentModule.module_id || "";
+  $("module-name").value = currentModule.name || "";
+  $("module-source").value = currentModule.source || "";
+  $("module-description").value = currentModule.description || "";
+  $("module-prompt").value = currentModule.prompt || "";
+  $("module-links").value = (currentModule.links || []).join("\n");
+  $("module-capabilities").value = (currentModule.capabilities || []).join(", ");
+  $("module-requires").value = (currentModule.requires || []).join(", ");
 }
 
 async function load() {
@@ -209,6 +232,19 @@ function umo() {
 function activeTask() {
   const tasks = state.tasks || [];
   return tasks.find((task) => task.task_id === selectedTaskId) || tasks[0] || null;
+}
+
+function readModuleEditor() {
+  return {
+    module_id: $("module-id").value.trim(),
+    name: $("module-name").value.trim(),
+    source: $("module-source").value.trim(),
+    description: $("module-description").value.trim(),
+    prompt: $("module-prompt").value.trim(),
+    links: $("module-links").value.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
+    capabilities: $("module-capabilities").value.split(",").map((item) => item.trim()).filter(Boolean),
+    requires: $("module-requires").value.split(",").map((item) => item.trim()).filter(Boolean),
+  };
 }
 
 function renderTaskReview() {
@@ -307,6 +343,46 @@ $("make-default").addEventListener("click", async () => {
   const result = await post("agents", payload);
   if (result?.agent?.agent_id) {
     selectedAgentId = result.agent.agent_id;
+    await load();
+  }
+});
+$("toggle-module").addEventListener("click", () => {
+  const moduleId = $("module-id").value.trim() || currentModule?.module_id;
+  if (!moduleId) return;
+  const next = new Set(currentAgent.module_ids || []);
+  if (next.has(moduleId)) next.delete(moduleId);
+  else next.add(moduleId);
+  currentAgent.module_ids = Array.from(next);
+  renderFromCurrentAgent();
+});
+$("new-module").addEventListener("click", () => {
+  draftModule = {
+    module_id: "my_agent_module",
+    name: "My Agent Module",
+    source: "custom",
+    description: "自定义 Agent Lab 模块。",
+    prompt: "模块：My Agent Module。请在这里写入任务模式行为协议。",
+    links: [],
+    capabilities: [],
+    requires: [],
+  };
+  selectedModuleId = "";
+  render();
+});
+$("duplicate-module").addEventListener("click", () => {
+  draftModule = clone(currentModule || {});
+  draftModule.module_id = `${draftModule.module_id || "module"}_custom`;
+  draftModule.name = `${draftModule.name || "Module"} Custom`;
+  draftModule.source = `custom from ${draftModule.source || "module"}`;
+  selectedModuleId = "";
+  render();
+});
+$("save-module").addEventListener("click", async () => {
+  const payload = readModuleEditor();
+  const result = await post("modules", payload);
+  if (result?.module?.module_id) {
+    draftModule = null;
+    selectedModuleId = result.module.module_id;
     await load();
   }
 });

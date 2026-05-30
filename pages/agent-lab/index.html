@@ -144,8 +144,48 @@
 
         <article class="panel wide">
           <h2>Modules</h2>
-          <p class="hint">点击切换当前 Agent 的模块协议，保存后生效。</p>
+          <p class="hint">点击模块进行审查/编辑；用下方按钮把模块加入或移出当前 Agent。</p>
           <div id="modules" class="module-grid"></div>
+          <div class="actions compact">
+            <button id="toggle-module">启用/停用模块</button>
+            <button id="new-module">新建模块</button>
+            <button id="duplicate-module">复制为自定义</button>
+            <button id="save-module">保存模块</button>
+          </div>
+          <div class="module-editor">
+            <label>
+              Module ID
+              <input id="module-id" />
+            </label>
+            <label>
+              名称
+              <input id="module-name" />
+            </label>
+            <label>
+              来源
+              <input id="module-source" />
+            </label>
+            <label>
+              描述
+              <textarea id="module-description" rows="3"></textarea>
+            </label>
+            <label>
+              Prompt
+              <textarea id="module-prompt" rows="5"></textarea>
+            </label>
+            <label>
+              Links（每行一个）
+              <textarea id="module-links" rows="3"></textarea>
+            </label>
+            <label>
+              Capabilities（逗号分隔）
+              <input id="module-capabilities" />
+            </label>
+            <label>
+              Requires（逗号分隔）
+              <input id="module-requires" />
+            </label>
+          </div>
         </article>
       </section>
     </main>

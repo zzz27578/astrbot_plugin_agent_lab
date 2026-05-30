@@ -51,6 +51,7 @@ Agent Lab should be considered healthy when:
 - WebUI `state` API returns agents/tasks/plugins/tools/skills/modules.
 - WebUI Task Review can tick, toggle heartbeat, resolve approvals, finish, and cancel.
 - WebUI Archives shows completed or cancelled tasks.
+- WebUI Modules can save custom module manifests into `plugin_data/modules`.
 
 Local repository smoke test:
 
