@@ -10,6 +10,7 @@ Agent Lab 是一个 AstrBot 插件，用来把普通 bot 会话切换成可持�
 - 支持自然语言进入 Agent Mode，也支持命令和 WebUI 调试。
 - 任务模式不是完全失忆：入口压缩普通上下文，任务期间使用独立 task_state，退出后归档并生成记忆候选。
 - 支持会话级插件启用/禁用，不动全局插件开关。
+- Agent Lab 插件本体会被锁定，避免任务模式把自己禁用后无法恢复。
 - 支持心跳续跑：长任务醒来后先读状态，再执行，再保存。
 - 支持审批协议：危险操作前由 bot 主动说明并请求用户确认。
 - 把外部优秀 agent 设计收束成模块，方便后续接入 LangGraph、OpenAI Agents SDK、CrewAI、Microsoft Agent Framework 等方案。

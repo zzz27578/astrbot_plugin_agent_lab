@@ -121,9 +121,14 @@ function render() {
   );
   $("plugins").replaceChildren(
     ...(state.plugins || []).map((item) => {
+      const locked = Boolean(item.locked);
       const override = currentAgent.plugin_overrides?.[item.name];
       const active = override === undefined ? item.activated : Boolean(override);
-      const el = pill(`${active ? "开" : "关"} · ${item.display_name || item.name}`, active);
+      const el = pill(`${locked ? "锁" : active ? "开" : "关"} · ${item.display_name || item.name}`, active);
+      if (locked) {
+        el.classList.add("locked");
+        return el;
+      }
       el.addEventListener("click", () => {
         currentAgent.plugin_overrides ||= {};
         currentAgent.plugin_overrides[item.name] = !active;

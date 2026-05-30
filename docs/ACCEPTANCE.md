@@ -30,6 +30,7 @@ Expected WebUI:
 - Shows Archives.
 - Shows Task Review with tick/heartbeat/finish/cancel actions.
 - Shows Plugins.
+- Agent Lab plugin itself is locked and cannot be disabled from its own task profile.
 - Shows Tools, including builtin catalog tools such as `astrbot_execute_shell`.
 - Shows Skills.
 - Shows Modules, including LangGraph/OpenAI/CrewAI/Microsoft adapters.

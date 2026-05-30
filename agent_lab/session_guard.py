@@ -7,8 +7,9 @@ from typing import Any
 class SessionPluginGuard:
     """Session-level plugin overrides using AstrBot's shared preferences schema."""
 
-    def __init__(self) -> None:
+    def __init__(self, protected_plugins: set[str] | None = None) -> None:
         self._sp = None
+        self.protected_plugins = set(protected_plugins or set())
 
     @property
     def sp(self):
@@ -38,6 +39,10 @@ class SessionPluginGuard:
         for plugin_name, is_enabled in plugin_overrides.items():
             if not plugin_name:
                 continue
+            if plugin_name in self.protected_plugins:
+                disabled.discard(plugin_name)
+                enabled.add(plugin_name)
+                continue
             if bool(is_enabled):
                 disabled.discard(plugin_name)
                 enabled.add(plugin_name)
@@ -53,4 +58,3 @@ class SessionPluginGuard:
     async def restore(self, umo: str, snapshot: dict[str, Any] | None) -> None:
         if isinstance(snapshot, dict):
             await self.sp.put_async("umo", umo, "session_plugin_config", snapshot)
-

@@ -25,6 +25,7 @@
 - Dangerous actions require soft approval.
 - Task state is stored in plugin_data.
 - Plugin overrides are session-level and restored on exit.
+- Agent Lab protects itself from being disabled by its own session plugin overrides.
 - Default AgentSpec includes common AstrBot Computer Use tool names; unavailable tools are skipped or reported by AstrBot runtime.
 - Commands and natural-language starts use the default Agent; WebUI starts use the selected Agent.
 

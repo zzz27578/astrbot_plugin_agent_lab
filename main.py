@@ -110,7 +110,7 @@ class AgentLabPlugin(Star):
         self.config = config or {}
         self.storage = AgentLabStorage(StarTools.get_data_dir(PLUGIN_NAME))
         self.modules = ModuleRegistry(self.storage.modules_dir)
-        self.guard = SessionPluginGuard()
+        self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
         self.summarizer = AgentSummarizer(
             context,
             {
@@ -907,6 +907,7 @@ class AgentLabPlugin(Star):
                     "display_name": plugin.display_name,
                     "activated": plugin.activated,
                     "reserved": plugin.reserved,
+                    "locked": plugin.name == PLUGIN_NAME,
                     "desc": plugin.desc,
                 }
             )

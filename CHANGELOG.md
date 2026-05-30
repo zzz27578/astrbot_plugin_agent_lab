@@ -22,3 +22,4 @@
 - Added multi-AgentSpec selection, duplication, creation, default-agent switching, and selected-Agent task starts.
 - Added WebUI custom module editor and `/modules` API for saving adapter manifests.
 - Limited WebUI Tasks/state task listing to active tasks; finished and cancelled tasks live under Archives.
+- Protected Agent Lab from being disabled by its own session plugin overrides.
