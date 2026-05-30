@@ -11,6 +11,7 @@ if str(ROOT) not in sys.path:
 from agent_lab import AgentLabStorage
 from agent_lab.models import TaskState
 from agent_lab.modules import ModuleRegistry
+from agent_lab.session_guard import SessionPluginGuard
 
 
 def main() -> None:
@@ -37,6 +38,21 @@ def main() -> None:
         assert saved.module_id == "custom_module"
         assert registry.get("custom_module") is not None
         assert (Path(tmp) / "custom_module.json").exists()
+
+    guard = SessionPluginGuard(protected_plugins={"astrbot_plugin_agent_lab"})
+    protected = guard._protected_config(
+        "test:private:1",
+        {
+            "test:private:1": {
+                "enabled_plugins": [],
+                "disabled_plugins": ["astrbot_plugin_agent_lab", "memory_noise"],
+            }
+        },
+    )
+    protected_session = protected["test:private:1"]
+    assert "astrbot_plugin_agent_lab" in protected_session["enabled_plugins"]
+    assert "astrbot_plugin_agent_lab" not in protected_session["disabled_plugins"]
+    assert "memory_noise" in protected_session["disabled_plugins"]
 
     with TemporaryDirectory() as tmp:
         store = AgentLabStorage(Path(tmp))

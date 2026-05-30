@@ -36,12 +36,12 @@ class SessionPluginGuard:
             session_cfg = {}
         enabled = set(session_cfg.get("enabled_plugins", []) or [])
         disabled = set(session_cfg.get("disabled_plugins", []) or [])
+        self._protect_sets(enabled, disabled)
         for plugin_name, is_enabled in plugin_overrides.items():
             if not plugin_name:
                 continue
             if plugin_name in self.protected_plugins:
-                disabled.discard(plugin_name)
-                enabled.add(plugin_name)
+                self._protect_sets(enabled, disabled)
                 continue
             if bool(is_enabled):
                 disabled.discard(plugin_name)
@@ -57,4 +57,23 @@ class SessionPluginGuard:
 
     async def restore(self, umo: str, snapshot: dict[str, Any] | None) -> None:
         if isinstance(snapshot, dict):
+            snapshot = self._protected_config(umo, snapshot)
             await self.sp.put_async("umo", umo, "session_plugin_config", snapshot)
+
+    def _protected_config(self, umo: str, config: dict[str, Any]) -> dict[str, Any]:
+        cfg = deepcopy(config)
+        session_cfg = cfg.get(umo, {})
+        if not isinstance(session_cfg, dict):
+            session_cfg = {}
+        enabled = set(session_cfg.get("enabled_plugins", []) or [])
+        disabled = set(session_cfg.get("disabled_plugins", []) or [])
+        self._protect_sets(enabled, disabled)
+        session_cfg["enabled_plugins"] = sorted(enabled)
+        session_cfg["disabled_plugins"] = sorted(disabled)
+        cfg[umo] = session_cfg
+        return cfg
+
+    def _protect_sets(self, enabled: set[str], disabled: set[str]) -> None:
+        for plugin_name in self.protected_plugins:
+            disabled.discard(plugin_name)
+            enabled.add(plugin_name)
