@@ -20,6 +20,7 @@ class AgentLabStorage:
         self.sessions_dir = self.root / "sessions"
         self.modules_dir = self.root / "modules"
         self.archives_dir = self.root / "archives"
+        self.default_agent_path = self.root / "default_agent_id.txt"
         self.root.mkdir(parents=True, exist_ok=True)
         self.agents_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -29,9 +30,15 @@ class AgentLabStorage:
     def ensure_defaults(self) -> AgentSpec:
         agents = self.list_agents()
         if agents:
+            default_id = self.default_agent_id()
+            for agent in agents:
+                if agent.agent_id == default_id:
+                    return agent
+            self.set_default_agent(agents[0].agent_id)
             return agents[0]
         spec = AgentSpec()
         self.save_agent(spec)
+        self.set_default_agent(spec.agent_id)
         return spec
 
     def list_agents(self) -> list[AgentSpec]:
@@ -48,11 +55,34 @@ class AgentLabStorage:
             path = self.agents_dir / f"{agent_id}.json"
             if path.exists():
                 return AgentSpec.from_dict(self._read_json(path))
-        return self.ensure_defaults()
+        agents = self.list_agents()
+        if not agents:
+            return self.ensure_defaults()
+        default_id = self.default_agent_id()
+        for agent in agents:
+            if agent.agent_id == default_id:
+                return agent
+        self.set_default_agent(agents[0].agent_id)
+        return agents[0]
 
     def save_agent(self, spec: AgentSpec) -> None:
         spec.updated_at = now_iso()
         self._write_json(self.agents_dir / f"{spec.agent_id}.json", spec.to_dict())
+        if not self.default_agent_id():
+            self.set_default_agent(spec.agent_id)
+
+    def default_agent_id(self) -> str:
+        if not self.default_agent_path.exists():
+            return ""
+        return self.default_agent_path.read_text(encoding="utf-8").strip()
+
+    def set_default_agent(self, agent_id: str) -> bool:
+        if not agent_id:
+            return False
+        if not (self.agents_dir / f"{agent_id}.json").exists():
+            return False
+        self._write_text(self.default_agent_path, agent_id)
+        return True
 
     def session_dir(self, umo: str) -> Path:
         path = self.sessions_dir / _safe_hash(umo)

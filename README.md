@@ -34,6 +34,7 @@ data/plugins/astrbot_plugin_agent_lab/
 
 ```text
 /agentlab status
+/agentlab use <agent_id>
 /agentlab start <目标>
 /agentlab tick
 /agentlab heartbeat on
@@ -78,6 +79,8 @@ data/plugins/astrbot_plugin_agent_lab/
 - `always`：尽量使用 Agent Mode，高风险仍审批。
 
 这套判断会同时写入 `agent-mode` Skill 和运行时系统提示词。也就是说，用户在 WebUI 里选择模式后，bot 不需要每次等固定命令，而是会按当前 AgentSpec 自主判断：是否该进入 Agent Mode、是否需要先确认、是否建议心跳、是否必须走审批。
+
+自然语言和命令默认使用当前默认 Agent。可以在 WebUI 里点击 Agent 后设为默认，或用 `/agentlab use <agent_id>` 切换默认 Agent；WebUI 测试入口会用当前选中的 Agent 启动任务。
 
 ## AgentSpec
 
@@ -162,6 +165,7 @@ astrbot_execute_python
 - 用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档。
 - 在 Task Review 中查看当前任务状态、处理审批、直接推进/结束任务。
 - 查看 Archives，确认任务退出后已经归档。
+- 新建、复制、选择 AgentSpec，并设置默认 Agent。
 - 编辑触发模式、记忆/审批/心跳策略、任务提示词、插件开关、工具白名单、任务专用 skills 和模块协议。
 - 后续可扩展成完整可视化 workflow builder。
 

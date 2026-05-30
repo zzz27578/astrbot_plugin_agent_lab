@@ -24,6 +24,16 @@ def main() -> None:
         store = AgentLabStorage(Path(tmp))
         spec = store.ensure_defaults()
         assert "astrbot_execute_shell" in spec.enabled_tools
+        assert store.default_agent_id() == spec.agent_id
+
+        second = spec.to_dict()
+        second.pop("agent_id", None)
+        second["name"] = "Second Agent"
+        second_spec = type(spec).from_dict(second)
+        store.save_agent(second_spec)
+        assert store.get_agent().agent_id == spec.agent_id
+        assert store.set_default_agent(second_spec.agent_id)
+        assert store.get_agent().agent_id == second_spec.agent_id
 
         task = TaskState(
             agent_id=spec.agent_id,

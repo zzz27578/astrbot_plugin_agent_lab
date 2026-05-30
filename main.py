@@ -158,6 +158,7 @@ class AgentLabPlugin(Star):
         risk_level: str = "work",
         user_confirmed: bool = False,
         need_heartbeat: bool = False,
+        agent_id: str = "",
     ) -> str:
         """进入 AstrBot Agent Lab 的 Agent Mode，创建任务状态。
 
@@ -167,8 +168,9 @@ class AgentLabPlugin(Star):
             risk_level(string): low/work/high。涉及文件写入、命令、部署、删除、密钥时至少为 work/high。
             user_confirmed(boolean): 用户是否明确同意进入 Agent Mode 或授权当前风险等级。
             need_heartbeat(boolean): 是否需要为长任务开启心跳。
+            agent_id(string): 可选 AgentSpec ID。为空时使用默认 Agent。
         """
-        spec = self.storage.get_agent()
+        spec = self.storage.get_agent(agent_id or None)
         if not spec.enabled:
             return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用，或选择另一个 AgentSpec。"
         if spec.trigger_mode in ("manual", "confirm") and not user_confirmed:
@@ -184,6 +186,7 @@ class AgentLabPlugin(Star):
             request_heartbeat=need_heartbeat,
             source="tool",
             risk_level=risk_level,
+            agent_id=agent_id,
         )
 
     @filter.llm_tool(name="agent_lab_read_state")
@@ -366,6 +369,8 @@ class AgentLabPlugin(Star):
             return self._status_text(event.unified_msg_origin)
         if cmd in ("agents", "agent"):
             return self._agents_text()
+        if cmd in ("use", "使用"):
+            return self._set_default_agent_text(rest)
         if cmd in ("plugins", "插件"):
             return self._plugins_text()
         if cmd in ("tools", "工具"):
@@ -384,6 +389,7 @@ class AgentLabPlugin(Star):
                 request_heartbeat=False,
                 source="command",
                 risk_level="work",
+                agent_id="",
             )
         if cmd in ("tick", "继续"):
             return await self._tick(event, reason="command")
@@ -417,12 +423,13 @@ class AgentLabPlugin(Star):
         request_heartbeat: bool,
         source: str,
         risk_level: str,
+        agent_id: str = "",
     ) -> str:
         umo = event.unified_msg_origin
         if self.storage.load_active_task(umo):
             return "当前会话已有 active task。请先 /agentlab finish 或 /agentlab cancel。"
 
-        spec = self.storage.get_agent()
+        spec = self.storage.get_agent(agent_id or None)
         if not spec.enabled:
             return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用后再进入 Agent Mode。"
         session_plugin_snapshot = await self.guard.apply_overrides(
@@ -773,6 +780,7 @@ class AgentLabPlugin(Star):
     async def api_state(self):
         return jsonify(
             {
+                "default_agent_id": self.storage.default_agent_id(),
                 "agents": [item.to_dict() for item in self.storage.list_agents()],
                 "tasks": [item.to_dict() for item in self.storage.list_tasks()],
                 "archives": [item.to_dict() for item in self.storage.list_archives()],
@@ -786,10 +794,20 @@ class AgentLabPlugin(Star):
     async def api_agents(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
+            make_default = bool(payload.pop("_make_default", False))
+            if not str(payload.get("agent_id") or "").strip():
+                payload.pop("agent_id", None)
             spec = AgentSpec.from_dict(payload)
             self.storage.save_agent(spec)
+            if make_default:
+                self.storage.set_default_agent(spec.agent_id)
             return jsonify({"ok": True, "agent": spec.to_dict()})
-        return jsonify({"agents": [item.to_dict() for item in self.storage.list_agents()]})
+        return jsonify(
+            {
+                "default_agent_id": self.storage.default_agent_id(),
+                "agents": [item.to_dict() for item in self.storage.list_agents()],
+            }
+        )
 
     async def api_task_start(self):
         payload = await request.get_json(force=True, silent=True) or {}
@@ -807,6 +825,7 @@ class AgentLabPlugin(Star):
             request_heartbeat=bool(payload.get("heartbeat", False)),
             source="webui",
             risk_level=str(payload.get("risk_level") or "work"),
+            agent_id=str(payload.get("agent_id") or ""),
         )
         return jsonify({"ok": True, "message": text})
 
@@ -936,10 +955,20 @@ class AgentLabPlugin(Star):
         )
 
     def _agents_text(self) -> str:
+        default_id = self.storage.default_agent_id()
         return "\n".join(
-            f"- {item.agent_id}: {item.name} ({item.trigger_mode})"
+            f"- {'* ' if item.agent_id == default_id else ''}{item.agent_id}: {item.name} ({item.trigger_mode})"
             for item in self.storage.list_agents()
         )
+
+    def _set_default_agent_text(self, agent_id: str) -> str:
+        agent_id = agent_id.strip()
+        if not agent_id:
+            return "请提供 AgentSpec ID。可用 /agentlab agents 查看。"
+        if not self.storage.set_default_agent(agent_id):
+            return f"未找到 AgentSpec：{agent_id}"
+        spec = self.storage.get_agent(agent_id)
+        return f"已切换默认 Agent：{spec.name} ({spec.agent_id})"
 
     def _plugins_text(self) -> str:
         return "\n".join(
@@ -969,6 +998,7 @@ class AgentLabPlugin(Star):
         return (
             "Agent Lab 命令：\n"
             "/agentlab status\n"
+            "/agentlab use <agent_id>\n"
             "/agentlab start <目标>\n"
             "/agentlab tick\n"
             "/agentlab heartbeat on|off\n"

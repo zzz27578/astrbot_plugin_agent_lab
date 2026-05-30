@@ -10,6 +10,8 @@
 
 ```text
 /agentlab status
+/agentlab agents
+/agentlab use <agent_id>
 /agentlab start 帮我测试 Agent Lab 是否能创建任务
 /agentlab tick
 /agentlab finish 初步测试完成
@@ -24,6 +26,7 @@
 - Task state is stored in plugin_data.
 - Plugin overrides are session-level and restored on exit.
 - Default AgentSpec includes common AstrBot Computer Use tool names; unavailable tools are skipped or reported by AstrBot runtime.
+- Commands and natural-language starts use the default Agent; WebUI starts use the selected Agent.
 
 ## Trigger Modes
 
@@ -39,6 +42,7 @@ The same rules are synchronized into `agent-mode` Skill and the runtime prompt, 
 Agent Lab should be considered healthy when:
 
 - `agents/` contains a default AgentSpec.
+- `default_agent_id.txt` points to an existing AgentSpec.
 - `/agentlab start` creates `active_task.json`.
 - `/agentlab tick` updates the task markdown.
 - `agent_lab_read_state` can return the active task summary.

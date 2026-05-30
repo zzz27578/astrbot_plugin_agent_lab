@@ -4,6 +4,8 @@ const $ = (id) => document.getElementById(id);
 let state = null;
 let currentAgent = null;
 let selectedTaskId = "";
+let selectedAgentId = "";
+let draftAgent = null;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -32,7 +34,18 @@ function escapeHtml(input) {
 }
 
 function render() {
-  currentAgent = clone((state.agents || [])[0] || {});
+  const agents = state.agents || [];
+  const defaultAgentId = state.default_agent_id || agents[0]?.agent_id || "";
+  if (agents.length && !agents.some((agent) => agent.agent_id === selectedAgentId)) {
+    selectedAgentId = defaultAgentId;
+  }
+  currentAgent = clone(
+    draftAgent ||
+      agents.find((agent) => agent.agent_id === selectedAgentId) ||
+      agents.find((agent) => agent.agent_id === defaultAgentId) ||
+      agents[0] ||
+      {},
+  );
   const tasks = state.tasks || [];
   if (tasks.length && !tasks.some((task) => task.task_id === selectedTaskId)) {
     selectedTaskId = tasks[0].task_id;
@@ -53,11 +66,26 @@ function render() {
   $("system-prompt").value = currentAgent.system_prompt || "";
   $("task-prompt").value = currentAgent.task_prompt || "";
 
-  $("agents").replaceChildren(
-    ...(state.agents || []).map((agent) =>
-      row(agent.name, `${agent.agent_id} · ${agent.trigger_mode}`),
-    ),
-  );
+  const agentRows = agents.map((agent) => {
+    const isDefault = agent.agent_id === defaultAgentId;
+    const el = row(
+      `${isDefault ? "★ " : ""}${agent.name}`,
+      `${agent.agent_id} · ${agent.trigger_mode}`,
+    );
+    if (!draftAgent && agent.agent_id === currentAgent.agent_id) el.classList.add("selected");
+    el.addEventListener("click", () => {
+      draftAgent = null;
+      selectedAgentId = agent.agent_id;
+      render();
+    });
+    return el;
+  });
+  if (draftAgent) {
+    const draft = row(`草稿 · ${draftAgent.name || "未命名 Agent"}`, "保存后生成 AgentSpec ID");
+    draft.classList.add("selected");
+    agentRows.unshift(draft);
+  }
+  $("agents").replaceChildren(...agentRows);
   $("tasks").replaceChildren(
     ...(tasks.length
       ? tasks.map((task) => {
@@ -144,21 +172,16 @@ function render() {
 }
 
 function renderFromCurrentAgent() {
-  const preserved = currentAgent;
-  const previousState = state;
-  state = { ...state, agents: [preserved, ...(state.agents || []).slice(1)] };
+  const preserved = clone(currentAgent);
+  if (draftAgent) {
+    draftAgent = preserved;
+  } else {
+    const agents = [...(state.agents || [])];
+    const index = agents.findIndex((agent) => agent.agent_id === preserved.agent_id);
+    if (index >= 0) agents[index] = preserved;
+    state = { ...state, agents };
+  }
   render();
-  state = previousState;
-  currentAgent = preserved;
-  $("agent-enabled").checked = currentAgent.enabled !== false;
-  $("agent-name").value = currentAgent.name || "";
-  $("trigger-mode").value = currentAgent.trigger_mode || "confirm";
-  $("memory-mode").value = currentAgent.memory_policy?.mode || "task_filtered";
-  $("approval-mode").value = currentAgent.approval_policy?.mode || "work";
-  $("heartbeat-mode").value = currentAgent.heartbeat_policy?.mode || "manual";
-  $("heartbeat-allowed").checked = currentAgent.heartbeat_policy?.allowed !== false;
-  $("system-prompt").value = currentAgent.system_prompt || "";
-  $("task-prompt").value = currentAgent.task_prompt || "";
 }
 
 async function load() {
@@ -172,8 +195,10 @@ async function post(endpoint, body) {
     const result = await bridge.apiPost(endpoint, body);
     $("result").textContent = JSON.stringify(result, null, 2);
     await load();
+    return result;
   } catch (error) {
     $("result").textContent = String(error?.stack || error);
+    return null;
   }
 }
 
@@ -255,6 +280,36 @@ await bridge.ready();
 await load();
 
 $("refresh").addEventListener("click", load);
+$("new-agent").addEventListener("click", () => {
+  draftAgent = clone(currentAgent || {});
+  delete draftAgent.agent_id;
+  delete draftAgent.created_at;
+  delete draftAgent.updated_at;
+  draftAgent.name = "新 Agent";
+  draftAgent.enabled = true;
+  render();
+});
+$("duplicate-agent").addEventListener("click", () => {
+  draftAgent = clone(currentAgent || {});
+  delete draftAgent.agent_id;
+  delete draftAgent.created_at;
+  delete draftAgent.updated_at;
+  draftAgent.name = `${currentAgent.name || "Agent"} 副本`;
+  render();
+});
+$("make-default").addEventListener("click", async () => {
+  if (!currentAgent?.agent_id) {
+    $("result").textContent = "请先保存草稿 Agent，再设为默认。";
+    return;
+  }
+  const payload = clone(currentAgent);
+  payload._make_default = true;
+  const result = await post("agents", payload);
+  if (result?.agent?.agent_id) {
+    selectedAgentId = result.agent.agent_id;
+    await load();
+  }
+});
 $("save-agent").addEventListener("click", async () => {
   currentAgent.enabled = $("agent-enabled").checked;
   currentAgent.name = $("agent-name").value.trim() || "Agent";
@@ -268,14 +323,28 @@ $("save-agent").addEventListener("click", async () => {
   currentAgent.heartbeat_policy.allowed = $("heartbeat-allowed").checked;
   currentAgent.system_prompt = $("system-prompt").value;
   currentAgent.task_prompt = $("task-prompt").value;
-  await post("agents", currentAgent);
+  const payload = clone(currentAgent);
+  if (!payload.agent_id) delete payload.agent_id;
+  const result = await post("agents", payload);
+  if (result?.agent?.agent_id) {
+    draftAgent = null;
+    selectedAgentId = result.agent.agent_id;
+    await load();
+  }
 });
 $("start").addEventListener("click", () =>
-  post("task/start", {
-    umo: umo(),
-    goal: $("goal").value,
-    completion_conditions: "用户验收通过",
-  }),
+  {
+    if (!currentAgent?.agent_id) {
+      $("result").textContent = "请先保存草稿 Agent，再用它启动任务。";
+      return;
+    }
+    post("task/start", {
+      umo: umo(),
+      agent_id: currentAgent.agent_id,
+      goal: $("goal").value,
+      completion_conditions: "用户验收通过",
+    });
+  },
 );
 $("tick").addEventListener("click", () => post("task/tick", { umo: umo() }));
 $("heartbeat-on").addEventListener("click", () =>

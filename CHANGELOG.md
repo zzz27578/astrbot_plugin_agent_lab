@@ -19,3 +19,4 @@
 - Added morning acceptance checklist.
 - Added mode-aware natural-language decision protocol synchronized through Skill and runtime prompts.
 - Added WebUI Task Review, approval resolution, cancel flow, Archives, module toggles, and policy controls.
+- Added multi-AgentSpec selection, duplication, creation, default-agent switching, and selected-Agent task starts.

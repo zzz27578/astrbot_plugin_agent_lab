@@ -25,6 +25,7 @@ Expected:
 Expected WebUI:
 
 - Shows Agents.
+- Agents can be selected, duplicated, created, and marked as default.
 - Shows Tasks.
 - Shows Archives.
 - Shows Task Review with tick/heartbeat/finish/cancel actions.
@@ -126,12 +127,16 @@ In Agent Lab Page:
 6. Toggle a skill.
 7. Toggle a module.
 8. Save AgentSpec.
-9. Refresh.
+9. Duplicate the AgentSpec.
+10. Set the duplicate as default.
+11. Refresh.
 
 Expected:
 
 - Changes persist.
 - New task uses AgentSpec snapshot.
+- WebUI task start uses the selected Agent.
+- `/agentlab use <agent_id>` changes the default Agent for natural-language/command starts.
 - Selected skills are shown in the Agent Mode runtime prompt for task ticks.
 - Selected modules are shown in the Agent Mode runtime prompt for task ticks.
 
