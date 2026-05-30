@@ -128,12 +128,20 @@ label {
 }
 
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   border: 1px solid #ccd4df;
   border-radius: 6px;
   padding: 10px 11px;
   font: inherit;
+}
+
+.hint {
+  margin: -6px 0 12px;
+  color: #6c7684;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 button {
@@ -177,4 +185,3 @@ pre {
     grid-template-columns: 1fr;
   }
 }
-

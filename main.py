@@ -531,12 +531,21 @@ class AgentLabPlugin(Star):
 
     def _build_toolset(self, spec: AgentSpec):
         tmgr = self.context.get_llm_tool_manager()
+        internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
         if not spec.enabled_tools:
-            return tmgr.get_full_tool_set()
+            toolset = tmgr.get_full_tool_set()
+            for name in internal_block:
+                try:
+                    toolset.remove_tool(name)
+                except Exception:
+                    pass
+            return toolset
         from astrbot.core.agent.tool import ToolSet
 
         toolset = ToolSet()
         for name in spec.enabled_tools:
+            if name in internal_block:
+                continue
             tool = tmgr.get_func(name)
             if tool:
                 toolset.add_tool(tool)

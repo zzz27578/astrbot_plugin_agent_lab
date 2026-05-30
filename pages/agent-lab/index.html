@@ -28,6 +28,34 @@
         </article>
 
         <article class="panel wide">
+          <h2>AgentSpec 编辑器</h2>
+          <label>
+            名称
+            <input id="agent-name" />
+          </label>
+          <label>
+            触发模式
+            <select id="trigger-mode">
+              <option value="manual">manual</option>
+              <option value="confirm">confirm</option>
+              <option value="smart">smart</option>
+              <option value="always">always</option>
+            </select>
+          </label>
+          <label>
+            System Prompt
+            <textarea id="system-prompt" rows="4"></textarea>
+          </label>
+          <label>
+            Task Prompt
+            <textarea id="task-prompt" rows="4"></textarea>
+          </label>
+          <div class="actions">
+            <button id="save-agent">保存 AgentSpec</button>
+          </div>
+        </article>
+
+        <article class="panel wide">
           <h2>WebUI 测试入口</h2>
           <label>
             UMO / session
@@ -49,16 +77,19 @@
 
         <article class="panel">
           <h2>Plugins</h2>
+          <p class="hint">点击切换当前 Agent 的任务模式开关，保存后生效。</p>
           <div id="plugins" class="switch-list"></div>
         </article>
 
         <article class="panel">
           <h2>Tools</h2>
+          <p class="hint">点击切换当前 Agent 的工具白名单；空白名单表示继承全部 active tools。</p>
           <div id="tools" class="switch-list"></div>
         </article>
 
         <article class="panel">
           <h2>Skills</h2>
+          <p class="hint">点击切换当前 Agent 的 skills 记录，后续可接入更严格的 Skill 注入策略。</p>
           <div id="skills" class="switch-list"></div>
         </article>
 
@@ -71,4 +102,3 @@
     <script type="module" src="./app.js"></script>
   </body>
 </html>
-
