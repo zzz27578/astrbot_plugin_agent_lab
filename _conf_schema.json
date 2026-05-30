@@ -1,0 +1,55 @@
+{
+  "private_only": {
+    "type": "bool",
+    "description": "仅允许私聊使用",
+    "default": true,
+    "hint": "第一版建议开启，避免群聊误触发、权限扩散和上下文混杂。"
+  },
+  "inject_agent_mode_policy": {
+    "type": "bool",
+    "description": "注入 Agent Mode 自主判断协议",
+    "default": true,
+    "hint": "开启后 bot 可根据用户自然语言与 Agent 配置判断是否进入 Agent Mode。"
+  },
+  "install_agent_mode_skill": {
+    "type": "bool",
+    "description": "安装 agent-mode skill",
+    "default": true,
+    "hint": "把 Agent Mode 的触发、审批、心跳和归档规范同步为 AstrBot Skill。"
+  },
+  "entry_summary_turns": {
+    "type": "int",
+    "description": "入口摘要读取最近轮数",
+    "default": 24,
+    "hint": "进入 Agent Mode 时读取最近对话并压缩成 task_brief。"
+  },
+  "fallback_summary_provider_id": {
+    "type": "string",
+    "description": "备用总结模型 Provider ID",
+    "default": "",
+    "hint": "当前会话模型总结失败时使用；为空则只用当前模型。"
+  },
+  "max_steps_per_tick": {
+    "type": "int",
+    "description": "每次 tick 最大工具步数",
+    "default": 12,
+    "hint": "限制单轮执行范围，避免失控长循环。"
+  },
+  "tool_call_timeout": {
+    "type": "int",
+    "description": "工具调用超时秒数",
+    "default": 120,
+    "hint": "单个工具调用的最大等待时间。"
+  },
+  "llm_compress_keep_recent": {
+    "type": "int",
+    "description": "Agent loop 压缩保留最近消息数",
+    "default": 6
+  },
+  "truncate_turns": {
+    "type": "int",
+    "description": "Agent loop 触发截断时丢弃轮数",
+    "default": 2
+  }
+}
+

@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent Lab</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="header">
+        <div>
+          <p class="eyebrow">AstrBot Agent Lab</p>
+          <h1>Agent Mode 控制台</h1>
+        </div>
+        <button id="refresh">刷新</button>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <h2>Agents</h2>
+          <div id="agents" class="list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Tasks</h2>
+          <div id="tasks" class="list"></div>
+        </article>
+
+        <article class="panel wide">
+          <h2>WebUI 测试入口</h2>
+          <label>
+            UMO / session
+            <input id="umo" placeholder="例如 aiocqhttp:FriendMessage:123456" />
+          </label>
+          <label>
+            目标
+            <textarea id="goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea>
+          </label>
+          <div class="actions">
+            <button id="start">开始任务</button>
+            <button id="tick">手动 tick</button>
+            <button id="heartbeat-on">开心跳</button>
+            <button id="heartbeat-off">关心跳</button>
+            <button id="finish">完成归档</button>
+          </div>
+          <pre id="result"></pre>
+        </article>
+
+        <article class="panel">
+          <h2>Plugins</h2>
+          <div id="plugins" class="switch-list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Tools</h2>
+          <div id="tools" class="switch-list"></div>
+        </article>
+
+        <article class="panel">
+          <h2>Skills</h2>
+          <div id="skills" class="switch-list"></div>
+        </article>
+
+        <article class="panel wide">
+          <h2>Modules</h2>
+          <div id="modules" class="module-grid"></div>
+        </article>
+      </section>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
+

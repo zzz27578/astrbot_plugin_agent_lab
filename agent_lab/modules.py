@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+
+@dataclass
+class AgentModule:
+    module_id: str
+    name: str
+    source: str
+    description: str
+    prompt: str
+    links: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "module_id": self.module_id,
+            "name": self.name,
+            "source": self.source,
+            "description": self.description,
+            "prompt": self.prompt,
+            "links": self.links,
+        }
+
+
+DEFAULT_MODULES: dict[str, AgentModule] = {
+    "checkpoint_state": AgentModule(
+        module_id="checkpoint_state",
+        name="Checkpoint State",
+        source="LangGraph durable execution / persistence",
+        description="每轮任务都落盘，重启或上下文压缩后以状态文件恢复。",
+        links=[
+            "https://docs.langchain.com/oss/python/langgraph/durable-execution",
+            "https://docs.langchain.com/oss/python/langgraph/persistence",
+        ],
+        prompt=(
+            "模块：Checkpoint State。任务状态是唯一真实来源。每轮执行必须记录时间戳、"
+            "具体操作、结果、下一步和阻塞点；不得从其他任务继承进度。"
+        ),
+    ),
+    "approval_guard": AgentModule(
+        module_id="approval_guard",
+        name="Approval Guard",
+        source="OpenAI Agents guardrails / human-in-the-loop pattern",
+        description="危险操作前由 Agent 主动请求审批，而不是撞到工具层才失败。",
+        links=[
+            "https://openai.github.io/openai-agents-python/guardrails/",
+            "https://docs.langchain.com/oss/python/langchain/human-in-the-loop",
+        ],
+        prompt=(
+            "模块：Approval Guard。危险操作前必须先说明动作、原因、影响范围、回滚方案，"
+            "并等待用户批准；普通读写和明确授权范围内的工作可直接执行。"
+        ),
+    ),
+    "heartbeat_protocol": AgentModule(
+        module_id="heartbeat_protocol",
+        name="Heartbeat Protocol",
+        source="TaskMode heartbeat protocol",
+        description="长任务通过 cron basic job 唤醒插件 runner，读档、执行、写档。",
+        links=[
+            "https://github.com/AstrBotDevs/AstrBot/blob/master/docs/en/use/agent-runner.md",
+        ],
+        prompt=(
+            "模块：Heartbeat Protocol。只有长任务才开心跳。心跳 payload 不携带细节；"
+            "醒来先读 task_state，再执行，再保存。重复同一问题三次必须暂停求助。"
+        ),
+    ),
+    "memory_gate": AgentModule(
+        module_id="memory_gate",
+        name="Memory Gate",
+        source="Deep Agents / task memory split",
+        description="把日常记忆和任务记忆分层，入口摘要进入，出口摘要回流。",
+        links=[
+            "https://docs.langchain.com/oss/python/deepagents/long-term-memory",
+        ],
+        prompt=(
+            "模块：Memory Gate。保持人格连续，但普通长期记忆不得覆盖 task_state、工具结果和项目事实；"
+            "任务结束后只回流稳定有用的记忆候选。"
+        ),
+    ),
+    "handoff_adapter": AgentModule(
+        module_id="handoff_adapter",
+        name="Handoff Adapter",
+        source="OpenAI Agents handoffs / AstrBot SubAgentOrchestrator",
+        description="把子代理/外部 agent 当作可选模块，而不是任务模式主体。",
+        links=[
+            "https://openai.github.io/openai-agents-python/handoffs/",
+        ],
+        prompt=(
+            "模块：Handoff Adapter。需要专业子任务时可以交给子代理，但主任务状态仍由 Agent Lab 管理；"
+            "handoff 结果必须回写 task_state。"
+        ),
+    ),
+    "flow_adapter": AgentModule(
+        module_id="flow_adapter",
+        name="Flow Adapter",
+        source="CrewAI Flows / Microsoft Agent Framework workflows",
+        description="为后续可视化工作流预留顺序、条件、审批节点。",
+        links=[
+            "https://docs.crewai.com/concepts/flows",
+            "https://learn.microsoft.com/en-us/agent-framework/overview/",
+        ],
+        prompt=(
+            "模块：Flow Adapter。复杂任务可以表示为 Plan -> Execute -> Observe -> Review -> Archive；"
+            "第一版使用线性流程，后续可替换为图状工作流。"
+        ),
+    ),
+}
+
+
+class ModuleRegistry:
+    def __init__(self) -> None:
+        self._modules = dict(DEFAULT_MODULES)
+
+    def list_modules(self) -> list[dict[str, Any]]:
+        return [module.to_dict() for module in self._modules.values()]
+
+    def get(self, module_id: str) -> AgentModule | None:
+        return self._modules.get(module_id)
+
+    def build_prompt(self, module_ids: list[str]) -> str:
+        chunks = []
+        for module_id in module_ids:
+            module = self.get(module_id)
+            if module:
+                chunks.append(module.prompt)
+        if not chunks:
+            return ""
+        return "[Agent Lab Modules]\n" + "\n".join(f"- {chunk}" for chunk in chunks)
+
