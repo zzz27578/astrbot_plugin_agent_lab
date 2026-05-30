@@ -16,3 +16,4 @@
 - Added Agent run hooks to log tool start/end/done events into task_state.
 - Added packaged module manifests for LangGraph, OpenAI Agents, Deep Agents, CrewAI, and Microsoft Agent Framework adapters.
 - Added AstrBot builtin Computer Use tool catalog and default coding tool profile.
+- Added morning acceptance checklist.

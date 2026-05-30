@@ -243,3 +243,5 @@ python scripts/smoke_test.py
 ```bash
 PYTHONPATH=/path/to/AstrBot/.. python -c "import astrbot_plugin_agent_lab.main"
 ```
+
+明早验收步骤见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。
