@@ -343,7 +343,7 @@ class AgentLabPlugin(Star):
         spec = self.storage.get_agent()
         task = self.storage.load_active_task(event.unified_msg_origin)
         if task:
-            modules_prompt = self.modules.build_prompt(spec.module_ids)
+            modules_prompt = self._build_task_extensions_prompt(spec)
             req.system_prompt += "\n\n" + build_task_system_prompt(
                 spec, task, modules_prompt
             )
@@ -472,7 +472,7 @@ class AgentLabPlugin(Star):
             return f"存在待审批操作，先处理审批再继续：\n{pending}"
 
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
-        modules_prompt = self.modules.build_prompt(spec.module_ids)
+        modules_prompt = self._build_task_extensions_prompt(spec)
         system_prompt = build_task_system_prompt(spec, task, modules_prompt)
         prompt = build_tick_prompt(task, reason)
         try:
@@ -698,6 +698,43 @@ class AgentLabPlugin(Star):
             if tool:
                 toolset.add_tool(tool)
         return toolset
+
+    def _build_task_extensions_prompt(self, spec: AgentSpec) -> str:
+        sections = []
+        modules_prompt = self.modules.build_prompt(spec.module_ids)
+        if modules_prompt.strip():
+            sections.append(modules_prompt)
+        skills_prompt = self._build_selected_skills_prompt(spec)
+        if skills_prompt.strip():
+            sections.append(skills_prompt)
+        return "\n\n".join(sections)
+
+    def _build_selected_skills_prompt(self, spec: AgentSpec) -> str:
+        selected = [name.strip() for name in spec.enabled_skills if str(name).strip()]
+        if not selected:
+            return ""
+        try:
+            from astrbot.core.skills.skill_manager import SkillManager, build_skills_prompt
+
+            skills = SkillManager().list_skills(active_only=False)
+            by_name = {item.name: item for item in skills}
+            chosen = [by_name[name] for name in selected if name in by_name]
+            missing = [name for name in selected if name not in by_name]
+            parts = [
+                "[AgentSpec Selected Skills]",
+                "以下 skills 是当前 AgentSpec 为任务模式选择的行为协议。使用前仍需按 Skill 规则读取 SKILL.md；未选择的 skill 不应作为本任务的主要依据。",
+            ]
+            if chosen:
+                parts.append(build_skills_prompt(chosen))
+            if missing:
+                parts.append("未找到的 selected skills：" + ", ".join(missing))
+            return "\n\n".join(parts)
+        except Exception as exc:
+            logger.warning("[AgentLab] selected skills prompt failed: %s", exc)
+            return (
+                "[AgentSpec Selected Skills]\n"
+                f"当前 AgentSpec 选择了 skills：{', '.join(selected)}，但运行时读取失败：{exc}。"
+            )
 
     def _sync_agent_mode_skill(self) -> None:
         if not _bool_cfg(self.config, "install_agent_mode_skill", True):

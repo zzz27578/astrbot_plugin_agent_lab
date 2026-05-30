@@ -77,6 +77,8 @@ data/plugins/astrbot_plugin_agent_lab/
 - `smart`：低风险任务可自动进入，高风险任务确认。
 - `always`：尽量使用 Agent Mode，高风险仍审批。
 
+这套判断会同时写入 `agent-mode` Skill 和运行时系统提示词。也就是说，用户在 WebUI 里选择模式后，bot 不需要每次等固定命令，而是会按当前 AgentSpec 自主判断：是否该进入 Agent Mode、是否需要先确认、是否建议心跳、是否必须走审批。
+
 ## AgentSpec
 
 AgentSpec 是用户手搓 Agent 的核心配置：
@@ -158,6 +160,7 @@ astrbot_execute_python
 
 - 查看 Agents、Tasks、Plugins、Tools、Skills、Modules。
 - 用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档。
+- 编辑触发模式、任务提示词、插件开关、工具白名单和任务专用 skills。
 - 后续可扩展成完整可视化 workflow builder。
 
 ## 模块系统

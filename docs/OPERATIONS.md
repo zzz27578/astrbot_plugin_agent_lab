@@ -25,6 +25,15 @@
 - Plugin overrides are session-level and restored on exit.
 - Default AgentSpec includes common AstrBot Computer Use tool names; unavailable tools are skipped or reported by AstrBot runtime.
 
+## Trigger Modes
+
+- `manual`: commands/WebUI/explicit user request only.
+- `confirm`: bot proposes Agent Mode and waits for user confirmation.
+- `smart`: bot may enter for low-risk multi-step work, but asks before writes, shell commands, deployment, deletion, plugin shutdown, or secret access.
+- `always`: bot prefers Agent Mode for actionable multi-step work; dangerous actions still require approval.
+
+The same rules are synchronized into `agent-mode` Skill and the runtime prompt, so natural-language triggering follows the WebUI-selected AgentSpec instead of a hardcoded global behavior.
+
 ## Validation Notes
 
 Agent Lab should be considered healthy when:

@@ -97,6 +97,21 @@ Expected:
 - `/agentlab status` shows pending approvals.
 - `/agentlab approve <approval_id>` resolves it.
 
+## Natural Language Trigger Checks
+
+Set AgentSpec trigger mode in WebUI and ask the bot a private-chat task such as:
+
+```text
+小莫，帮我把这个插件排错并持续记录进度。
+```
+
+Expected:
+
+- `manual`: bot should not auto-enter unless the user explicitly asks for Agent Mode or uses a command/WebUI.
+- `confirm`: bot should explain why Agent Mode fits and ask for confirmation.
+- `smart`: bot may enter for low-risk planning/analysis, but asks first before file writes, shell commands, deployment, deletion, plugin shutdown, or secret access.
+- `always`: bot should prefer Agent Mode for actionable multi-step tasks while still requesting approval for dangerous operations.
+
 ## WebUI Editing Checks
 
 In Agent Lab Page:
@@ -105,13 +120,15 @@ In Agent Lab Page:
 2. Change trigger mode.
 3. Toggle a plugin.
 4. Toggle a tool.
-5. Save AgentSpec.
-6. Refresh.
+5. Toggle a skill.
+6. Save AgentSpec.
+7. Refresh.
 
 Expected:
 
 - Changes persist.
 - New task uses AgentSpec snapshot.
+- Selected skills are shown in the Agent Mode runtime prompt for task ticks.
 
 ## Known Limits In v0.1.0
 
@@ -119,4 +136,3 @@ Expected:
 - WebUI is a functional test console, not yet a full workflow builder.
 - External frameworks are module manifests/specs, not embedded full runtimes yet.
 - Real shell/file/browser capability depends on AstrBot Computer Use runtime and permissions.
-
