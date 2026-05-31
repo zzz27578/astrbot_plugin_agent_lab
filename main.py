@@ -35,6 +35,14 @@ PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人 Agent Mode。"
 SKILL_NAME = "agent-mode"
 NO_EXTERNAL_TOOLS_SENTINEL = "__agent_lab_no_external_tools__"
+DEFAULT_BOT_LABEL = "当前 Bot"
+AGENT_NAME_SUFFIX = " Agent Mode"
+DEFAULT_AGENT_NAMES = {
+    "",
+    f"{DEFAULT_BOT_LABEL}{AGENT_NAME_SUFFIX}",
+    "AstrBot Agent Mode",
+    "Agent Mode",
+}
 
 BUILTIN_TOOL_CATALOG = [
     {
@@ -122,9 +130,11 @@ class AgentLabPlugin(Star):
             },
         )
         self.storage.ensure_defaults()
+        self._sync_default_agent_identity()
         self._register_web_apis()
 
     async def initialize(self):
+        self._sync_default_agent_identity()
         self._sync_agent_mode_skill()
         await self._rehydrate_heartbeats()
         logger.info("[AgentLab] initialized")
@@ -433,13 +443,16 @@ class AgentLabPlugin(Star):
         spec = self.storage.get_agent(agent_id or None)
         if not spec.enabled:
             return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用后再进入 Agent Mode。"
+        effective_agent_name = await self._effective_agent_name(spec, event)
+        profile_agent = spec.to_dict()
+        profile_agent["name"] = effective_agent_name
         session_plugin_snapshot = await self.guard.apply_overrides(
             umo, spec.plugin_overrides
         )
         entry_summary = await self.summarizer.summarize_entry(event, goal, brief)
         task = TaskState(
             agent_id=spec.agent_id,
-            agent_name=spec.name,
+            agent_name=effective_agent_name,
             umo=umo,
             root_goal=goal.strip(),
             completion_conditions=[
@@ -453,7 +466,7 @@ class AgentLabPlugin(Star):
             current_summary=f"任务由 {source} 创建，风险级别：{risk_level}。",
             next_step="根据入口摘要制定第一轮执行计划，并推进一个有限工作单元。",
             profile_snapshot={
-                "agent": spec.to_dict(),
+                "agent": profile_agent,
                 "session_plugin_snapshot": session_plugin_snapshot,
             },
             heartbeat=spec.heartbeat_policy,
@@ -468,7 +481,7 @@ class AgentLabPlugin(Star):
         return (
             f"已进入 Agent Mode。\n"
             f"- task_id: {task.task_id}\n"
-            f"- agent: {spec.name}\n"
+            f"- agent: {effective_agent_name}\n"
             f"- 状态文件: {self.storage.task_markdown_path(umo, task.task_id)}\n"
             f"- 下一步: /agentlab tick\n"
             f"{heartbeat_text}"
@@ -792,6 +805,12 @@ class AgentLabPlugin(Star):
                 "tools": self._tool_rows(),
                 "skills": self._skill_rows(),
                 "modules": self.modules.list_modules(),
+                "runtime": {
+                    "bot_label": self._current_bot_label(),
+                    "default_agent_name": self._agent_name_from_label(
+                        self._current_bot_label()
+                    ),
+                },
             }
         )
 
@@ -799,9 +818,26 @@ class AgentLabPlugin(Star):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
             make_default = bool(payload.pop("_make_default", False))
+            incoming_agent_id = str(payload.get("agent_id") or "").strip()
+            previous_spec = None
+            if incoming_agent_id:
+                previous_spec = next(
+                    (
+                        item
+                        for item in self.storage.list_agents()
+                        if item.agent_id == incoming_agent_id
+                    ),
+                    None,
+                )
             if not str(payload.get("agent_id") or "").strip():
                 payload.pop("agent_id", None)
             spec = AgentSpec.from_dict(payload)
+            if (
+                previous_spec
+                and previous_spec.identity_label_source == "astrbot_persona"
+                and spec.name != previous_spec.name
+            ):
+                spec.identity_label_source = "manual"
             self.storage.save_agent(spec)
             if make_default:
                 self.storage.set_default_agent(spec.agent_id)
@@ -1030,3 +1066,199 @@ class AgentLabPlugin(Star):
         if len(text) <= limit:
             return text
         return text[: limit - 20] + "\n...[truncated]"
+
+    def _sync_default_agent_identity(self) -> None:
+        """Keep the built-in default Agent aligned with AstrBot's current persona."""
+        try:
+            spec = self.storage.get_agent()
+        except Exception:
+            return
+        if not self._should_sync_agent_identity(spec):
+            return
+        derived_name = self._agent_name_from_label(self._current_bot_label())
+        if spec.name == derived_name and spec.identity_label_source == "astrbot_persona":
+            return
+        spec.name = derived_name
+        spec.identity_label_source = "astrbot_persona"
+        self.storage.save_agent(spec)
+
+    async def _effective_agent_name(
+        self, spec: AgentSpec, event: AstrMessageEvent
+    ) -> str:
+        if not self._should_sync_agent_identity(spec):
+            return spec.name
+        return self._agent_name_from_label(await self._current_bot_label_for_event(event))
+
+    def _should_sync_agent_identity(self, spec: AgentSpec) -> bool:
+        if spec.identity_label_source == "astrbot_persona":
+            return True
+        if spec.name in DEFAULT_AGENT_NAMES:
+            return True
+        return self._looks_like_default_agent_template(spec)
+
+    @staticmethod
+    def _looks_like_default_agent_template(spec: AgentSpec) -> bool:
+        if not spec.name.endswith(AGENT_NAME_SUFFIX):
+            return False
+        base = AgentSpec()
+        return (
+            spec.description == base.description
+            and spec.system_prompt == base.system_prompt
+            and spec.task_prompt == base.task_prompt
+            and spec.enabled_tools == base.enabled_tools
+            and spec.module_ids == base.module_ids
+        )
+
+    @staticmethod
+    def _agent_name_from_label(bot_label: str) -> str:
+        return f"{bot_label or DEFAULT_BOT_LABEL}{AGENT_NAME_SUFFIX}"
+
+    def _current_bot_label(self) -> str:
+        persona_name = self._current_persona_name()
+        if self._usable_persona_label(persona_name):
+            return persona_name
+        return DEFAULT_BOT_LABEL
+
+    async def _current_bot_label_for_event(self, event: AstrMessageEvent) -> str:
+        persona_name = await self._current_persona_name_for_event(event)
+        if self._usable_persona_label(persona_name):
+            return persona_name
+        return self._current_bot_label()
+
+    async def _current_persona_name_for_event(self, event: AstrMessageEvent) -> str:
+        umo = getattr(event, "unified_msg_origin", "")
+        config = self._context_config(umo)
+        provider_settings = _cfg(config, "provider_settings", {}) or {}
+        conversation_persona_id = await self._conversation_persona_id(umo)
+        persona_manager = getattr(self.context, "persona_manager", None)
+
+        resolve_selected = getattr(persona_manager, "resolve_selected_persona", None)
+        if callable(resolve_selected):
+            try:
+                _, persona, _, _ = await resolve_selected(
+                    umo=umo,
+                    conversation_persona_id=conversation_persona_id or None,
+                    platform_name=self._event_platform_name(event),
+                    provider_settings=provider_settings,
+                )
+                name = self._persona_name(persona)
+                if name:
+                    return name
+            except Exception:
+                pass
+
+        if conversation_persona_id:
+            name = self._persona_name_by_id(conversation_persona_id)
+            if name:
+                return name
+
+        get_default = getattr(persona_manager, "get_default_persona_v3", None)
+        if callable(get_default):
+            try:
+                return self._persona_name(await get_default(umo=umo))
+            except Exception:
+                pass
+
+        return self._current_persona_name()
+
+    def _current_persona_name(self) -> str:
+        persona_manager = getattr(self.context, "persona_manager", None)
+        for attr in ("selected_default_persona_v3", "selected_default_persona"):
+            persona = getattr(persona_manager, attr, None)
+            name = self._persona_name(persona)
+            if name:
+                return name
+
+        config = self._context_config()
+        provider_settings = _cfg(config, "provider_settings", {}) or {}
+        default_persona = _cfg(provider_settings, "default_personality", "")
+        name = self._persona_name_by_id(default_persona)
+        if name:
+            return name
+        if default_persona:
+            return str(default_persona).strip()
+        return ""
+
+    @staticmethod
+    def _persona_name(persona: Any) -> str:
+        if not persona:
+            return ""
+        if isinstance(persona, dict):
+            return str(persona.get("name") or persona.get("persona_id") or "").strip()
+        for key in ("name", "persona_id"):
+            try:
+                value = persona[key]
+                if value:
+                    return str(value).strip()
+            except Exception:
+                pass
+        return str(
+            getattr(persona, "name", "")
+            or getattr(persona, "persona_id", "")
+            or ""
+        ).strip()
+
+    def _persona_name_by_id(self, persona_id: Any) -> str:
+        persona_id = str(persona_id or "").strip()
+        if not persona_id:
+            return ""
+        persona_manager = getattr(self.context, "persona_manager", None)
+        get_by_id = getattr(persona_manager, "get_persona_v3_by_id", None)
+        if callable(get_by_id):
+            try:
+                return self._persona_name(get_by_id(persona_id))
+            except Exception:
+                return ""
+        return ""
+
+    async def _conversation_persona_id(self, umo: str) -> str:
+        if not umo:
+            return ""
+        conversation_manager = getattr(self.context, "conversation_manager", None)
+        get_curr = getattr(conversation_manager, "get_curr_conversation_id", None)
+        get_conversation = getattr(conversation_manager, "get_conversation", None)
+        if not callable(get_curr) or not callable(get_conversation):
+            return ""
+        try:
+            conversation_id = await get_curr(umo)
+            if not conversation_id:
+                return ""
+            conversation = await get_conversation(umo, conversation_id)
+        except Exception:
+            return ""
+        if isinstance(conversation, dict):
+            return str(conversation.get("persona_id") or "").strip()
+        return str(getattr(conversation, "persona_id", "") or "").strip()
+
+    @staticmethod
+    def _event_platform_name(event: AstrMessageEvent) -> str:
+        get_platform_name = getattr(event, "get_platform_name", None)
+        if callable(get_platform_name):
+            try:
+                return str(get_platform_name() or "")
+            except Exception:
+                pass
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        return umo.split(":", 1)[0] if ":" in umo else ""
+
+    @staticmethod
+    def _usable_persona_label(name: str) -> bool:
+        normalized = str(name or "").strip()
+        return normalized.lower() not in {"", "default", "[%none]", "none"}
+
+    def _context_config(self, umo: str | None = None) -> Any:
+        get_config = getattr(self.context, "get_config", None)
+        if callable(get_config):
+            if umo:
+                try:
+                    return get_config(umo=umo)
+                except Exception:
+                    try:
+                        return get_config(umo)
+                    except Exception:
+                        pass
+            try:
+                return get_config()
+            except Exception:
+                pass
+        return getattr(self.context, "_config", None)

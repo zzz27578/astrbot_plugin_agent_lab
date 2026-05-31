@@ -48,6 +48,9 @@ class FakeContext:
         self.web_apis = []
         self.cron_manager = FakeCronManager()
         self.conversation_manager = FakeConversationManager()
+        self.persona_manager = SimpleNamespace(
+            selected_default_persona_v3={"name": "测试人格"}
+        )
 
     def register_web_api(self, route, handler, methods, desc) -> None:
         self.web_apis.append((route, methods, desc))
@@ -129,6 +132,7 @@ async def main() -> None:
         plugin = plugin_main.AgentLabPlugin(FakeContext(), config={"private_only": True})
         plugin.guard = FakeGuard()
         event = FakeEvent()
+        assert plugin.storage.get_agent().name == "测试人格 Agent Mode"
 
         start = await plugin._start_task(
             event,
@@ -143,7 +147,7 @@ async def main() -> None:
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         assert task.root_goal == "runtime smoke goal"
-        assert task.profile_snapshot["agent"]["name"]
+        assert task.profile_snapshot["agent"]["name"] == "测试人格 Agent Mode"
 
         approval = await plugin.agent_lab_request_approval(
             event,

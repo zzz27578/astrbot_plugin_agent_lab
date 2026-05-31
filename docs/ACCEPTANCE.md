@@ -101,7 +101,7 @@ Expected:
 Ask naturally:
 
 ```text
-小莫，进入 Agent Mode，然后准备删除一个测试目录，先走审批。
+进入 Agent Mode，然后准备删除一个测试目录，先走审批。
 ```
 
 Expected:
@@ -115,7 +115,7 @@ Expected:
 Set AgentSpec trigger mode in WebUI and ask the bot a private-chat task such as:
 
 ```text
-小莫，帮我把这个插件排错并持续记录进度。
+请帮我把这个插件排错并持续记录进度。
 ```
 
 Expected:

@@ -36,7 +36,7 @@ class AgentLabStorage:
                     return agent
             self.set_default_agent(agents[0].agent_id)
             return agents[0]
-        spec = AgentSpec()
+        spec = AgentSpec(identity_label_source="astrbot_persona")
         self.save_agent(spec)
         self.set_default_agent(spec.agent_id)
         return spec

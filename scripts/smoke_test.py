@@ -58,6 +58,7 @@ def main() -> None:
         store = AgentLabStorage(Path(tmp))
         spec = store.ensure_defaults()
         assert "astrbot_execute_shell" in spec.enabled_tools
+        assert spec.identity_label_source == "astrbot_persona"
         assert store.default_agent_id() == spec.agent_id
 
         second = spec.to_dict()

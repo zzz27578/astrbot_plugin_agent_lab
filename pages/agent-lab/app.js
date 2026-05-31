@@ -46,6 +46,7 @@ function setResult(value) {
 }
 
 function ensurePolicies(agent) {
+  agent.identity_label_source ||= "manual";
   agent.memory_policy ||= {};
   agent.approval_policy ||= {};
   agent.heartbeat_policy ||= {};
@@ -139,6 +140,7 @@ function render() {
 function renderStats(defaultAgentId) {
   const defaultAgent = getAgents().find((agent) => agent.agent_id === defaultAgentId);
   $("stat-default").textContent = defaultAgent?.name || "-";
+  $("stat-bot-label").textContent = state.runtime?.bot_label || "当前 Bot";
   $("stat-agents").textContent = String(getAgents().length);
   $("stat-active").textContent = String(getTasks().length);
   $("stat-archives").textContent = String((state.archives || []).length);
@@ -594,6 +596,7 @@ $("new-agent").addEventListener("click", () => {
   delete draftAgent.created_at;
   delete draftAgent.updated_at;
   draftAgent.name = "新 Agent";
+  draftAgent.identity_label_source = "manual";
   draftAgent.enabled = true;
   render();
   setFeedback("已创建 Agent 草稿，保存后生效。");
@@ -605,6 +608,7 @@ $("duplicate-agent").addEventListener("click", () => {
   delete draftAgent.created_at;
   delete draftAgent.updated_at;
   draftAgent.name = `${currentAgent.name || "Agent"} 副本`;
+  draftAgent.identity_label_source = "manual";
   render();
   setFeedback("已复制为草稿，保存后生效。");
 });
@@ -734,7 +738,8 @@ function createPreviewBridge() {
     agents: [
       {
         agent_id: "agent_preview",
-        name: "小莫 Agent Mode",
+        name: "当前 Bot Agent Mode",
+        identity_label_source: "astrbot_persona",
         enabled: true,
         trigger_mode: "confirm",
         system_prompt: "你仍然是当前 AstrBot 里的原本角色。",
@@ -750,6 +755,7 @@ function createPreviewBridge() {
     ],
     tasks: [],
     archives: [],
+    runtime: { bot_label: "当前 Bot", default_agent_name: "当前 Bot Agent Mode" },
     plugins: [
       { name: "astrbot_plugin_agent_lab", display_name: "Agent Lab", activated: true, locked: true },
       { name: "memory_noise", display_name: "记忆注入插件", activated: true, locked: false },

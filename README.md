@@ -2,7 +2,9 @@
 
 Agent Lab 是一个 AstrBot 插件，用来把普通 bot 会话切换成可持续执行、可审批、可归档、可扩展的 **Agent Mode**。
 
-它不是替代 AstrBot，而是把 AstrBot 已有的 provider、Agent Runner、tools、MCP、Skills、cron、conversation、plugin session config 组织成一个可以手搓个人 Agent 的运行层。你可以把它理解成：让“小莫还是小莫”，但在写代码、配置项目、排错、部署、整理资料这类长任务里，临时进入一个更稳的任务工作台。
+它不是替代 AstrBot，而是把 AstrBot 已有的 provider、Agent Runner、tools、MCP、Skills、cron、conversation、plugin session config 组织成一个可以手搓个人 Agent 的运行层。你可以把它理解成：当前 bot 仍然保持原本的人设和关系，但在写代码、配置项目、排错、部署、整理资料这类长任务里，临时进入一个更稳的任务工作台。
+
+Agent Lab 不内置任何固定 bot 名字。默认 Agent 会优先读取 AstrBot 当前会话/默认人格名称来生成展示名；读不到时才显示通用的“当前 Bot”占位。用户自己创建或改名的 AgentSpec 会保持手动名称。
 
 ## 新手先看
 
@@ -130,7 +132,8 @@ AgentSpec 是用户手搓 Agent 的核心配置：
 
 ```json
 {
-  "name": "小莫 Agent Mode",
+  "name": "当前 Bot Agent Mode",
+  "identity_label_source": "astrbot_persona",
   "trigger_mode": "confirm",
   "system_prompt": "...",
   "task_prompt": "...",

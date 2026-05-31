@@ -25,5 +25,6 @@
 - Added WebUI custom module editor and `/modules` API for saving adapter manifests.
 - Reworked the WebUI into a Chinese structured console with separate task runtime, agent rules, capability switches, and module editor areas.
 - Added clearer WebUI button feedback, disabled states, and local preview mode for layout testing.
+- Removed hardcoded role names from defaults/docs; derived default and task-time Agent labels from AstrBot persona/config when available.
 - Limited WebUI Tasks/state task listing to active tasks; finished and cancelled tasks live under Archives.
 - Protected Agent Lab from being disabled by its own session plugin overrides.

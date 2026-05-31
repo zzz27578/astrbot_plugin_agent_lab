@@ -91,7 +91,8 @@ class MemoryPolicy:
 @dataclass
 class AgentSpec:
     agent_id: str = field(default_factory=lambda: new_id("agent"))
-    name: str = "小莫 Agent Mode"
+    name: str = "当前 Bot Agent Mode"
+    identity_label_source: str = "manual"  # manual | astrbot_persona
     description: str = "把 AstrBot 会话切换为可持续执行、可审批、可归档的 Agent 模式。"
     enabled: bool = True
     trigger_mode: str = "confirm"  # manual | confirm | smart | always
