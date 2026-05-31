@@ -3,7 +3,7 @@ display_name: Agent Lab
 desc: 在 AstrBot 内创建、运行和管理个人 Agent Mode 的任务执行插件。
 version: v0.1.0
 author: zzz27578 & Codex
-repo: https://github.com/zzz27578/name
+repo: https://github.com/zzz27578/astrbot_plugin_agent_lab
 astrbot_version: ">=4.16,<5"
 tags:
   - agent
@@ -11,4 +11,3 @@ tags:
   - workflow
   - heartbeat
   - skills
-

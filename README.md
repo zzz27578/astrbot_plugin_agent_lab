@@ -1,12 +1,49 @@
-# AstrBot Agent Lab
+# astrbot_plugin_agent_lab
 
 Agent Lab 是一个 AstrBot 插件，用来把普通 bot 会话切换成可持续执行、可审批、可归档、可扩展的 **Agent Mode**。
 
-它不是替代 AstrBot，而是把 AstrBot 已有的 provider、Agent Runner、tools、MCP、Skills、cron、conversation、plugin session config 组织成一个可以手搓个人 Agent 的运行层。
+它不是替代 AstrBot，而是把 AstrBot 已有的 provider、Agent Runner、tools、MCP、Skills、cron、conversation、plugin session config 组织成一个可以手搓个人 Agent 的运行层。你可以把它理解成：让“小莫还是小莫”，但在写代码、配置项目、排错、部署、整理资料这类长任务里，临时进入一个更稳的任务工作台。
 
-## 目标
+## 新手先看
 
-- 让用户在 AstrBot 里创建自己的 Agent。
+Agent Lab 主要解决四件事：
+
+1. **防串记忆**：进入任务时压缩当前聊天计划，任务期间用独立 `task_state` 续跑，避免普通记忆插件把旧事注入进工程任务。
+2. **可控工具箱**：每个 AgentSpec 都可以配置插件开关、工具白名单、任务专用 skills 和模块。
+3. **任务连续性**：任务进度写进 `plugin_data`，手动 tick 或心跳醒来时先读状态、再执行、再保存。
+4. **软审批**：删除、重置、部署、读密钥等危险动作前，bot 应先说明影响并请求确认。
+
+最快验收方式：
+
+```text
+/agentlab status
+/agentlab start 帮我测试 Agent Lab 是否能创建、推进和归档任务
+/agentlab tick
+/agentlab finish 初步测试完成
+```
+
+第一版默认只允许私聊使用，避免群聊误触发和权限扩散。
+
+## WebUI 入口和权限
+
+Agent Lab 的 WebUI 是 **AstrBot Dashboard 插件 Page**，不是一个独立 Web 服务。
+
+- 不需要 Agent Lab 自己开放端口。
+- 不需要 Agent Lab 自己再设置一套管理员密码。
+- 访问控制继承 AstrBot Dashboard：能登录 Dashboard 的管理员，就能打开插件 Page。
+- 如果你的 AstrBot Dashboard 暴露到公网，请按 AstrBot 本体要求配置管理员密码、监听地址、反向代理或访问控制；这不是插件单独处理的。
+
+打开路径：
+
+```text
+AstrBot Dashboard -> 插件 -> Agent Lab -> 打开 Page
+```
+
+WebUI 第一版主要是功能测试和可视化审查台：可以创建/复制 AgentSpec，切插件、工具、skills、modules，查看 active task 和 archive，手动 tick，开心跳/关心跳，处理审批。
+
+## 功能概览
+
+- 创建多个 AgentSpec，并选择默认 Agent。
 - 支持自然语言进入 Agent Mode，也支持命令和 WebUI 调试。
 - 任务模式不是完全失忆：入口压缩普通上下文，任务期间使用独立 task_state，退出后归档并生成记忆候选。
 - 支持会话级插件启用/禁用，不动全局插件开关。
@@ -17,7 +54,11 @@ Agent Lab 是一个 AstrBot 插件，用来把普通 bot 会话切换成可持�
 
 ## 安装
 
-把本仓库作为 AstrBot 插件安装，或放入 `data/plugins/astrbot_plugin_agent_lab`。
+把本仓库作为 AstrBot 插件安装，或放入 `data/plugins/astrbot_plugin_agent_lab`。推荐仓库目录名和插件 ID 保持一致：
+
+```bash
+git clone https://github.com/zzz27578/astrbot_plugin_agent_lab.git data/plugins/astrbot_plugin_agent_lab
+```
 
 ```text
 data/plugins/astrbot_plugin_agent_lab/
@@ -29,7 +70,7 @@ data/plugins/astrbot_plugin_agent_lab/
 └── pages/
 ```
 
-启动后插件会自动安装 `agent-mode` Skill，并在 AstrBot WebUI 的插件页面暴露 `Agent Lab` Page。
+启动后插件会自动安装 `agent-mode` Skill，并在 AstrBot Dashboard 的插件页面暴露 `Agent Lab` Page。
 
 ## 命令
 

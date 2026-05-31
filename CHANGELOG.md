@@ -3,6 +3,8 @@
 ## v0.1.0
 
 - Initial Agent Lab plugin.
+- Standardized repository identity around `astrbot_plugin_agent_lab`.
+- Added beginner-facing README guidance for features, first run, WebUI access, and Dashboard security expectations.
 - Added AgentSpec and TaskState persistence in plugin_data.
 - Added private-session Agent Mode commands and LLM tools.
 - Added entry and exit summarizers using AstrBot providers.

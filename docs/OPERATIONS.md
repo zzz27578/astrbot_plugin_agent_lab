@@ -2,7 +2,7 @@
 
 ## First Run Checklist
 
-1. Install plugin.
+1. Install plugin as `data/plugins/astrbot_plugin_agent_lab`.
 2. Restart AstrBot or reload plugins.
 3. Open WebUI -> Plugins -> Agent Lab page.
 4. Confirm `agent-mode` skill is active.
@@ -16,6 +16,14 @@
 /agentlab tick
 /agentlab finish 初步测试完成
 ```
+
+## WebUI Access
+
+Agent Lab WebUI is an AstrBot Dashboard plugin Page. It does not start a separate HTTP server, open an extra port, or maintain a separate admin password.
+
+- Dashboard login and AstrBot's own admin settings protect the page.
+- If Dashboard is exposed outside localhost/LAN, secure AstrBot Dashboard itself with its admin password, bind address, reverse proxy, or access controls.
+- The WebUI test form asks for UMO only because it can simulate task operations from the dashboard. Normal users can start from private chat commands instead.
 
 ## Safe Defaults
 
@@ -60,4 +68,5 @@ Local repository smoke test:
 ```text
 python -m compileall -q .
 python scripts/smoke_test.py
+python scripts/runtime_smoke_test.py
 ```

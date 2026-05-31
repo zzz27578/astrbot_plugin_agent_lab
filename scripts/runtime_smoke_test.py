@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -114,7 +115,7 @@ class FakeGuard:
 
 async def main() -> None:
     try:
-        import name.main as plugin_main
+        plugin_main = importlib.import_module(f"{ROOT.name}.main")
     except ModuleNotFoundError as exc:
         if exc.name and exc.name.startswith("astrbot"):
             print("runtime smoke skipped: AstrBot SDK/source is not importable")

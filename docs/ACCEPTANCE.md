@@ -24,6 +24,12 @@ Expected:
 4. Confirm `agent-mode` Skill is active.
 5. Open plugin Page `Agent Lab`.
 
+Note:
+
+- Agent Lab WebUI is loaded inside AstrBot Dashboard.
+- It does not require a separate plugin port or plugin-specific admin password.
+- Access control follows the AstrBot Dashboard login and deployment settings.
+
 Expected WebUI:
 
 - Shows Agents.
