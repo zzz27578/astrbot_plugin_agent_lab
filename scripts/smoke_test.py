@@ -50,9 +50,11 @@ async def smoke_webui_server() -> None:
     client = server.app.test_client()
     denied = await client.get("/api/state")
     ok = await client.get("/api/state", headers={"X-Agent-Lab-Token": "secret"})
+    modules = await client.get("/api/modules", headers={"X-Agent-Lab-Token": "secret"})
     page = await client.get("/")
     assert denied.status_code == 401
     assert ok.status_code == 200
+    assert modules.status_code == 200
     assert page.status_code == 200
 
 
@@ -107,6 +109,8 @@ def main() -> None:
         spec = store.ensure_defaults()
         assert "astrbot_execute_shell" in spec.enabled_tools
         assert spec.identity_label_source == "astrbot_runtime"
+        assert spec.application_scope == "entry"
+        assert spec.entry_channel == "command"
         assert isinstance(spec.tool_risk_overrides, dict)
         assert isinstance(spec.module_settings, dict)
         assert spec.workflow_nodes

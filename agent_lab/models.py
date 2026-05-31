@@ -97,6 +97,8 @@ class AgentSpec:
     description: str = "把 AstrBot 会话切换为可持续执行、可审批、可归档的 Agent 模式。"
     enabled: bool = True
     provider_id: str = ""
+    application_scope: str = "entry"  # entry | global
+    entry_channel: str = "command"  # command | natural | webui
     trigger_mode: str = "confirm"  # manual | confirm | smart | always
     system_prompt: str = (
         "你仍然是当前 AstrBot 里的原本角色，但进入 Agent Mode 后必须以任务推进为中心。"

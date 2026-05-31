@@ -90,6 +90,10 @@ class StandaloneWebUIServer:
         async def integrations():
             return await self._guard(self.owner.api_modules)
 
+        @app.route("/api/modules", methods=["GET", "POST"])
+        async def modules():
+            return await self._guard(self.owner.api_modules)
+
         @app.route("/api/registry", methods=["GET", "POST"])
         async def registry():
             return await self._guard(self.owner.api_registry)

@@ -27,6 +27,8 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 
 [当前 AgentSpec]
 - name：{spec.name}
+- application_scope：{spec.application_scope}
+- entry_channel：{spec.entry_channel}
 - trigger_mode：{spec.trigger_mode}
 - memory_mode：{spec.memory_policy.mode}
 - approval_mode：{spec.approval_policy.mode}
@@ -42,11 +44,13 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 
 [自主触发决策]
 1. 先判断用户请求是否需要可持续任务状态。普通问答、闲聊、一次性解释不进入 Agent Mode。
-2. manual：只有命令、WebUI 或用户明确说进入 Agent Mode/任务模式时才进入。
-3. confirm：判断适合进入时，先用一句话说明原因并请求确认。
-4. smart：低风险资料整理、计划、分析可自动进入；涉及文件写入、命令执行、部署、删除、读取密钥、关闭插件等先确认。
-5. always：除简单问答和闲聊外优先进入 Agent Mode；危险动作仍需审批。
-6. 如果已有 active task，不要重复进入，先读取 task_state 再继续。
+2. application_scope=global：把当前 AgentSpec 作为默认任务工作台，所有适合长任务的请求都按 trigger_mode 判断是否进入。
+3. application_scope=entry：只有入口命中时才进入。entry_channel=command 表示命令或用户明确说“进入任务模式”；entry_channel=natural 表示自然语言也可触发；entry_channel=webui 表示主要从 WebUI 创建任务。
+4. manual：只有命令、WebUI 或用户明确说进入 Agent Mode/任务模式时才进入。
+5. confirm：判断适合进入时，先用一句话说明原因并请求确认。
+6. smart：低风险资料整理、计划、分析可自动进入；涉及文件写入、命令执行、部署、删除、读取密钥、关闭插件等先确认。
+7. always：除简单问答和闲聊外优先进入 Agent Mode；危险动作仍需审批。
+8. 如果已有 active task，不要重复进入，先读取 task_state 再继续。
 
 可用工具：
 - agent_lab_enter_mode：进入 Agent Mode，创建任务状态。
@@ -100,6 +104,8 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 - pending_approvals: {approval_text}
 
 [AgentSpec Snapshot]
+- application_scope: {spec.application_scope}
+- entry_channel: {spec.entry_channel}
 - trigger_mode: {spec.trigger_mode}
 - memory_mode: {spec.memory_policy.mode}
 - approval_mode: {spec.approval_policy.mode}

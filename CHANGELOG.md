@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.1
+
+- Rebuilt the Canvas page as the primary task-mode cockpit with explicit global-vs-entry application scope and command/natural/WebUI entry channels.
+- Added persisted AgentSpec fields for application scope and entry channel, and injected them into runtime task-mode prompts.
+- Added WebUI task-entry controls beside the selected AgentSpec and exposed cancel/archive plus approval approve/reject actions from the Tasks page.
+- Reworked workflow visualization into a staged board with editable nodes, edge chips, add/delete controls, and advanced JSON kept as a fallback.
+- Added standalone `/api/modules` route compatibility for blueprint import/update.
+- Fixed runtime smoke test shutdown when AstrBot SDK import leaves helper threads alive.
+
 ## v0.1.0
 
 - Initial Agent Lab plugin.

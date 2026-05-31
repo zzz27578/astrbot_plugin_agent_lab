@@ -36,7 +36,7 @@ from .agent_lab.webui_server import StandaloneWebUIServer
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.1.0"
+PLUGIN_VERSION = "v0.1.1"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人 Agent Mode。"
 SKILL_NAME = "agent-mode"
@@ -1568,8 +1568,16 @@ class AgentLabPlugin(Star):
         self, spec: AgentSpec, previous_spec: AgentSpec | None = None
     ) -> None:
         self._normalize_agent_identity_for_save(spec, previous_spec)
+        self._normalize_agent_entry_settings(spec)
         self._upgrade_default_agent_tools(spec)
         self._sanitize_agent_enabled_tools(spec)
+
+    @staticmethod
+    def _normalize_agent_entry_settings(spec: AgentSpec) -> None:
+        scope = str(getattr(spec, "application_scope", "") or "entry").strip()
+        spec.application_scope = scope if scope in {"entry", "global"} else "entry"
+        channel = str(getattr(spec, "entry_channel", "") or "command").strip()
+        spec.entry_channel = channel if channel in {"command", "natural", "webui"} else "command"
 
     def _normalize_agent_identity_for_save(
         self, spec: AgentSpec, previous_spec: AgentSpec | None = None

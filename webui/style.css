@@ -212,6 +212,19 @@ label > textarea {
   font-size: 14px;
 }
 
+.check-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.check-line input {
+  width: 18px;
+  min-height: 18px;
+}
+
 .feedback {
   min-height: 40px;
   margin-bottom: 14px;
@@ -230,6 +243,71 @@ label > textarea {
 .view {
   display: grid;
   gap: 14px;
+}
+
+.canvas-hero {
+  display: grid;
+  gap: 14px;
+}
+
+.canvas-hero-main {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.canvas-hero-main h2 {
+  margin: 0 0 8px;
+  font-size: 28px;
+  line-height: 1.15;
+}
+
+.choice-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.choice-grid.two-choice {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.choice-grid.three-choice {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.choice-card {
+  min-height: 86px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.choice-card.active {
+  border-color: var(--ink);
+  background: #fffdf6;
+  box-shadow: inset 0 0 0 2px rgba(47, 125, 91, 0.16);
+}
+
+.choice-card strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 15px;
+}
+
+.choice-card span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.setup-grid {
+  align-items: stretch;
 }
 
 .grid {
@@ -446,6 +524,103 @@ button.list-row {
   align-items: start;
 }
 
+.workflow-layout > div {
+  min-width: 0;
+}
+
+.workflow-panel {
+  overflow: hidden;
+}
+
+.workflow-board {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(132px, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 4px 2px 12px;
+}
+
+.workflow-column {
+  min-width: 132px;
+  min-height: 360px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.workflow-column[data-stage="entry"] {
+  border-top: 4px solid var(--green);
+}
+
+.workflow-column[data-stage="execute"] {
+  border-top: 4px solid var(--blue);
+}
+
+.workflow-column[data-stage="guard"] {
+  border-top: 4px solid var(--amber);
+}
+
+.workflow-column[data-stage="archive"] {
+  border-top: 4px solid var(--ink);
+}
+
+.workflow-stage {
+  display: grid;
+  gap: 2px;
+  min-height: 48px;
+  margin-bottom: 10px;
+}
+
+.workflow-stage strong {
+  font-size: 14px;
+}
+
+.workflow-stage span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.workflow-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.edge-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.edge-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.edge-chip b {
+  color: var(--ink);
+}
+
+.edge-chip.muted {
+  border-style: dashed;
+}
+
 .workflow-side {
   display: grid;
   gap: 12px;
@@ -496,8 +671,8 @@ button.list-row {
 }
 
 .node {
-  min-height: 118px;
-  padding: 14px;
+  min-height: 132px;
+  padding: 13px;
   box-shadow: none;
   color: var(--ink);
   text-align: left;
@@ -521,6 +696,11 @@ button.list-row {
   margin-top: 10px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.small-empty {
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.45);
 }
 
 .node.selected {
@@ -882,8 +1062,22 @@ pre {
   .grid.three,
   .form-grid,
   .canvas,
+  .choice-grid.two-choice,
+  .choice-grid.three-choice,
   .integration-layout {
     grid-template-columns: 1fr;
+  }
+
+  .canvas-hero-main {
+    flex-direction: column;
+  }
+
+  .workflow-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .workflow-board {
+    grid-template-columns: repeat(6, minmax(180px, 1fr));
   }
 
   .subnav {

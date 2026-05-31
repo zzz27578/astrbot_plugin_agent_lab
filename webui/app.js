@@ -61,6 +61,84 @@ function identitySourceLabel(source) {
   }[source] || "AstrBot 运行时";
 }
 
+function scopeLabel(scope) {
+  return {
+    global: "全局应用",
+    entry: "进入式应用",
+  }[scope] || "进入式应用";
+}
+
+function scopeHint(scope) {
+  return {
+    global: "默认 AgentSpec 持续参与私聊，长任务请求按触发模式判断。",
+    entry: "只在入口命中时进入任务模式，普通会话保持原样。",
+  }[scope] || "";
+}
+
+function entryChannelLabel(channel) {
+  return {
+    command: "命令入口",
+    natural: "自然语言入口",
+    webui: "WebUI 入口",
+  }[channel] || "命令入口";
+}
+
+function entryChannelHint(channel) {
+  return {
+    command: "/agentlab start 或用户明确说进入任务模式。",
+    natural: "用户提出连续任务时，按触发模式判断是否进入。",
+    webui: "从控制台创建任务，适合调试和运营。",
+  }[channel] || "";
+}
+
+function triggerLabel(mode) {
+  return {
+    manual: "手动",
+    confirm: "先确认",
+    smart: "智能判断",
+    always: "优先进入",
+  }[mode] || mode;
+}
+
+function memoryModeLabel(mode) {
+  return {
+    inherit: "继承会话",
+    task_filtered: "任务过滤",
+    strict: "严格隔离",
+  }[mode] || mode;
+}
+
+function approvalModeLabel(mode) {
+  return {
+    observe: "只观察",
+    work: "工作审批",
+    high_risk_review: "高危必审",
+    delegated: "委托策略",
+  }[mode] || mode;
+}
+
+function heartbeatModeLabel(mode) {
+  return {
+    off: "关闭",
+    manual: "手动",
+    auto: "自动建议",
+  }[mode] || mode;
+}
+
+function workflowKindLabel(kind) {
+  return {
+    state: "状态",
+    tool: "工具",
+    guard: "闸门",
+  }[kind] || kind;
+}
+
+function labeledOptions(values, selected, labeler) {
+  return values
+    .map((value) => `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>${esc(labeler(value))}</option>`)
+    .join("");
+}
+
 function runtimeAgentName() {
   return state?.runtime?.default_agent_name || "按当前 AstrBot 身份自动生成";
 }
@@ -76,6 +154,8 @@ function agentDisplayName(agent) {
 }
 
 function ensureAgent(agent) {
+  agent.application_scope ||= "entry";
+  agent.entry_channel ||= "command";
   agent.memory_policy ||= {};
   agent.approval_policy ||= {};
   agent.approval_policy.preapproved_scopes ||= [];
@@ -111,6 +191,8 @@ function defaultAgentDraft() {
     description: "把 AstrBot 会话切换为可持续执行、可审批、可归档的 Agent 模式。",
     enabled: true,
     provider_id: "",
+    application_scope: "entry",
+    entry_channel: "command",
     trigger_mode: "confirm",
     system_prompt: "你仍然是当前 AstrBot 里的原本角色，但进入 Agent Mode 后必须以任务推进为中心。",
     task_prompt: "你在 Agent Mode 中工作。先读取任务状态，再执行一个有限步骤，随后总结并写回状态。",
@@ -453,46 +535,87 @@ function taskRows(tasks, archive = false) {
 function renderCanvas() {
   currentAgent = ensureAgent(currentAgent || {});
   ensureWorkflow();
+  const currentName = agentDisplayName(currentAgent);
+  const stats = agentStats(currentAgent);
   $("view").innerHTML = `
-    <section class="grid two">
+    <section class="panel canvas-hero">
+      <div class="canvas-hero-main">
+        <div>
+          <p class="card-kicker">当前任务模式配置</p>
+          <h2>${esc(currentName)}</h2>
+          <div class="module-meta">
+            ${badge(scopeLabel(currentAgent.application_scope), currentAgent.application_scope === "global" ? "ok" : "warn")}
+            ${badge(entryChannelLabel(currentAgent.entry_channel))}
+            ${badge(triggerLabel(currentAgent.trigger_mode || "confirm"))}
+            ${badge(currentAgent.enabled === false ? "已停用" : "已启用", currentAgent.enabled === false ? "bad" : "ok")}
+          </div>
+          <div class="row-meta">${esc(currentAgent.agent_id || "新配置尚未保存")} · 运行 ${stats.active} · 触发 ${stats.triggers} · Token ${stats.tokens} · 待审批 ${stats.approvals}</div>
+        </div>
+        <div class="inline-actions">
+          <button class="button secondary" data-action="new-agent" type="button">新建配置</button>
+          <button class="button secondary" data-action="duplicate-agent" type="button">复制配置</button>
+          <button class="button secondary" data-action="make-default" type="button">设为默认</button>
+          <button class="button" data-action="save-agent" type="button">保存配置</button>
+        </div>
+      </div>
+      <div class="choice-grid two-choice">
+        ${["entry", "global"].map((scope) => `
+          <button class="choice-card ${currentAgent.application_scope === scope ? "active" : ""}" data-action="set-agent-scope" data-id="${scope}" type="button">
+            <strong>${esc(scopeLabel(scope))}</strong>
+            <span>${esc(scopeHint(scope))}</span>
+          </button>
+        `).join("")}
+      </div>
+      <div class="choice-grid three-choice">
+        ${["command", "natural", "webui"].map((channel) => `
+          <button class="choice-card ${currentAgent.entry_channel === channel ? "active" : ""}" data-action="set-entry-channel" data-id="${channel}" type="button">
+            <strong>${esc(entryChannelLabel(channel))}</strong>
+            <span>${esc(entryChannelHint(channel))}</span>
+          </button>
+        `).join("")}
+      </div>
+    </section>
+
+    <section class="grid two setup-grid">
       <div class="panel">
         <div class="panel-head">
-          <div><p class="card-kicker">配置模板</p><h2>Agent Mode 生产车间</h2></div>
-          <div class="inline-actions">
-            <button class="button secondary" data-action="new-agent" type="button">新建</button>
-            <button class="button secondary" data-action="duplicate-agent" type="button">复制</button>
-            <button class="button secondary" data-action="make-default" type="button">设为默认</button>
-            <button class="button" data-action="save-agent" type="button">保存</button>
-          </div>
+          <div><p class="card-kicker">进入入口</p><h2>从 WebUI 进入任务模式</h2></div>
         </div>
+        <div class="form-grid">
+          <label>会话 UMO<input id="canvas-umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
+          <label>风险级别<select id="canvas-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
+          <label class="span-2">任务目标<textarea id="canvas-goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
+          <label class="span-2">完成条件<input id="canvas-completion" value="用户验收通过" /></label>
+          <label class="span-2">入口补充<textarea id="canvas-brief" rows="3" placeholder="可写入刚刚确认过的计划、约束、授权范围。"></textarea></label>
+          <label class="check-line span-2"><input id="canvas-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
+        </div>
+        <div class="button-row">
+          <button class="button" data-action="canvas-start-task" type="button">进入任务模式</button>
+          <button class="button secondary" data-route="tasks" type="button">查看任务状态</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><div><p class="card-kicker">规则配置</p><h2>触发、记忆、审批、心跳</h2></div></div>
         <div class="form-grid">
           <label>任务模式配置名称<input id="agent-name" value="${esc(currentAgent.name || "")}" placeholder="${esc(runtimeAgentName())}" /></label>
           <label>底层模型 Provider ID<input id="provider-id" value="${esc(currentAgent.provider_id || "")}" placeholder="为空则使用当前会话模型" /></label>
-          <label>配置状态<select id="agent-enabled">${options(["true", "false"], String(currentAgent.enabled !== false))}</select></label>
-          <label>触发模式<select id="trigger-mode">${options(["manual", "confirm", "smart", "always"], currentAgent.trigger_mode || "confirm")}</select></label>
-          <label>记忆模式<select id="memory-mode">${options(["inherit", "task_filtered", "strict"], currentAgent.memory_policy.mode || "task_filtered")}</select></label>
-          <label>审批模式<select id="approval-mode">${options(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work")}</select></label>
-          <label>心跳模式<select id="heartbeat-mode">${options(["off", "manual", "auto"], currentAgent.heartbeat_policy.mode || "manual")}</select></label>
-          <label>允许心跳<select id="heartbeat-allowed">${options(["true", "false"], String(currentAgent.heartbeat_policy.allowed !== false))}</select></label>
+          <label>配置状态<select id="agent-enabled">${labeledOptions(["true", "false"], String(currentAgent.enabled !== false), (value) => value === "true" ? "启用" : "停用")}</select></label>
+          <label>触发模式<select id="trigger-mode">${labeledOptions(["manual", "confirm", "smart", "always"], currentAgent.trigger_mode || "confirm", triggerLabel)}</select></label>
+          <label>记忆模式<select id="memory-mode">${labeledOptions(["inherit", "task_filtered", "strict"], currentAgent.memory_policy.mode || "task_filtered", memoryModeLabel)}</select></label>
+          <label>审批模式<select id="approval-mode">${labeledOptions(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
+          <label>心跳模式<select id="heartbeat-mode">${labeledOptions(["off", "manual", "auto"], currentAgent.heartbeat_policy.mode || "manual", heartbeatModeLabel)}</select></label>
+          <label>允许心跳<select id="heartbeat-allowed">${labeledOptions(["true", "false"], String(currentAgent.heartbeat_policy.allowed !== false), (value) => value === "true" ? "允许" : "禁止")}</select></label>
           <label>上下文摘要轮数<input id="entry-summary-turns" type="number" min="1" value="${esc(currentAgent.memory_policy.entry_summary_turns || 24)}" /></label>
           <label>心跳 Cron<input id="heartbeat-cron" value="${esc(currentAgent.heartbeat_policy.cron_expression || "*/5 * * * *")}" /></label>
           <div class="span-2 note-line">当前运行时身份：${esc(state.runtime?.bot_label || "等待读取")}；来源：${esc(identitySourceLabel(state.runtime?.bot_label_source))}。这里配置的是任务模式模板名和规则，不会覆盖 AstrBot 当前身份。</div>
-          <label class="span-2">任务模式补充提示词（不是身份替换）<textarea id="system-prompt" rows="4">${esc(currentAgent.system_prompt || "")}</textarea></label>
-          <label class="span-2">每轮执行协议<textarea id="task-prompt" rows="4">${esc(currentAgent.task_prompt || "")}</textarea></label>
-          <details class="span-2 advanced-json">
-            <summary>高级：工作流 JSON 导入/导出</summary>
-            <textarea id="workflow-json" rows="8">${esc(JSON.stringify(workflowData(), null, 2))}</textarea>
-          </details>
         </div>
       </div>
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">资产列表</p><h2>选择任务模式配置</h2></div></div>
-        <div class="list">${agentRows()}</div>
-      </div>
     </section>
-    <section class="panel">
+
+    <section class="panel workflow-panel">
       <div class="panel-head">
-        <div><p class="card-kicker">流程</p><h2>任务模式工作流</h2></div>
+        <div><p class="card-kicker">画布</p><h2>任务模式工作流</h2></div>
         <div class="inline-actions">
           <button class="button secondary" data-action="add-workflow-node" type="button">新增节点</button>
           <button class="button secondary" data-action="reset-workflow" type="button">恢复默认流程</button>
@@ -500,15 +623,29 @@ function renderCanvas() {
       </div>
       <div class="workflow-layout">
         <div>
-          <div class="canvas">
-            ${workflowNodes()}
-          </div>
-          <pre>${esc(edgeText())}</pre>
+          ${workflowBoard()}
+          ${workflowEdgeChips()}
         </div>
         <div class="workflow-side">
           ${workflowInspector()}
           ${workflowEdgesPanel()}
         </div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="panel">
+        <div class="panel-head"><div><p class="card-kicker">提示词</p><h2>任务运行协议</h2></div></div>
+        <label class="span-2">任务模式补充提示词（不是身份替换）<textarea id="system-prompt" rows="5">${esc(currentAgent.system_prompt || "")}</textarea></label>
+        <label class="span-2">每轮执行协议<textarea id="task-prompt" rows="5">${esc(currentAgent.task_prompt || "")}</textarea></label>
+        <details class="advanced-json">
+          <summary>高级：工作流 JSON 导入/导出</summary>
+          <textarea id="workflow-json" rows="8">${esc(JSON.stringify(workflowData(), null, 2))}</textarea>
+        </details>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><div><p class="card-kicker">资产列表</p><h2>选择任务模式配置</h2></div></div>
+        <div class="list">${agentRows()}</div>
       </div>
     </section>
   `;
@@ -529,6 +666,57 @@ function workflowNodes() {
     .join("");
 }
 
+function workflowStage(item) {
+  const id = String(item.id || "").toLowerCase();
+  const title = String(item.title || "").toLowerCase();
+  if (id.includes("entry") || title.includes("入口")) return "entry";
+  if (id.includes("plan") || title.includes("计划")) return "plan";
+  if (item.kind === "tool" || id.includes("execute") || title.includes("执行")) return "execute";
+  if (id.includes("checkpoint") || title.includes("快照")) return "checkpoint";
+  if (id.includes("archive") || title.includes("归档")) return "archive";
+  if (item.kind === "guard" || id.includes("approval") || id.includes("heartbeat")) return "guard";
+  return "plan";
+}
+
+function workflowBoard() {
+  ensureWorkflow();
+  const stages = [
+    ["entry", "入口", "压缩上下文"],
+    ["plan", "计划", "拆解任务"],
+    ["execute", "执行", "调用工具"],
+    ["guard", "闸门", "审批/心跳"],
+    ["checkpoint", "快照", "写回状态"],
+    ["archive", "出口", "归档回流"],
+  ];
+  return `
+    <div class="workflow-board">
+      ${stages.map(([stage, title, meta]) => {
+        const nodes = currentAgent.workflow_nodes.filter((item) => workflowStage(item) === stage);
+        return `
+          <div class="workflow-column" data-stage="${stage}">
+            <div class="workflow-stage"><strong>${esc(title)}</strong><span>${esc(meta)}</span></div>
+            <div class="workflow-stack">${nodes.map((item) => node(item)).join("") || `<div class="empty small-empty">暂无节点</div>`}</div>
+          </div>
+        `;
+      }).join("")}
+    </div>
+  `;
+}
+
+function workflowEdgeChips() {
+  ensureWorkflow();
+  const edges = currentAgent.workflow_edges || [];
+  return `
+    <div class="edge-chips">
+      ${edges.map((edge, index) => `
+        <span class="edge-chip" title="连线 ${index + 1}">
+          ${esc(edge.from)} <b>→</b> ${esc(edge.to)}
+        </span>
+      `).join("") || `<span class="edge-chip muted">尚未配置连线</span>`}
+    </div>
+  `;
+}
+
 function edgeText() {
   ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
@@ -542,7 +730,7 @@ function node(item) {
     <button class="node ${selected ? "selected" : ""}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" type="button">
       <strong>${esc(item.title || item.id)}</strong>
       <p>${esc(item.description || item.id)}</p>
-      <span>${esc(item.id)} · ${esc(item.kind || "state")}</span>
+      <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}</span>
     </button>
   `;
 }
@@ -560,7 +748,7 @@ function workflowInspector() {
       <div class="panel-head"><div><p class="card-kicker">节点</p><h3>编辑节点</h3></div></div>
       <label>节点 ID<input id="workflow-node-id" value="${esc(item.id)}" /></label>
       <label>标题<input id="workflow-node-title" value="${esc(item.title)}" /></label>
-      <label>类型<select id="workflow-node-kind">${options(["state", "tool", "guard"], item.kind || "state")}</select></label>
+      <label>类型<select id="workflow-node-kind">${labeledOptions(["state", "tool", "guard"], item.kind || "state", workflowKindLabel)}</select></label>
       <label>说明<textarea id="workflow-node-description" rows="4">${esc(item.description || "")}</textarea></label>
       <div class="button-row">
         <button class="button" data-action="apply-workflow-node" type="button">应用节点</button>
@@ -632,6 +820,8 @@ function readAgentForm() {
   }
   currentAgent.provider_id = $("provider-id").value.trim();
   currentAgent.enabled = $("agent-enabled").value === "true";
+  currentAgent.application_scope = ["entry", "global"].includes(currentAgent.application_scope) ? currentAgent.application_scope : "entry";
+  currentAgent.entry_channel = ["command", "natural", "webui"].includes(currentAgent.entry_channel) ? currentAgent.entry_channel : "command";
   currentAgent.trigger_mode = $("trigger-mode").value;
   currentAgent.memory_policy.mode = $("memory-mode").value;
   currentAgent.memory_policy.entry_summary_turns = Number($("entry-summary-turns").value || 24);
@@ -655,14 +845,16 @@ function renderTasks() {
   $("view").innerHTML = `
     <section class="grid two">
       <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">创建</p><h2>新任务</h2></div></div>
+        <div class="panel-head"><div><p class="card-kicker">入口</p><h2>进入任务模式</h2></div></div>
         <div class="form-grid">
           <label>会话 UMO<input id="umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
-          <label>完成条件<input id="completion" value="用户验收通过" /></label>
+          <label>风险级别<select id="task-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
           <label class="span-2">任务目标<textarea id="goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
+          <label class="span-2">完成条件<input id="completion" value="用户验收通过" /></label>
           <label class="span-2">入口补充<textarea id="brief" rows="3"></textarea></label>
+          <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
         </div>
-        <div class="button-row"><button class="button" data-action="start-task" type="button">创建任务</button></div>
+        <div class="button-row"><button class="button" data-action="start-task" type="button">进入任务模式</button></div>
       </div>
       <div class="panel">
         <div class="panel-head"><div><p class="card-kicker">Active</p><h2>当前任务</h2></div></div>
@@ -675,8 +867,9 @@ function renderTasks() {
           <div><p class="card-kicker">状态</p><h2>任务快照</h2></div>
           <div class="inline-actions">
             <button class="button secondary" data-action="tick-task" ${runnableTask ? "" : "disabled"} type="button">推进一轮</button>
-            <button class="button secondary" data-action="toggle-heartbeat" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开心跳"}</button>
+            <button class="button secondary" data-action="toggle-heartbeat" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开启心跳"}</button>
             <button class="button secondary" data-action="finish-task" ${runnableTask ? "" : "disabled"} type="button">完成归档</button>
+            <button class="button danger" data-action="cancel-task" ${runnableTask ? "" : "disabled"} type="button">取消归档</button>
           </div>
         </div>
         ${task ? taskDetail(task) : `<div class="empty">请选择或创建任务。</div>`}
@@ -758,11 +951,16 @@ function stateField(label, value) {
 
 function approvalRows(approvals) {
   if (!approvals.length) return `<div class="empty">暂无待审批事项。</div>`;
+  const task = selectedTask();
   return approvals.map((item) => `
     <div class="list-row">
       <div class="row-title"><span>${esc(item.operation || item.approval_id)}</span>${badge(item.status || "pending", "warn")}</div>
       <div class="row-meta">${esc(item.approval_id)} · ${esc(item.reason || "-")}</div>
       <div class="row-meta">影响：${esc(item.impact || "-")} · 回滚：${esc(item.rollback || "-")}</div>
+      <div class="inline-actions approval-actions">
+        <button class="button secondary" data-action="resolve-approval" data-id="${esc(item.approval_id)}" data-umo="${esc(task?.umo || "")}" data-approved="true" type="button">通过</button>
+        <button class="button danger" data-action="resolve-approval" data-id="${esc(item.approval_id)}" data-umo="${esc(task?.umo || "")}" data-approved="false" type="button">拒绝</button>
+      </div>
     </div>
   `).join("");
 }
@@ -1392,6 +1590,17 @@ document.addEventListener("click", async (event) => {
       currentAgent.identity_label_source = "manual";
       render();
     }
+    if (action === "set-agent-scope") {
+      readAgentForm();
+      currentAgent.application_scope = target.dataset.id === "global" ? "global" : "entry";
+      render();
+    }
+    if (action === "set-entry-channel") {
+      readAgentForm();
+      const channel = target.dataset.id;
+      currentAgent.entry_channel = ["command", "natural", "webui"].includes(channel) ? channel : "command";
+      render();
+    }
     if (action === "select-workflow-node") {
       readAgentForm();
       selectedWorkflowNodeId = target.dataset.id;
@@ -1462,6 +1671,25 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "save-agent") await saveAgent(false);
     if (action === "make-default") await saveAgent(true);
+    if (action === "canvas-start-task") {
+      readAgentForm();
+      const payload = {
+        umo: $("canvas-umo").value.trim(),
+        goal: $("canvas-goal").value,
+        completion_conditions: $("canvas-completion").value,
+        brief: $("canvas-brief").value,
+        heartbeat: $("canvas-start-heartbeat")?.checked || false,
+        risk_level: $("canvas-risk-level")?.value || "work",
+      };
+      if (!currentAgent.agent_id) {
+        await saveAgent(false);
+      }
+      payload.agent_id = currentAgent.agent_id || selectedAgentId;
+      await api("/api/task/start", { method: "POST", body: payload });
+      setFeedback("已进入任务模式。");
+      route = "tasks";
+      await load();
+    }
     if (action === "start-task") {
       await api("/api/task/start", {
         method: "POST",
@@ -1470,6 +1698,8 @@ document.addEventListener("click", async (event) => {
           goal: $("goal").value,
           completion_conditions: $("completion").value,
           brief: $("brief").value,
+          heartbeat: $("task-start-heartbeat")?.checked || false,
+          risk_level: $("task-risk-level")?.value || "work",
           agent_id: currentAgent.agent_id,
         },
       });
@@ -1512,6 +1742,19 @@ document.addEventListener("click", async (event) => {
       if (!task) throw new Error("请选择一个正在运行的任务。");
       await api("/api/task/cancel", { method: "POST", body: { umo: task.umo, reason: "WebUI 强制停止任务。" } });
       setFeedback("任务已停止并归档。");
+      await load();
+    }
+    if (action === "resolve-approval") {
+      const task = selectedTask();
+      await api("/api/task/approval", {
+        method: "POST",
+        body: {
+          umo: target.dataset.umo || task?.umo || "",
+          approval_id: target.dataset.id,
+          approved: target.dataset.approved === "true",
+        },
+      });
+      setFeedback(target.dataset.approved === "true" ? "审批已通过。" : "审批已拒绝。");
       await load();
     }
     if (action === "save-memory") {

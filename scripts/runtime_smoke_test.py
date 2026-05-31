@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -180,6 +181,8 @@ async def main() -> None:
         assert plugin.storage.get_agent().name == "测试人格 Agent Mode"
         assert plugin._runtime_identity_payload()["bot_label_source"] == "astrbot_persona"
         spec = plugin.storage.get_agent()
+        assert spec.application_scope == "entry"
+        assert spec.entry_channel == "command"
         plugin.storage.save_skill_rule(
             {"skill_name": "agent-mode", "content": "运行时补充规则"}
         )
@@ -373,3 +376,8 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
+    # AstrBot SDK imports can leave non-daemon scheduler/sqlite helper threads alive
+    # in this isolated smoke environment. All assertions have completed here.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
