@@ -34,6 +34,7 @@ PLUGIN_VERSION = "v0.1.0"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人 Agent Mode。"
 SKILL_NAME = "agent-mode"
+NO_EXTERNAL_TOOLS_SENTINEL = "__agent_lab_no_external_tools__"
 
 BUILTIN_TOOL_CATALOG = [
     {
@@ -695,6 +696,8 @@ class AgentLabPlugin(Star):
 
         toolset = ToolSet()
         for name in spec.enabled_tools:
+            if name == NO_EXTERNAL_TOOLS_SENTINEL:
+                continue
             if name in internal_block:
                 continue
             try:

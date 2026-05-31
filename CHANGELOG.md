@@ -23,5 +23,7 @@
 - Added WebUI Task Review, approval resolution, cancel flow, Archives, module toggles, and policy controls.
 - Added multi-AgentSpec selection, duplication, creation, default-agent switching, and selected-Agent task starts.
 - Added WebUI custom module editor and `/modules` API for saving adapter manifests.
+- Reworked the WebUI into a Chinese structured console with separate task runtime, agent rules, capability switches, and module editor areas.
+- Added clearer WebUI button feedback, disabled states, and local preview mode for layout testing.
 - Limited WebUI Tasks/state task listing to active tasks; finished and cancelled tasks live under Archives.
 - Protected Agent Lab from being disabled by its own session plugin overrides.

@@ -7,186 +7,275 @@
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <main class="shell">
-      <section class="header">
+    <main class="app-shell">
+      <header class="topbar">
         <div>
           <p class="eyebrow">AstrBot Agent Lab</p>
-          <h1>Agent Mode 控制台</h1>
+          <h1>Agent 模式控制台</h1>
         </div>
-        <button id="refresh">刷新</button>
+        <div class="top-actions">
+          <button id="refresh" class="button secondary" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section class="status-strip" aria-label="运行概览">
+        <div class="stat">
+          <span>默认 Agent</span>
+          <strong id="stat-default">-</strong>
+        </div>
+        <div class="stat">
+          <span>Agent 数量</span>
+          <strong id="stat-agents">0</strong>
+        </div>
+        <div class="stat">
+          <span>当前任务</span>
+          <strong id="stat-active">0</strong>
+        </div>
+        <div class="stat">
+          <span>归档任务</span>
+          <strong id="stat-archives">0</strong>
+        </div>
       </section>
 
-      <section class="grid">
-        <article class="panel">
-          <h2>Agents</h2>
-          <div id="agents" class="list"></div>
-          <div class="actions compact">
-            <button id="new-agent">新建</button>
-            <button id="duplicate-agent">复制</button>
-            <button id="make-default">设为默认</button>
-          </div>
-        </article>
+      <div id="feedback" class="feedback" role="status">正在加载 Agent Lab...</div>
 
-        <article class="panel">
-          <h2>Tasks</h2>
-          <div id="tasks" class="list"></div>
-        </article>
+      <section class="workspace">
+        <aside class="sidebar">
+          <section class="panel">
+            <div class="section-title">
+              <div>
+                <p class="section-kicker">配置</p>
+                <h2>Agent 列表</h2>
+              </div>
+            </div>
+            <div id="agent-list" class="item-list"></div>
+            <div class="button-row">
+              <button id="new-agent" class="button secondary" type="button">新建</button>
+              <button id="duplicate-agent" class="button secondary" type="button">复制</button>
+              <button id="make-default" class="button" type="button">设为默认</button>
+            </div>
+          </section>
 
-        <article class="panel">
-          <h2>Archives</h2>
-          <div id="archives" class="list"></div>
-        </article>
+          <section class="panel">
+            <div class="section-title">
+              <div>
+                <p class="section-kicker">运行</p>
+                <h2>当前任务</h2>
+              </div>
+            </div>
+            <div id="task-list" class="item-list"></div>
+          </section>
 
-        <article class="panel wide">
-          <h2>AgentSpec 编辑器</h2>
-          <label class="check">
-            <input id="agent-enabled" type="checkbox" />
-            启用 Agent
-          </label>
-          <label>
-            名称
-            <input id="agent-name" />
-          </label>
-          <label>
-            触发模式
-            <select id="trigger-mode">
-              <option value="manual">manual</option>
-              <option value="confirm">confirm</option>
-              <option value="smart">smart</option>
-              <option value="always">always</option>
-            </select>
-          </label>
-          <label>
-            记忆模式
-            <select id="memory-mode">
-              <option value="inherit">inherit</option>
-              <option value="task_filtered">task_filtered</option>
-              <option value="strict">strict</option>
-            </select>
-          </label>
-          <label>
-            审批模式
-            <select id="approval-mode">
-              <option value="observe">observe</option>
-              <option value="work">work</option>
-              <option value="high_risk_review">high_risk_review</option>
-              <option value="delegated">delegated</option>
-            </select>
-          </label>
-          <label>
-            心跳模式
-            <select id="heartbeat-mode">
-              <option value="off">off</option>
-              <option value="manual">manual</option>
-              <option value="auto">auto</option>
-            </select>
-          </label>
-          <label class="check">
-            <input id="heartbeat-allowed" type="checkbox" />
-            允许心跳
-          </label>
-          <label>
-            System Prompt
-            <textarea id="system-prompt" rows="4"></textarea>
-          </label>
-          <label>
-            Task Prompt
-            <textarea id="task-prompt" rows="4"></textarea>
-          </label>
-          <div class="actions">
-            <button id="save-agent">保存 AgentSpec</button>
-          </div>
-        </article>
+          <section class="panel">
+            <div class="section-title">
+              <div>
+                <p class="section-kicker">历史</p>
+                <h2>归档</h2>
+              </div>
+            </div>
+            <div id="archive-list" class="item-list compact-list"></div>
+          </section>
+        </aside>
 
-        <article class="panel wide">
-          <h2>WebUI 测试入口</h2>
-          <label>
-            UMO / session
-            <input id="umo" placeholder="例如 aiocqhttp:FriendMessage:123456" />
-          </label>
-          <label>
-            目标
-            <textarea id="goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea>
-          </label>
-          <div class="actions">
-            <button id="start">开始任务</button>
-            <button id="tick">手动 tick</button>
-            <button id="heartbeat-on">开心跳</button>
-            <button id="heartbeat-off">关心跳</button>
-            <button id="finish">完成归档</button>
-          </div>
-          <pre id="result"></pre>
-        </article>
+        <section class="main-column">
+          <section class="panel run-panel">
+            <div class="section-title">
+              <div>
+                <p class="section-kicker">任务运行</p>
+                <h2>任务控制台</h2>
+              </div>
+              <span id="active-task-badge" class="badge muted">无任务</span>
+            </div>
 
-        <article class="panel wide">
-          <h2>Task Review</h2>
-          <div id="task-review" class="task-review"></div>
-          <div id="approvals" class="approval-list"></div>
-        </article>
+            <div class="quick-grid">
+              <label>
+                会话 UMO
+                <input id="umo" autocomplete="off" placeholder="aiocqhttp:FriendMessage:123456" />
+              </label>
+              <label>
+                任务目标
+                <textarea id="goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea>
+              </label>
+            </div>
 
-        <article class="panel">
-          <h2>Plugins</h2>
-          <p class="hint">点击切换当前 Agent 的任务模式开关，保存后生效。</p>
-          <div id="plugins" class="switch-list"></div>
-        </article>
+            <div class="button-row primary-actions">
+              <button id="start" class="button" type="button">创建任务</button>
+              <button id="tick" class="button secondary" type="button">推进一轮</button>
+              <button id="heartbeat-toggle" class="button secondary" type="button">开心跳</button>
+              <button id="finish" class="button secondary" type="button">完成归档</button>
+              <button id="cancel" class="button danger" type="button">取消归档</button>
+            </div>
 
-        <article class="panel">
-          <h2>Tools</h2>
-          <p class="hint">点击切换当前 Agent 的工具白名单；空白名单表示继承全部 active tools。</p>
-          <div id="tools" class="switch-list"></div>
-        </article>
+            <div id="task-review" class="task-review"></div>
+            <div id="approvals" class="approval-list"></div>
+            <pre id="result" class="result-box"></pre>
+          </section>
 
-        <article class="panel">
-          <h2>Skills</h2>
-          <p class="hint">点击切换当前 Agent 的任务专用 skills，保存后会进入 Agent Mode runtime prompt。</p>
-          <div id="skills" class="switch-list"></div>
-        </article>
+          <section class="panel">
+            <div class="section-title">
+              <div>
+                <p class="section-kicker">规则</p>
+                <h2>Agent 规则</h2>
+              </div>
+              <label class="switch-line">
+                <input id="agent-enabled" type="checkbox" />
+                启用
+              </label>
+            </div>
 
-        <article class="panel wide">
-          <h2>Modules</h2>
-          <p class="hint">点击模块进行审查/编辑；用下方按钮把模块加入或移出当前 Agent。</p>
-          <div id="modules" class="module-grid"></div>
-          <div class="actions compact">
-            <button id="toggle-module">启用/停用模块</button>
-            <button id="new-module">新建模块</button>
-            <button id="duplicate-module">复制为自定义</button>
-            <button id="save-module">保存模块</button>
-          </div>
-          <div class="module-editor">
-            <label>
-              Module ID
-              <input id="module-id" />
-            </label>
-            <label>
-              名称
-              <input id="module-name" />
-            </label>
-            <label>
-              来源
-              <input id="module-source" />
-            </label>
-            <label>
-              描述
-              <textarea id="module-description" rows="3"></textarea>
-            </label>
-            <label>
-              Prompt
-              <textarea id="module-prompt" rows="5"></textarea>
-            </label>
-            <label>
-              Links（每行一个）
-              <textarea id="module-links" rows="3"></textarea>
-            </label>
-            <label>
-              Capabilities（逗号分隔）
-              <input id="module-capabilities" />
-            </label>
-            <label>
-              Requires（逗号分隔）
-              <input id="module-requires" />
-            </label>
-          </div>
-        </article>
+            <div class="form-grid">
+              <label>
+                名称
+                <input id="agent-name" />
+              </label>
+              <label>
+                触发模式
+                <select id="trigger-mode">
+                  <option value="manual">手动</option>
+                  <option value="confirm">确认</option>
+                  <option value="smart">智能</option>
+                  <option value="always">总是</option>
+                </select>
+              </label>
+              <label>
+                记忆模式
+                <select id="memory-mode">
+                  <option value="inherit">继承</option>
+                  <option value="task_filtered">任务过滤</option>
+                  <option value="strict">严格</option>
+                </select>
+              </label>
+              <label>
+                审批模式
+                <select id="approval-mode">
+                  <option value="observe">观察</option>
+                  <option value="work">工作</option>
+                  <option value="high_risk_review">高风险审查</option>
+                  <option value="delegated">委托</option>
+                </select>
+              </label>
+              <label>
+                心跳模式
+                <select id="heartbeat-mode">
+                  <option value="off">关闭</option>
+                  <option value="manual">手动</option>
+                  <option value="auto">自动</option>
+                </select>
+              </label>
+              <label class="switch-line inline-switch">
+                <input id="heartbeat-allowed" type="checkbox" />
+                允许心跳
+              </label>
+              <label class="span-2">
+                人格与系统提示词
+                <textarea id="system-prompt" rows="4"></textarea>
+              </label>
+              <label class="span-2">
+                任务模式提示词
+                <textarea id="task-prompt" rows="4"></textarea>
+              </label>
+            </div>
+
+            <div class="button-row">
+              <button id="save-agent" class="button" type="button">保存 Agent</button>
+            </div>
+          </section>
+
+          <section class="split-panels">
+            <section class="panel">
+              <div class="section-title">
+                <div>
+                  <p class="section-kicker">能力</p>
+                  <h2>插件开关</h2>
+                </div>
+              </div>
+              <div id="plugins" class="toggle-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="section-title">
+                <div>
+                  <p class="section-kicker">工具</p>
+                  <h2>工具白名单</h2>
+                </div>
+                <button id="inherit-tools" class="button ghost" type="button">继承全部</button>
+              </div>
+              <div id="tools" class="toggle-list"></div>
+            </section>
+          </section>
+
+          <section class="split-panels">
+            <section class="panel">
+              <div class="section-title">
+                <div>
+                  <p class="section-kicker">协议</p>
+                  <h2>任务 Skills</h2>
+                </div>
+              </div>
+              <div id="skills" class="toggle-list"></div>
+            </section>
+
+            <section class="panel">
+              <div class="section-title">
+                <div>
+                  <p class="section-kicker">模块</p>
+                  <h2>模块库</h2>
+                </div>
+              </div>
+              <div id="modules" class="module-list"></div>
+            </section>
+          </section>
+
+          <section class="panel">
+            <div class="section-title">
+              <div>
+                <p class="section-kicker">扩展</p>
+                <h2>模块编辑器</h2>
+              </div>
+              <div class="button-row">
+                <button id="toggle-selected-module" class="button secondary" type="button">启用模块</button>
+                <button id="new-module" class="button secondary" type="button">新建模块</button>
+                <button id="duplicate-module" class="button secondary" type="button">复制模块</button>
+                <button id="save-module" class="button" type="button">保存模块</button>
+              </div>
+            </div>
+
+            <div class="module-editor">
+              <label>
+                模块 ID
+                <input id="module-id" />
+              </label>
+              <label>
+                名称
+                <input id="module-name" />
+              </label>
+              <label>
+                来源
+                <input id="module-source" />
+              </label>
+              <label class="span-2">
+                描述
+                <textarea id="module-description" rows="3"></textarea>
+              </label>
+              <label class="span-2">
+                模块提示词
+                <textarea id="module-prompt" rows="5"></textarea>
+              </label>
+              <label class="span-2">
+                参考链接
+                <textarea id="module-links" rows="3"></textarea>
+              </label>
+              <label>
+                能力标签
+                <input id="module-capabilities" />
+              </label>
+              <label>
+                依赖模块
+                <input id="module-requires" />
+              </label>
+            </div>
+          </section>
+        </section>
       </section>
     </main>
     <script type="module" src="./app.js"></script>
