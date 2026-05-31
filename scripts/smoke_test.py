@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -12,9 +13,49 @@ from agent_lab import AgentLabStorage
 from agent_lab.models import TaskState
 from agent_lab.modules import ModuleRegistry
 from agent_lab.session_guard import SessionPluginGuard
+from agent_lab.webui_server import StandaloneWebUIServer
+
+
+class FakeWebOwner:
+    async def api_state(self):
+        from quart import jsonify
+
+        return jsonify({"ok": True, "agents": []})
+
+    async def api_agents(self):
+        from quart import jsonify
+
+        return jsonify({"ok": True})
+
+    api_modules = api_agents
+    api_task_start = api_agents
+    api_task_tick = api_agents
+    api_task_finish = api_agents
+    api_task_cancel = api_agents
+    api_task_heartbeat = api_agents
+    api_task_approval = api_agents
+
+
+async def smoke_webui_server() -> None:
+    server = StandaloneWebUIServer(
+        owner=FakeWebOwner(),
+        static_dir=ROOT / "webui",
+        host="127.0.0.1",
+        port=8788,
+        token="secret",
+    )
+    client = server.app.test_client()
+    denied = await client.get("/api/state")
+    ok = await client.get("/api/state", headers={"X-Agent-Lab-Token": "secret"})
+    page = await client.get("/")
+    assert denied.status_code == 401
+    assert ok.status_code == 200
+    assert page.status_code == 200
 
 
 def main() -> None:
+    asyncio.run(smoke_webui_server())
+
     modules = ModuleRegistry().list_modules()
     module_ids = {item["module_id"] for item in modules}
     assert "checkpoint_state" in module_ids
@@ -59,6 +100,7 @@ def main() -> None:
         spec = store.ensure_defaults()
         assert "astrbot_execute_shell" in spec.enabled_tools
         assert spec.identity_label_source == "astrbot_persona"
+        assert isinstance(spec.module_settings, dict)
         assert store.default_agent_id() == spec.agent_id
 
         second = spec.to_dict()

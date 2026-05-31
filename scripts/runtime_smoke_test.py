@@ -40,7 +40,32 @@ class FakeConversationManager:
 
 
 class FakeToolManager:
-    func_list = []
+    def __init__(self) -> None:
+        self.func_list = [
+            SimpleNamespace(
+                name="memory_noise_search",
+                active=True,
+                description="memory plugin tool",
+                handler_module_path="memory_noise.main",
+            ),
+            SimpleNamespace(
+                name="safe_registered_tool",
+                active=True,
+                description="safe registered tool",
+                handler_module_path="safe_plugin.main",
+            ),
+        ]
+
+    def get_func(self, name: str):
+        return next((item for item in self.func_list if item.name == name), None)
+
+    def get_full_tool_set(self):
+        from astrbot.core.agent.tool import ToolSet
+
+        toolset = ToolSet()
+        for tool in self.func_list:
+            toolset.add_tool(tool)
+        return toolset
 
 
 class FakeContext:
@@ -48,6 +73,7 @@ class FakeContext:
         self.web_apis = []
         self.cron_manager = FakeCronManager()
         self.conversation_manager = FakeConversationManager()
+        self.tool_manager = FakeToolManager()
         self.persona_manager = SimpleNamespace(
             selected_default_persona_v3={"name": "测试人格"}
         )
@@ -73,11 +99,22 @@ class FakeContext:
                 activated=True,
                 reserved=False,
                 desc="test memory plugin",
+                module_path="memory_noise.main",
+                root_dir_name="memory_noise",
+            ),
+            SimpleNamespace(
+                name="safe_plugin",
+                display_name="Safe Plugin",
+                activated=True,
+                reserved=False,
+                desc="safe plugin",
+                module_path="safe_plugin.main",
+                root_dir_name="safe_plugin",
             ),
         ]
 
     def get_llm_tool_manager(self):
-        return FakeToolManager()
+        return self.tool_manager
 
     async def get_current_chat_provider_id(self, umo: str):
         raise RuntimeError("no provider in runtime smoke")
@@ -133,6 +170,15 @@ async def main() -> None:
         plugin.guard = FakeGuard()
         event = FakeEvent()
         assert plugin.storage.get_agent().name == "测试人格 Agent Mode"
+        spec = plugin.storage.get_agent()
+        spec.enabled_tools = ["memory_noise_search", "safe_registered_tool"]
+        spec.plugin_overrides["memory_noise"] = False
+        toolset = plugin._build_toolset(spec)
+        tool_names = {tool.name for tool in toolset.tools}
+        assert "memory_noise_search" not in tool_names
+        assert "safe_registered_tool" in tool_names
+        tool_rows = {row["name"]: row for row in plugin._tool_rows()}
+        assert tool_rows["memory_noise_search"]["plugin_name"] == "memory_noise"
 
         start = await plugin._start_task(
             event,

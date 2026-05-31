@@ -1,8 +1,8 @@
-# Agent Lab Module Spec
+# Agent Lab Integration Blueprint Spec
 
-Agent Lab 模块是把外部 agent 能力接入 AstrBot Agent Mode 的兼容层。
+Agent Lab 早期代码里使用 `module` 命名；面向用户时统一称为 **集成蓝图**。它不是 AstrBot 插件，也不是另一个 bot，而是把外部 agent 能力接入 AstrBot Agent Mode 的兼容层。
 
-模块可以是三种形态：
+集成蓝图可以是三种形态：
 
 1. **Prompt Module**：只注入协议和行为规范。
 2. **Tool Module**：注册 AstrBot LLM tools 或 MCP tools。
@@ -19,7 +19,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 
 前者用于插件内置模块，后者用于用户本地扩展。相同 `module_id` 后加载者会覆盖前者。
 
-WebUI 的 Modules 面板可以直接新建模块，或把内置模块复制为自定义模块后保存。保存结果会写入：
+独立 WebUI 的“外部方案库”会展示这些蓝图。保存结果会写入：
 
 ```text
 data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json
@@ -27,7 +27,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json
 
 `module_id` 会被规范化为字母、数字、下划线、点和连字符组成的短 ID。
 
-## 最小模块字段
+## 最小蓝图字段
 
 ```json
 {
@@ -38,15 +38,24 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json
   "prompt": "模块注入给 Agent 的行为协议。",
   "links": ["https://..."],
   "capabilities": ["state", "resume"],
-  "requires": []
+  "requires": [],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "max_log_items": {"type": "integer"}
+    }
+  },
+  "default_settings": {
+    "max_log_items": 80
+  }
 }
 ```
 
-模块只负责声明协议、能力和适配要求。真正执行可以通过 AstrBot tools、MCP、skills、外部服务或 runner adapter 完成。
+蓝图只负责声明协议、能力、设置 schema 和适配要求。真正执行可以通过 AstrBot 插件、LLM tools、MCP、skills、外部服务或 runner adapter 完成。
 
 ## 接入原则
 
-- 外部模块不能绕过 Agent Lab task_state。
+- 外部蓝图不能绕过 Agent Lab task_state。
 - 外部 runner 的每轮结果必须回写 `progress_log`、`last_observation`、`next_step`。
 - 外部 memory store 只能通过 MemoryGate 进入任务上下文。
 - 外部工具必须声明危险等级。

@@ -122,6 +122,7 @@ class AgentSpec:
             "memory_gate",
         ]
     )
+    module_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
     memory_policy: MemoryPolicy = field(default_factory=MemoryPolicy)
     approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
     heartbeat_policy: HeartbeatPolicy = field(default_factory=HeartbeatPolicy)

@@ -27,6 +27,7 @@ from .agent_lab.prompts import (
 )
 from .agent_lab.session_guard import SessionPluginGuard
 from .agent_lab.summarizer import AgentSummarizer
+from .agent_lab.webui_server import StandaloneWebUIServer
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
@@ -120,6 +121,7 @@ class AgentLabPlugin(Star):
         self.storage = AgentLabStorage(StarTools.get_data_dir(PLUGIN_NAME))
         self.modules = ModuleRegistry(self.storage.modules_dir)
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
+        self.webui_server: StandaloneWebUIServer | None = None
         self.summarizer = AgentSummarizer(
             context,
             {
@@ -137,9 +139,11 @@ class AgentLabPlugin(Star):
         self._sync_default_agent_identity()
         self._sync_agent_mode_skill()
         await self._rehydrate_heartbeats()
+        await self._start_webui_server()
         logger.info("[AgentLab] initialized")
 
     async def terminate(self):
+        await self._stop_webui_server()
         logger.info("[AgentLab] terminated")
 
     @filter.command("agentlab")
@@ -378,6 +382,8 @@ class AgentLabPlugin(Star):
 
         if cmd in ("status", "状态"):
             return self._status_text(event.unified_msg_origin)
+        if cmd in ("webui", "控制台"):
+            return self._webui_text()
         if cmd in ("agents", "agent"):
             return self._agents_text()
         if cmd in ("use", "使用"):
@@ -388,7 +394,7 @@ class AgentLabPlugin(Star):
             return self._tools_text()
         if cmd in ("skills", "技能"):
             return self._skills_text()
-        if cmd in ("modules", "模块"):
+        if cmd in ("modules", "integrations", "blueprints", "模块", "集成", "蓝图"):
             return self._modules_text()
         if cmd in ("start", "enter", "开启", "开始"):
             goal = rest or "未命名任务"
@@ -693,6 +699,7 @@ class AgentLabPlugin(Star):
             "agent_lab_set_heartbeat",
             "agent_lab_finish",
         }
+        disabled_plugins = self._disabled_plugin_names(spec)
         if not spec.enabled_tools:
             toolset = tmgr.get_full_tool_set()
             for name in internal_block:
@@ -700,6 +707,12 @@ class AgentLabPlugin(Star):
                     toolset.remove_tool(name)
                 except Exception:
                     pass
+            for tool in list(toolset.tools):
+                if (
+                    tool.name not in essential
+                    and not self._tool_available_for_agent(tool, disabled_plugins)
+                ):
+                    toolset.remove_tool(tool.name)
             for name in essential:
                 tool = tmgr.get_func(name)
                 if tool:
@@ -718,7 +731,7 @@ class AgentLabPlugin(Star):
             except Exception as exc:
                 logger.warning("[AgentLab] cannot resolve tool %s: %s", name, exc)
                 continue
-            if tool:
+            if tool and self._tool_available_for_agent(tool, disabled_plugins):
                 toolset.add_tool(tool)
         for name in essential:
             try:
@@ -731,7 +744,7 @@ class AgentLabPlugin(Star):
 
     def _build_task_extensions_prompt(self, spec: AgentSpec) -> str:
         sections = []
-        modules_prompt = self.modules.build_prompt(spec.module_ids)
+        modules_prompt = self.modules.build_prompt(spec.module_ids, spec.module_settings)
         if modules_prompt.strip():
             sections.append(modules_prompt)
         skills_prompt = self._build_selected_skills_prompt(spec)
@@ -781,6 +794,44 @@ class AgentLabPlugin(Star):
         except Exception as exc:
             logger.warning("[AgentLab] skill install failed: %s", exc)
 
+    async def _start_webui_server(self) -> None:
+        if not _bool_cfg(self.config, "standalone_webui_enabled", True):
+            return
+        if self.webui_server:
+            return
+        if jsonify is None:
+            logger.warning("[AgentLab] standalone WebUI skipped: quart is unavailable")
+            return
+        host = str(_cfg(self.config, "standalone_webui_host", "127.0.0.1") or "127.0.0.1").strip()
+        port = int(_cfg(self.config, "standalone_webui_port", 8788) or 8788)
+        token = str(_cfg(self.config, "standalone_webui_token", "") or "").strip()
+        static_dir = Path(__file__).parent / "webui"
+        self.webui_server = StandaloneWebUIServer(
+            owner=self,
+            static_dir=static_dir,
+            host=host,
+            port=port,
+            token=token,
+        )
+        try:
+            await self.webui_server.start()
+            logger.info("[AgentLab] standalone WebUI listening on %s", self.webui_server.url)
+            if host not in {"127.0.0.1", "localhost", "::1"} and not token:
+                logger.warning(
+                    "[AgentLab] standalone WebUI is not local-only and has no token configured."
+                )
+        except Exception as exc:
+            logger.warning("[AgentLab] standalone WebUI failed to start: %s", exc)
+            self.webui_server = None
+
+    async def _stop_webui_server(self) -> None:
+        if not self.webui_server:
+            return
+        try:
+            await self.webui_server.stop()
+        finally:
+            self.webui_server = None
+
     def _register_web_apis(self) -> None:
         if jsonify is None:
             return
@@ -805,6 +856,13 @@ class AgentLabPlugin(Star):
                 "tools": self._tool_rows(),
                 "skills": self._skill_rows(),
                 "modules": self.modules.list_modules(),
+                "integrations": self.modules.list_modules(),
+                "metrics": self._metrics_payload(),
+                "webui": {
+                    "standalone": bool(self.webui_server),
+                    "url": self.webui_server.url if self.webui_server else "",
+                    "auth": bool(self.webui_server and self.webui_server.token),
+                },
                 "runtime": {
                     "bot_label": self._current_bot_label(),
                     "default_agent_name": self._agent_name_from_label(
@@ -948,6 +1006,8 @@ class AgentLabPlugin(Star):
                     "reserved": plugin.reserved,
                     "locked": plugin.name == PLUGIN_NAME,
                     "desc": plugin.desc,
+                    "module_path": getattr(plugin, "module_path", "") or "",
+                    "root_dir_name": getattr(plugin, "root_dir_name", "") or "",
                 }
             )
         return rows
@@ -955,14 +1015,22 @@ class AgentLabPlugin(Star):
     def _tool_rows(self) -> list[dict[str, Any]]:
         rows = []
         seen = set()
+        plugin_rows = {item["name"]: item for item in self._plugin_rows()}
         for tool in self.context.get_llm_tool_manager().func_list:
             seen.add(tool.name)
+            plugin_name = self._tool_plugin_name(tool)
+            plugin_row = plugin_rows.get(plugin_name or "")
+            plugin_enabled = True if plugin_row is None else bool(plugin_row.get("activated", True))
             rows.append(
                 {
                     "name": tool.name,
                     "active": getattr(tool, "active", True),
+                    "effective_active": bool(getattr(tool, "active", True)) and plugin_enabled,
                     "description": getattr(tool, "description", ""),
                     "handler_module_path": getattr(tool, "handler_module_path", ""),
+                    "plugin_name": plugin_name,
+                    "plugin_display_name": plugin_row.get("display_name") if plugin_row else "",
+                    "plugin_enabled": plugin_enabled,
                     "source": "registered",
                     "risk": "unknown",
                 }
@@ -974,8 +1042,12 @@ class AgentLabPlugin(Star):
                 {
                     "name": item["name"],
                     "active": False,
+                    "effective_active": False,
                     "description": item["description"],
                     "handler_module_path": "astrbot.core.tools",
+                    "plugin_name": "",
+                    "plugin_display_name": "AstrBot 内置工具",
+                    "plugin_enabled": True,
                     "source": "builtin_catalog",
                     "risk": item["risk"],
                 }
@@ -990,10 +1062,82 @@ class AgentLabPlugin(Star):
         except Exception:
             return []
 
+    def _metrics_payload(self) -> dict[str, Any]:
+        tasks = self.storage.list_tasks()
+        archives = self.storage.list_archives()
+        heartbeat_on = sum(1 for task in tasks if task.heartbeat.enabled)
+        pending_approvals = sum(len(task.pending_approvals()) for task in tasks)
+        return {
+            "agents": len(self.storage.list_agents()),
+            "active_tasks": len(tasks),
+            "archived_tasks": len(archives),
+            "heartbeat_online": heartbeat_on,
+            "heartbeat_offline": max(len(tasks) - heartbeat_on, 0),
+            "pending_approvals": pending_approvals,
+            "task_triggers": len(tasks) + len(archives),
+            "token_usage": 0,
+            "token_usage_note": "当前框架未接入 provider token 统计，保留为汇总接口。",
+        }
+
+    def _webui_text(self) -> str:
+        if not self.webui_server:
+            return "Agent Lab 独立控制台未启动。请检查 standalone_webui_enabled 和端口配置。"
+        suffix = "（需要 token）" if self.webui_server.token else ""
+        return f"Agent Lab 独立控制台：{self.webui_server.url} {suffix}".strip()
+
+    def _plugin_by_module_path(self, module_path: str | None) -> Any:
+        if not module_path:
+            return None
+        try:
+            from astrbot.core.star.star import star_map
+        except Exception:
+            star_map = {}
+        plugin = star_map.get(module_path)
+        if plugin:
+            return plugin
+        for item in self.context.get_all_stars():
+            item_module_path = getattr(item, "module_path", None)
+            if not item_module_path:
+                continue
+            if module_path == item_module_path or module_path.startswith(f"{item_module_path}."):
+                return item
+        return None
+
+    def _tool_plugin_name(self, tool: Any) -> str:
+        plugin = self._plugin_by_module_path(getattr(tool, "handler_module_path", None))
+        if not plugin:
+            return ""
+        return str(getattr(plugin, "name", "") or "")
+
+    def _disabled_plugin_names(self, spec: AgentSpec) -> set[str]:
+        disabled = {
+            item["name"]
+            for item in self._plugin_rows()
+            if item.get("name") and not bool(item.get("activated", True))
+        }
+        for plugin_name, enabled in spec.plugin_overrides.items():
+            if plugin_name == PLUGIN_NAME:
+                disabled.discard(plugin_name)
+                continue
+            if enabled:
+                disabled.discard(plugin_name)
+            else:
+                disabled.add(plugin_name)
+        return disabled
+
+    def _tool_available_for_agent(self, tool: Any, disabled_plugins: set[str]) -> bool:
+        if not bool(getattr(tool, "active", True)):
+            return False
+        plugin_name = self._tool_plugin_name(tool)
+        if plugin_name and plugin_name in disabled_plugins:
+            return False
+        return True
+
     def _status_text(self, umo: str) -> str:
         task = self.storage.load_active_task(umo)
+        webui = f"\n- webui: {self.webui_server.url}" if self.webui_server else ""
         if not task:
-            return "Agent Lab：当前没有 active task。"
+            return "Agent Lab：当前没有 active task。" + webui
         return (
             f"Agent Lab active task:\n"
             f"- id: {task.task_id}\n"
@@ -1003,6 +1147,7 @@ class AgentLabPlugin(Star):
             f"- heartbeat: {'on' if task.heartbeat.enabled else 'off'}\n"
             f"- pending approvals: {len(task.pending_approvals())}\n"
             f"- state: {self.storage.task_markdown_path(umo, task.task_id)}"
+            f"{webui}"
         )
 
     def _agents_text(self) -> str:
@@ -1057,7 +1202,8 @@ class AgentLabPlugin(Star):
             "/agentlab reject <approval_id>\n"
             "/agentlab finish <总结>\n"
             "/agentlab cancel <原因>\n"
-            "/agentlab agents|plugins|tools|skills|modules"
+            "/agentlab webui\n"
+            "/agentlab agents|plugins|tools|skills|integrations"
         )
 
     @staticmethod

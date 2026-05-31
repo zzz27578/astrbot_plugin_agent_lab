@@ -11,7 +11,7 @@ Agent Lab 不内置任何固定 bot 名字。默认 Agent 会优先读取 AstrBo
 Agent Lab 主要解决四件事：
 
 1. **防串记忆**：进入任务时压缩当前聊天计划，任务期间用独立 `task_state` 续跑，避免普通记忆插件把旧事注入进工程任务。
-2. **可控工具箱**：每个 AgentSpec 都可以配置插件开关、工具白名单、任务专用 skills 和模块。
+2. **可控工具箱**：每个 AgentSpec 都可以配置插件开关、工具白名单、任务专用 skills 和外部集成蓝图。
 3. **任务连续性**：任务进度写进 `plugin_data`，手动 tick 或心跳醒来时先读状态、再执行、再保存。
 4. **软审批**：删除、重置、部署、读密钥等危险动作前，bot 应先说明影响并请求确认。
 
@@ -28,20 +28,20 @@ Agent Lab 主要解决四件事：
 
 ## WebUI 入口和权限
 
-Agent Lab 的 WebUI 是 **AstrBot Dashboard 插件 Page**，不是一个独立 Web 服务。
+Agent Lab 现在使用 **独立控制台**，默认监听 `127.0.0.1:8788`，不再暴露 AstrBot Dashboard 插件 Page。
 
-- 不需要 Agent Lab 自己开放端口。
-- 不需要 Agent Lab 自己再设置一套管理员密码。
-- 访问控制继承 AstrBot Dashboard：能登录 Dashboard 的管理员，就能打开插件 Page。
-- 如果你的 AstrBot Dashboard 暴露到公网，请按 AstrBot 本体要求配置管理员密码、监听地址、反向代理或访问控制；这不是插件单独处理的。
+- `standalone_webui_enabled`：是否启动独立控制台。
+- `standalone_webui_host`：监听地址，默认只允许本机访问。
+- `standalone_webui_port`：监听端口，默认 `8788`。
+- `standalone_webui_token`：API 访问 Token；如果监听到局域网或公网，建议必须填写。
 
-打开路径：
+打开路径默认是：
 
 ```text
-AstrBot Dashboard -> 插件 -> Agent Lab -> 打开 Page
+http://127.0.0.1:8788
 ```
 
-WebUI 第一版主要是功能测试和可视化审查台：可以创建/复制 AgentSpec，切插件、工具、skills、modules，查看 active task 和 archive，手动 tick，开心跳/关心跳，处理审批。
+WebUI 分为五个区域：仪表盘与列表、可视化编排画布、任务与记忆控制台、实例与心跳监控、插件与集成。它是 Agent Lab 后续扩展的主入口。
 
 ## 功能概览
 
@@ -52,7 +52,7 @@ WebUI 第一版主要是功能测试和可视化审查台：可以创建/复制 
 - Agent Lab 插件本体会被锁定，避免任务模式把自己禁用后无法恢复。
 - 支持心跳续跑：长任务醒来后先读状态，再执行，再保存。
 - 支持审批协议：危险操作前由 bot 主动说明并请求用户确认。
-- 把外部优秀 agent 设计收束成模块，方便后续接入 LangGraph、OpenAI Agents SDK、CrewAI、Microsoft Agent Framework 等方案。
+- 把外部优秀 agent 设计收束成集成蓝图，方便后续接入 LangGraph、OpenAI Agents SDK、CrewAI、Microsoft Agent Framework 等方案。
 
 ## 安装
 
@@ -69,10 +69,10 @@ data/plugins/astrbot_plugin_agent_lab/
 ├── _conf_schema.json
 ├── agent_lab/
 ├── skills/
-└── pages/
+└── webui/
 ```
 
-启动后插件会自动安装 `agent-mode` Skill，并在 AstrBot Dashboard 的插件页面暴露 `Agent Lab` Page。
+启动后插件会自动安装 `agent-mode` Skill，并启动独立 Agent Lab 控制台。
 
 ## 命令
 
@@ -91,7 +91,8 @@ data/plugins/astrbot_plugin_agent_lab/
 /agentlab plugins
 /agentlab tools
 /agentlab skills
-/agentlab modules
+/agentlab integrations
+/agentlab webui
 ```
 
 短命令：
@@ -124,7 +125,7 @@ data/plugins/astrbot_plugin_agent_lab/
 
 这套判断会同时写入 `agent-mode` Skill 和运行时系统提示词。也就是说，用户在 WebUI 里选择模式后，bot 不需要每次等固定命令，而是会按当前 AgentSpec 自主判断：是否该进入 Agent Mode、是否需要先确认、是否建议心跳、是否必须走审批。
 
-自然语言和命令默认使用当前默认 Agent。可以在 WebUI 里点击 Agent 后设为默认，或用 `/agentlab use <agent_id>` 切换默认 Agent；WebUI 测试入口会用当前选中的 Agent 启动任务。
+自然语言和命令默认使用当前默认 Agent。可以在 WebUI 里点击 Agent 后设为默认，或用 `/agentlab use <agent_id>` 切换默认 Agent；WebUI 入口会用当前选中的 Agent 启动任务。
 
 ## AgentSpec
 
@@ -204,29 +205,26 @@ astrbot_execute_python
 
 ## WebUI
 
-插件 Page 用于第一版功能测试和可视化验收：
+独立控制台是 Agent Lab 的主操作面：
 
-- 查看 Agents、Active Tasks、Archives、Plugins、Tools、Skills、Modules。
-- 用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档。
-- 在 Task Review 中查看当前任务状态、处理审批、直接推进/结束任务。
-- 查看 Archives，确认任务退出后已经归档。
-- 新建、复制、选择 AgentSpec，并设置默认 Agent。
-- 编辑触发模式、记忆/审批/心跳策略、任务提示词、插件开关、工具白名单、任务专用 skills 和模块协议。
-- 审查、复制、新建并保存自定义模块 manifest 到 `plugin_data/modules`。
-- 后续可扩展成完整可视化 workflow builder。
+- **仪表盘与列表**：看 Agent 资产、当前任务、归档任务、心跳和审批概览。
+- **可视化编排画布**：配置任务模式补充提示词、触发策略、记忆/审批/心跳策略和流程节点。这里不重建 AstrBot 人格，只继承当前 bot。
+- **任务与记忆控制台**：用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档，并审查出口记忆候选。
+- **实例与心跳监控**：查看运行中任务的心跳状态、进度日志，并进行任务级停止/心跳控制。
+- **插件与集成**：管理 AstrBot 插件隔离、注册工具白名单、任务专用 skills，以及外部方案蓝图。
 
-## 模块系统
+## 外部方案库
 
-Agent Lab 会加载两类模块：
+Agent Lab 会加载两类集成蓝图。代码层仍使用 `modules` 命名以保持兼容，但在 WebUI 中统一称为“外部方案库/集成蓝图”：
 
 ```text
 modules/*.json
 data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 ```
 
-也就是说，用户可以把外部 agent 方案写成模块 manifest 放进插件数据目录，不用改主框架代码。WebUI 的 Modules 面板也可以直接复制内置模块、编辑字段并保存为自定义模块。
+也就是说，用户可以把外部 agent 方案写成蓝图 manifest 放进插件数据目录，不用改主框架代码。蓝图只描述协议、能力、设置 schema 和适配要求；真正执行仍通过 AstrBot 插件、注册工具、MCP、skills 或后续 runner adapter。
 
-模块 manifest 示例：
+蓝图 manifest 示例：
 
 ```json
 {
@@ -237,13 +235,22 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
   "prompt": "模块注入给 Agent 的行为协议。",
   "links": ["https://example.com"],
   "capabilities": ["memory"],
-  "requires": ["memory_gate"]
+  "requires": ["memory_gate"],
+  "settings_schema": {
+    "type": "object",
+    "properties": {
+      "entry_summary_turns": {"type": "integer"}
+    }
+  },
+  "default_settings": {
+    "entry_summary_turns": 24
+  }
 }
 ```
 
-## 内置模块
+## 内置蓝图
 
-模块不是外部框架的硬依赖，而是 Agent Lab 的兼容层：
+蓝图不是外部框架的硬依赖，而是 Agent Lab 的兼容层：
 
 - `checkpoint_state`：借鉴 LangGraph persistence，把状态作为续跑根基。
 - `approval_guard`：借鉴 OpenAI Agents guardrails / HITL，把危险动作前置审批。
@@ -274,15 +281,15 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 
 - 插件后端可运行。
 - AgentSpec/TaskState 可持久化。
-- 命令、LLM 工具、WebUI Page、心跳、审批、入口/出口摘要均已落地。
+- 命令、LLM 工具、独立 WebUI、心跳、审批、入口/出口摘要均已落地。
 - Agent 能在 tick 中显式读写 task_state，并通过 hooks 记录工具调用。
-- 外部方案以模块形式内置为可扩展收束口。
+- 外部方案以集成蓝图形式内置为可扩展收束口。
 
 后续可以继续增强：
 
-- 更强的 WebUI 编辑器。
-- workflow 可视化图。
-- 更细的工具权限守卫。
+- 真正可拖拽的 workflow 画布。
+- provider token 统计接入。
+- 更细的工具危险等级和凭证管理。
 - 对接外部 memory store。
 - 对接 LangGraph/CrewAI/OpenAI Agents SDK 作为可选 runner adapter。
 

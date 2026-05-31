@@ -17,6 +17,8 @@ class AgentModule:
     links: list[str]
     capabilities: list[str] | None = None
     requires: list[str] | None = None
+    settings_schema: dict[str, Any] | None = None
+    default_settings: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -28,6 +30,8 @@ class AgentModule:
             "links": self.links,
             "capabilities": self.capabilities or [],
             "requires": self.requires or [],
+            "settings_schema": self.settings_schema or {},
+            "default_settings": self.default_settings or {},
         }
 
     @classmethod
@@ -43,6 +47,8 @@ class AgentModule:
                 str(item) for item in payload.get("capabilities", []) if str(item).strip()
             ],
             requires=[str(item) for item in payload.get("requires", []) if str(item).strip()],
+            settings_schema=payload.get("settings_schema") if isinstance(payload.get("settings_schema"), dict) else {},
+            default_settings=payload.get("default_settings") if isinstance(payload.get("default_settings"), dict) else {},
         )
 
 
@@ -60,6 +66,14 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
             "模块：Checkpoint State。任务状态是唯一真实来源。每轮执行必须记录时间戳、"
             "具体操作、结果、下一步和阻塞点；不得从其他任务继承进度。"
         ),
+        settings_schema={
+            "type": "object",
+            "properties": {
+                "max_log_items": {"type": "integer", "description": "任务日志保留条数"},
+                "state_format": {"type": "string", "description": "状态快照格式"},
+            },
+        },
+        default_settings={"max_log_items": 80, "state_format": "json+markdown"},
     ),
     "approval_guard": AgentModule(
         module_id="approval_guard",
@@ -74,6 +88,17 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
             "模块：Approval Guard。危险操作前必须先说明动作、原因、影响范围、回滚方案，"
             "并等待用户批准；普通读写和明确授权范围内的工作可直接执行。"
         ),
+        settings_schema={
+            "type": "object",
+            "properties": {
+                "require_before": {"type": "array", "description": "必须提前审批的动作类型"},
+                "allow_preapproved_scope": {"type": "boolean", "description": "允许用户一次性授权明确范围"},
+            },
+        },
+        default_settings={
+            "require_before": ["delete", "deploy", "secret_read", "service_restart"],
+            "allow_preapproved_scope": True,
+        },
     ),
     "heartbeat_protocol": AgentModule(
         module_id="heartbeat_protocol",
@@ -87,6 +112,14 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
             "模块：Heartbeat Protocol。只有长任务才开心跳。心跳 payload 不携带细节；"
             "醒来先读 task_state，再执行，再保存。重复同一问题三次必须暂停求助。"
         ),
+        settings_schema={
+            "type": "object",
+            "properties": {
+                "cron_expression": {"type": "string", "description": "默认心跳 cron"},
+                "max_repeated_failures": {"type": "integer", "description": "连续重复失败阈值"},
+            },
+        },
+        default_settings={"cron_expression": "*/5 * * * *", "max_repeated_failures": 3},
     ),
     "memory_gate": AgentModule(
         module_id="memory_gate",
@@ -100,6 +133,14 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
             "模块：Memory Gate。保持人格连续，但普通长期记忆不得覆盖 task_state、工具结果和项目事实；"
             "任务结束后只回流稳定有用的记忆候选。"
         ),
+        settings_schema={
+            "type": "object",
+            "properties": {
+                "entry_summary_turns": {"type": "integer", "description": "进入任务时摘要最近轮数"},
+                "exit_memory_candidates": {"type": "boolean", "description": "结束后生成记忆候选"},
+            },
+        },
+        default_settings={"entry_summary_turns": 24, "exit_memory_candidates": True},
     ),
     "handoff_adapter": AgentModule(
         module_id="handoff_adapter",
@@ -160,12 +201,19 @@ class ModuleRegistry:
     def get(self, module_id: str) -> AgentModule | None:
         return self._modules.get(module_id)
 
-    def build_prompt(self, module_ids: list[str]) -> str:
+    def build_prompt(self, module_ids: list[str], settings: dict[str, dict[str, Any]] | None = None) -> str:
         chunks = []
+        settings = settings or {}
         for module_id in module_ids:
             module = self.get(module_id)
             if module:
-                chunks.append(module.prompt)
+                module_settings = settings.get(module_id) or module.default_settings or {}
+                if module_settings:
+                    chunks.append(
+                        f"{module.prompt}\n配置：{json.dumps(module_settings, ensure_ascii=False, sort_keys=True)}"
+                    )
+                else:
+                    chunks.append(module.prompt)
         if not chunks:
             return ""
         return "[Agent Lab Modules]\n" + "\n".join(f"- {chunk}" for chunk in chunks)

@@ -26,5 +26,9 @@
 - Reworked the WebUI into a Chinese structured console with separate task runtime, agent rules, capability switches, and module editor areas.
 - Added clearer WebUI button feedback, disabled states, and local preview mode for layout testing.
 - Removed hardcoded role names from defaults/docs; derived default and task-time Agent labels from AstrBot persona/config when available.
+- Replaced the Dashboard plugin Page with a standalone WebUI server (`standalone_webui_host`/`port`/`token`) and a five-section Agent Lab console.
+- Separated AstrBot plugin isolation, registered tools, skills, and external integration blueprints in the WebUI.
+- Added tool filtering so tools from Agent-disabled plugins are removed from Agent Mode runs.
+- Added per-blueprint settings support through `module_settings`, `settings_schema`, and `default_settings`.
 - Limited WebUI Tasks/state task listing to active tasks; finished and cancelled tasks live under Archives.
 - Protected Agent Lab from being disabled by its own session plugin overrides.

@@ -22,26 +22,25 @@ Expected:
 2. Reload plugins or restart AstrBot.
 3. Confirm plugin appears as `Agent Lab`.
 4. Confirm `agent-mode` Skill is active.
-5. Open plugin Page `Agent Lab`.
+5. Open standalone console, default `http://127.0.0.1:8788`.
 
 Note:
 
-- Agent Lab WebUI is loaded inside AstrBot Dashboard.
-- It does not require a separate plugin port or plugin-specific admin password.
-- Access control follows the AstrBot Dashboard login and deployment settings.
+- Agent Lab WebUI is no longer an AstrBot Dashboard plugin Page.
+- Host, port, and optional API token are controlled by plugin config.
+- If binding outside localhost, configure `standalone_webui_token`.
 
 Expected WebUI:
 
-- Shows Agents.
-- Agents can be selected, duplicated, created, and marked as default.
-- Shows active Tasks only.
-- Shows Archives.
-- Shows Task Review with tick/heartbeat/finish/cancel actions.
-- Shows Plugins.
+- Shows sidebar pages: Dashboard, Canvas, Tasks/Memory, Monitor, Plugins/Integrations.
+- Agents can be selected, duplicated, created, and marked as default in Canvas.
+- Shows active tasks and archives.
+- Task/memory console has tick/heartbeat/finish/cancel actions.
+- Shows AstrBot plugins separately from external integration blueprints.
 - Agent Lab plugin itself is locked and cannot be disabled from its own task profile.
 - Shows Tools, including builtin catalog tools such as `astrbot_execute_shell`.
 - Shows Skills.
-- Shows Modules, including LangGraph/OpenAI/CrewAI/Microsoft adapters.
+- Shows integration blueprints, including LangGraph/OpenAI/CrewAI/Microsoft adapters.
 
 ## Private Chat Flow
 
@@ -127,7 +126,7 @@ Expected:
 
 ## WebUI Editing Checks
 
-In Agent Lab Page:
+In Agent Lab standalone console:
 
 1. Change Agent name.
 2. Change trigger mode.
@@ -135,7 +134,7 @@ In Agent Lab Page:
 4. Toggle a plugin.
 5. Toggle a tool.
 6. Toggle a skill.
-7. Toggle a module.
+7. Toggle an integration blueprint.
 8. Save AgentSpec.
 9. Duplicate the AgentSpec.
 10. Set the duplicate as default.
@@ -148,11 +147,12 @@ Expected:
 - WebUI task start uses the selected Agent.
 - `/agentlab use <agent_id>` changes the default Agent for natural-language/command starts.
 - Selected skills are shown in the Agent Mode runtime prompt for task ticks.
-- Selected modules are shown in the Agent Mode runtime prompt for task ticks.
+- Tools belonging to plugins disabled in Agent Mode are shown as unavailable and are filtered from task ticks.
+- Selected integration blueprints are shown in the Agent Mode runtime prompt for task ticks.
 
 ## WebUI Review Checks
 
-Create a task from WebUI or private chat, then use Task Review:
+Create a task from WebUI or private chat, then use Task/Memory console:
 
 1. Select a task.
 2. Click `Tick`.
@@ -162,31 +162,29 @@ Create a task from WebUI or private chat, then use Task Review:
 
 Expected:
 
-- Task Review updates after each action.
+- Task/Memory console updates after each action.
 - Finished/cancelled task appears in Archives.
 - `archives/<umo_hash>/task_<id>.md` exists.
 
-## Module Editor Checks
+## Integration Blueprint Checks
 
-In the Modules panel:
+In the Plugins & Integrations page:
 
-1. Select an existing module.
-2. Click `复制为自定义`.
-3. Change `Module ID`, description, prompt, links, capabilities, and requires.
-4. Click `保存模块`.
-5. Refresh.
-6. Enable the saved module for the selected AgentSpec and save AgentSpec.
+1. Select an existing integration blueprint.
+2. Toggle it into the selected AgentSpec.
+3. Edit its fine-grained settings JSON.
+4. Save settings into the Agent draft.
+5. Save AgentSpec.
+6. Start a new task.
 
 Expected:
 
-- Custom module appears in Modules.
-- `data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json` exists.
-- New task snapshot includes the selected custom module.
-- Tick runtime prompt includes the custom module prompt.
+- New task snapshot includes the selected integration blueprint.
+- Tick runtime prompt includes the blueprint prompt and selected settings.
 
 ## Known Limits In v0.1.0
 
 - First version supports private chat only.
-- WebUI is a functional test console, not yet a full workflow builder.
-- External frameworks are module manifests/specs and adapter contracts, not embedded full runtimes yet.
+- Canvas is a structured workflow view, not a drag-and-drop runtime yet.
+- External frameworks are integration blueprints/specs and adapter contracts, not embedded full runtimes yet.
 - Real shell/file/browser capability depends on AstrBot Computer Use runtime and permissions.

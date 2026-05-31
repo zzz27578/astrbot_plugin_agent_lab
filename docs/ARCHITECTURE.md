@@ -56,7 +56,7 @@ AstrBot SubAgentOrchestrator 负责把 subagent 变成 handoff tool。它适合�
 - 心跳续跑。
 - 审批和归档。
 
-所以 Agent Lab 作为主 runtime，subagent/handoff 作为模块。
+所以 Agent Lab 作为主 runtime，subagent/handoff 作为可选集成蓝图。
 
 ## 显式读写状态
 

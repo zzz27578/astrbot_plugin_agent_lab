@@ -5,6 +5,30 @@
     "default": true,
     "hint": "第一版建议开启，避免群聊误触发、权限扩散和上下文混杂。"
   },
+  "standalone_webui_enabled": {
+    "type": "bool",
+    "description": "启用独立 Agent Lab 控制台",
+    "default": true,
+    "hint": "启动插件自带 Web 服务，不再依赖 AstrBot Dashboard 插件 Page。"
+  },
+  "standalone_webui_host": {
+    "type": "string",
+    "description": "独立控制台监听地址",
+    "default": "127.0.0.1",
+    "hint": "默认仅本机可访问；如需局域网访问可改为 0.0.0.0，并务必设置访问 Token。"
+  },
+  "standalone_webui_port": {
+    "type": "int",
+    "description": "独立控制台监听端口",
+    "default": 8788,
+    "hint": "访问地址默认为 http://127.0.0.1:8788"
+  },
+  "standalone_webui_token": {
+    "type": "string",
+    "description": "独立控制台访问 Token",
+    "default": "",
+    "hint": "为空时不校验 API Token；建议公网或局域网监听时填写。"
+  },
   "inject_agent_mode_policy": {
     "type": "bool",
     "description": "注入 Agent Mode 自主判断协议",
@@ -52,4 +76,3 @@
     "default": 2
   }
 }
-

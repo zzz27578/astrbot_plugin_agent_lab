@@ -4,7 +4,7 @@
 
 1. Install plugin as `data/plugins/astrbot_plugin_agent_lab`.
 2. Restart AstrBot or reload plugins.
-3. Open WebUI -> Plugins -> Agent Lab page.
+3. Open the standalone WebUI, default `http://127.0.0.1:8788`.
 4. Confirm `agent-mode` skill is active.
 5. In private chat:
 
@@ -19,11 +19,12 @@
 
 ## WebUI Access
 
-Agent Lab WebUI is an AstrBot Dashboard plugin Page. It does not start a separate HTTP server, open an extra port, or maintain a separate admin password.
+Agent Lab WebUI is a standalone Quart console started by the plugin.
 
-- Dashboard login and AstrBot's own admin settings protect the page.
-- If Dashboard is exposed outside localhost/LAN, secure AstrBot Dashboard itself with its admin password, bind address, reverse proxy, or access controls.
-- The WebUI test form asks for UMO only because it can simulate task operations from the dashboard. Normal users can start from private chat commands instead.
+- `standalone_webui_host`: default `127.0.0.1`.
+- `standalone_webui_port`: default `8788`.
+- `standalone_webui_token`: optional API token; set it when listening outside localhost.
+- The WebUI task form asks for UMO because it can simulate task operations from the console. Normal users can start from private chat commands instead.
 
 ## Safe Defaults
 
@@ -35,6 +36,7 @@ Agent Lab WebUI is an AstrBot Dashboard plugin Page. It does not start a separat
 - Plugin overrides are session-level and restored on exit.
 - Agent Lab protects itself from being disabled by its own session plugin overrides.
 - Default AgentSpec includes common AstrBot Computer Use tool names; unavailable tools are skipped or reported by AstrBot runtime.
+- Tools from a plugin disabled in Agent Mode are filtered out together with that plugin.
 - Commands and natural-language starts use the default Agent; WebUI starts use the selected Agent.
 
 ## Trigger Modes
@@ -58,10 +60,10 @@ Agent Lab should be considered healthy when:
 - `agent_lab_update_state` can write progress and next step.
 - `/agentlab finish` moves a copy to `archives/`.
 - Completed/cancelled tasks leave the active Tasks list and remain visible under Archives.
-- WebUI `state` API returns agents/tasks/plugins/tools/skills/modules.
-- WebUI Task Review can tick, toggle heartbeat, resolve approvals, finish, and cancel.
-- WebUI Archives shows completed or cancelled tasks.
-- WebUI Modules can save custom module manifests into `plugin_data/modules`.
+- Standalone WebUI `state` API returns agents/tasks/plugins/tools/skills/integrations.
+- Task and memory console can tick, toggle heartbeat, finish, and cancel.
+- Archive list shows completed or cancelled tasks.
+- Plugin and integration page separates AstrBot plugin isolation from external integration blueprints.
 
 Local repository smoke test:
 

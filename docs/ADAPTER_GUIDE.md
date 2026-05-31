@@ -1,6 +1,6 @@
 # Adapter Guide
 
-Agent Lab 的核心只负责 AstrBot-native 的 Agent Mode：AgentSpec、TaskState、插件过滤、工具白名单、审批、心跳和归档。外部 agent 框架不要直接替换核心，而是作为模块或适配器接进来。
+Agent Lab 的核心只负责 AstrBot-native 的 Agent Mode：AgentSpec、TaskState、插件过滤、工具白名单、审批、心跳和归档。外部 agent 框架不要直接替换核心，而是作为集成蓝图或适配器接进来。
 
 ## Adapter Boundary
 
@@ -8,7 +8,7 @@ Agent Lab 的核心只负责 AstrBot-native 的 Agent Mode：AgentSpec、TaskSta
 
 ```text
 External framework
--> adapter module
+-> integration blueprint
 -> Agent Lab task_state / approval / memory gate
 -> AstrBot provider/tools/session/plugin runtime
 ```
@@ -36,7 +36,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json
 }
 ```
 
-保存后刷新 WebUI，在 Modules 中启用该模块并保存 AgentSpec。新任务会复制 AgentSpec 快照，运行中任务不会被后续修改突然影响。
+保存后刷新 WebUI，在“插件与集成 -> 外部方案库”中启用该蓝图并保存 AgentSpec。新任务会复制 AgentSpec 快照，运行中任务不会被后续修改突然影响。
 
 ## Runtime Contract
 
@@ -126,8 +126,8 @@ MCP clients -> tool catalog
 
 接入一个外部方案后，用这些条件验收：
 
-- WebUI Modules 能看到并启用该模块。
-- 新任务的 AgentSpec 快照包含该模块。
+- WebUI 外部方案库能看到并启用该蓝图。
+- 新任务的 AgentSpec 快照包含该蓝图。
 - tick 前能读到 task_state。
 - adapter 每轮都写回 progress、observation、next_step。
 - 危险动作产生 approval，而不是直接执行。
