@@ -130,7 +130,7 @@ DEFAULT_MODULES: dict[str, AgentModule] = {
             "https://docs.langchain.com/oss/python/deepagents/memory",
         ],
         prompt=(
-            "模块：Memory Gate。保持人格连续，但普通长期记忆不得覆盖 task_state、工具结果和项目事实；"
+            "模块：Memory Gate。保持当前 bot 的身份与语气连续，但普通长期记忆不得覆盖 task_state、工具结果和项目事实；"
             "任务结束后只回流稳定有用的记忆候选。"
         ),
         settings_schema={

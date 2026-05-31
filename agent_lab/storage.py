@@ -6,7 +6,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from .models import AgentSpec, TaskState, now_iso
+from cryptography.fernet import Fernet, InvalidToken
+
+from .models import AgentSpec, TaskState, new_id, now_iso
 
 
 def _safe_hash(text: str) -> str:
@@ -20,12 +22,21 @@ class AgentLabStorage:
         self.sessions_dir = self.root / "sessions"
         self.modules_dir = self.root / "modules"
         self.archives_dir = self.root / "archives"
+        self.registry_dir = self.root / "registry"
+        self.memories_dir = self.root / "memories"
         self.default_agent_path = self.root / "default_agent_id.txt"
+        self.custom_apis_path = self.registry_dir / "custom_apis.json"
+        self.credentials_path = self.registry_dir / "credentials.json"
+        self.secrets_key_path = self.registry_dir / "secrets.key"
+        self.skill_rules_path = self.registry_dir / "skill_rules.json"
+        self.memory_entries_path = self.memories_dir / "entries.json"
         self.root.mkdir(parents=True, exist_ok=True)
         self.agents_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.modules_dir.mkdir(parents=True, exist_ok=True)
         self.archives_dir.mkdir(parents=True, exist_ok=True)
+        self.registry_dir.mkdir(parents=True, exist_ok=True)
+        self.memories_dir.mkdir(parents=True, exist_ok=True)
 
     def ensure_defaults(self) -> AgentSpec:
         agents = self.list_agents()
@@ -36,7 +47,7 @@ class AgentLabStorage:
                     return agent
             self.set_default_agent(agents[0].agent_id)
             return agents[0]
-        spec = AgentSpec(identity_label_source="astrbot_persona")
+        spec = AgentSpec(identity_label_source="astrbot_runtime")
         self.save_agent(spec)
         self.set_default_agent(spec.agent_id)
         return spec
@@ -134,6 +145,15 @@ class AgentLabStorage:
         active = self.active_task_path(task.umo)
         if active.exists():
             active.unlink()
+        for item in task.memory_candidates:
+            self.save_memory_entry(
+                {
+                    "text": item,
+                    "source_task_id": task.task_id,
+                    "source_umo": task.umo,
+                    "status": "candidate",
+                }
+            )
         return dst_md
 
     def list_tasks(self, umo: str | None = None) -> list[TaskState]:
@@ -214,6 +234,17 @@ class AgentLabStorage:
                 lines.append(f"- {item.get('time')} [{item.get('kind')}] {item.get('text')}")
         else:
             lines.append("- none")
+        lines.extend(["", "## State Snapshots"])
+        if task.state_snapshots:
+            for item in task.state_snapshots[-40:]:
+                lines.append(
+                    f"- {item.get('time')} [{item.get('kind')}] "
+                    f"status={item.get('status')} next={item.get('next_step') or '-'}"
+                )
+        else:
+            lines.append("- none")
+        lines.extend(["", "## Token Usage"])
+        lines.append(json.dumps(task.token_usage, ensure_ascii=False, sort_keys=True))
         lines.extend(["", "## Blockers"])
         if task.blockers:
             for item in task.blockers[-40:]:
@@ -229,8 +260,166 @@ class AgentLabStorage:
         lines.append("")
         return "\n".join(lines)
 
+    def list_custom_apis(self) -> list[dict[str, Any]]:
+        return self._read_list(self.custom_apis_path)
+
+    def save_custom_api(self, payload: dict[str, Any]) -> dict[str, Any]:
+        items = self.list_custom_apis()
+        item = dict(payload or {})
+        item["api_id"] = str(item.get("api_id") or "").strip() or new_id("api")
+        item["name"] = str(item.get("name") or item["api_id"]).strip()
+        item["method"] = str(item.get("method") or "GET").upper()
+        item["url"] = str(item.get("url") or "").strip()
+        item["description"] = str(item.get("description") or "").strip()
+        item["credential_id"] = str(item.get("credential_id") or "").strip()
+        item["auth_type"] = str(item.get("auth_type") or "bearer").strip()
+        item["auth_header"] = str(item.get("auth_header") or "Authorization").strip()
+        item["auth_query_param"] = str(item.get("auth_query_param") or "api_key").strip()
+        try:
+            item["timeout_seconds"] = max(1, min(int(item.get("timeout_seconds") or 30), 120))
+        except Exception:
+            item["timeout_seconds"] = 30
+        headers = item.get("headers") or {}
+        if isinstance(headers, str):
+            try:
+                headers = json.loads(headers)
+            except Exception:
+                headers = {}
+        item["headers"] = headers if isinstance(headers, dict) else {}
+        item["updated_at"] = now_iso()
+        if not item.get("created_at"):
+            item["created_at"] = item["updated_at"]
+        items = [existing for existing in items if existing.get("api_id") != item["api_id"]]
+        items.append(item)
+        self._write_json(self.custom_apis_path, items)
+        return item
+
+    def get_custom_api(self, api_id_or_name: str) -> dict[str, Any] | None:
+        needle = str(api_id_or_name or "").strip()
+        if not needle:
+            return None
+        for item in self.list_custom_apis():
+            if item.get("api_id") == needle or item.get("name") == needle:
+                return item
+        return None
+
+    def list_credentials(self) -> list[dict[str, Any]]:
+        rows = []
+        for item in self._read_list(self.credentials_path):
+            redacted = dict(item)
+            encrypted = str(redacted.pop("encrypted_value", "") or "")
+            redacted["has_value"] = bool(encrypted)
+            redacted["masked_value"] = "********" if encrypted else ""
+            rows.append(redacted)
+        return rows
+
+    def save_credential(self, payload: dict[str, Any]) -> dict[str, Any]:
+        items = self._read_list(self.credentials_path)
+        item = dict(payload or {})
+        credential_id = str(item.get("credential_id") or "").strip() or new_id("cred")
+        existing = next((row for row in items if row.get("credential_id") == credential_id), {})
+        value = str(item.pop("value", "") or "")
+        row = {
+            **existing,
+            "credential_id": credential_id,
+            "label": str(item.get("label") or existing.get("label") or credential_id).strip(),
+            "provider": str(item.get("provider") or existing.get("provider") or "").strip(),
+            "scope": str(item.get("scope") or existing.get("scope") or "tool").strip(),
+            "updated_at": now_iso(),
+        }
+        row["created_at"] = row.get("created_at") or row["updated_at"]
+        if value:
+            row["encrypted_value"] = self._encrypt_secret(value)
+        items = [existing for existing in items if existing.get("credential_id") != credential_id]
+        items.append(row)
+        self._write_json(self.credentials_path, items)
+        public = dict(row)
+        public.pop("encrypted_value", None)
+        public["has_value"] = bool(row.get("encrypted_value"))
+        public["masked_value"] = "********" if row.get("encrypted_value") else ""
+        return public
+
+    def get_credential_secret(self, credential_id: str) -> str:
+        credential_id = str(credential_id or "").strip()
+        if not credential_id:
+            return ""
+        for item in self._read_list(self.credentials_path):
+            if item.get("credential_id") != credential_id:
+                continue
+            encrypted = str(item.get("encrypted_value") or "")
+            if not encrypted:
+                return ""
+            return self._decrypt_secret(encrypted)
+        return ""
+
+    def list_skill_rules(self) -> list[dict[str, Any]]:
+        return self._read_list(self.skill_rules_path)
+
+    def get_skill_rule(self, skill_name: str) -> dict[str, Any] | None:
+        skill_name = str(skill_name or "").strip()
+        if not skill_name:
+            return None
+        for item in self.list_skill_rules():
+            if item.get("skill_name") == skill_name:
+                return item
+        return None
+
+    def save_skill_rule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        items = self.list_skill_rules()
+        item = dict(payload or {})
+        item["skill_name"] = str(item.get("skill_name") or "agent-mode").strip()
+        item["content"] = str(item.get("content") or "").strip()
+        item["updated_at"] = now_iso()
+        item["created_at"] = item.get("created_at") or item["updated_at"]
+        items = [
+            existing
+            for existing in items
+            if existing.get("skill_name") != item["skill_name"]
+        ]
+        items.append(item)
+        self._write_json(self.skill_rules_path, items)
+        return item
+
+    def list_memory_entries(self) -> list[dict[str, Any]]:
+        return self._read_list(self.memory_entries_path)
+
+    def save_memory_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
+        items = self.list_memory_entries()
+        item = dict(payload or {})
+        item["memory_id"] = str(item.get("memory_id") or "").strip() or new_id("mem")
+        item["text"] = str(item.get("text") or "").strip()
+        item["status"] = str(item.get("status") or "candidate").strip()
+        item["source_task_id"] = str(item.get("source_task_id") or "").strip()
+        item["source_umo"] = str(item.get("source_umo") or "").strip()
+        item["updated_at"] = now_iso()
+        item["created_at"] = item.get("created_at") or item["updated_at"]
+        items = [existing for existing in items if existing.get("memory_id") != item["memory_id"]]
+        if item["text"]:
+            items.append(item)
+        self._write_json(self.memory_entries_path, items)
+        return item
+
+    def delete_memory_entry(self, memory_id: str) -> bool:
+        items = self.list_memory_entries()
+        kept = [item for item in items if item.get("memory_id") != memory_id]
+        if len(kept) == len(items):
+            return False
+        self._write_json(self.memory_entries_path, kept)
+        return True
+
     def _read_json(self, path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
+
+    def _read_list(self, path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if not isinstance(payload, list):
+            return []
+        return [item for item in payload if isinstance(item, dict)]
 
     def _write_json(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -246,3 +435,17 @@ class AgentLabStorage:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
+
+    def _fernet(self) -> Fernet:
+        if not self.secrets_key_path.exists():
+            self._write_text(self.secrets_key_path, Fernet.generate_key().decode("ascii"))
+        return Fernet(self.secrets_key_path.read_text(encoding="utf-8").strip().encode("ascii"))
+
+    def _encrypt_secret(self, value: str) -> str:
+        return self._fernet().encrypt(value.encode("utf-8")).decode("ascii")
+
+    def _decrypt_secret(self, value: str) -> str:
+        try:
+            return self._fernet().decrypt(value.encode("ascii")).decode("utf-8")
+        except (InvalidToken, ValueError):
+            return ""

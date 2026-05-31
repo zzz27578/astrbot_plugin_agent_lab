@@ -36,6 +36,8 @@ disabled_plugins=[...]
 
 进入任务时保存快照，退出时恢复。
 
+边界是：AstrBot 全局已经停用的插件仍然保持停用，Agent Mode 不负责也不能绕过全局插件管理把它重新启用。Agent Mode 只在当前会话里进一步收窄插件与工具可见性。
+
 ## 为什么不用 AstrBot active_agent cron 直接做心跳
 
 AstrBot active agent cron 会唤醒主 Agent，并默认带入会话历史。Agent Lab 需要更干净的任务状态循环，所以使用 `add_basic_job` 调用插件的 `_heartbeat_tick`：

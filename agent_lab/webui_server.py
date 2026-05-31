@@ -90,6 +90,18 @@ class StandaloneWebUIServer:
         async def integrations():
             return await self._guard(self.owner.api_modules)
 
+        @app.route("/api/registry", methods=["GET", "POST"])
+        async def registry():
+            return await self._guard(self.owner.api_registry)
+
+        @app.route("/api/memory", methods=["GET", "POST", "DELETE"])
+        async def memory():
+            return await self._guard(self.owner.api_memory)
+
+        @app.get("/api/task/logs")
+        async def task_logs():
+            return await self._guard(self.owner.api_task_logs)
+
         @app.post("/api/task/start")
         async def task_start():
             return await self._guard(self.owner.api_task_start)

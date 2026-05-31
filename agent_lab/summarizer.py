@@ -41,7 +41,8 @@ class AgentSummarizer:
         )
         if provided_brief.strip():
             prompt += f"\n\n用户补充：\n{provided_brief.strip()}"
-        return await self._summarize(event, prompt, ENTRY_SUMMARY_SYSTEM, provided_brief)
+        system_prompt = str(self.config.get("entry_summary_system_prompt") or ENTRY_SUMMARY_SYSTEM)
+        return await self._summarize(event, prompt, system_prompt, provided_brief)
 
     async def summarize_exit(self, event, task: TaskState, provided: str = "") -> str:
         prompt = (
@@ -55,7 +56,8 @@ class AgentSummarizer:
         )
         if provided.strip():
             prompt += f"\n\n用户或工具补充：\n{provided.strip()}"
-        return await self._summarize(event, prompt, EXIT_SUMMARY_SYSTEM, provided)
+        system_prompt = str(self.config.get("exit_summary_system_prompt") or EXIT_SUMMARY_SYSTEM)
+        return await self._summarize(event, prompt, system_prompt, provided)
 
     async def _load_history(self, event) -> list[dict[str, Any]]:
         conv_mgr = getattr(self.context, "conversation_manager", None)
@@ -101,4 +103,3 @@ class AgentSummarizer:
             except Exception:
                 continue
         return fallback.strip() or "自动摘要暂不可用，请根据当前 task_state 继续。"
-

@@ -33,14 +33,24 @@ Note:
 Expected WebUI:
 
 - Shows sidebar pages: Dashboard, Canvas, Tasks/Memory, Monitor, Plugins/Integrations.
+- Shows current Bot label and identity source; it must come from AstrBot Persona/config when available, not a hardcoded character name.
+- Leaving the Canvas configuration name empty should keep `identity_label_source=astrbot_runtime` and use the current AstrBot Persona/config label.
 - Agents can be selected, duplicated, created, and marked as default in Canvas.
+- Dashboard Agent rows show per-configuration health, active count, trigger count, token total, and pending approval count.
 - Shows active tasks and archives.
+- Task/Memory console can select both active and archived tasks and show structured state fields, pending approvals, and snapshot timeline.
 - Task/memory console has tick/heartbeat/finish/cancel actions.
+- Plugins/Integrations uses sub-pages or equivalent navigation so large plugin/tool/blueprint lists are not one flat page.
 - Shows AstrBot plugins separately from external integration blueprints.
 - Agent Lab plugin itself is locked and cannot be disabled from its own task profile.
-- Shows Tools, including builtin catalog tools such as `astrbot_execute_shell`.
+- Globally disabled AstrBot plugins show as unavailable and cannot be revived by Agent Mode.
+- Closing an AstrBot plugin in Agent Mode makes tools from that plugin unavailable in the registered tools view and runtime toolset.
+- Saving an AgentSpec also removes tools that belong to globally disabled or Agent-disabled AstrBot plugins.
+- Shows Tools grouped or collapsible by source, including builtin catalog tools such as `astrbot_execute_shell`.
+- Shows `agent_lab_call_custom_api` when custom API calling is available.
 - Shows Skills.
 - Shows integration blueprints, including LangGraph/OpenAI/CrewAI/Microsoft adapters.
+- External blueprint page can import/update a manifest and save it into plugin_data without changing framework code.
 
 ## Private Chat Flow
 
@@ -128,27 +138,39 @@ Expected:
 
 In Agent Lab standalone console:
 
-1. Change Agent name.
+1. Change the Agent Mode configuration name, then confirm it becomes manual instead of auto-following the current Bot label.
 2. Change trigger mode.
 3. Change memory/approval/heartbeat modes.
 4. Toggle a plugin.
-5. Toggle a tool.
-6. Toggle a skill.
-7. Toggle an integration blueprint.
-8. Save AgentSpec.
-9. Duplicate the AgentSpec.
-10. Set the duplicate as default.
-11. Refresh.
+5. Confirm tools from the disabled plugin are no longer selected/available for the current Agent.
+6. Toggle a tool.
+7. Change a tool risk level.
+8. Edit approval preapproved scopes and required approval actions.
+9. Toggle a skill.
+10. Toggle an integration blueprint and edit its schema-rendered fine settings; confirm advanced JSON is still available.
+11. Import or update a custom external blueprint manifest from the blueprints page.
+12. Add a workflow node.
+13. Edit the selected workflow node title/kind/description.
+14. Add and delete a workflow edge.
+15. Save AgentSpec.
+16. Duplicate the AgentSpec.
+17. Set the duplicate as default.
+18. Refresh.
 
 Expected:
 
 - Changes persist.
 - New task uses AgentSpec snapshot.
+- Workflow nodes and edges persist without editing raw JSON.
 - WebUI task start uses the selected Agent.
 - `/agentlab use <agent_id>` changes the default Agent for natural-language/command starts.
 - Selected skills are shown in the Agent Mode runtime prompt for task ticks.
+- Edited `agent-mode` custom Skill rules persist and appear in the task tick runtime prompt.
+- Edited entry/exit summary rules persist and are used by task entry compression and exit archival summarization.
+- Tool risk overrides and approval policy appear in the Agent Mode runtime prompt for task ticks.
 - Tools belonging to plugins disabled in Agent Mode are shown as unavailable and are filtered from task ticks.
 - Selected integration blueprints are shown in the Agent Mode runtime prompt for task ticks.
+- Custom imported blueprints remain under `plugin_data/astrbot_plugin_agent_lab/modules` and are still available after refresh.
 
 ## WebUI Review Checks
 
@@ -163,7 +185,10 @@ Create a task from WebUI or private chat, then use Task/Memory console:
 Expected:
 
 - Task/Memory console updates after each action.
+- Selected task detail shows current summary, confirmed progress, next step, last observation, pending approvals, and state snapshots without requiring raw JSON reading.
 - Finished/cancelled task appears in Archives.
+- Archived task can be selected and inspected after finish/cancel.
+- Memory candidates can be filtered by all/candidate/accepted/rejected.
 - `archives/<umo_hash>/task_<id>.md` exists.
 
 ## Integration Blueprint Checks
@@ -181,6 +206,22 @@ Expected:
 
 - New task snapshot includes the selected integration blueprint.
 - Tick runtime prompt includes the blueprint prompt and selected settings.
+
+## Custom API Checks
+
+In the Plugins & Integrations page:
+
+1. Save a credential in Credentials.
+2. Register a Custom API that references the credential.
+3. Confirm the selected AgentSpec has `agent_lab_call_custom_api` enabled.
+4. Start a task and ask the bot to call the registered API by purpose or api_id.
+
+Expected:
+
+- Credential list shows only masked values.
+- Task prompt lists registered Custom API api_id/name/description without secret values.
+- `agent_lab_call_custom_api` can call only a registered API.
+- Tool result never echoes the stored credential.
 
 ## Known Limits In v0.1.0
 

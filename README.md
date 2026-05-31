@@ -2,9 +2,9 @@
 
 Agent Lab 是一个 AstrBot 插件，用来把普通 bot 会话切换成可持续执行、可审批、可归档、可扩展的 **Agent Mode**。
 
-它不是替代 AstrBot，而是把 AstrBot 已有的 provider、Agent Runner、tools、MCP、Skills、cron、conversation、plugin session config 组织成一个可以手搓个人 Agent 的运行层。你可以把它理解成：当前 bot 仍然保持原本的人设和关系，但在写代码、配置项目、排错、部署、整理资料这类长任务里，临时进入一个更稳的任务工作台。
+它不是替代 AstrBot，而是把 AstrBot 已有的 provider、Agent Runner、tools、MCP、Skills、cron、conversation、plugin session config 组织成一个可以手搓个人 Agent 的运行层。你可以把它理解成：当前 bot 仍然保持原本身份、语气和关系，但在写代码、配置项目、排错、部署、整理资料这类长任务里，临时进入一个更稳的任务工作台。
 
-Agent Lab 不内置任何固定 bot 名字。默认 Agent 会优先读取 AstrBot 当前会话/默认人格名称来生成展示名；读不到时才显示通用的“当前 Bot”占位。用户自己创建或改名的 AgentSpec 会保持手动名称。
+Agent Lab 不内置任何固定 bot 名字。默认 Agent 会按 AstrBot 运行时读取当前身份：优先会话/对话/默认 Persona，其次 AstrBot 配置里的机器人展示名，读不到时才显示通用的“当前 Bot”占位。WebUI 里配置名留空时继续跟随运行时身份；只有用户明确输入自定义配置名时，AgentSpec 才会转成手动名称。
 
 ## 新手先看
 
@@ -115,6 +115,7 @@ data/plugins/astrbot_plugin_agent_lab/
 - `agent_lab_request_approval`
 - `agent_lab_set_heartbeat`
 - `agent_lab_finish`
+- `agent_lab_call_custom_api`
 
 触发策略由 AgentSpec 控制：
 
@@ -133,8 +134,7 @@ AgentSpec 是用户手搓 Agent 的核心配置：
 
 ```json
 {
-  "name": "当前 Bot Agent Mode",
-  "identity_label_source": "astrbot_persona",
+  "identity_label_source": "astrbot_runtime",
   "trigger_mode": "confirm",
   "system_prompt": "...",
   "task_prompt": "...",
@@ -148,8 +148,13 @@ AgentSpec 是用户手搓 Agent 的核心配置：
     "astrbot_file_write_tool",
     "astrbot_file_edit_tool",
     "astrbot_execute_shell",
-    "astrbot_execute_python"
+    "astrbot_execute_python",
+    "agent_lab_call_custom_api"
   ],
+  "tool_risk_overrides": {
+    "astrbot_execute_shell": "work",
+    "agent_lab_call_custom_api": "work"
+  },
   "enabled_skills": [],
   "module_ids": [
     "checkpoint_state",
@@ -162,6 +167,8 @@ AgentSpec 是用户手搓 Agent 的核心配置：
   "heartbeat_policy": {}
 }
 ```
+
+默认 AgentSpec 不要求手填 bot 名。`identity_label_source: "astrbot_runtime"` 表示运行时自动读取当前会话/对话/默认 Persona，读不到 Persona 时再读 AstrBot 配置里的机器人展示名；WebUI 的配置名输入框留空时仍按运行时身份生成展示名，只有用户手动输入自定义 `name` 时才会转成 `manual`。
 
 任务启动时会复制 AgentSpec 快照，运行中的任务不会被后续模板修改突然影响。
 
@@ -207,22 +214,34 @@ astrbot_execute_python
 
 独立控制台是 Agent Lab 的主操作面：
 
-- **仪表盘与列表**：看 Agent 资产、当前任务、归档任务、心跳和审批概览。
-- **可视化编排画布**：配置任务模式补充提示词、触发策略、记忆/审批/心跳策略和流程节点。这里不重建 AstrBot 人格，只继承当前 bot。
-- **任务与记忆控制台**：用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档，并审查出口记忆候选。
-- **实例与心跳监控**：查看运行中任务的心跳状态、进度日志，并进行任务级停止/心跳控制。
-- **插件与集成**：管理 AstrBot 插件隔离、注册工具白名单、任务专用 skills，以及外部方案蓝图。
+- **仪表盘与列表**：看 Agent 资产、当前任务、任务触发量、心跳在线/异常和 Token 消耗概览；每个任务模式配置会汇总运行数、触发数、Token、待审批和在线/离线/报错状态。
+- **可视化编排画布**：配置任务模式补充提示词、触发策略、记忆/审批/心跳策略和流程节点。节点和连线可在面板中编辑，JSON 仅作为高级导入/导出兜底；这里不重建 bot 身份，只继承 AstrBot 运行时解析出的身份。
+- **任务与记忆控制台**：用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档；可审查 active 与历史归档任务的结构化状态、待审批、状态快照时间线，并筛选/修剪出口记忆候选。
+- **实例与心跳监控**：查看运行中任务的心跳健康状态、超时告警、状态曲线和实时日志，并进行任务级停止/心跳控制。
+- **插件与集成**：用页内左侧子导航管理 AstrBot 插件隔离、注册工具白名单、自定义 API、凭证、任务专用 skills，以及外部方案蓝图。
+
+自定义 API 在“插件与集成 -> 自定义 API”里注册，凭证在“凭证库”里加密保存。Agent Mode 中只暴露一个通用工具 `agent_lab_call_custom_api`：它只能调用已注册的 API，并按注册时选择的 bearer/header/query 方式注入凭证；工具结果不会回显密钥。
+
+“插件与集成 -> Skills 规则”可以编辑 `agent-mode` 的自定义规则，也可以编辑入口摘要和出口归档规则。规则会保存到 `plugin_data/astrbot_plugin_agent_lab/registry/skill_rules.json`，并在插件同步 `agent-mode` Skill 时追加到 `SKILL.md`；入口/出口摘要规则会直接参与进入任务模式的 `task_brief` 压缩和退出归档。
+
+“插件与集成 -> AstrBot 插件隔离”只作用于 Agent Mode 会话，不会改 AstrBot 全局插件开关。AstrBot 全局停用的插件固定关闭，Agent Mode 不能绕过原生插件管理把它复活；在 Agent Mode 中关闭某插件时，该插件来源的注册工具会同步从当前 Agent 的工具白名单中移除。后端保存 AgentSpec 时也会再次清理这些工具，防止绕过 WebUI 写回不一致状态。
+
+“插件与集成 -> 注册工具”会按来源插件折叠显示工具，并允许为当前 AgentSpec 覆盖 `safe/work/high` 风险等级。右侧审批策略可编辑预授权范围、必须审批动作和审批备注；这些不会硬性截断工具，而是写入任务模式提示，让 bot 在计划和调用工具前主动判断。
+
+“插件与集成 -> 外部方案蓝图”可以查看、加入、精细配置或导入/更新蓝图 manifest。用户自定义蓝图会写入 `plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json`，框架升级时不会覆盖这部分数据；相同 `module_id` 的用户蓝图会覆盖内置蓝图，方便你按自己的工作流改规则。
 
 ## 外部方案库
 
-Agent Lab 会加载两类集成蓝图。代码层仍使用 `modules` 命名以保持兼容，但在 WebUI 中统一称为“外部方案库/集成蓝图”：
+Agent Lab 会加载两类集成蓝图。代码层仍使用 `modules` 命名以保持兼容，但在 WebUI 中统一称为“外部方案蓝图/规则模块”：
 
 ```text
 modules/*.json
 data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 ```
 
-也就是说，用户可以把外部 agent 方案写成蓝图 manifest 放进插件数据目录，不用改主框架代码。蓝图只描述协议、能力、设置 schema 和适配要求；真正执行仍通过 AstrBot 插件、注册工具、MCP、skills 或后续 runner adapter。
+也就是说，用户可以把外部 agent 方案写成蓝图 manifest 放进插件数据目录，不用改主框架代码。蓝图只描述协议、能力、设置 schema 和适配要求；真正执行仍通过 AstrBot 插件、注册工具、MCP、skills 或后续 runner adapter。它不是 AstrBot 插件，也不是可直接调用的工具，而是把外部方案的好概念翻译成 Agent Lab 的 TaskState、审批、心跳、记忆和工作流约束。
+
+蓝图的 `settings_schema.properties` 会在 WebUI 里渲染成精细设置表单，当前值写入 AgentSpec 的 `module_settings`。高级 JSON 导入/导出仍保留，用来兼容复杂对象和未来扩展字段。
 
 蓝图 manifest 示例：
 
@@ -281,6 +300,14 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 
 - 插件后端可运行。
 - AgentSpec/TaskState 可持久化。
+- 默认 Agent 展示名从 AstrBot 运行时身份读取，WebUI 会显示来源是 Persona、配置名称还是兜底占位。
+- 自定义 API、加密凭证和 `agent_lab_call_custom_api` 工具已打通。
+- `agent-mode` Skill 支持 WebUI 自定义规则同步。
+- 可视化编排画布支持节点/连线编辑，不再只能手改 workflow JSON。
+- 工具支持风险分组、风险覆盖和可编辑审批策略。
+- 外部方案蓝图支持按 `settings_schema` 渲染精细设置表单，并保存到 `module_settings`。
+- 仪表盘 Agent 资产列表会按配置聚合心跳健康、任务触发、Token 和待审批数量。
+- 任务与记忆控制台支持查看归档任务详情、结构化状态字段、待审批和快照时间线。
 - 命令、LLM 工具、独立 WebUI、心跳、审批、入口/出口摘要均已落地。
 - Agent 能在 tick 中显式读写 task_state，并通过 hooks 记录工具调用。
 - 外部方案以集成蓝图形式内置为可扩展收束口。
@@ -288,7 +315,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 后续可以继续增强：
 
 - 真正可拖拽的 workflow 画布。
-- provider token 统计接入。
+- 更完整的 provider token usage 统计；当前只汇总 provider 已上报的 usage。
 - 更细的工具危险等级和凭证管理。
 - 对接外部 memory store。
 - 对接 LangGraph/CrewAI/OpenAI Agents SDK 作为可选 runner adapter。

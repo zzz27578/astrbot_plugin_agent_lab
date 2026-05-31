@@ -19,13 +19,15 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 
 前者用于插件内置模块，后者用于用户本地扩展。相同 `module_id` 后加载者会覆盖前者。
 
-独立 WebUI 的“外部方案库”会展示这些蓝图。保存结果会写入：
+独立 WebUI 的“插件与集成 -> 外部方案蓝图”会展示这些蓝图，也可以从该页导入或更新 manifest。保存结果会写入：
 
 ```text
 data/plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json
 ```
 
 `module_id` 会被规范化为字母、数字、下划线、点和连字符组成的短 ID。
+
+WebUI 会读取 `settings_schema.properties` 渲染精细设置表单，并把当前 Agent 的取值保存到 `AgentSpec.module_settings[module_id]`。简单类型建议使用 `string`、`integer`、`number`、`boolean`、`array`；复杂对象仍可用高级 JSON 兜底。
 
 ## 最小蓝图字段
 

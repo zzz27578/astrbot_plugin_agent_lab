@@ -23,7 +23,7 @@ EXIT_SUMMARY_SYSTEM = """你是 AstrBot Agent Lab 的出口归档器。
 def build_agent_mode_policy(spec: AgentSpec) -> str:
     return f"""
 [Agent Lab 模式协议]
-当前 AstrBot 会话支持 Agent Mode。你仍然保持原本的人格与关系，但当任务适合进入 Agent Mode 时，应按用户选择的触发模式行动。
+当前 AstrBot 会话支持 Agent Mode。你仍然保持当前 bot 原本的身份、语气与关系，但当任务适合进入 Agent Mode 时，应按用户选择的触发模式行动。
 
 [当前 AgentSpec]
 - name：{spec.name}
@@ -31,6 +31,10 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 - memory_mode：{spec.memory_policy.mode}
 - approval_mode：{spec.approval_policy.mode}
 - heartbeat_mode：{spec.heartbeat_policy.mode}
+- preapproved_scopes：
+{_lines_or_none(spec.approval_policy.preapproved_scopes)}
+- require_approval：
+{_lines_or_none(spec.approval_policy.require_approval)}
 - enabled_tools：
 {_lines_or_none(spec.enabled_tools)}
 - enabled_skills：
@@ -60,6 +64,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 4. 删除、重置、部署、改全局配置、读取密钥等危险动作前，先主动说明影响并请求用户同意。
 5. 用户取消时立即停止，不得自行恢复。
 6. 心跳只是唤醒机制，不是记忆本身；只有长任务、等待型任务或用户要求时才建议启用。
+7. 审批是行为规范：在计划或工具调用前自己判断，不要等工具报错后才补请示。
 """.strip()
 
 
@@ -99,6 +104,10 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 - memory_mode: {spec.memory_policy.mode}
 - approval_mode: {spec.approval_policy.mode}
 - heartbeat_mode: {spec.heartbeat_policy.mode}
+- preapproved_scopes:
+{_lines_or_none(spec.approval_policy.preapproved_scopes)}
+- require_approval:
+{_lines_or_none(spec.approval_policy.require_approval)}
 - enabled_tools:
 {_lines_or_none(spec.enabled_tools)}
 - enabled_skills:
@@ -108,7 +117,7 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 如果这是心跳唤醒，第一步必须读取并相信 task_state；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。
 
 [Approval Contract]
-普通读取、创建任务记录、小范围明确文件写入、运行测试无需审批。删除、批量覆盖、git reset/clean、部署/重启服务、密钥读取、数据库破坏性变更、全局插件/系统配置修改必须先请求审批。
+普通读取、创建任务记录、小范围明确文件写入、运行测试无需审批。删除、批量覆盖、git reset/clean、部署/重启服务、密钥读取、数据库破坏性变更、全局插件/系统配置修改必须先请求审批。若某项在 preapproved_scopes 中，仍需先确认它确实属于用户已授权范围；若超出范围，必须调用 agent_lab_request_approval。
 
 {modules_prompt}
 """.strip()

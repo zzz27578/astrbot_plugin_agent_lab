@@ -51,6 +51,14 @@ class AgentLabRunHooks(BaseAgentRunHooks):
             "tool_end",
             f"{getattr(tool, 'name', 'unknown')} result={_short(tool_result, 1200)}",
         )
+        task.add_snapshot(
+            "tool_end",
+            {
+                "tool": getattr(tool, "name", "unknown"),
+                "args": _short(tool_args, 800),
+                "result": _short(tool_result, 1200),
+            },
+        )
         self.storage.save_task(task)
 
     async def on_agent_done(self, run_context, llm_response) -> None:
@@ -61,5 +69,9 @@ class AgentLabRunHooks(BaseAgentRunHooks):
             "agent_done",
             _short(getattr(llm_response, "completion_text", ""), 1200),
         )
+        task.add_token_usage(getattr(llm_response, "usage", None))
+        task.add_snapshot(
+            "agent_done",
+            {"token_usage": task.token_usage},
+        )
         self.storage.save_task(task)
-

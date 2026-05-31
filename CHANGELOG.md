@@ -26,9 +26,30 @@
 - Reworked the WebUI into a Chinese structured console with separate task runtime, agent rules, capability switches, and module editor areas.
 - Added clearer WebUI button feedback, disabled states, and local preview mode for layout testing.
 - Removed hardcoded role names from defaults/docs; derived default and task-time Agent labels from AstrBot persona/config when available.
+- Made raw AgentSpec defaults runtime-following as well, so plugin configuration no longer carries a baked-in bot display name before AstrBot resolves Persona/config.
 - Replaced the Dashboard plugin Page with a standalone WebUI server (`standalone_webui_host`/`port`/`token`) and a five-section Agent Lab console.
 - Separated AstrBot plugin isolation, registered tools, skills, and external integration blueprints in the WebUI.
 - Added tool filtering so tools from Agent-disabled plugins are removed from Agent Mode runs.
 - Added per-blueprint settings support through `module_settings`, `settings_schema`, and `default_settings`.
 - Limited WebUI Tasks/state task listing to active tasks; finished and cancelled tasks live under Archives.
 - Protected Agent Lab from being disabled by its own session plugin overrides.
+- Added runtime identity source reporting so the standalone WebUI shows whether the current Bot label comes from AstrBot Persona, AstrBot config, or fallback.
+- Replaced the default identity marker with `astrbot_runtime` while preserving compatibility with existing `astrbot_persona` AgentSpec files.
+- Added registries for custom APIs, encrypted credentials, memory entries, task snapshots, workflow JSON, and provider-reported token usage.
+- Added `agent_lab_call_custom_api`, a managed tool for calling WebUI-registered custom APIs with encrypted credentials.
+- Added WebUI-editable `agent-mode` custom Skill rules saved under plugin_data and synced into the installed Skill.
+- Added structured Canvas workflow node and edge editing, with JSON kept as an advanced fallback.
+- Added per-AgentSpec tool risk overrides, risk-grouped tool UI, and editable approval scopes/actions.
+- Added global-plugin-disabled hard boundary: Agent Mode can further disable plugins but cannot revive AstrBot globally disabled plugins.
+- Reworked Plugins & Integrations into a left-subpage console; registered tools are now collapsible by source plugin and plugin-off tools are removed from the current Agent tool selection.
+- Clarified external blueprints as rule modules rather than AstrBot plugins or direct tools, with visible settings schema/defaults in the WebUI.
+- Added heartbeat health payloads (`online`/`idle`/`stale`/`blocked`/`off`) and monitor-page timeout badges/log rows.
+- Added editable entry/exit summary rules in the Skills Rules page; they are saved in plugin_data and appended to the installed `agent-mode` Skill.
+- Tightened Canvas wording around Agent Mode configuration so it does not read like a bot identity/persona editor.
+- Kept blank WebUI AgentSpec names bound to `astrbot_runtime`, so new configurations inherit the current AstrBot Persona/config label instead of becoming a fixed template name.
+- Added save-time AgentSpec sanitation so tools from globally disabled or Agent-disabled plugins cannot be persisted back into the enabled tool list.
+- Added a clean WebUI AgentSpec draft flow with an explicit enabled/disabled control, so New is no longer just Duplicate with a blank name.
+- Added WebUI import/update for external blueprint manifests, persisted under plugin_data modules for framework-upgrade compatibility.
+- Rendered blueprint `settings_schema.properties` as fine-grained WebUI controls while keeping advanced JSON import/export as a compatibility fallback.
+- Expanded dashboard Agent rows with per-configuration health, active task count, trigger count, Token total, and pending approval count.
+- Reworked Task/Memory details into structured state fields, pending approvals, snapshot timelines, archive selection, and memory status filters.

@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import json
 import shutil
+import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib import error as urlerror
+from urllib import parse as urlparse
+from urllib import request as urlrequest
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
@@ -35,9 +40,27 @@ PLUGIN_VERSION = "v0.1.0"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人 Agent Mode。"
 SKILL_NAME = "agent-mode"
+ENTRY_SUMMARY_RULE_NAME = "agent-mode-entry-summary"
+EXIT_SUMMARY_RULE_NAME = "agent-mode-exit-summary"
 NO_EXTERNAL_TOOLS_SENTINEL = "__agent_lab_no_external_tools__"
+CUSTOM_API_TOOL_NAME = "agent_lab_call_custom_api"
 DEFAULT_BOT_LABEL = "当前 Bot"
 AGENT_NAME_SUFFIX = " Agent Mode"
+AUTO_IDENTITY_LABEL_SOURCES = {
+    "astrbot_runtime",
+    "astrbot_persona",  # legacy value kept for existing AgentSpec files.
+    "astrbot_config",
+}
+CONFIG_BOT_LABEL_KEYS = (
+    "bot_label",
+    "bot_display_name",
+    "bot_name",
+    "robot_name",
+    "assistant_name",
+    "wecom_ai_bot_name",
+    "app_name",
+    "kf_name",
+)
 DEFAULT_AGENT_NAMES = {
     "",
     f"{DEFAULT_BOT_LABEL}{AGENT_NAME_SUFFIX}",
@@ -86,6 +109,11 @@ BUILTIN_TOOL_CATALOG = [
         "description": "AstrBot proactive future task tool.",
         "risk": "work",
     },
+    {
+        "name": CUSTOM_API_TOOL_NAME,
+        "description": "Call an Agent Lab registered custom API with managed credentials.",
+        "risk": "work",
+    },
 ]
 
 
@@ -113,6 +141,13 @@ def _message_tail(event: AstrMessageEvent, command_name: str) -> str:
     return parts[1].strip() if len(parts) > 1 else ""
 
 
+def _lines_or_none(items: list[str]) -> str:
+    cleaned = [str(item).strip() for item in items if str(item).strip()]
+    if not cleaned:
+        return "- none"
+    return "\n".join(f"- {item}" for item in cleaned)
+
+
 @register(PLUGIN_NAME, PLUGIN_AUTHOR, PLUGIN_DESC, PLUGIN_VERSION)
 class AgentLabPlugin(Star):
     def __init__(self, context: Context, config: Any = None):
@@ -133,6 +168,7 @@ class AgentLabPlugin(Star):
         )
         self.storage.ensure_defaults()
         self._sync_default_agent_identity()
+        self._refresh_summarizer_rules()
         self._register_web_apis()
 
     async def initialize(self):
@@ -275,6 +311,14 @@ class AgentLabPlugin(Star):
         if need_heartbeat and not task.heartbeat.enabled and task.heartbeat.allowed:
             # Record the recommendation; user/tool can call agent_lab_set_heartbeat.
             task.add_log("heartbeat_recommended", "Agent judged this task needs heartbeat.")
+        task.add_snapshot(
+            "update_state",
+            {
+                "progress": progress.strip(),
+                "blocker": blocker.strip(),
+                "need_heartbeat": need_heartbeat,
+            },
+        )
         self.storage.save_task(task)
         return (
             f"task_state 已更新：status={task.status}, next_step={task.next_step or '-'}, "
@@ -353,6 +397,73 @@ class AgentLabPlugin(Star):
             final_summary=final_summary,
             memory_candidates=memory_candidates,
         )
+
+    @filter.llm_tool(name="agent_lab_call_custom_api")
+    async def agent_lab_call_custom_api(
+        self,
+        event: AstrMessageEvent,
+        api_id: str,
+        query_json: str = "",
+        body_json: str = "",
+        headers_json: str = "",
+    ) -> str:
+        """调用 Agent Lab WebUI 中预注册的自定义 API。只能调用已注册 API，密钥不会返回给模型。
+
+        Args:
+            api_id(string): 自定义 API 的 api_id 或名称。
+            query_json(string): 可选 JSON 对象，追加到 URL 查询参数。
+            body_json(string): 可选 JSON 对象或数组，作为非 GET 请求体。
+            headers_json(string): 可选 JSON 对象，作为本次调用的额外请求头。
+        """
+        api_spec = self.storage.get_custom_api(api_id)
+        if not api_spec:
+            return f"未找到已注册自定义 API：{api_id}"
+        if not api_spec.get("url"):
+            return f"自定义 API {api_id} 未配置 URL。"
+
+        try:
+            query = self._parse_json_object(query_json, "query_json")
+            headers = self._parse_json_object(headers_json, "headers_json")
+            body = self._parse_json_payload(body_json, "body_json")
+        except ValueError as exc:
+            return str(exc)
+
+        headers = {str(k): str(v) for k, v in headers.items()}
+        for key, value in (api_spec.get("headers") or {}).items():
+            headers.setdefault(str(key), str(value))
+
+        credential_id = str(api_spec.get("credential_id") or "").strip()
+        if credential_id:
+            secret = self.storage.get_credential_secret(credential_id)
+            if not secret:
+                return f"自定义 API {api_spec.get('name') or api_id} 绑定的凭证为空或无法解密。"
+            self._apply_custom_api_auth(api_spec, headers, query, secret)
+
+        result = await asyncio.to_thread(
+            self._perform_custom_api_http_call,
+            str(api_spec.get("method") or "GET").upper(),
+            str(api_spec.get("url") or ""),
+            query,
+            body,
+            headers,
+            int(api_spec.get("timeout_seconds") or 30),
+        )
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if task:
+            task.add_log(
+                "custom_api",
+                f"{api_spec.get('api_id')}: status={result.get('status', '-')}",
+            )
+            task.add_snapshot(
+                "custom_api",
+                {
+                    "api_id": api_spec.get("api_id"),
+                    "status": result.get("status"),
+                    "ok": result.get("ok"),
+                },
+            )
+            self.storage.save_task(task)
+        return json.dumps(result, ensure_ascii=False, indent=2)
 
     @filter.on_llm_request()
     async def inject_agent_lab_policy(self, event: AstrMessageEvent, req: ProviderRequest):
@@ -449,12 +560,19 @@ class AgentLabPlugin(Star):
         spec = self.storage.get_agent(agent_id or None)
         if not spec.enabled:
             return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用后再进入 Agent Mode。"
-        effective_agent_name = await self._effective_agent_name(spec, event)
+        runtime_identity = await self._current_bot_identity_for_event(event)
+        effective_agent_name = (
+            self._agent_name_from_label(runtime_identity["label"])
+            if self._should_sync_agent_identity(spec)
+            else spec.name
+        )
         profile_agent = spec.to_dict()
         profile_agent["name"] = effective_agent_name
+        profile_agent["runtime_identity"] = runtime_identity
         session_plugin_snapshot = await self.guard.apply_overrides(
             umo, spec.plugin_overrides
         )
+        self._refresh_summarizer_rules()
         entry_summary = await self.summarizer.summarize_entry(event, goal, brief)
         task = TaskState(
             agent_id=spec.agent_id,
@@ -478,6 +596,7 @@ class AgentLabPlugin(Star):
             heartbeat=spec.heartbeat_policy,
         )
         task.add_log("created", f"goal={goal}; source={source}; risk={risk_level}")
+        task.add_snapshot("created", {"source": source, "risk_level": risk_level})
         self.storage.save_task(task)
         heartbeat_text = ""
         if request_heartbeat and task.heartbeat.allowed:
@@ -510,7 +629,7 @@ class AgentLabPlugin(Star):
         system_prompt = build_task_system_prompt(spec, task, modules_prompt)
         prompt = build_tick_prompt(task, reason)
         try:
-            provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+            provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(event.unified_msg_origin)
             resp = await self.context.tool_loop_agent(
                 event=event,
                 chat_provider_id=provider_id,
@@ -529,7 +648,16 @@ class AgentLabPlugin(Star):
             task.current_summary = self._compact_text(text, 1200) if text else task.current_summary
             task.next_step = "根据上一轮观察继续推进；若涉及危险操作，先请求审批。"
             task.status = "running"
+            task.add_token_usage(getattr(resp, "usage", None))
             task.add_log("tick", f"reason={reason}; response={self._compact_text(text, 1200)}")
+            task.add_snapshot(
+                "tick",
+                {
+                    "reason": reason,
+                    "provider_id": provider_id,
+                    "token_usage": task.token_usage,
+                },
+            )
             self.storage.save_task(task)
             return f"tick 完成。\n\n{self._compact_text(text, 1800)}"
         except Exception as exc:
@@ -554,6 +682,7 @@ class AgentLabPlugin(Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
+        self._refresh_summarizer_rules()
         exit_summary = await self.summarizer.summarize_exit(event, task, final_summary)
         task.status = status
         task.exit_summary = exit_summary
@@ -564,6 +693,7 @@ class AgentLabPlugin(Star):
         ]
         task.finished_at = now_iso()
         task.add_log("finished", f"status={status}")
+        task.add_snapshot("finished", {"status": status, "final_summary": final_summary})
         await self._disable_heartbeat(task)
         snapshot = task.profile_snapshot.get("session_plugin_snapshot")
         await self.guard.restore(task.umo, snapshot)
@@ -750,7 +880,72 @@ class AgentLabPlugin(Star):
         skills_prompt = self._build_selected_skills_prompt(spec)
         if skills_prompt.strip():
             sections.append(skills_prompt)
+        agent_mode_rule = self._build_agent_mode_skill_rule_prompt()
+        if agent_mode_rule.strip():
+            sections.append(agent_mode_rule)
+        tool_risk_prompt = self._build_tool_risk_prompt(spec)
+        if tool_risk_prompt.strip():
+            sections.append(tool_risk_prompt)
+        custom_api_prompt = self._build_custom_api_prompt(spec)
+        if custom_api_prompt.strip():
+            sections.append(custom_api_prompt)
         return "\n\n".join(sections)
+
+    def _build_tool_risk_prompt(self, spec: AgentSpec) -> str:
+        selected = set(spec.enabled_tools or [])
+        if NO_EXTERNAL_TOOLS_SENTINEL in selected:
+            return ""
+        rows = []
+        for row in self._tool_rows():
+            if selected and row["name"] not in selected:
+                continue
+            risk = self._effective_tool_risk(spec, row["name"], row.get("risk", "work"))
+            rows.append(
+                f"- {row['name']}: risk={risk}; source={row.get('plugin_display_name') or row.get('source')}; "
+                f"available={'yes' if row.get('effective_active') else 'no'}"
+            )
+        if not rows:
+            return ""
+        return "\n".join(
+            [
+                "[Agent Lab Tool Risk Policy]",
+                "工具风险由 AgentSpec 配置。safe 通常可直接用；work 需确认当前任务授权；high 或命中 require_approval 的动作必须先向用户说明影响并请求审批。",
+                "preapproved_scopes:",
+                _lines_or_none(spec.approval_policy.preapproved_scopes),
+                "require_approval:",
+                _lines_or_none(spec.approval_policy.require_approval),
+                "selected_tools:",
+                *rows,
+            ]
+        )
+
+    def _build_agent_mode_skill_rule_prompt(self) -> str:
+        rule = self.storage.get_skill_rule(SKILL_NAME)
+        content = str((rule or {}).get("content") or "").strip()
+        if not content:
+            return ""
+        return "[Agent Mode Custom Skill Rules]\n" + content
+
+    def _build_custom_api_prompt(self, spec: AgentSpec) -> str:
+        if spec.enabled_tools and CUSTOM_API_TOOL_NAME not in spec.enabled_tools:
+            return ""
+        apis = self.storage.list_custom_apis()
+        if not apis:
+            return ""
+        lines = [
+            "[Agent Lab Custom APIs]",
+            "以下 API 由管理员在 Agent Lab WebUI 注册。调用时只能使用 agent_lab_call_custom_api，并传入 api_id；不要请求或输出凭证值。",
+        ]
+        for item in apis:
+            lines.append(
+                "- "
+                f"api_id={item.get('api_id')}; "
+                f"name={item.get('name')}; "
+                f"method={item.get('method')}; "
+                f"auth={item.get('auth_type') or 'none'}; "
+                f"description={item.get('description') or '-'}"
+            )
+        return "\n".join(lines)
 
     def _build_selected_skills_prompt(self, spec: AgentSpec) -> str:
         selected = [name.strip() for name in spec.enabled_skills if str(name).strip()]
@@ -779,6 +974,18 @@ class AgentLabPlugin(Star):
                 f"当前 AgentSpec 选择了 skills：{', '.join(selected)}，但运行时读取失败：{exc}。"
             )
 
+    def _refresh_summarizer_rules(self) -> None:
+        self.summarizer.config["entry_summary_system_prompt"] = self._summary_rule_content(
+            ENTRY_SUMMARY_RULE_NAME
+        )
+        self.summarizer.config["exit_summary_system_prompt"] = self._summary_rule_content(
+            EXIT_SUMMARY_RULE_NAME
+        )
+
+    def _summary_rule_content(self, rule_name: str) -> str:
+        rule = self.storage.get_skill_rule(rule_name)
+        return str((rule or {}).get("content") or "").strip()
+
     def _sync_agent_mode_skill(self) -> None:
         if not _bool_cfg(self.config, "install_agent_mode_skill", True):
             return
@@ -790,9 +997,29 @@ class AgentLabPlugin(Star):
             dst = Path(get_astrbot_skills_path()) / SKILL_NAME
             if src.exists():
                 shutil.copytree(src, dst, dirs_exist_ok=True)
+                self._append_agent_mode_skill_rules(dst / "SKILL.md")
             SkillManager().set_skill_active(SKILL_NAME, True)
         except Exception as exc:
             logger.warning("[AgentLab] skill install failed: %s", exc)
+
+    def _append_agent_mode_skill_rules(self, skill_path: Path) -> None:
+        if not skill_path.exists():
+            return
+        sections = []
+        for rule_name, title in (
+            (SKILL_NAME, "Agent Lab 自定义规则"),
+            (ENTRY_SUMMARY_RULE_NAME, "入口摘要规则"),
+            (EXIT_SUMMARY_RULE_NAME, "出口归档规则"),
+        ):
+            rule = self.storage.get_skill_rule(rule_name)
+            content = str((rule or {}).get("content") or "").strip()
+            if content:
+                sections.append(f"## {title}\n\n{content}")
+        if not sections:
+            return
+        text = skill_path.read_text(encoding="utf-8")
+        text = text.rstrip() + "\n\n" + "\n\n".join(sections) + "\n"
+        skill_path.write_text(text, encoding="utf-8")
 
     async def _start_webui_server(self) -> None:
         if not _bool_cfg(self.config, "standalone_webui_enabled", True):
@@ -805,7 +1032,7 @@ class AgentLabPlugin(Star):
         host = str(_cfg(self.config, "standalone_webui_host", "127.0.0.1") or "127.0.0.1").strip()
         port = int(_cfg(self.config, "standalone_webui_port", 8788) or 8788)
         token = str(_cfg(self.config, "standalone_webui_token", "") or "").strip()
-        static_dir = Path(__file__).parent / "webui"
+        static_dir = Path(__file__).resolve().parent / "webui"
         self.webui_server = StandaloneWebUIServer(
             owner=self,
             static_dir=static_dir,
@@ -838,6 +1065,9 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "Agent Lab state")
         self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST"], "Agent specs")
         self.context.register_web_api(f"/{PLUGIN_NAME}/modules", self.api_modules, ["GET", "POST"], "Agent modules")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/registry", self.api_registry, ["GET", "POST"], "Agent integrations registry")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/memory", self.api_memory, ["GET", "POST", "DELETE"], "Agent memory entries")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/logs", self.api_task_logs, ["GET"], "Task logs")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/start", self.api_task_start, ["POST"], "Start task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/tick", self.api_task_tick, ["POST"], "Tick task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/finish", self.api_task_finish, ["POST"], "Finish task")
@@ -846,29 +1076,31 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/approval", self.api_task_approval, ["POST"], "Resolve approval")
 
     async def api_state(self):
+        self._sync_default_agent_identity()
         return jsonify(
             {
                 "default_agent_id": self.storage.default_agent_id(),
                 "agents": [item.to_dict() for item in self.storage.list_agents()],
-                "tasks": [item.to_dict() for item in self.storage.list_tasks()],
-                "archives": [item.to_dict() for item in self.storage.list_archives()],
+                "tasks": [self._task_payload(item) for item in self.storage.list_tasks()],
+                "archives": [
+                    self._task_payload(item) for item in self.storage.list_archives()
+                ],
                 "plugins": self._plugin_rows(),
                 "tools": self._tool_rows(),
                 "skills": self._skill_rows(),
                 "modules": self.modules.list_modules(),
                 "integrations": self.modules.list_modules(),
+                "custom_apis": self.storage.list_custom_apis(),
+                "credentials": self.storage.list_credentials(),
+                "skill_rules": self.storage.list_skill_rules(),
+                "memories": self.storage.list_memory_entries(),
                 "metrics": self._metrics_payload(),
                 "webui": {
                     "standalone": bool(self.webui_server),
                     "url": self.webui_server.url if self.webui_server else "",
                     "auth": bool(self.webui_server and self.webui_server.token),
                 },
-                "runtime": {
-                    "bot_label": self._current_bot_label(),
-                    "default_agent_name": self._agent_name_from_label(
-                        self._current_bot_label()
-                    ),
-                },
+                "runtime": self._runtime_identity_payload(),
             }
         )
 
@@ -890,12 +1122,7 @@ class AgentLabPlugin(Star):
             if not str(payload.get("agent_id") or "").strip():
                 payload.pop("agent_id", None)
             spec = AgentSpec.from_dict(payload)
-            if (
-                previous_spec
-                and previous_spec.identity_label_source == "astrbot_persona"
-                and spec.name != previous_spec.name
-            ):
-                spec.identity_label_source = "manual"
+            self._prepare_agent_spec_for_save(spec, previous_spec)
             self.storage.save_agent(spec)
             if make_default:
                 self.storage.set_default_agent(spec.agent_id)
@@ -916,6 +1143,61 @@ class AgentLabPlugin(Star):
                 return jsonify({"ok": False, "error": str(exc)})
             return jsonify({"ok": True, "module": module.to_dict()})
         return jsonify({"modules": self.modules.list_modules()})
+
+    async def api_registry(self):
+        if request.method == "POST":
+            payload = await request.get_json(force=True, silent=True) or {}
+            kind = str(payload.get("kind") or "api")
+            if kind == "credential":
+                return jsonify({"ok": True, "credential": self.storage.save_credential(payload)})
+            if kind == "skill_rule":
+                rule = self.storage.save_skill_rule(payload)
+                self._sync_agent_mode_skill()
+                return jsonify({"ok": True, "skill_rule": rule})
+            return jsonify({"ok": True, "api": self.storage.save_custom_api(payload)})
+        return jsonify(
+            {
+                "ok": True,
+                "custom_apis": self.storage.list_custom_apis(),
+                "credentials": self.storage.list_credentials(),
+                "skill_rules": self.storage.list_skill_rules(),
+            }
+        )
+
+    async def api_memory(self):
+        if request.method == "POST":
+            payload = await request.get_json(force=True, silent=True) or {}
+            return jsonify({"ok": True, "memory": self.storage.save_memory_entry(payload)})
+        if request.method == "DELETE":
+            payload = await request.get_json(force=True, silent=True) or {}
+            memory_id = str(payload.get("memory_id") or request.args.get("memory_id") or "")
+            return jsonify({"ok": self.storage.delete_memory_entry(memory_id)})
+        return jsonify({"ok": True, "memories": self.storage.list_memory_entries()})
+
+    async def api_task_logs(self):
+        umo = str(request.args.get("umo") or "")
+        task_id = str(request.args.get("task_id") or "")
+        task = self.storage.load_active_task(umo)
+        if not task:
+            task = next(
+                (
+                    item
+                    for item in self.storage.list_archives(umo or None)
+                    if not task_id or item.task_id == task_id
+                ),
+                None,
+            )
+        if not task or (task_id and task.task_id != task_id):
+            return jsonify({"ok": False, "error": "task not found"})
+        return jsonify(
+            {
+                "ok": True,
+                "logs": task.progress_log[-200:],
+                "snapshots": task.state_snapshots[-80:],
+                "token_usage": task.token_usage,
+                "heartbeat_health": self._heartbeat_health(task),
+            }
+        )
 
     async def api_task_start(self):
         payload = await request.get_json(force=True, silent=True) or {}
@@ -1015,6 +1297,7 @@ class AgentLabPlugin(Star):
     def _tool_rows(self) -> list[dict[str, Any]]:
         rows = []
         seen = set()
+        builtin_risks = {item["name"]: item["risk"] for item in BUILTIN_TOOL_CATALOG}
         plugin_rows = {item["name"]: item for item in self._plugin_rows()}
         for tool in self.context.get_llm_tool_manager().func_list:
             seen.add(tool.name)
@@ -1032,7 +1315,11 @@ class AgentLabPlugin(Star):
                     "plugin_display_name": plugin_row.get("display_name") if plugin_row else "",
                     "plugin_enabled": plugin_enabled,
                     "source": "registered",
-                    "risk": "unknown",
+                    "risk": builtin_risks.get(tool.name)
+                    or self._infer_tool_risk(
+                        tool.name,
+                        getattr(tool, "description", ""),
+                    ),
                 }
             )
         for item in BUILTIN_TOOL_CATALOG:
@@ -1054,6 +1341,61 @@ class AgentLabPlugin(Star):
             )
         return rows
 
+    @staticmethod
+    def _infer_tool_risk(name: str, description: str = "") -> str:
+        text = f"{name} {description}".lower()
+        high_keywords = (
+            "delete",
+            "remove",
+            "reset",
+            "clean",
+            "deploy",
+            "restart",
+            "secret",
+            "credential",
+            "token",
+            "password",
+            "drop",
+            "truncate",
+            "migration",
+            "system config",
+        )
+        if any(keyword in text for keyword in high_keywords):
+            return "high"
+        safe_keywords = (
+            "read",
+            "search",
+            "grep",
+            "list",
+            "status",
+            "query",
+            "get",
+            "fetch",
+        )
+        if any(keyword in text for keyword in safe_keywords):
+            return "safe"
+        work_keywords = (
+            "write",
+            "edit",
+            "execute",
+            "shell",
+            "python",
+            "call",
+            "post",
+            "update",
+            "create",
+        )
+        if any(keyword in text for keyword in work_keywords):
+            return "work"
+        return "work"
+
+    @staticmethod
+    def _effective_tool_risk(
+        spec: AgentSpec, tool_name: str, default: str = "work"
+    ) -> str:
+        risk = str((spec.tool_risk_overrides or {}).get(tool_name) or default or "work").strip()
+        return risk if risk in {"safe", "work", "high"} else "work"
+
     def _skill_rows(self) -> list[dict[str, Any]]:
         try:
             from astrbot.core.skills.skill_manager import SkillManager
@@ -1062,21 +1404,105 @@ class AgentLabPlugin(Star):
         except Exception:
             return []
 
+    def _task_payload(self, task: TaskState) -> dict[str, Any]:
+        payload = task.to_dict()
+        payload["heartbeat_health"] = self._heartbeat_health(task)
+        return payload
+
+    def _heartbeat_health(self, task: TaskState) -> dict[str, Any]:
+        stale_after = self._heartbeat_stale_after_seconds(task)
+        if task.status == "blocked":
+            return {
+                "state": "blocked",
+                "tone": "bad",
+                "message": "任务已阻塞",
+                "last_pulse_at": task.heartbeat.last_pulse_at,
+                "seconds_since_pulse": self._seconds_since(task.heartbeat.last_pulse_at),
+                "stale_after_seconds": stale_after,
+            }
+        if not task.heartbeat.enabled:
+            return {
+                "state": "off",
+                "tone": "warn",
+                "message": "未开心跳",
+                "last_pulse_at": task.heartbeat.last_pulse_at,
+                "seconds_since_pulse": self._seconds_since(task.heartbeat.last_pulse_at),
+                "stale_after_seconds": stale_after,
+            }
+        seconds = self._seconds_since(task.heartbeat.last_pulse_at)
+        if seconds is None:
+            return {
+                "state": "idle",
+                "tone": "warn",
+                "message": "等待首次心跳",
+                "last_pulse_at": task.heartbeat.last_pulse_at,
+                "seconds_since_pulse": None,
+                "stale_after_seconds": stale_after,
+            }
+        if seconds > stale_after:
+            return {
+                "state": "stale",
+                "tone": "bad",
+                "message": "心跳超时",
+                "last_pulse_at": task.heartbeat.last_pulse_at,
+                "seconds_since_pulse": seconds,
+                "stale_after_seconds": stale_after,
+            }
+        return {
+            "state": "online",
+            "tone": "ok",
+            "message": "心跳正常",
+            "last_pulse_at": task.heartbeat.last_pulse_at,
+            "seconds_since_pulse": seconds,
+            "stale_after_seconds": stale_after,
+        }
+
+    @staticmethod
+    def _heartbeat_stale_after_seconds(task: TaskState) -> int:
+        cron = str(task.heartbeat.cron_expression or "*/5 * * * *").strip()
+        interval_minutes = 5
+        first = cron.split()[0] if cron.split() else ""
+        if first.startswith("*/"):
+            try:
+                interval_minutes = max(1, int(first[2:]))
+            except Exception:
+                interval_minutes = 5
+        return max(interval_minutes * 60 * 2, 120)
+
+    @staticmethod
+    def _seconds_since(iso_time: str) -> int | None:
+        raw = str(iso_time or "").strip()
+        if not raw:
+            return None
+        try:
+            stamp = datetime.fromisoformat(raw)
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+        return max(0, int((datetime.now(timezone.utc) - stamp.astimezone(timezone.utc)).total_seconds()))
+
     def _metrics_payload(self) -> dict[str, Any]:
         tasks = self.storage.list_tasks()
         archives = self.storage.list_archives()
-        heartbeat_on = sum(1 for task in tasks if task.heartbeat.enabled)
+        all_tasks = [*tasks, *archives]
+        health_states = [self._heartbeat_health(task)["state"] for task in tasks]
+        heartbeat_online = sum(1 for state in health_states if state == "online")
+        heartbeat_stale = sum(1 for state in health_states if state in {"stale", "blocked"})
+        heartbeat_offline = sum(1 for state in health_states if state in {"off", "idle"})
         pending_approvals = sum(len(task.pending_approvals()) for task in tasks)
+        token_usage = sum(int(task.token_usage.get("total", 0) or 0) for task in all_tasks)
         return {
             "agents": len(self.storage.list_agents()),
             "active_tasks": len(tasks),
             "archived_tasks": len(archives),
-            "heartbeat_online": heartbeat_on,
-            "heartbeat_offline": max(len(tasks) - heartbeat_on, 0),
+            "heartbeat_online": heartbeat_online,
+            "heartbeat_offline": heartbeat_offline,
+            "heartbeat_stale": heartbeat_stale,
             "pending_approvals": pending_approvals,
             "task_triggers": len(tasks) + len(archives),
-            "token_usage": 0,
-            "token_usage_note": "当前框架未接入 provider token 统计，保留为汇总接口。",
+            "token_usage": token_usage,
+            "token_usage_note": "来自 Agent Lab 捕获到的 provider usage；未上报 usage 的 provider 不计入。",
         }
 
     def _webui_text(self) -> str:
@@ -1110,14 +1536,19 @@ class AgentLabPlugin(Star):
         return str(getattr(plugin, "name", "") or "")
 
     def _disabled_plugin_names(self, spec: AgentSpec) -> set[str]:
+        plugin_rows = {item["name"]: item for item in self._plugin_rows() if item.get("name")}
         disabled = {
-            item["name"]
-            for item in self._plugin_rows()
-            if item.get("name") and not bool(item.get("activated", True))
+            name
+            for name, item in plugin_rows.items()
+            if not bool(item.get("activated", True))
         }
         for plugin_name, enabled in spec.plugin_overrides.items():
             if plugin_name == PLUGIN_NAME:
                 disabled.discard(plugin_name)
+                continue
+            plugin_row = plugin_rows.get(plugin_name)
+            if plugin_row and not bool(plugin_row.get("activated", True)):
+                disabled.add(plugin_name)
                 continue
             if enabled:
                 disabled.discard(plugin_name)
@@ -1132,6 +1563,75 @@ class AgentLabPlugin(Star):
         if plugin_name and plugin_name in disabled_plugins:
             return False
         return True
+
+    def _prepare_agent_spec_for_save(
+        self, spec: AgentSpec, previous_spec: AgentSpec | None = None
+    ) -> None:
+        self._normalize_agent_identity_for_save(spec, previous_spec)
+        self._upgrade_default_agent_tools(spec)
+        self._sanitize_agent_enabled_tools(spec)
+
+    def _normalize_agent_identity_for_save(
+        self, spec: AgentSpec, previous_spec: AgentSpec | None = None
+    ) -> None:
+        spec.name = str(spec.name or "").strip()
+        runtime_name = self._runtime_identity_payload()["default_agent_name"]
+        if not spec.name:
+            spec.identity_label_source = "astrbot_runtime"
+            spec.name = runtime_name
+            return
+
+        if (
+            previous_spec
+            and previous_spec.identity_label_source in AUTO_IDENTITY_LABEL_SOURCES
+        ):
+            previous_name = str(previous_spec.name or "").strip()
+            if spec.name in {previous_name, runtime_name}:
+                spec.identity_label_source = "astrbot_runtime"
+                spec.name = runtime_name
+            else:
+                spec.identity_label_source = "manual"
+            return
+
+        if spec.identity_label_source in AUTO_IDENTITY_LABEL_SOURCES:
+            if spec.name == runtime_name or self._looks_like_default_agent_template(spec):
+                spec.identity_label_source = "astrbot_runtime"
+                spec.name = runtime_name
+            else:
+                spec.identity_label_source = "manual"
+
+    def _sanitize_agent_enabled_tools(self, spec: AgentSpec) -> None:
+        names = []
+        seen = set()
+        for raw_name in spec.enabled_tools or []:
+            name = str(raw_name or "").strip()
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            names.append(name)
+
+        if NO_EXTERNAL_TOOLS_SENTINEL in names:
+            spec.enabled_tools = [NO_EXTERNAL_TOOLS_SENTINEL]
+            return
+
+        tmgr = self.context.get_llm_tool_manager()
+        disabled_plugins = self._disabled_plugin_names(spec)
+        internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
+        sanitized = []
+        for name in names:
+            if name in internal_block:
+                continue
+            try:
+                tool = tmgr.get_func(name)
+            except Exception as exc:
+                logger.warning("[AgentLab] cannot resolve tool %s: %s", name, exc)
+                tool = None
+            if tool is not None:
+                if self._tool_available_for_agent(tool, disabled_plugins):
+                    sanitized.append(name)
+                continue
+            sanitized.append(name)
+        spec.enabled_tools = sanitized
 
     def _status_text(self, umo: str) -> str:
         task = self.storage.load_active_task(umo)
@@ -1213,20 +1713,157 @@ class AgentLabPlugin(Star):
             return text
         return text[: limit - 20] + "\n...[truncated]"
 
+    @staticmethod
+    def _parse_json_object(raw: str, field_name: str) -> dict[str, Any]:
+        raw = str(raw or "").strip()
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_name} 不是合法 JSON：{exc}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f"{field_name} 必须是 JSON 对象。")
+        return payload
+
+    @staticmethod
+    def _parse_json_payload(raw: str, field_name: str) -> Any:
+        raw = str(raw or "").strip()
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{field_name} 不是合法 JSON：{exc}") from exc
+
+    @staticmethod
+    def _apply_custom_api_auth(
+        api_spec: dict[str, Any],
+        headers: dict[str, str],
+        query: dict[str, Any],
+        secret: str,
+    ) -> None:
+        auth_type = str(api_spec.get("auth_type") or "bearer").strip().lower()
+        if auth_type in {"none", "off", "disabled"}:
+            return
+        if auth_type == "query":
+            param = str(api_spec.get("auth_query_param") or "api_key").strip()
+            if param:
+                query[param] = secret
+            return
+        header = str(api_spec.get("auth_header") or "Authorization").strip()
+        if not header:
+            return
+        if auth_type == "header":
+            headers[header] = secret
+        else:
+            headers[header] = f"Bearer {secret}"
+
+    @staticmethod
+    def _perform_custom_api_http_call(
+        method: str,
+        url: str,
+        query: dict[str, Any],
+        body: Any,
+        headers: dict[str, str],
+        timeout_seconds: int,
+    ) -> dict[str, Any]:
+        parsed = urlparse.urlsplit(url)
+        if parsed.scheme not in {"http", "https"}:
+            return {
+                "ok": False,
+                "status": 0,
+                "error": "Only http/https custom APIs are supported.",
+            }
+        existing_query = dict(urlparse.parse_qsl(parsed.query, keep_blank_values=True))
+        existing_query.update({str(k): str(v) for k, v in query.items()})
+        final_url = urlparse.urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path,
+                urlparse.urlencode(existing_query),
+                parsed.fragment,
+            )
+        )
+        method = method.upper()
+        request_body = None
+        safe_headers = dict(headers)
+        if method not in {"GET", "HEAD"} and body is not None:
+            request_body = json.dumps(body, ensure_ascii=False).encode("utf-8")
+            safe_headers.setdefault("Content-Type", "application/json")
+        req = urlrequest.Request(
+            final_url,
+            data=request_body,
+            headers=safe_headers,
+            method=method,
+        )
+        try:
+            with urlrequest.urlopen(req, timeout=timeout_seconds) as resp:
+                raw = resp.read(256_000)
+                text = raw.decode(resp.headers.get_content_charset() or "utf-8", errors="replace")
+                return {
+                    "ok": 200 <= resp.status < 300,
+                    "status": resp.status,
+                    "content_type": resp.headers.get("Content-Type", ""),
+                    "body": text[:12000],
+                    "truncated": len(text) > 12000,
+                }
+        except urlerror.HTTPError as exc:
+            raw = exc.read(64_000)
+            text = raw.decode("utf-8", errors="replace")
+            return {
+                "ok": False,
+                "status": exc.code,
+                "content_type": exc.headers.get("Content-Type", ""),
+                "body": text[:8000],
+                "truncated": len(text) > 8000,
+            }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": 0,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
     def _sync_default_agent_identity(self) -> None:
-        """Keep the built-in default Agent aligned with AstrBot's current persona."""
+        """Keep the built-in default Agent aligned with AstrBot's runtime identity."""
         try:
             spec = self.storage.get_agent()
         except Exception:
             return
         if not self._should_sync_agent_identity(spec):
             return
-        derived_name = self._agent_name_from_label(self._current_bot_label())
-        if spec.name == derived_name and spec.identity_label_source == "astrbot_persona":
+        identity = self._current_bot_identity()
+        derived_name = self._agent_name_from_label(identity["label"])
+        upgraded = self._upgrade_default_agent_tools(spec)
+        if (
+            spec.name == derived_name
+            and spec.identity_label_source == "astrbot_runtime"
+            and not upgraded
+        ):
             return
         spec.name = derived_name
-        spec.identity_label_source = "astrbot_persona"
+        spec.identity_label_source = "astrbot_runtime"
         self.storage.save_agent(spec)
+
+    @staticmethod
+    def _upgrade_default_agent_tools(spec: AgentSpec) -> bool:
+        legacy_default_tools = {
+            "astrbot_file_read_tool",
+            "astrbot_grep_tool",
+            "astrbot_file_write_tool",
+            "astrbot_file_edit_tool",
+            "astrbot_execute_shell",
+            "astrbot_execute_python",
+        }
+        if (
+            CUSTOM_API_TOOL_NAME not in spec.enabled_tools
+            and set(spec.enabled_tools) == legacy_default_tools
+        ):
+            spec.enabled_tools.append(CUSTOM_API_TOOL_NAME)
+            return True
+        return False
 
     async def _effective_agent_name(
         self, spec: AgentSpec, event: AstrMessageEvent
@@ -1236,7 +1873,7 @@ class AgentLabPlugin(Star):
         return self._agent_name_from_label(await self._current_bot_label_for_event(event))
 
     def _should_sync_agent_identity(self, spec: AgentSpec) -> bool:
-        if spec.identity_label_source == "astrbot_persona":
+        if spec.identity_label_source in AUTO_IDENTITY_LABEL_SOURCES:
             return True
         if spec.name in DEFAULT_AGENT_NAMES:
             return True
@@ -1260,48 +1897,87 @@ class AgentLabPlugin(Star):
         return f"{bot_label or DEFAULT_BOT_LABEL}{AGENT_NAME_SUFFIX}"
 
     def _current_bot_label(self) -> str:
-        persona_name = self._current_persona_name()
-        if self._usable_persona_label(persona_name):
-            return persona_name
-        return DEFAULT_BOT_LABEL
+        return self._current_bot_identity()["label"]
 
     async def _current_bot_label_for_event(self, event: AstrMessageEvent) -> str:
+        return (await self._current_bot_identity_for_event(event))["label"]
+
+    def _runtime_identity_payload(self) -> dict[str, str]:
+        identity = self._current_bot_identity()
+        return {
+            "bot_label": identity["label"],
+            "bot_label_source": identity["source"],
+            "default_agent_name": self._agent_name_from_label(identity["label"]),
+        }
+
+    def _current_bot_identity(self) -> dict[str, str]:
+        persona_name = self._current_persona_name()
+        if self._usable_persona_label(persona_name):
+            return {"label": persona_name, "source": "astrbot_persona"}
+        config_label = self._config_bot_label(self._context_config())
+        if config_label:
+            return {"label": config_label, "source": "astrbot_config"}
+        return {"label": DEFAULT_BOT_LABEL, "source": "fallback"}
+
+    async def _current_bot_identity_for_event(
+        self, event: AstrMessageEvent
+    ) -> dict[str, str]:
         persona_name = await self._current_persona_name_for_event(event)
         if self._usable_persona_label(persona_name):
-            return persona_name
-        return self._current_bot_label()
+            return {"label": persona_name, "source": "astrbot_persona"}
+        config_label = self._config_bot_label(
+            self._context_config(getattr(event, "unified_msg_origin", "")),
+            self._event_platform_name(event),
+        )
+        if config_label:
+            return {"label": config_label, "source": "astrbot_config"}
+        return {"label": DEFAULT_BOT_LABEL, "source": "fallback"}
 
     async def _current_persona_name_for_event(self, event: AstrMessageEvent) -> str:
         umo = getattr(event, "unified_msg_origin", "")
         config = self._context_config(umo)
         provider_settings = _cfg(config, "provider_settings", {}) or {}
+        session_persona_id = await self._session_persona_id(umo)
         conversation_persona_id = await self._conversation_persona_id(umo)
         persona_manager = getattr(self.context, "persona_manager", None)
 
         resolve_selected = getattr(persona_manager, "resolve_selected_persona", None)
         if callable(resolve_selected):
             try:
-                _, persona, _, _ = await resolve_selected(
+                selected_id, persona, force_persona_id, _ = await resolve_selected(
                     umo=umo,
                     conversation_persona_id=conversation_persona_id or None,
                     platform_name=self._event_platform_name(event),
                     provider_settings=provider_settings,
                 )
                 name = self._persona_name(persona)
-                if name:
+                if self._usable_persona_label(name):
                     return name
+                if selected_id == "[%None]" or force_persona_id == "[%None]":
+                    return ""
+                name = self._persona_name_by_id(selected_id)
+                if self._usable_persona_label(name):
+                    return name
+                if self._usable_persona_label(str(selected_id or "")):
+                    return str(selected_id).strip()
             except Exception:
                 pass
 
-        if conversation_persona_id:
-            name = self._persona_name_by_id(conversation_persona_id)
-            if name:
+        for persona_id in (session_persona_id, conversation_persona_id):
+            if persona_id == "[%None]":
+                return ""
+            name = self._persona_name_by_id(persona_id)
+            if self._usable_persona_label(name):
                 return name
+            if self._usable_persona_label(persona_id):
+                return persona_id
 
         get_default = getattr(persona_manager, "get_default_persona_v3", None)
         if callable(get_default):
             try:
-                return self._persona_name(await get_default(umo=umo))
+                name = self._persona_name(await get_default(umo=umo))
+                if self._usable_persona_label(name):
+                    return name
             except Exception:
                 pass
 
@@ -1312,18 +1988,87 @@ class AgentLabPlugin(Star):
         for attr in ("selected_default_persona_v3", "selected_default_persona"):
             persona = getattr(persona_manager, attr, None)
             name = self._persona_name(persona)
-            if name:
+            if self._usable_persona_label(name):
                 return name
 
         config = self._context_config()
         provider_settings = _cfg(config, "provider_settings", {}) or {}
         default_persona = _cfg(provider_settings, "default_personality", "")
         name = self._persona_name_by_id(default_persona)
-        if name:
+        if self._usable_persona_label(name):
             return name
-        if default_persona:
+        if self._usable_persona_label(default_persona):
             return str(default_persona).strip()
         return ""
+
+    async def _session_persona_id(self, umo: str) -> str:
+        if not umo:
+            return ""
+        try:
+            from astrbot.api import sp
+
+            session_service_config = (
+                await sp.get_async(
+                    scope="umo",
+                    scope_id=str(umo),
+                    key="session_service_config",
+                    default={},
+                )
+                or {}
+            )
+        except Exception:
+            return ""
+        if not isinstance(session_service_config, dict):
+            return ""
+        return str(session_service_config.get("persona_id") or "").strip()
+
+    def _config_bot_label(
+        self, config: Any, platform_name: str | None = None
+    ) -> str:
+        for key in CONFIG_BOT_LABEL_KEYS:
+            label = self._usable_config_label(_cfg(config, key, ""))
+            if label:
+                return label
+        for section_name in ("provider_settings", "platform_settings"):
+            section = _cfg(config, section_name, {}) or {}
+            for key in CONFIG_BOT_LABEL_KEYS:
+                label = self._usable_config_label(_cfg(section, key, ""))
+                if label:
+                    return label
+
+        platform_name = str(platform_name or "").strip()
+        platforms = _cfg(config, "platform", []) or _cfg(config, "platforms", []) or []
+        if isinstance(platforms, dict):
+            platforms = list(platforms.values())
+        if not isinstance(platforms, list):
+            platforms = []
+
+        matched: list[Any] = []
+        unmatched: list[Any] = []
+        for item in platforms:
+            item_type = str(_cfg(item, "type", "") or _cfg(item, "id", "")).strip()
+            if platform_name and item_type == platform_name:
+                matched.append(item)
+            else:
+                unmatched.append(item)
+
+        for item in matched + unmatched:
+            if _cfg(item, "enable", True) is False:
+                continue
+            for key in CONFIG_BOT_LABEL_KEYS:
+                label = self._usable_config_label(_cfg(item, key, ""))
+                if label:
+                    return label
+        return ""
+
+    @staticmethod
+    def _usable_config_label(value: Any) -> str:
+        label = str(value or "").strip()
+        if not label:
+            return ""
+        if label.lower() in {"default", "[%none]", "none", "unknown"}:
+            return ""
+        return label
 
     @staticmethod
     def _persona_name(persona: Any) -> str:

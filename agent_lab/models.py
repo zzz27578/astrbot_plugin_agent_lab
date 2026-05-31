@@ -91,10 +91,12 @@ class MemoryPolicy:
 @dataclass
 class AgentSpec:
     agent_id: str = field(default_factory=lambda: new_id("agent"))
-    name: str = "当前 Bot Agent Mode"
-    identity_label_source: str = "manual"  # manual | astrbot_persona
+    name: str = ""
+    # manual | astrbot_runtime | astrbot_persona(legacy) | astrbot_config(legacy)
+    identity_label_source: str = "astrbot_runtime"
     description: str = "把 AstrBot 会话切换为可持续执行、可审批、可归档的 Agent 模式。"
     enabled: bool = True
+    provider_id: str = ""
     trigger_mode: str = "confirm"  # manual | confirm | smart | always
     system_prompt: str = (
         "你仍然是当前 AstrBot 里的原本角色，但进入 Agent Mode 后必须以任务推进为中心。"
@@ -111,8 +113,10 @@ class AgentSpec:
             "astrbot_file_edit_tool",
             "astrbot_execute_shell",
             "astrbot_execute_python",
+            "agent_lab_call_custom_api",
         ]
     )
+    tool_risk_overrides: dict[str, str] = field(default_factory=dict)
     enabled_skills: list[str] = field(default_factory=list)
     module_ids: list[str] = field(
         default_factory=lambda: [
@@ -123,6 +127,28 @@ class AgentSpec:
         ]
     )
     module_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    workflow_nodes: list[dict[str, Any]] = field(
+        default_factory=lambda: [
+            {"id": "entry", "title": "入口压缩", "kind": "state"},
+            {"id": "plan", "title": "计划拆解", "kind": "state"},
+            {"id": "execute", "title": "工具执行", "kind": "tool"},
+            {"id": "approval", "title": "审批闸门", "kind": "guard"},
+            {"id": "checkpoint", "title": "状态快照", "kind": "state"},
+            {"id": "heartbeat", "title": "心跳续跑", "kind": "guard"},
+            {"id": "archive", "title": "出口归档", "kind": "state"},
+        ]
+    )
+    workflow_edges: list[dict[str, str]] = field(
+        default_factory=lambda: [
+            {"from": "entry", "to": "plan"},
+            {"from": "plan", "to": "execute"},
+            {"from": "execute", "to": "approval"},
+            {"from": "approval", "to": "checkpoint"},
+            {"from": "checkpoint", "to": "heartbeat"},
+            {"from": "heartbeat", "to": "execute"},
+            {"from": "checkpoint", "to": "archive"},
+        ]
+    )
     memory_policy: MemoryPolicy = field(default_factory=MemoryPolicy)
     approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
     heartbeat_policy: HeartbeatPolicy = field(default_factory=HeartbeatPolicy)
@@ -192,6 +218,7 @@ class TaskState:
     next_step: str = ""
     last_observation: str = ""
     progress_log: list[dict[str, str]] = field(default_factory=list)
+    state_snapshots: list[dict[str, Any]] = field(default_factory=list)
     blockers: list[dict[str, str]] = field(default_factory=list)
     repeated_issue_counts: dict[str, int] = field(default_factory=dict)
     approvals: list[dict[str, Any]] = field(default_factory=list)
@@ -199,6 +226,14 @@ class TaskState:
     entry_summary: str = ""
     exit_summary: str = ""
     memory_candidates: list[str] = field(default_factory=list)
+    token_usage: dict[str, int] = field(
+        default_factory=lambda: {
+            "input_other": 0,
+            "input_cached": 0,
+            "output": 0,
+            "total": 0,
+        }
+    )
     archive_path: str = ""
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
@@ -208,6 +243,35 @@ class TaskState:
         self.progress_log.append(
             {"time": now_iso(), "kind": kind, "text": str(text).strip()}
         )
+        self.updated_at = now_iso()
+
+    def add_snapshot(self, kind: str, data: dict[str, Any] | None = None) -> None:
+        self.state_snapshots.append(
+            {
+                "time": now_iso(),
+                "kind": str(kind or "state"),
+                "status": self.status,
+                "current_summary": self.current_summary,
+                "last_confirmed_progress": self.last_confirmed_progress,
+                "next_step": self.next_step,
+                "last_observation": self.last_observation,
+                "data": data or {},
+            }
+        )
+        self.state_snapshots = self.state_snapshots[-120:]
+        self.updated_at = now_iso()
+
+    def add_token_usage(self, usage: Any) -> None:
+        if not usage:
+            return
+        input_other = int(getattr(usage, "input_other", 0) or 0)
+        input_cached = int(getattr(usage, "input_cached", 0) or 0)
+        output = int(getattr(usage, "output", 0) or 0)
+        total = int(getattr(usage, "total", input_other + input_cached + output) or 0)
+        self.token_usage["input_other"] = self.token_usage.get("input_other", 0) + input_other
+        self.token_usage["input_cached"] = self.token_usage.get("input_cached", 0) + input_cached
+        self.token_usage["output"] = self.token_usage.get("output", 0) + output
+        self.token_usage["total"] = self.token_usage.get("total", 0) + total
         self.updated_at = now_iso()
 
     def add_blocker(self, issue: str, detail: str = "") -> int:

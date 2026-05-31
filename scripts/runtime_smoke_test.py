@@ -69,20 +69,28 @@ class FakeToolManager:
 
 
 class FakeContext:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        config: dict | None = None,
+        persona_name: str | None = "测试人格",
+        plugin_activation: dict[str, bool] | None = None,
+    ) -> None:
+        self._config = config or {}
+        self.plugin_activation = plugin_activation or {}
         self.web_apis = []
         self.cron_manager = FakeCronManager()
         self.conversation_manager = FakeConversationManager()
         self.tool_manager = FakeToolManager()
         self.persona_manager = SimpleNamespace(
-            selected_default_persona_v3={"name": "测试人格"}
+            selected_default_persona_v3={"name": persona_name} if persona_name else None
         )
 
     def register_web_api(self, route, handler, methods, desc) -> None:
         self.web_apis.append((route, methods, desc))
 
-    def get_config(self):
-        return {}
+    def get_config(self, *args, **kwargs):
+        return self._config
 
     def get_all_stars(self):
         return [
@@ -96,7 +104,7 @@ class FakeContext:
             SimpleNamespace(
                 name="memory_noise",
                 display_name="Memory Noise",
-                activated=True,
+                activated=self.plugin_activation.get("memory_noise", True),
                 reserved=False,
                 desc="test memory plugin",
                 module_path="memory_noise.main",
@@ -105,7 +113,7 @@ class FakeContext:
             SimpleNamespace(
                 name="safe_plugin",
                 display_name="Safe Plugin",
-                activated=True,
+                activated=self.plugin_activation.get("safe_plugin", True),
                 reserved=False,
                 desc="safe plugin",
                 module_path="safe_plugin.main",
@@ -170,7 +178,47 @@ async def main() -> None:
         plugin.guard = FakeGuard()
         event = FakeEvent()
         assert plugin.storage.get_agent().name == "测试人格 Agent Mode"
+        assert plugin._runtime_identity_payload()["bot_label_source"] == "astrbot_persona"
         spec = plugin.storage.get_agent()
+        plugin.storage.save_skill_rule(
+            {"skill_name": "agent-mode", "content": "运行时补充规则"}
+        )
+        plugin.storage.save_skill_rule(
+            {"skill_name": "agent-mode-entry-summary", "content": "入口摘要测试规则"}
+        )
+        plugin.storage.save_skill_rule(
+            {"skill_name": "agent-mode-exit-summary", "content": "出口归档测试规则"}
+        )
+        blank_auto_spec = plugin_main.AgentSpec(
+            name="",
+            identity_label_source="astrbot_runtime",
+        )
+        plugin._prepare_agent_spec_for_save(blank_auto_spec)
+        assert blank_auto_spec.name == "测试人格 Agent Mode"
+        assert blank_auto_spec.identity_label_source == "astrbot_runtime"
+        custom_named_spec = plugin_main.AgentSpec(
+            name="自定义任务模板",
+            identity_label_source="astrbot_runtime",
+        )
+        plugin._prepare_agent_spec_for_save(custom_named_spec)
+        assert custom_named_spec.identity_label_source == "manual"
+        plugin._refresh_summarizer_rules()
+        assert plugin.summarizer.config["entry_summary_system_prompt"] == "入口摘要测试规则"
+        assert plugin.summarizer.config["exit_summary_system_prompt"] == "出口归档测试规则"
+        assert "运行时补充规则" in plugin._build_task_extensions_prompt(spec)
+        spec.enabled_tools = ["safe_registered_tool"]
+        spec.tool_risk_overrides["safe_registered_tool"] = "high"
+        spec.approval_policy.preapproved_scopes = ["读取项目文件"]
+        risk_prompt = plugin._build_task_extensions_prompt(spec)
+        assert "safe_registered_tool: risk=high" in risk_prompt
+        assert "读取项目文件" in risk_prompt
+        skill_file = Path(tmp) / "SKILL.md"
+        skill_file.write_text("# Agent Mode\n", encoding="utf-8")
+        plugin._append_agent_mode_skill_rules(skill_file)
+        skill_text = skill_file.read_text(encoding="utf-8")
+        assert "Agent Lab 自定义规则" in skill_text
+        assert "入口摘要规则" in skill_text
+        assert "出口归档规则" in skill_text
         spec.enabled_tools = ["memory_noise_search", "safe_registered_tool"]
         spec.plugin_overrides["memory_noise"] = False
         toolset = plugin._build_toolset(spec)
@@ -179,6 +227,33 @@ async def main() -> None:
         assert "safe_registered_tool" in tool_names
         tool_rows = {row["name"]: row for row in plugin._tool_rows()}
         assert tool_rows["memory_noise_search"]["plugin_name"] == "memory_noise"
+        save_spec = plugin_main.AgentSpec(
+            name="工具测试",
+            identity_label_source="manual",
+        )
+        save_spec.enabled_tools = [
+            "memory_noise_search",
+            "safe_registered_tool",
+            "future_custom_tool",
+            "agent_lab_tick",
+        ]
+        save_spec.plugin_overrides["memory_noise"] = False
+        plugin._prepare_agent_spec_for_save(save_spec)
+        assert save_spec.enabled_tools == ["safe_registered_tool", "future_custom_tool"]
+
+        global_off_plugin = plugin_main.AgentLabPlugin(
+            FakeContext(plugin_activation={"memory_noise": False}),
+            config={"private_only": True},
+        )
+        global_off_spec = global_off_plugin.storage.get_agent()
+        global_off_spec.enabled_tools = ["memory_noise_search", "safe_registered_tool"]
+        global_off_spec.plugin_overrides["memory_noise"] = True
+        global_off_toolset = global_off_plugin._build_toolset(global_off_spec)
+        global_off_tool_names = {tool.name for tool in global_off_toolset.tools}
+        assert "memory_noise_search" not in global_off_tool_names
+        assert "safe_registered_tool" in global_off_tool_names
+        global_off_plugin._prepare_agent_spec_for_save(global_off_spec)
+        assert global_off_spec.enabled_tools == ["safe_registered_tool"]
 
         start = await plugin._start_task(
             event,
@@ -194,6 +269,7 @@ async def main() -> None:
         assert task is not None
         assert task.root_goal == "runtime smoke goal"
         assert task.profile_snapshot["agent"]["name"] == "测试人格 Agent Mode"
+        assert plugin._task_payload(task)["heartbeat_health"]["state"] == "off"
 
         approval = await plugin.agent_lab_request_approval(
             event,
@@ -214,12 +290,57 @@ async def main() -> None:
         )
         assert "审批已通过" in resolved
 
+        api_credential = plugin.storage.save_credential(
+            {"label": "Runtime API Key", "provider": "test", "value": "runtime-secret"}
+        )
+        api_spec = plugin.storage.save_custom_api(
+            {
+                "name": "Runtime API",
+                "method": "post",
+                "url": "https://example.com/runtime",
+                "credential_id": api_credential["credential_id"],
+                "auth_type": "header",
+                "auth_header": "X-Test-Key",
+            }
+        )
+        api_call = {}
+
+        def fake_custom_api_call(method, url, query, body, headers, timeout_seconds):
+            api_call.update(
+                {
+                    "method": method,
+                    "url": url,
+                    "query": query,
+                    "body": body,
+                    "headers": headers,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            return {"ok": True, "status": 200, "body": "pong"}
+
+        plugin._perform_custom_api_http_call = fake_custom_api_call
+        api_result = await plugin.agent_lab_call_custom_api(
+            event,
+            api_id=api_spec["api_id"],
+            query_json='{"q":"smoke"}',
+            body_json='{"hello":"world"}',
+        )
+        assert '"pong"' in api_result
+        assert "runtime-secret" not in api_result
+        assert api_call["headers"]["X-Test-Key"] == "runtime-secret"
+        assert api_call["query"]["q"] == "smoke"
+        assert api_call["body"]["hello"] == "world"
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert any(item.get("kind") == "custom_api" for item in task.progress_log)
+
         heartbeat = await plugin._enable_heartbeat(event, task, "runtime_smoke")
         assert "已开启心跳" in heartbeat
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         assert task.heartbeat.enabled
         assert task.heartbeat.job_id
+        assert plugin._heartbeat_health(task)["state"] == "idle"
 
         finish = await plugin._finish_task(
             event,
@@ -233,6 +354,19 @@ async def main() -> None:
         assert len(archives) == 1
         assert archives[0].status == "completed"
         assert plugin.guard.restored
+
+    with TemporaryDirectory() as tmp:
+        plugin_main.StarTools.get_data_dir = staticmethod(
+            lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
+        )
+        plugin = plugin_main.AgentLabPlugin(
+            FakeContext(config={"bot_name": "配置机器人"}, persona_name=None),
+            config={"private_only": True},
+        )
+        assert plugin.storage.get_agent().name == "配置机器人 Agent Mode"
+        runtime_identity = plugin._runtime_identity_payload()
+        assert runtime_identity["bot_label"] == "配置机器人"
+        assert runtime_identity["bot_label_source"] == "astrbot_config"
 
     print("Agent Lab runtime smoke test passed.")
 

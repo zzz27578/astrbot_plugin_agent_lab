@@ -35,8 +35,14 @@ Agent Lab WebUI is a standalone Quart console started by the plugin.
 - Task state is stored in plugin_data.
 - Plugin overrides are session-level and restored on exit.
 - Agent Lab protects itself from being disabled by its own session plugin overrides.
+- Default AgentSpec display name auto-follows the current AstrBot runtime identity: session/conversation/default Persona first, then configured bot display name, then generic fallback.
 - Default AgentSpec includes common AstrBot Computer Use tool names; unavailable tools are skipped or reported by AstrBot runtime.
 - Tools from a plugin disabled in Agent Mode are filtered out together with that plugin.
+- Custom APIs are called through `agent_lab_call_custom_api`; the tool only accepts registered API ids/names and never returns stored credential values.
+- `agent-mode` custom rules edited in WebUI are saved in `registry/skill_rules.json`, appended to the installed Skill, and injected into Agent Mode task ticks.
+- Entry/exit summary rules are edited in the same Skills Rules page; they control task entry compression and exit archival summaries.
+- Workflow nodes and edges are edited from the Canvas panel; raw JSON remains available only as an advanced import/export fallback.
+- Tool risk levels are editable per AgentSpec. Risk policy is soft governance: it is injected into the runtime prompt so the bot asks before dangerous actions instead of relying on tool-layer hard stops.
 - Commands and natural-language starts use the default Agent; WebUI starts use the selected Agent.
 
 ## Trigger Modes
@@ -61,9 +67,13 @@ Agent Lab should be considered healthy when:
 - `/agentlab finish` moves a copy to `archives/`.
 - Completed/cancelled tasks leave the active Tasks list and remain visible under Archives.
 - Standalone WebUI `state` API returns agents/tasks/plugins/tools/skills/integrations.
+- Standalone WebUI shows `bot_label_source` so operators can verify whether the label came from AstrBot Persona, AstrBot config, or fallback.
+- Monitor data includes `heartbeat_health`; stale or blocked tasks should show warning/bad status instead of merely "heartbeat enabled".
+- Custom API and credential registries can save entries; credentials are listed with masks and decrypted only inside the call tool.
 - Task and memory console can tick, toggle heartbeat, finish, and cancel.
 - Archive list shows completed or cancelled tasks.
-- Plugin and integration page separates AstrBot plugin isolation from external integration blueprints.
+- Plugin and integration page separates AstrBot plugin isolation from external integration blueprints, and globally disabled AstrBot plugins cannot be re-enabled from Agent Mode.
+- Blueprint fine settings are rendered from `settings_schema.properties` and saved under `module_settings`; advanced JSON remains available for complex fields.
 
 Local repository smoke test:
 
