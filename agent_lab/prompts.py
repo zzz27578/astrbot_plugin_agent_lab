@@ -10,6 +10,40 @@ def _lines_or_none(items: list[str]) -> str:
     return "\n".join(f"- {item}" for item in cleaned)
 
 
+def _workflow_text(spec: AgentSpec) -> str:
+    nodes = [item for item in spec.workflow_nodes if isinstance(item, dict)]
+    edges = [item for item in spec.workflow_edges if isinstance(item, dict)]
+    if not nodes:
+        return "- 未配置自定义工作流。按读取状态、计划、执行、写回、归档的默认顺序推进。"
+
+    node_lines = []
+    for node in nodes[:24]:
+        node_id = str(node.get("id") or "").strip() or "node"
+        title = str(node.get("title") or node_id).strip()
+        kind = str(node.get("kind") or "state").strip()
+        stage = str(node.get("stage") or "").strip() or "plan"
+        action = str(node.get("action") or "").strip() or "manual"
+        instruction = str(
+            node.get("instruction") or node.get("description") or ""
+        ).strip()
+        suffix = f": {instruction}" if instruction else ""
+        node_lines.append(f"- {node_id} [{stage}/{kind}/{action}] {title}{suffix}")
+
+    edge_lines = []
+    for edge in edges[:32]:
+        start = str(edge.get("from") or "").strip()
+        end = str(edge.get("to") or "").strip()
+        if start and end:
+            edge_lines.append(f"- {start} -> {end}")
+
+    return (
+        "节点：\n"
+        + "\n".join(node_lines)
+        + "\n连线：\n"
+        + ("\n".join(edge_lines) if edge_lines else "- 未配置连线")
+    )
+
+
 ENTRY_SUMMARY_SYSTEM = """你是 AstrBot Agent Lab 的入口摘要器。
 你的任务是把用户和 bot 在进入 Agent Mode 前商量出的计划压缩成可执行的 task_brief。
 只保留任务目标、约束、已确认计划、用户授权、风险、重要上下文和接续语气。
@@ -42,6 +76,9 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 - enabled_skills：
 {_lines_or_none(spec.enabled_skills)}
 
+[当前工作流]
+{_workflow_text(spec)}
+
 [自主触发决策]
 1. 先判断用户请求是否需要可持续任务状态。普通问答、闲聊、一次性解释不进入 Agent Mode。
 2. application_scope=global：把当前 AgentSpec 作为默认任务工作台，所有适合长任务的请求都按 trigger_mode 判断是否进入。
@@ -69,6 +106,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 5. 用户取消时立即停止，不得自行恢复。
 6. 心跳只是唤醒机制，不是记忆本身；只有长任务、等待型任务或用户要求时才建议启用。
 7. 审批是行为规范：在计划或工具调用前自己判断，不要等工具报错后才补请示。
+8. 工作流是任务推进路线图。每轮按节点指令选择下一步，但不得绕过 task_state、审批和工具白名单。
 """.strip()
 
 
@@ -118,6 +156,9 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 {_lines_or_none(spec.enabled_tools)}
 - enabled_skills:
 {_lines_or_none(spec.enabled_skills)}
+
+[Workflow]
+{_workflow_text(spec)}
 
 [Heartbeat Contract]
 如果这是心跳唤醒，第一步必须读取并相信 task_state；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。

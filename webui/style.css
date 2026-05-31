@@ -532,6 +532,72 @@ button.list-row {
   overflow: hidden;
 }
 
+.workflow-canvas-wrap {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(90deg, rgba(23, 32, 29, 0.045) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(23, 32, 29, 0.04) 1px, transparent 1px),
+    #fbfcfb;
+  background-size: 24px 24px;
+}
+
+.workflow-canvas {
+  position: relative;
+  min-width: 100%;
+}
+
+.workflow-lanes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.workflow-lane {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 220px;
+  padding: 12px 14px;
+  border-right: 1px solid rgba(170, 185, 180, 0.45);
+  color: var(--muted);
+}
+
+.workflow-lane strong,
+.workflow-lane span {
+  display: block;
+}
+
+.workflow-lane strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.workflow-lane span {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.workflow-links {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.workflow-links path {
+  fill: none;
+  stroke: rgba(49, 95, 143, 0.68);
+  stroke-width: 2;
+  marker-end: url("#workflow-arrow");
+}
+
+.workflow-links marker path {
+  fill: rgba(49, 95, 143, 0.78);
+}
+
 .workflow-board {
   display: grid;
   grid-template-columns: repeat(6, minmax(132px, 1fr));
@@ -679,6 +745,29 @@ button.list-row {
   cursor: pointer;
 }
 
+.flow-node {
+  position: absolute;
+  z-index: 2;
+  width: 190px;
+  min-height: 116px;
+  padding: 12px;
+  background: var(--panel);
+  touch-action: none;
+  user-select: none;
+}
+
+.flow-node:hover {
+  border-color: var(--line-strong);
+  box-shadow: 0 10px 24px rgba(30, 45, 41, 0.12);
+}
+
+.node .node-stage {
+  margin: 0 0 7px;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: none;
+}
+
 .node strong {
   display: block;
   margin-bottom: 8px;
@@ -696,6 +785,11 @@ button.list-row {
   margin-top: 10px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.node .node-stage {
+  margin: 0 0 7px;
+  font-size: 11px;
 }
 
 .small-empty {
@@ -718,6 +812,18 @@ button.list-row {
 
 .node[data-kind="tool"] {
   border-left: 5px solid var(--blue);
+}
+
+.node[data-kind="api"] {
+  border-left: 5px solid var(--blue);
+}
+
+.node[data-kind="human"] {
+  border-left: 5px solid var(--red);
+}
+
+.node[data-kind="memory"] {
+  border-left: 5px solid var(--green);
 }
 
 .capability-list {

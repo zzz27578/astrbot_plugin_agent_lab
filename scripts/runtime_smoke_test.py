@@ -205,6 +205,34 @@ async def main() -> None:
         )
         plugin._prepare_agent_spec_for_save(custom_named_spec)
         assert custom_named_spec.identity_label_source == "manual"
+        workflow_spec = plugin_main.AgentSpec(
+            name="工作流测试",
+            identity_label_source="manual",
+        )
+        workflow_spec.workflow_nodes = [
+            {
+                "id": "entry start!",
+                "title": "入口",
+                "kind": "unknown",
+                "stage": "weird",
+                "x": "12",
+                "y": "34",
+            },
+            {
+                "id": "call/api",
+                "title": "调用 API",
+                "kind": "api",
+                "stage": "execute",
+                "action": "call_api",
+            },
+        ]
+        workflow_spec.workflow_edges = [{"from": "entry start!", "to": "call/api"}]
+        plugin._prepare_agent_spec_for_save(workflow_spec)
+        assert workflow_spec.workflow_nodes[0]["id"] == "entry_start"
+        assert workflow_spec.workflow_nodes[0]["kind"] == "state"
+        assert workflow_spec.workflow_nodes[0]["stage"] == "entry"
+        assert workflow_spec.workflow_nodes[0]["x"] == 12
+        assert workflow_spec.workflow_edges == [{"from": "entry_start", "to": "callapi"}]
         plugin._refresh_summarizer_rules()
         assert plugin.summarizer.config["entry_summary_system_prompt"] == "入口摘要测试规则"
         assert plugin.summarizer.config["exit_summary_system_prompt"] == "出口归档测试规则"
@@ -272,6 +300,14 @@ async def main() -> None:
         assert task is not None
         assert task.root_goal == "runtime smoke goal"
         assert task.profile_snapshot["agent"]["name"] == "测试人格 Agent Mode"
+        assert task.profile_snapshot["agent"]["workflow_nodes"][0]["stage"] == "entry"
+        assert "工作流：" in task.current_summary
+        task_prompt = plugin_main.build_task_system_prompt(
+            plugin_main.AgentSpec.from_dict(task.profile_snapshot["agent"]),
+            task,
+        )
+        assert "[Workflow]" in task_prompt
+        assert "run_tools" in task_prompt
         assert plugin._task_payload(task)["heartbeat_health"]["state"] == "off"
 
         approval = await plugin.agent_lab_request_approval(

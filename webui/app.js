@@ -10,6 +10,29 @@ const DEFAULT_ENABLED_TOOLS = [
   "agent_lab_call_custom_api",
 ];
 
+const WORKFLOW_STAGES = [
+  ["entry", "入口", "压缩上下文"],
+  ["plan", "计划", "拆解任务"],
+  ["execute", "执行", "调用工具"],
+  ["guard", "闸门", "审批/人工"],
+  ["checkpoint", "快照", "写回状态"],
+  ["archive", "出口", "归档回流"],
+];
+
+const WORKFLOW_KINDS = ["state", "tool", "guard", "human", "api", "memory"];
+const WORKFLOW_ACTIONS = [
+  "summarize_entry",
+  "plan",
+  "run_tools",
+  "call_api",
+  "request_approval",
+  "wait_user",
+  "save_state",
+  "heartbeat",
+  "archive",
+  "manual",
+];
+
 const sections = [
   ["dashboard", "仪表盘与列表", "看大盘"],
   ["canvas", "可视化编排画布", "捏任务模式"],
@@ -31,6 +54,7 @@ let pluginFilter = "";
 let toolFilter = "";
 let blueprintFilter = "";
 let memoryFilter = "all";
+let workflowDrag = null;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -130,7 +154,29 @@ function workflowKindLabel(kind) {
     state: "状态",
     tool: "工具",
     guard: "闸门",
+    human: "人工",
+    api: "API",
+    memory: "记忆",
   }[kind] || kind;
+}
+
+function workflowStageLabel(stage) {
+  return Object.fromEntries(WORKFLOW_STAGES.map(([id, title]) => [id, title]))[stage] || "计划";
+}
+
+function workflowActionLabel(action) {
+  return {
+    summarize_entry: "入口摘要",
+    plan: "计划拆解",
+    run_tools: "工具执行",
+    call_api: "API 调用",
+    request_approval: "请求审批",
+    wait_user: "等待用户",
+    save_state: "写回状态",
+    heartbeat: "心跳续跑",
+    archive: "归档退出",
+    manual: "人工判断",
+  }[action] || action;
 }
 
 function labeledOptions(values, selected, labeler) {
@@ -273,13 +319,83 @@ function renderAndRestoreInput(action, value) {
 
 function defaultWorkflowNodes() {
   return [
-    { id: "entry", title: "入口压缩", kind: "state", description: "把任务前商量出的计划压缩为 task_brief，不重建当前运行时身份。" },
-    { id: "plan", title: "计划拆解", kind: "state", description: "把根目标拆成可验证的小步，并记录完成条件。" },
-    { id: "execute", title: "工具执行", kind: "tool", description: "只把 AgentSpec 选中的注册工具交给 AstrBot Agent Runner。" },
-    { id: "approval", title: "审批闸门", kind: "guard", description: "删除、部署、密钥、重启等危险动作前先软审批。" },
-    { id: "checkpoint", title: "状态快照", kind: "state", description: "active_task.json 与 markdown 是任务连续性的真实来源。" },
-    { id: "heartbeat", title: "心跳续跑", kind: "guard", description: "长任务由 cron 唤醒：读状态、推进一步、写状态。" },
-    { id: "archive", title: "出口归档", kind: "state", description: "完成或取消时生成出口摘要和可审查记忆候选。" },
+    {
+      id: "entry",
+      title: "入口压缩",
+      kind: "state",
+      stage: "entry",
+      action: "summarize_entry",
+      description: "进入任务模式前的上下文入口。",
+      instruction: "把任务前确认过的目标、约束、授权和上下文压缩成 task_brief。",
+      x: 40,
+      y: 160,
+    },
+    {
+      id: "plan",
+      title: "计划拆解",
+      kind: "state",
+      stage: "plan",
+      action: "plan",
+      description: "把目标拆成可验证的小步。",
+      instruction: "明确完成条件、当前优先级，并约束每轮只推进一个有限工作单元。",
+      x: 260,
+      y: 80,
+    },
+    {
+      id: "execute",
+      title: "工具执行",
+      kind: "tool",
+      stage: "execute",
+      action: "run_tools",
+      description: "调用白名单工具或自定义 API。",
+      instruction: "只使用 AgentSpec 已启用的工具，关键输出必须写回状态。",
+      x: 500,
+      y: 80,
+    },
+    {
+      id: "approval",
+      title: "审批闸门",
+      kind: "guard",
+      stage: "guard",
+      action: "request_approval",
+      description: "危险动作前请求用户确认。",
+      instruction: "删除、部署、密钥、重启、全局配置和破坏性数据库操作前必须先说明影响并等待审批。",
+      x: 500,
+      y: 300,
+    },
+    {
+      id: "checkpoint",
+      title: "状态快照",
+      kind: "state",
+      stage: "checkpoint",
+      action: "save_state",
+      description: "把本轮结果写入 task_state。",
+      instruction: "每轮结束写回 current_summary、progress、next_step、observation 和阻塞点。",
+      x: 740,
+      y: 160,
+    },
+    {
+      id: "heartbeat",
+      title: "心跳续跑",
+      kind: "guard",
+      stage: "guard",
+      action: "heartbeat",
+      description: "长任务定时唤醒。",
+      instruction: "心跳醒来先读 task_state，再推进一小步；同一阻塞重复三次则暂停求助。",
+      x: 960,
+      y: 300,
+    },
+    {
+      id: "archive",
+      title: "出口归档",
+      kind: "state",
+      stage: "archive",
+      action: "archive",
+      description: "完成或取消后归档。",
+      instruction: "结束时生成出口摘要和可回流长期记忆候选。",
+      x: 1180,
+      y: 160,
+    },
   ];
 }
 
@@ -295,6 +411,64 @@ function defaultWorkflowEdges() {
   ];
 }
 
+function workflowTemplate(id) {
+  if (id === "api_review") {
+    return {
+      nodes: [
+        { id: "entry", title: "入口压缩", kind: "state", stage: "entry", action: "summarize_entry", description: "整理目标与调用约束", instruction: "把用户目标、接口用途、参数边界和授权范围压缩成 task_brief。", x: 40, y: 160 },
+        { id: "plan", title: "调用计划", kind: "state", stage: "plan", action: "plan", description: "明确 API 调用方案", instruction: "确认要调用的注册 API、参数、风险级别和成功判定。", x: 270, y: 90 },
+        { id: "approval", title: "敏感审批", kind: "human", stage: "guard", action: "request_approval", description: "涉及外部写入或敏感数据时审批", instruction: "如果 API 会写入外部系统、发送消息、产生费用或读取敏感数据，先请求用户审批。", x: 500, y: 300 },
+        { id: "call_api", title: "调用 API", kind: "api", stage: "execute", action: "call_api", description: "执行已注册自定义 API", instruction: "使用 agent_lab_call_custom_api 调用已注册 API，隐藏凭证，只保留必要结果摘要。", x: 500, y: 90 },
+        { id: "review", title: "结果复核", kind: "state", stage: "checkpoint", action: "save_state", description: "检查结果并写回状态", instruction: "核对 API 返回是否满足完成条件；写回观察、进度和下一步。", x: 750, y: 160 },
+        { id: "archive", title: "出口归档", kind: "memory", stage: "archive", action: "archive", description: "沉淀可复用信息", instruction: "完成后只归档稳定有用的事实，避免保存密钥、一次性 token 或临时响应。", x: 980, y: 160 },
+      ],
+      edges: [
+        { from: "entry", to: "plan" },
+        { from: "plan", to: "approval" },
+        { from: "approval", to: "call_api" },
+        { from: "plan", to: "call_api" },
+        { from: "call_api", to: "review" },
+        { from: "review", to: "archive" },
+      ],
+    };
+  }
+  return { nodes: defaultWorkflowNodes(), edges: defaultWorkflowEdges() };
+}
+
+function applyWorkflowTemplate(id) {
+  const template = workflowTemplate(id);
+  currentAgent.workflow_nodes = clone(template.nodes);
+  currentAgent.workflow_edges = clone(template.edges);
+  selectedWorkflowNodeId = currentAgent.workflow_nodes[0]?.id || "";
+  setFeedback(id === "api_review" ? "已套用 API 审批流，保存后会进入任务运行协议。" : "已套用标准工作流，保存后会进入任务运行协议。");
+}
+
+function clamp(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, value));
+}
+
+function defaultWorkflowPosition(stage, index = 0) {
+  const stageIndex = Math.max(0, WORKFLOW_STAGES.findIndex(([id]) => id === stage));
+  return {
+    x: 40 + stageIndex * 220,
+    y: 80 + (index % 3) * 150,
+  };
+}
+
+function defaultWorkflowAction(node) {
+  const stage = String(node?.stage || "").trim();
+  const kind = String(node?.kind || "").trim();
+  if (stage === "entry") return "summarize_entry";
+  if (stage === "execute" && kind === "api") return "call_api";
+  if (stage === "execute") return "run_tools";
+  if (stage === "guard" && kind === "human") return "wait_user";
+  if (stage === "guard") return "request_approval";
+  if (stage === "checkpoint") return "save_state";
+  if (stage === "archive") return "archive";
+  return "plan";
+}
+
 function ensureWorkflow() {
   currentAgent = ensureAgent(currentAgent || {});
   if (!Array.isArray(currentAgent.workflow_nodes) || !currentAgent.workflow_nodes.length) {
@@ -306,8 +480,13 @@ function ensureWorkflow() {
   currentAgent.workflow_nodes = currentAgent.workflow_nodes.map((node, index) => ({
     id: String(node.id || `node_${index + 1}`).trim(),
     title: String(node.title || node.id || `节点 ${index + 1}`).trim(),
-    kind: String(node.kind || "state").trim(),
+    kind: WORKFLOW_KINDS.includes(String(node.kind || "").trim()) ? String(node.kind).trim() : "state",
+    stage: workflowStage(node),
+    action: String(node.action || defaultWorkflowAction(node)).trim() || "manual",
     description: String(node.description || "").trim(),
+    instruction: String(node.instruction || node.prompt || node.description || "").trim(),
+    x: clamp(Number(node.x ?? defaultWorkflowPosition(workflowStage(node), index).x), 0, 3000),
+    y: clamp(Number(node.y ?? defaultWorkflowPosition(workflowStage(node), index).y), 0, 1800),
   }));
   const ids = new Set(currentAgent.workflow_nodes.map((node) => node.id));
   currentAgent.workflow_edges = currentAgent.workflow_edges
@@ -618,15 +797,17 @@ function renderCanvas() {
         <div><p class="card-kicker">画布</p><h2>任务模式工作流</h2></div>
         <div class="inline-actions">
           <button class="button secondary" data-action="add-workflow-node" type="button">新增节点</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="linear" type="button">标准流程</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="api_review" type="button">API 审批流</button>
           <button class="button secondary" data-action="reset-workflow" type="button">恢复默认流程</button>
         </div>
       </div>
       <div class="workflow-layout">
         <div>
-          ${workflowBoard()}
-          ${workflowEdgeChips()}
+          ${workflowCanvas()}
         </div>
         <div class="workflow-side">
+          ${workflowSummaryPanel()}
           ${workflowInspector()}
           ${workflowEdgesPanel()}
         </div>
@@ -640,7 +821,7 @@ function renderCanvas() {
         <label class="span-2">每轮执行协议<textarea id="task-prompt" rows="5">${esc(currentAgent.task_prompt || "")}</textarea></label>
         <details class="advanced-json">
           <summary>高级：工作流 JSON 导入/导出</summary>
-          <textarea id="workflow-json" rows="8">${esc(JSON.stringify(workflowData(), null, 2))}</textarea>
+          <textarea id="workflow-json" rows="8" data-original="${esc(JSON.stringify(workflowData(), null, 2))}">${esc(JSON.stringify(workflowData(), null, 2))}</textarea>
         </details>
       </div>
       <div class="panel">
@@ -667,52 +848,98 @@ function workflowNodes() {
 }
 
 function workflowStage(item) {
+  const explicit = String(item.stage || "").trim();
+  if (WORKFLOW_STAGES.some(([stage]) => stage === explicit)) return explicit;
   const id = String(item.id || "").toLowerCase();
   const title = String(item.title || "").toLowerCase();
   if (id.includes("entry") || title.includes("入口")) return "entry";
   if (id.includes("plan") || title.includes("计划")) return "plan";
-  if (item.kind === "tool" || id.includes("execute") || title.includes("执行")) return "execute";
+  if (["tool", "api"].includes(item.kind) || id.includes("execute") || title.includes("执行")) return "execute";
   if (id.includes("checkpoint") || title.includes("快照")) return "checkpoint";
   if (id.includes("archive") || title.includes("归档")) return "archive";
-  if (item.kind === "guard" || id.includes("approval") || id.includes("heartbeat")) return "guard";
+  if (["guard", "human"].includes(item.kind) || id.includes("approval") || id.includes("heartbeat")) return "guard";
   return "plan";
 }
 
 function workflowBoard() {
   ensureWorkflow();
-  const stages = [
-    ["entry", "入口", "压缩上下文"],
-    ["plan", "计划", "拆解任务"],
-    ["execute", "执行", "调用工具"],
-    ["guard", "闸门", "审批/心跳"],
-    ["checkpoint", "快照", "写回状态"],
-    ["archive", "出口", "归档回流"],
-  ];
+  return workflowCanvas();
+}
+
+function workflowCanvasSize() {
+  ensureWorkflow();
+  const nodes = currentAgent.workflow_nodes || [];
+  const maxX = nodes.reduce((value, node) => Math.max(value, Number(node.x || 0)), 0);
+  const maxY = nodes.reduce((value, node) => Math.max(value, Number(node.y || 0)), 0);
+  return {
+    width: Math.max(1160, maxX + 230),
+    height: Math.max(560, maxY + 150),
+  };
+}
+
+function workflowCanvas() {
+  ensureWorkflow();
+  const size = workflowCanvasSize();
   return `
-    <div class="workflow-board">
-      ${stages.map(([stage, title, meta]) => {
-        const nodes = currentAgent.workflow_nodes.filter((item) => workflowStage(item) === stage);
-        return `
-          <div class="workflow-column" data-stage="${stage}">
-            <div class="workflow-stage"><strong>${esc(title)}</strong><span>${esc(meta)}</span></div>
-            <div class="workflow-stack">${nodes.map((item) => node(item)).join("") || `<div class="empty small-empty">暂无节点</div>`}</div>
-          </div>
-        `;
-      }).join("")}
+    <div class="workflow-canvas-wrap">
+      <div class="workflow-canvas" style="width:${size.width}px;height:${size.height}px">
+        <div class="workflow-lanes">
+          ${WORKFLOW_STAGES.map(([stage, title, meta], index) => `
+            <div class="workflow-lane" data-stage="${stage}" style="left:${index * 220}px">
+              <strong>${esc(title)}</strong>
+              <span>${esc(meta)}</span>
+            </div>
+          `).join("")}
+        </div>
+        <svg class="workflow-links" width="${size.width}" height="${size.height}" viewBox="0 0 ${size.width} ${size.height}" aria-hidden="true">
+          ${workflowLinksSvg()}
+        </svg>
+        ${currentAgent.workflow_nodes.map((item) => node(item)).join("")}
+      </div>
     </div>
   `;
 }
 
-function workflowEdgeChips() {
+function workflowLinksSvg() {
   ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
+  const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
+  const paths = edges.map((edge) => {
+    const from = nodes.get(edge.from);
+    const to = nodes.get(edge.to);
+    if (!from || !to) return "";
+    const x1 = Number(from.x || 0) + 190;
+    const y1 = Number(from.y || 0) + 58;
+    const x2 = Number(to.x || 0);
+    const y2 = Number(to.y || 0) + 58;
+    const bend = Math.max(70, Math.abs(x2 - x1) * 0.45);
+    const d = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+    return `<path d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}"></path>`;
+  }).join("");
   return `
-    <div class="edge-chips">
-      ${edges.map((edge, index) => `
-        <span class="edge-chip" title="连线 ${index + 1}">
-          ${esc(edge.from)} <b>→</b> ${esc(edge.to)}
-        </span>
-      `).join("") || `<span class="edge-chip muted">尚未配置连线</span>`}
+    <defs>
+      <marker id="workflow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z"></path>
+      </marker>
+    </defs>
+    ${paths}
+  `;
+}
+
+function workflowSummaryPanel() {
+  ensureWorkflow();
+  const nodeCount = currentAgent.workflow_nodes.length;
+  const edgeCount = currentAgent.workflow_edges.length;
+  const selected = selectedWorkflowNode();
+  return `
+    <div class="detail-box workflow-summary">
+      <div class="panel-head"><div><p class="card-kicker">运行框架</p><h3>${nodeCount} 节点 · ${edgeCount} 连线</h3></div></div>
+      <div class="mini-stats">
+        <span>${esc(workflowStageLabel(selected?.stage || "plan"))}</span>
+        <span>${esc(workflowKindLabel(selected?.kind || "state"))}</span>
+        <span>${esc(workflowActionLabel(selected?.action || "manual"))}</span>
+        <span>${edgeCount ? "可运行" : "待连线"}</span>
+      </div>
     </div>
   `;
 }
@@ -727,9 +954,10 @@ function edgeText() {
 function node(item) {
   const selected = item.id === selectedWorkflowNodeId;
   return `
-    <button class="node ${selected ? "selected" : ""}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" type="button">
+    <button class="node flow-node ${selected ? "selected" : ""}" style="left:${Number(item.x || 0)}px;top:${Number(item.y || 0)}px" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" type="button">
+      <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
       <strong>${esc(item.title || item.id)}</strong>
-      <p>${esc(item.description || item.id)}</p>
+      <p>${esc(item.instruction || item.description || item.id)}</p>
       <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}</span>
     </button>
   `;
@@ -748,8 +976,15 @@ function workflowInspector() {
       <div class="panel-head"><div><p class="card-kicker">节点</p><h3>编辑节点</h3></div></div>
       <label>节点 ID<input id="workflow-node-id" value="${esc(item.id)}" /></label>
       <label>标题<input id="workflow-node-title" value="${esc(item.title)}" /></label>
-      <label>类型<select id="workflow-node-kind">${labeledOptions(["state", "tool", "guard"], item.kind || "state", workflowKindLabel)}</select></label>
-      <label>说明<textarea id="workflow-node-description" rows="4">${esc(item.description || "")}</textarea></label>
+      <div class="form-grid compact">
+        <label>阶段<select id="workflow-node-stage">${labeledOptions(WORKFLOW_STAGES.map(([id]) => id), item.stage || "plan", workflowStageLabel)}</select></label>
+        <label>类型<select id="workflow-node-kind">${labeledOptions(WORKFLOW_KINDS, item.kind || "state", workflowKindLabel)}</select></label>
+        <label>动作<select id="workflow-node-action">${labeledOptions(WORKFLOW_ACTIONS, item.action || "manual", workflowActionLabel)}</select></label>
+        <label>位置 X<input id="workflow-node-x" type="number" min="0" value="${esc(item.x || 0)}" /></label>
+        <label>位置 Y<input id="workflow-node-y" type="number" min="0" value="${esc(item.y || 0)}" /></label>
+      </div>
+      <label>说明<input id="workflow-node-description" value="${esc(item.description || "")}" /></label>
+      <label>执行指令<textarea id="workflow-node-instruction" rows="5">${esc(item.instruction || "")}</textarea></label>
       <div class="button-row">
         <button class="button" data-action="apply-workflow-node" type="button">应用节点</button>
         <button class="button danger" data-action="delete-workflow-node" type="button">删除节点</button>
@@ -831,8 +1066,9 @@ function readAgentForm() {
   currentAgent.heartbeat_policy.cron_expression = $("heartbeat-cron").value.trim() || "*/5 * * * *";
   currentAgent.system_prompt = $("system-prompt").value;
   currentAgent.task_prompt = $("task-prompt").value;
-  if ($("workflow-json")) {
-    const workflow = JSON.parse($("workflow-json").value || "{}");
+  const workflowJson = $("workflow-json");
+  if (workflowJson && workflowJson.value.trim() !== (workflowJson.dataset.original || "").trim()) {
+    const workflow = JSON.parse(workflowJson.value || "{}");
     currentAgent.workflow_nodes = Array.isArray(workflow.nodes) ? workflow.nodes : currentAgent.workflow_nodes;
     currentAgent.workflow_edges = Array.isArray(workflow.edges) ? workflow.edges : currentAgent.workflow_edges;
     ensureWorkflow();
@@ -1195,7 +1431,7 @@ function toolsPanel() {
     const row = `
       <div class="toggle-row ${disabled ? "disabled" : ""}">
         <input type="checkbox" data-action="toggle-tool" data-id="${esc(tool.name)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
-        <span><strong>${esc(tool.name)}</strong><br /><small>${esc(tool.plugin_display_name || tool.source)} · ${esc(tool.description || "无描述")}</small></span>
+        <span><strong>${esc(tool.name)}</strong><br /><small>${esc(tool.plugin_display_name || tool.source || "注册工具")}</small></span>
         <span class="tool-controls">
           ${badge(riskLabel(risk), riskTone(risk))}
           ${badge(disabled ? "随插件关闭" : checked ? "已选择" : "未选择", disabled ? "bad" : checked ? "ok" : "")}
@@ -1229,7 +1465,7 @@ function toolsPanel() {
   `;
   return `
     <div class="section-note">
-      注册工具来自 AstrBot 内部工具管理器。来源插件在 AstrBot 全局停用或在 Agent Mode 中关闭时，本组工具会同步关闭；保存后后端构建 ToolSet 时也会再次过滤。
+      工具按来源插件分组；保存后会进入任务运行白名单。
     </div>
     <section class="grid two">
       <div>
@@ -1261,7 +1497,7 @@ function skillsPanel() {
     <section class="grid two">
       <div class="panel-lite">
         <div class="panel-head"><div><p class="card-kicker">规则</p><h3>任务模式 Skills 规则</h3></div></div>
-        <div class="section-note">这里编辑的是任务模式行为规则和进出摘要规则，会保存到 plugin_data/registry/skill_rules.json，并同步追加到 agent-mode Skill。入口/出口摘要会直接影响进出任务模式时的压缩与归档。</div>
+        <div class="section-note">规则会影响进入、执行与归档。</div>
         <label>agent-mode 行为规则<textarea id="skill-rule-content" rows="8" placeholder="写入任务模式的触发、审批、记忆过滤、工具边界等补充规则。">${esc(agentModeRule.content || "")}</textarea></label>
         <label>入口摘要规则<textarea id="entry-summary-rule-content" rows="7" placeholder="定义进入任务模式时如何把当前上下文压缩成 task_brief。">${esc(entryRule.content || "")}</textarea></label>
         <label>出口归档规则<textarea id="exit-summary-rule-content" rows="7" placeholder="定义退出任务模式时如何归档总结，以及哪些记忆候选可以回流。">${esc(exitRule.content || "")}</textarea></label>
@@ -1270,7 +1506,7 @@ function skillsPanel() {
       <div class="capability-list">${(state.skills || []).map((skill) => `
         <label class="toggle-row">
           <input type="checkbox" data-action="toggle-skill" data-id="${esc(skill.name)}" ${selected.has(skill.name) ? "checked" : ""} />
-          <span><strong>${esc(skill.name)}</strong><br /><small>${esc(skill.description || skill.path || "AstrBot Skill")}</small></span>
+          <span><strong>${esc(skill.name)}</strong><br /><small>${esc(skill.path || "AstrBot Skill")}</small></span>
           ${badge(skill.active ? "已安装" : "未激活", skill.active ? "ok" : "warn")}
         </label>
       `).join("") || `<div class="empty">未读取到 Skills。</div>`}</div>
@@ -1461,7 +1697,7 @@ function blueprintsPanel() {
   `).join("");
   return `
     <div class="section-note">
-      外部方案蓝图不是 AstrBot 插件，也不是会立刻执行的工具。它是一组可开关、可配置的运行规则：把 LangGraph、OpenAI Agents、CrewAI 等方案的好用概念翻译成 Agent Lab 的 TaskState、审批、心跳、记忆和工作流约束。真正的可调用能力仍在“注册工具”和“自定义 API”里管理。
+      蓝图是可开关的运行规则；真正调用能力在注册工具和自定义 API 里管理。
     </div>
     <section class="grid two">
       <div>
@@ -1523,6 +1759,7 @@ async function saveAgent(makeDefault = false) {
   selectedAgentId = result.agent?.agent_id || selectedAgentId;
   setFeedback("任务模式配置已保存。");
   await load();
+  return result.agent;
 }
 
 function toggleListValue(listName, value) {
@@ -1554,6 +1791,70 @@ function removeToolsForPlugin(pluginName) {
   const kept = materializedToolSelection().filter((name) => !blocked.has(name));
   currentAgent.enabled_tools = kept.length ? Array.from(new Set(kept)).sort() : [EMPTY_TOOLS_SENTINEL];
 }
+
+function workflowNodeById(id) {
+  ensureWorkflow();
+  return currentAgent.workflow_nodes.find((item) => item.id === id);
+}
+
+function refreshWorkflowCanvasDom() {
+  const svg = document.querySelector(".workflow-links");
+  if (!svg) return;
+  const size = workflowCanvasSize();
+  const canvas = document.querySelector(".workflow-canvas");
+  if (canvas) {
+    canvas.style.width = `${size.width}px`;
+    canvas.style.height = `${size.height}px`;
+  }
+  svg.setAttribute("width", String(size.width));
+  svg.setAttribute("height", String(size.height));
+  svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
+  svg.innerHTML = workflowLinksSvg();
+}
+
+document.addEventListener("pointerdown", (event) => {
+  const nodeEl = event.target.closest(".flow-node");
+  if (!nodeEl || !document.querySelector(".workflow-canvas")?.contains(nodeEl)) return;
+  const item = workflowNodeById(nodeEl.dataset.id);
+  if (!item) return;
+  selectedWorkflowNodeId = item.id;
+  document.querySelectorAll(".flow-node.selected").forEach((node) => node.classList.remove("selected"));
+  nodeEl.classList.add("selected");
+  workflowDrag = {
+    id: item.id,
+    element: nodeEl,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    baseX: Number(item.x || 0),
+    baseY: Number(item.y || 0),
+    moved: false,
+  };
+  nodeEl.setPointerCapture?.(event.pointerId);
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
+  const item = workflowNodeById(workflowDrag.id);
+  if (!item) return;
+  const dx = event.clientX - workflowDrag.startX;
+  const dy = event.clientY - workflowDrag.startY;
+  workflowDrag.moved ||= Math.abs(dx) + Math.abs(dy) > 3;
+  item.x = clamp(workflowDrag.baseX + dx, 0, 3000);
+  item.y = clamp(workflowDrag.baseY + dy, 0, 1800);
+  workflowDrag.element.style.left = `${item.x}px`;
+  workflowDrag.element.style.top = `${item.y}px`;
+  refreshWorkflowCanvasDom();
+});
+
+document.addEventListener("pointerup", (event) => {
+  if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
+  workflowDrag.element.releasePointerCapture?.(event.pointerId);
+  if (workflowDrag.moved) {
+    setFeedback("节点位置已更新，保存配置后生效。");
+  }
+  workflowDrag = null;
+});
 
 document.addEventListener("click", async (event) => {
   const target = event.target.closest("[data-route], [data-action]");
@@ -1610,13 +1911,24 @@ document.addEventListener("click", async (event) => {
       readAgentForm();
       ensureWorkflow();
       const id = uniqueWorkflowNodeId("step");
+      const pos = defaultWorkflowPosition("plan", currentAgent.workflow_nodes.length);
       currentAgent.workflow_nodes.push({
         id,
-        title: "新步骤",
+        title: "新节点",
         kind: "state",
-        description: "描述这个步骤在任务模式中的作用。",
+        stage: "plan",
+        action: "manual",
+        description: "自定义流程节点",
+        instruction: "写清楚这个节点何时执行、要产出什么、如何写回任务状态。",
+        x: pos.x,
+        y: pos.y,
       });
       selectedWorkflowNodeId = id;
+      render();
+    }
+    if (action === "apply-workflow-template") {
+      readAgentForm();
+      applyWorkflowTemplate(target.dataset.id || "linear");
       render();
     }
     if (action === "reset-workflow") {
@@ -1636,7 +1948,12 @@ document.addEventListener("click", async (event) => {
       node.id = newId;
       node.title = $("workflow-node-title").value.trim() || newId;
       node.kind = $("workflow-node-kind").value;
+      node.stage = $("workflow-node-stage").value;
+      node.action = $("workflow-node-action").value;
       node.description = $("workflow-node-description").value.trim();
+      node.instruction = $("workflow-node-instruction").value.trim();
+      node.x = clamp(Number($("workflow-node-x").value || node.x || 0), 0, 3000);
+      node.y = clamp(Number($("workflow-node-y").value || node.y || 0), 0, 1800);
       currentAgent.workflow_edges = currentAgent.workflow_edges.map((edge) => ({
         from: edge.from === oldId ? newId : edge.from,
         to: edge.to === oldId ? newId : edge.to,
@@ -1681,10 +1998,8 @@ document.addEventListener("click", async (event) => {
         heartbeat: $("canvas-start-heartbeat")?.checked || false,
         risk_level: $("canvas-risk-level")?.value || "work",
       };
-      if (!currentAgent.agent_id) {
-        await saveAgent(false);
-      }
-      payload.agent_id = currentAgent.agent_id || selectedAgentId;
+      const savedAgent = await saveAgent(false);
+      payload.agent_id = savedAgent?.agent_id || selectedAgentId;
       await api("/api/task/start", { method: "POST", body: payload });
       setFeedback("已进入任务模式。");
       route = "tasks";

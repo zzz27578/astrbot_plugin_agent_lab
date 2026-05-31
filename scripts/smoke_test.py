@@ -115,6 +115,9 @@ def main() -> None:
         assert isinstance(spec.module_settings, dict)
         assert spec.workflow_nodes
         assert spec.workflow_edges
+        assert {"stage", "action", "instruction", "x", "y"}.issubset(
+            spec.workflow_nodes[0]
+        )
         assert store.default_agent_id() == spec.agent_id
 
         credential = store.save_credential(

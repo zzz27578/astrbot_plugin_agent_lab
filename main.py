@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import asyncio
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -560,6 +561,7 @@ class AgentLabPlugin(Star):
         spec = self.storage.get_agent(agent_id or None)
         if not spec.enabled:
             return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用后再进入 Agent Mode。"
+        self._normalize_agent_workflow(spec)
         runtime_identity = await self._current_bot_identity_for_event(event)
         effective_agent_name = (
             self._agent_name_from_label(runtime_identity["label"])
@@ -587,7 +589,10 @@ class AgentLabPlugin(Star):
             or ["用户验收通过"],
             task_brief=entry_summary,
             entry_summary=entry_summary,
-            current_summary=f"任务由 {source} 创建，风险级别：{risk_level}。",
+            current_summary=(
+                f"任务由 {source} 创建，风险级别：{risk_level}。"
+                f"工作流：{len(spec.workflow_nodes)} 个节点 / {len(spec.workflow_edges)} 条连线。"
+            ),
             next_step="根据入口摘要制定第一轮执行计划，并推进一个有限工作单元。",
             profile_snapshot={
                 "agent": profile_agent,
@@ -1569,6 +1574,7 @@ class AgentLabPlugin(Star):
     ) -> None:
         self._normalize_agent_identity_for_save(spec, previous_spec)
         self._normalize_agent_entry_settings(spec)
+        self._normalize_agent_workflow(spec)
         self._upgrade_default_agent_tools(spec)
         self._sanitize_agent_enabled_tools(spec)
 
@@ -1578,6 +1584,117 @@ class AgentLabPlugin(Star):
         spec.application_scope = scope if scope in {"entry", "global"} else "entry"
         channel = str(getattr(spec, "entry_channel", "") or "command").strip()
         spec.entry_channel = channel if channel in {"command", "natural", "webui"} else "command"
+
+    @classmethod
+    def _normalize_agent_workflow(cls, spec: AgentSpec) -> None:
+        raw_nodes = spec.workflow_nodes if isinstance(spec.workflow_nodes, list) else []
+        if not raw_nodes:
+            raw_nodes = AgentSpec().workflow_nodes
+
+        used_ids: set[str] = set()
+        id_map: dict[str, str] = {}
+        nodes: list[dict[str, Any]] = []
+        for index, raw_node in enumerate(raw_nodes):
+            if not isinstance(raw_node, dict):
+                raw_node = {}
+            old_id = str(raw_node.get("id") or "").strip()
+            node_id = cls._unique_workflow_id(
+                cls._normalize_workflow_id(old_id or f"node_{index + 1}"),
+                used_ids,
+            )
+            if old_id:
+                id_map[old_id] = node_id
+            used_ids.add(node_id)
+            title = str(raw_node.get("title") or node_id).strip() or node_id
+            kind = str(raw_node.get("kind") or "state").strip()
+            if kind not in {"state", "tool", "guard", "human", "api", "memory"}:
+                kind = "state"
+            stage = cls._workflow_stage(raw_node, kind)
+            action = str(raw_node.get("action") or "manual").strip() or "manual"
+            description = str(raw_node.get("description") or "").strip()
+            instruction = str(
+                raw_node.get("instruction") or description or title
+            ).strip()
+            normalized = {str(key): value for key, value in raw_node.items()}
+            normalized.update(
+                {
+                    "id": node_id,
+                    "title": title[:80],
+                    "kind": kind,
+                    "stage": stage,
+                    "action": action[:80],
+                    "description": description[:500],
+                    "instruction": instruction[:1000],
+                    "x": cls._clamp_int(raw_node.get("x"), 0, 3000, 40 + index * 220),
+                    "y": cls._clamp_int(raw_node.get("y"), 0, 1800, 120),
+                }
+            )
+            nodes.append(normalized)
+
+        edges: list[dict[str, str]] = []
+        seen_edges: set[tuple[str, str]] = set()
+        for raw_edge in spec.workflow_edges if isinstance(spec.workflow_edges, list) else []:
+            if not isinstance(raw_edge, dict):
+                continue
+            start = id_map.get(str(raw_edge.get("from") or "").strip(), str(raw_edge.get("from") or "").strip())
+            end = id_map.get(str(raw_edge.get("to") or "").strip(), str(raw_edge.get("to") or "").strip())
+            if start not in used_ids or end not in used_ids or start == end:
+                continue
+            key = (start, end)
+            if key in seen_edges:
+                continue
+            seen_edges.add(key)
+            edges.append({"from": start, "to": end})
+        if not edges and len(nodes) > 1:
+            edges = [
+                {"from": nodes[index]["id"], "to": nodes[index + 1]["id"]}
+                for index in range(len(nodes) - 1)
+            ]
+
+        spec.workflow_nodes = nodes
+        spec.workflow_edges = edges
+
+    @staticmethod
+    def _normalize_workflow_id(value: str) -> str:
+        value = re.sub(r"\s+", "_", str(value or "").strip())
+        value = re.sub(r"[^A-Za-z0-9_-]", "", value)
+        return value[:64] or "node"
+
+    @classmethod
+    def _unique_workflow_id(cls, value: str, used_ids: set[str]) -> str:
+        root = cls._normalize_workflow_id(value)
+        if root not in used_ids:
+            return root
+        index = 2
+        while f"{root}_{index}" in used_ids:
+            index += 1
+        return f"{root}_{index}"
+
+    @staticmethod
+    def _workflow_stage(node: dict[str, Any], kind: str) -> str:
+        stage = str(node.get("stage") or "").strip()
+        if stage in {"entry", "plan", "execute", "guard", "checkpoint", "archive"}:
+            return stage
+        text = f"{node.get('id') or ''} {node.get('title') or ''}".lower()
+        if "entry" in text or "入口" in text:
+            return "entry"
+        if "checkpoint" in text or "快照" in text or "状态" in text:
+            return "checkpoint"
+        if "archive" in text or "归档" in text or "出口" in text:
+            return "archive"
+        if kind in {"tool", "api"} or "execute" in text or "执行" in text:
+            return "execute"
+        if kind in {"guard", "human"} or "approval" in text or "heartbeat" in text:
+            return "guard"
+        return "plan"
+
+    @staticmethod
+    def _clamp_int(value: Any, low: int, high: int, default: int) -> int:
+        try:
+            number = int(float(value))
+        except Exception:
+            number = default
+        return max(low, min(high, number))
 
     def _normalize_agent_identity_for_save(
         self, spec: AgentSpec, previous_spec: AgentSpec | None = None
