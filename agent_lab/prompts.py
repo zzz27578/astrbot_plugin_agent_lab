@@ -200,6 +200,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 - agent_lab_advance_workflow：记录当前工作流节点结果并推进到下一节点；多分支、并行分支、审批/校验节点必须用它留下节点轨迹。
 - agent_lab_read_task_memory：读取已归档任务记忆，普通模式也可以按标签/关键词查询。
 - agent_lab_update_workflow：检查、增删改工作流节点和连线；当用户要求调整入口、审批、API、插件/工具/skill 模块、并行分支、节点提示词或记忆环节时使用。
+- agent_lab_run_parallel_workflow：运行画布中的 parallel_branch 后续工作包；API 节点走已注册 API，提示词/插件/工具节点走受限子工作包，结果写回 task_state。
 - agent_lab_tick：推进当前任务一轮。
 - agent_lab_request_approval：危险操作前请求审批。
 - agent_lab_set_heartbeat：为长任务开启或关闭心跳。
@@ -217,6 +218,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 9. 记忆必须分层：普通聊天记忆只在入口压缩后进入任务；任务过程中的时间线、关键改动和成果写入 task_state/任务记忆；出口摘要只回流稳定事实。
 10. 调整工作流不是换 bot 身份；只是在当前 AstrBot 身份下改变任务模式的入口、模块、校验、记忆和出口规则。修改后先检查工作流，再继续任务。
 11. 工作流模块必须尊重隔离和白名单：插件模块不能复活全局停用插件，API 模块只能调用已注册 API，工具模块必须在 AgentSpec 允许范围内。
+12. 遇到 action=parallel_branch 的节点，优先使用 agent_lab_run_parallel_workflow 执行可并行后续工作包；子工作包不能直接结束任务，必须由主 Agent 合并、校验、写回和归档。
 """.strip()
 
 
@@ -288,6 +290,9 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 
 [Workflow Cursor Contract]
 每轮至少在完成一个工作流节点或选择分支时调用 agent_lab_advance_workflow，记录 node_id、outcome、next_node_id 和选择原因。多分支节点不能靠猜测自动前进；必须说明选择哪条连线。工作流游标是审计轨迹，不替代 task_state。
+
+[Parallel Workflow Contract]
+如果当前节点 action=parallel_branch，且后续节点是互不依赖的 API、提示词、插件或工具工作包，可以调用 agent_lab_run_parallel_workflow。该工具会受限并发运行后续工作包，并把 parallel_runs、workflow_events、last_observation 写回 task_state。并行结果只是证据层，仍需主 Agent 在汇总节点做冲突合并、验收和下一步决策。
 
 {modules_prompt}
 """.strip()

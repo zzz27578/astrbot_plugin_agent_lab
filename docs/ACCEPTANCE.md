@@ -40,6 +40,7 @@ WebUI 预期：
 - Canvas node library groups entry, isolation, memory, planning, parallel, tool, API, safety, validation, and exit modules so common task-mode blocks do not require hand-written JSON.
 - Canvas toolbox can add AstrBot plugin, custom API, and whitelisted tool modules as workflow nodes, and node inspector can edit instruction, condition, and node prompt without exposing X/Y coordinate fields.
 - Workflow check reports missing entry/archive, entry summary, isolation snapshot, task memory, unreachable nodes, invalid API refs, isolated plugins, and tools outside whitelist.
+- Parallel branch nodes can be executed by `agent_lab_run_parallel_workflow`; API workers call registered Custom APIs, prompt/plugin/tool workers run through a restricted AstrBot `tool_loop_agent`, and task details show the resulting worker statuses.
 - Dashboard Agent rows show per-configuration health, active count, trigger count, token total, and pending approval count.
 - Shows active tasks and archives.
 - Task/Memory console can select both active and archived tasks and show structured state fields, pending approvals, and snapshot timeline.
@@ -91,6 +92,7 @@ Expected:
 - `sessions/<umo_hash>/task_<id>.json` exists after start.
 - `sessions/<umo_hash>/task_<id>.md` contains progress log.
 - `task_<id>.json` contains `workflow_current_node_id`, `workflow_path`, and `workflow_events`; markdown contains `Workflow Cursor`.
+- When a parallel workflow runs, `task_<id>.json` contains `parallel_runs`, the cursor advances to the merge node when one is found, and markdown contains `Parallel Workflow Runs`.
 - `archives/<umo_hash>/task_<id>.md` exists after finish.
 
 ## Heartbeat Checks
@@ -230,6 +232,22 @@ Expected:
 - Task prompt lists registered Custom API api_id/name/description without secret values.
 - `agent_lab_call_custom_api` can call only a registered API.
 - Tool result never echoes the stored credential.
+
+## Parallel Workflow Runtime Checks
+
+Create a workflow with:
+
+```text
+parallel_branch -> api worker / prompt worker / tool worker -> merge
+```
+
+Expected:
+
+- `agent_lab_run_parallel_workflow` returns all worker results with `ok=true` when every worker succeeds.
+- API worker uses the registered API credential injection path and does not expose the secret in the result.
+- Prompt/plugin/tool workers receive only the tools allowed by the selected AgentSpec and isolation policy.
+- Active task detail shows the latest parallel run, worker status, and merge node.
+- Task markdown records `Parallel Workflow Runs`.
 
 ## 已知边界
 

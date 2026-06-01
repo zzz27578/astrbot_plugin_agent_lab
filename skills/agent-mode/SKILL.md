@@ -44,6 +44,7 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 - `agent_lab_advance_workflow`：记录当前工作流节点结果并推进到下一节点；多分支、并行分支、审批/校验节点必须用它留下轨迹。
 - `agent_lab_read_task_memory`：读取已归档并暴露的任务记忆；普通模式也可以按标签或关键词查询续写上下文。
 - `agent_lab_update_workflow`：检查、增删改工作流节点和连线；适合用户要求改入口、审批、API、插件模块、工具模块、并行分支、节点提示词、记忆或出口规则时使用。
+- `agent_lab_run_parallel_workflow`：运行画布中 `parallel_branch` 后续工作包；API 节点调用已注册 API，提示词/插件/工具节点以受限工作包执行，结果写入 task_state。
 - `agent_lab_tick`：推进当前任务一轮。
 - `agent_lab_request_approval`：危险操作前请求审批。
 - `agent_lab_set_heartbeat`：为长任务开启/关闭心跳。
@@ -62,6 +63,7 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 7. 任务过程中的时间线和成果属于任务记忆，不直接污染普通聊天记忆；退出时再生成可回流的候选。
 8. 修改工作流后先用 `agent_lab_update_workflow operation=check` 检查入口、出口、入口摘要、隔离快照、任务记忆、审批/人工闸门、不可达节点和模块引用；工作流改变任务模式规则，不改变 bot 身份。
 9. 插件、API、工具、skill 都只是任务模式模块：绑定时写清 `ref_type/ref_id`，必要时补 `prompt`、`condition` 或 `parallel_group`，不要绕过 AgentSpec 的隔离和白名单。
+10. 遇到 `parallel_branch` 节点时，优先用 `agent_lab_run_parallel_workflow` 执行后续可并行工作包。子工作包只能产出证据、结论、风险和合并字段，不能直接完成或退出任务。
 
 ## 审批规则
 

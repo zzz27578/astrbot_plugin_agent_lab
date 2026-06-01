@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -14,6 +15,11 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_PARENT = ROOT.parent
 if str(PACKAGE_PARENT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_PARENT))
+
+
+def debug(message: str) -> None:
+    if os.environ.get("AGENT_LAB_SMOKE_DEBUG"):
+        print(f"[runtime_smoke] {message}", flush=True)
 
 
 class FakeCronManager:
@@ -170,7 +176,9 @@ class FakeGuard:
 
 async def main() -> None:
     try:
+        debug("import plugin main")
         plugin_main = importlib.import_module(f"{ROOT.name}.main")
+        debug("plugin main imported")
     except ModuleNotFoundError as exc:
         if exc.name and exc.name.startswith("astrbot"):
             print("runtime smoke skipped: AstrBot SDK/source is not importable")
@@ -178,6 +186,7 @@ async def main() -> None:
         raise
 
     with TemporaryDirectory() as tmp:
+        debug("first runtime fixture")
         plugin_main.StarTools.get_data_dir = staticmethod(
             lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
         )
@@ -320,6 +329,7 @@ async def main() -> None:
             source="runtime_smoke",
             risk_level="work",
         )
+        debug("task started")
         assert "已进入 Agent Mode" in start
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
@@ -453,6 +463,7 @@ async def main() -> None:
             query_json='{"q":"smoke"}',
             body_json='{"hello":"world"}',
         )
+        debug("custom api tool checked")
         assert '"pong"' in api_result
         assert "runtime-secret" not in api_result
         assert api_call["headers"]["X-Test-Key"] == "runtime-secret"
@@ -462,7 +473,193 @@ async def main() -> None:
         assert task is not None
         assert any(item.get("kind") == "custom_api" for item in task.progress_log)
 
+        parallel_api_calls = []
+
+        def fake_parallel_custom_api_call(method, url, query, body, headers, timeout_seconds):
+            parallel_api_calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "query": query,
+                    "body": body,
+                    "headers": headers,
+                    "timeout_seconds": timeout_seconds,
+                }
+            )
+            return {
+                "ok": True,
+                "status": 200,
+                "body": {
+                    "worker": "api_worker",
+                    "query": query,
+                    "body": body,
+                },
+            }
+
+        tool_loop_calls = []
+
+        async def fake_parallel_worker(**kwargs):
+            tools = kwargs.get("tools")
+            tool_names = [
+                str(getattr(tool, "name", "") or "")
+                for tool in getattr(tools, "tools", [])
+            ]
+            prompt = str(kwargs.get("prompt") or "")
+            tool_loop_calls.append(
+                {
+                    "prompt": prompt,
+                    "tool_names": tool_names,
+                    "system_prompt": str(kwargs.get("system_prompt") or ""),
+                }
+            )
+            if "tool_worker" in prompt:
+                assert tool_names == ["safe_registered_tool"]
+                return SimpleNamespace(
+                    completion_text="tool_worker completed with safe_registered_tool",
+                    usage=SimpleNamespace(input_other=1, input_cached=0, output=2, total=3),
+                )
+            assert tool_names == []
+            return SimpleNamespace(
+                completion_text="prompt_worker completed with isolated prompt",
+                usage=SimpleNamespace(input_other=1, input_cached=0, output=1, total=2),
+            )
+
+        task.profile_snapshot["agent"]["enabled_tools"] = [
+            "safe_registered_tool",
+            "agent_lab_call_custom_api",
+            "agent_lab_run_parallel_workflow",
+        ]
+        task.profile_snapshot["agent"].setdefault("plugin_overrides", {})["safe_plugin"] = True
+        task.profile_snapshot["agent"]["workflow_nodes"] = [
+            {
+                "id": "entry",
+                "title": "Entry",
+                "kind": "state",
+                "stage": "entry",
+                "action": "summarize_entry",
+                "instruction": "entry",
+            },
+            {
+                "id": "parallel_branch",
+                "title": "Parallel Branch",
+                "kind": "branch",
+                "stage": "plan",
+                "action": "parallel_branch",
+                "instruction": "split independent workers",
+            },
+            {
+                "id": "api_worker",
+                "title": "API Worker",
+                "kind": "api",
+                "stage": "execute",
+                "action": "call_api",
+                "instruction": "call registered API",
+                "ref_type": "api",
+                "ref_id": api_spec["api_id"],
+                "api_id": api_spec["api_id"],
+                "parallel_group": "runtime_smoke",
+            },
+            {
+                "id": "prompt_worker",
+                "title": "Prompt Worker",
+                "kind": "subflow",
+                "stage": "execute",
+                "action": "manual",
+                "instruction": "run prompt-only worker",
+                "prompt": "prompt_worker should return a concise structured result",
+                "parallel_group": "runtime_smoke",
+            },
+            {
+                "id": "tool_worker",
+                "title": "Tool Worker",
+                "kind": "tool",
+                "stage": "execute",
+                "action": "run_tools",
+                "instruction": "run whitelisted tool worker",
+                "ref_type": "tool",
+                "ref_id": "safe_registered_tool",
+                "tool_name": "safe_registered_tool",
+                "prompt": "tool_worker should use only the safe tool profile",
+                "parallel_group": "runtime_smoke",
+            },
+            {
+                "id": "parallel_merge",
+                "title": "Parallel Merge",
+                "kind": "transform",
+                "stage": "checkpoint",
+                "action": "transform_context",
+                "instruction": "merge worker results",
+            },
+            {
+                "id": "archive",
+                "title": "Archive",
+                "kind": "memory",
+                "stage": "archive",
+                "action": "exit_summary",
+                "instruction": "archive",
+            },
+        ]
+        task.profile_snapshot["agent"]["workflow_edges"] = [
+            {"from": "entry", "to": "parallel_branch"},
+            {"from": "parallel_branch", "to": "api_worker"},
+            {"from": "parallel_branch", "to": "prompt_worker"},
+            {"from": "parallel_branch", "to": "tool_worker"},
+            {"from": "api_worker", "to": "parallel_merge"},
+            {"from": "prompt_worker", "to": "parallel_merge"},
+            {"from": "tool_worker", "to": "parallel_merge"},
+            {"from": "parallel_merge", "to": "archive"},
+        ]
+        task.workflow_current_node_id = "parallel_branch"
+        task.workflow_path = ["entry", "parallel_branch"]
+        plugin.storage.save_task(task)
+        plugin._perform_custom_api_http_call = fake_parallel_custom_api_call
+        plugin.context.tool_loop_agent_handler = fake_parallel_worker
+
+        parallel_result_text = await plugin.agent_lab_run_parallel_workflow(
+            event,
+            branch_node_id="parallel_branch",
+            parallel_group="runtime_smoke",
+            shared_instruction="runtime smoke parallel execution",
+            api_payloads_json=json.dumps(
+                {
+                    "api_worker": {
+                        "query": {"q": "parallel"},
+                        "body": {"payload": "runtime"},
+                    }
+                }
+            ),
+            max_concurrency="2",
+        )
+        debug("parallel workflow checked")
+        parallel_result = json.loads(parallel_result_text)
+        assert parallel_result["ok"] is True
+        assert parallel_result["branch_node_id"] == "parallel_branch"
+        assert parallel_result["merge_node_id"] == "parallel_merge"
+        assert {item["node_id"] for item in parallel_result["workers"]} == {
+            "api_worker",
+            "prompt_worker",
+            "tool_worker",
+        }
+        assert parallel_api_calls
+        assert parallel_api_calls[0]["headers"]["X-Test-Key"] == "runtime-secret"
+        assert parallel_api_calls[0]["query"]["q"] == "parallel"
+        assert parallel_api_calls[0]["body"]["payload"] == "runtime"
+        assert len(tool_loop_calls) == 2
+        assert any(call["tool_names"] == ["safe_registered_tool"] for call in tool_loop_calls)
+        assert any(call["tool_names"] == [] for call in tool_loop_calls)
+        assert all("Agent Lab Parallel Worker" in call["system_prompt"] for call in tool_loop_calls)
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert task.parallel_runs
+        assert task.parallel_runs[-1]["merge_node_id"] == "parallel_merge"
+        assert task.workflow_current_node_id == "parallel_merge"
+        assert task.workflow_path[-1] == "parallel_merge"
+        assert any(item.get("node_id") == "api_worker" for item in task.workflow_events)
+        assert "Parallel Workflow Runs" in plugin.storage.render_markdown(task)
+        assert "runtime-secret" not in parallel_result_text
+
         heartbeat = await plugin._enable_heartbeat(event, task, "runtime_smoke")
+        debug("heartbeat enabled")
         assert "已开启心跳" in heartbeat
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
@@ -476,6 +673,7 @@ async def main() -> None:
             final_summary="runtime smoke done",
             memory_candidates="- Agent Lab runtime smoke passed",
         )
+        debug("first task finished")
         assert "Agent Mode 已结束并归档" in finish
         assert plugin.storage.load_active_task(event.unified_msg_origin) is None
         archives = plugin.storage.list_archives(event.unified_msg_origin)
@@ -484,6 +682,7 @@ async def main() -> None:
         assert plugin.guard.restored
 
     with TemporaryDirectory() as tmp:
+        debug("second runtime fixture")
         plugin_main.StarTools.get_data_dir = staticmethod(
             lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
         )
@@ -511,6 +710,7 @@ async def main() -> None:
 
         context.tool_loop_agent_handler = finish_inside_tick
         result = await plugin._tick(event, "runtime_smoke_finish")
+        debug("finish-inside-tick checked")
         assert "任务已在本轮结束或切换" in result
         assert plugin.storage.load_active_task(event.unified_msg_origin) is None
         archives = plugin.storage.list_archives(event.unified_msg_origin)
@@ -518,6 +718,7 @@ async def main() -> None:
         assert archives[0].status == "completed"
 
     with TemporaryDirectory() as tmp:
+        debug("third runtime fixture")
         plugin_main.StarTools.get_data_dir = staticmethod(
             lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
         )
@@ -530,6 +731,7 @@ async def main() -> None:
         assert runtime_identity["bot_label"] == "配置机器人"
         assert runtime_identity["bot_label_source"] == "astrbot_config"
 
+    debug("runtime smoke complete")
     print("Agent Lab runtime smoke test passed.")
 
 

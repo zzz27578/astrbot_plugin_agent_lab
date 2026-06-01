@@ -193,6 +193,7 @@ class AgentSpec:
             "astrbot_execute_python",
             "agent_lab_read_task_memory",
             "agent_lab_call_custom_api",
+            "agent_lab_run_parallel_workflow",
         ]
     )
     tool_risk_overrides: dict[str, str] = field(default_factory=dict)
@@ -551,6 +552,7 @@ class TaskState:
     workflow_current_node_id: str = ""
     workflow_path: list[str] = field(default_factory=list)
     workflow_events: list[dict[str, Any]] = field(default_factory=list)
+    parallel_runs: list[dict[str, Any]] = field(default_factory=list)
     token_usage: dict[str, int] = field(
         default_factory=lambda: {
             "input_other": 0,
@@ -606,6 +608,13 @@ class TaskState:
             }
         )
         self.workflow_events = self.workflow_events[-120:]
+        self.updated_at = now_iso()
+
+    def add_parallel_run(self, run: dict[str, Any]) -> None:
+        payload = dict(run or {})
+        payload.setdefault("time", now_iso())
+        self.parallel_runs.append(payload)
+        self.parallel_runs = self.parallel_runs[-40:]
         self.updated_at = now_iso()
 
     def add_token_usage(self, usage: Any) -> None:

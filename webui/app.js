@@ -9,6 +9,7 @@ const DEFAULT_ENABLED_TOOLS = [
   "astrbot_execute_python",
   "agent_lab_read_task_memory",
   "agent_lab_call_custom_api",
+  "agent_lab_run_parallel_workflow",
 ];
 
 const WORKFLOW_STAGES = [
@@ -2338,10 +2339,45 @@ function taskDetail(task) {
       ${stateField("最近观察", task.last_observation)}
     </div>
     ${taskWorkflowDetail(task)}
+    ${taskParallelRunsDetail(task)}
     <div class="panel-head"><div><p class="card-kicker">审批</p><h3>待审批</h3></div></div>
     <div class="list">${approvalRows(pendingApprovals)}</div>
     <div class="panel-head"><div><p class="card-kicker">快照</p><h3>状态快照时间线</h3></div></div>
     <div class="list">${snapshotRows(task.state_snapshots || [])}</div>
+  `;
+}
+
+function taskParallelRunsDetail(task) {
+  const runs = task.parallel_runs || [];
+  if (!runs.length) return "";
+  const latest = runs[runs.length - 1] || {};
+  return `
+    <div class="detail-box workflow-runtime-card">
+      <div class="panel-head"><div><p class="card-kicker">并行工作包</p><h3>${esc(latest.summary || "最近并行运行")}</h3></div></div>
+      <div class="mini-stats">
+        <span>运行 ${runs.length}</span>
+        <span>${esc(latest.branch_node_id || "-")}</span>
+        <span>${esc(latest.merge_node_id || "未汇总")}</span>
+        <span>${latest.ok ? "全部完成" : "需复核"}</span>
+      </div>
+      <div class="edge-list">
+        ${(latest.workers || []).map((item) => `
+          <div class="edge-row">
+            <span>${esc(item.node_id || "-")} · ${esc(item.title || item.kind || "-")}</span>
+            ${badge(item.ok ? "完成" : "阻塞", item.ok ? "ok" : "bad")}
+          </div>
+        `).join("") || `<div class="empty">暂无工作包结果。</div>`}
+      </div>
+      <div class="workflow-events">
+        ${(latest.workers || []).slice(0, 6).map((item) => `
+          <div class="log-row">
+            <span>${esc(item.kind || "-")}</span>
+            <strong>${esc(item.summary || item.error || "-")}</strong>
+            <p>${esc(item.details || "")}</p>
+          </div>
+        `).join("")}
+      </div>
+    </div>
   `;
 }
 

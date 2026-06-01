@@ -110,3 +110,4 @@ WebUI 画布使用大横向工作台表达这些节点，节点边框圆点支�
 - `workflow_events`：每个节点的结果、下一节点和选择原因。
 
 `agent_lab_advance_workflow` 只负责记录和推进游标，不替代实际工具/API 调用；它把 Dify/n8n 风格的可视化连线变成 Agent Lab 的 task_state 证据层。
+`agent_lab_run_parallel_workflow` 负责把 `parallel_branch` 后续的独立工作包真正跑起来。API 节点复用已注册自定义 API 与凭证注入，提示词/插件/工具节点通过 AstrBot `tool_loop_agent` 以受限 ToolSet 执行；所有 worker 结果会写入 `parallel_runs`、`workflow_events`、快照和 Markdown。并行 worker 只产出证据和候选结论，主 Agent 仍要在汇总节点做冲突合并、验收和归档。

@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
 
 from .agent_lab import AgentLabStorage, AgentSpec, ApprovalRequest, TaskState
 from .agent_lab.hooks import AgentLabRunHooks
-from .agent_lab.models import now_iso
+from .agent_lab.models import new_id, now_iso
 from .agent_lab.modules import ModuleRegistry
 from .agent_lab.prompts import (
     build_agent_mode_policy,
@@ -162,6 +162,11 @@ BUILTIN_TOOL_CATALOG = [
     {
         "name": "agent_lab_update_workflow",
         "description": "Check or edit Agent Lab workflow nodes and edges.",
+        "risk": "work",
+    },
+    {
+        "name": "agent_lab_run_parallel_workflow",
+        "description": "Run outgoing workflow nodes from a parallel branch and merge their results.",
         "risk": "work",
     },
     {
@@ -561,39 +566,14 @@ class AgentLabPlugin(Star):
             body_json(string): 可选 JSON 对象或数组，作为非 GET 请求体。
             headers_json(string): 可选 JSON 对象，作为本次调用的额外请求头。
         """
-        api_spec = self.storage.get_custom_api(api_id)
-        if not api_spec:
-            return f"未找到已注册自定义 API：{api_id}"
-        if not api_spec.get("url"):
-            return f"自定义 API {api_id} 未配置 URL。"
-
-        try:
-            query = self._parse_json_object(query_json, "query_json")
-            headers = self._parse_json_object(headers_json, "headers_json")
-            body = self._parse_json_payload(body_json, "body_json")
-        except ValueError as exc:
-            return str(exc)
-
-        headers = {str(k): str(v) for k, v in headers.items()}
-        for key, value in (api_spec.get("headers") or {}).items():
-            headers.setdefault(str(key), str(value))
-
-        credential_id = str(api_spec.get("credential_id") or "").strip()
-        if credential_id:
-            secret = self.storage.get_credential_secret(credential_id)
-            if not secret:
-                return f"自定义 API {api_spec.get('name') or api_id} 绑定的凭证为空或无法解密。"
-            self._apply_custom_api_auth(api_spec, headers, query, secret)
-
-        result = await asyncio.to_thread(
-            self._perform_custom_api_http_call,
-            str(api_spec.get("method") or "GET").upper(),
-            str(api_spec.get("url") or ""),
-            query,
-            body,
-            headers,
-            int(api_spec.get("timeout_seconds") or 30),
+        result, api_spec, message = await self._call_registered_custom_api(
+            api_id,
+            query_json=query_json,
+            body_json=body_json,
+            headers_json=headers_json,
         )
+        if message:
+            return message
         task = self.storage.load_active_task(event.unified_msg_origin)
         if task:
             task.add_log(
@@ -610,6 +590,57 @@ class AgentLabPlugin(Star):
             )
             self.storage.save_task(task)
         return json.dumps(result, ensure_ascii=False, indent=2)
+
+    @filter.llm_tool(name="agent_lab_run_parallel_workflow")
+    async def agent_lab_run_parallel_workflow(
+        self,
+        event: AstrMessageEvent,
+        branch_node_id: str = "",
+        parallel_group: str = "",
+        merge_node_id: str = "",
+        shared_instruction: str = "",
+        api_payloads_json: str = "",
+        max_concurrency: str = "3",
+    ) -> str:
+        """执行当前工作流中的并行分支，并把 API/提示词/工具/插件工作包结果写回 task_state。
+
+        Args:
+            branch_node_id(string): 并行分支节点 ID；为空时使用当前工作流节点或第一个 parallel_branch。
+            parallel_group(string): 可选分组名，只运行匹配 parallel_group 的后续工作包。
+            merge_node_id(string): 可选汇总节点 ID；为空时自动寻找多个分支共同指向的节点。
+            shared_instruction(string): 给所有工作包追加的本轮统一要求。
+            api_payloads_json(string): 可选 JSON 对象，按 node_id 配置 API query/body/headers。
+            max_concurrency(string): 并发上限，默认 3，最大 6。
+        """
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            return "当前没有 active task。"
+        if task.pending_approvals():
+            return "存在待审批操作，先处理审批再运行并行工作流。"
+        spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
+        self._normalize_agent_workflow(spec)
+        try:
+            api_payloads = self._parse_json_object(api_payloads_json, "api_payloads_json") if api_payloads_json else {}
+        except ValueError as exc:
+            return str(exc)
+        try:
+            concurrency = max(1, min(int(max_concurrency or 3), 6))
+        except Exception:
+            concurrency = 3
+
+        run = await self._run_parallel_workflow(
+            event=event,
+            task=task,
+            spec=spec,
+            branch_node_id=branch_node_id,
+            parallel_group=parallel_group,
+            merge_node_id=merge_node_id,
+            shared_instruction=shared_instruction,
+            api_payloads=api_payloads,
+            max_concurrency=concurrency,
+        )
+        self.storage.save_task(task)
+        return json.dumps(run, ensure_ascii=False, indent=2)
 
     @filter.llm_tool(name="agent_lab_update_workflow")
     async def agent_lab_update_workflow(
@@ -1197,6 +1228,7 @@ class AgentLabPlugin(Star):
             "agent_lab_set_heartbeat",
             "agent_lab_finish",
             "agent_lab_update_workflow",
+            "agent_lab_run_parallel_workflow",
         }
         disabled_plugins = self._disabled_plugin_names(spec)
         tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
@@ -1382,6 +1414,399 @@ class AgentLabPlugin(Star):
             f"{' -> ' + target if target else ''}。\n"
             f"当前节点：{task.workflow_current_node_id or current_id}\n"
             f"下一候选：{next_text}"
+        )
+
+    async def _run_parallel_workflow(
+        self,
+        *,
+        event: AstrMessageEvent,
+        task: TaskState,
+        spec: AgentSpec,
+        branch_node_id: str = "",
+        parallel_group: str = "",
+        merge_node_id: str = "",
+        shared_instruction: str = "",
+        api_payloads: dict[str, Any] | None = None,
+        max_concurrency: int = 3,
+    ) -> dict[str, Any]:
+        self._normalize_agent_workflow(spec)
+        node_map = {str(node.get("id") or ""): node for node in spec.workflow_nodes}
+        outgoing = self._workflow_outgoing(spec)
+        branch_id = self._resolve_parallel_branch_id(spec, task, branch_node_id)
+        if not branch_id:
+            return {
+                "ok": False,
+                "error": "未找到 parallel_branch 节点；请先在画布中添加并行分支。",
+            }
+        branch = node_map.get(branch_id) or {}
+        group = str(parallel_group or "").strip()
+        worker_ids = [
+            node_id
+            for node_id in outgoing.get(branch_id, [])
+            if node_id in node_map
+            and node_id != merge_node_id
+            and (not group or str(node_map[node_id].get("parallel_group") or "").strip() == group)
+        ]
+        if not worker_ids:
+            return {
+                "ok": False,
+                "branch_node_id": branch_id,
+                "error": "并行分支没有匹配的后续工作包。",
+            }
+        api_payloads = api_payloads or {}
+        semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+        async def run_worker(node_id: str) -> dict[str, Any]:
+            async with semaphore:
+                return await self._run_parallel_worker(
+                    event=event,
+                    task=task,
+                    spec=spec,
+                    node=node_map[node_id],
+                    shared_instruction=shared_instruction,
+                    api_payload=api_payloads.get(node_id) or {},
+                )
+
+        workers = await asyncio.gather(*(run_worker(node_id) for node_id in worker_ids))
+        merge_id = self._resolve_parallel_merge_id(
+            spec,
+            worker_ids,
+            explicit_merge_id=merge_node_id,
+        )
+        ok_count = sum(1 for item in workers if item.get("ok"))
+        summary = (
+            f"并行分支 {branch_id} 完成 {ok_count}/{len(workers)} 个工作包。"
+            f"{' 汇总到 ' + merge_id if merge_id else ' 未找到自动汇总节点。'}"
+        )
+        run = {
+            "run_id": new_id("parallel"),
+            "time": now_iso(),
+            "ok": ok_count == len(workers),
+            "branch_node_id": branch_id,
+            "branch_title": branch.get("title") or branch_id,
+            "parallel_group": group,
+            "merge_node_id": merge_id,
+            "summary": summary,
+            "workers": workers,
+        }
+        task.add_parallel_run(run)
+        task.last_observation = self._compact_text(
+            json.dumps(run, ensure_ascii=False, indent=2),
+            4000,
+        )
+        task.last_confirmed_progress = summary
+        task.current_summary = summary
+        task.next_step = (
+            f"进入工作流节点 {merge_id}，合并并校验并行结果。"
+            if merge_id
+            else "检查并行结果，手动选择下一工作流节点。"
+        )
+        task.add_log("parallel_workflow", summary)
+        task.add_snapshot(
+            "parallel_workflow",
+            {
+                "branch_node_id": branch_id,
+                "merge_node_id": merge_id,
+                "worker_ids": worker_ids,
+                "ok": run["ok"],
+            },
+        )
+        for worker in workers:
+            task.add_workflow_event(
+                str(worker.get("node_id") or ""),
+                status="completed" if worker.get("ok") else "blocked",
+                outcome=str(worker.get("summary") or worker.get("error") or ""),
+                note=str(worker.get("details") or "")[:1000],
+                next_node_id=merge_id,
+            )
+        self._advance_task_workflow(
+            task,
+            spec,
+            node_id=branch_id,
+            outcome=summary,
+            next_node_id=merge_id,
+            note="agent_lab_run_parallel_workflow",
+            status="completed" if run["ok"] else "blocked",
+        )
+        return run
+
+    def _resolve_parallel_branch_id(
+        self,
+        spec: AgentSpec,
+        task: TaskState,
+        branch_node_id: str = "",
+    ) -> str:
+        node_map = {str(node.get("id") or ""): node for node in spec.workflow_nodes}
+        requested = str(branch_node_id or "").strip()
+        if requested and requested in node_map:
+            return requested
+        current = str(task.workflow_current_node_id or "").strip()
+        if current in node_map and node_map[current].get("action") == "parallel_branch":
+            return current
+        for node in spec.workflow_nodes:
+            if node.get("action") == "parallel_branch":
+                return str(node.get("id") or "")
+        return ""
+
+    def _resolve_parallel_merge_id(
+        self,
+        spec: AgentSpec,
+        worker_ids: list[str],
+        *,
+        explicit_merge_id: str = "",
+    ) -> str:
+        node_ids = {str(node.get("id") or "") for node in spec.workflow_nodes}
+        explicit = str(explicit_merge_id or "").strip()
+        if explicit and explicit in node_ids:
+            return explicit
+        outgoing = self._workflow_outgoing(spec)
+        counts: dict[str, int] = {}
+        for worker_id in worker_ids:
+            for candidate in outgoing.get(worker_id, []):
+                counts[candidate] = counts.get(candidate, 0) + 1
+        if not counts:
+            return ""
+        ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        best, count = ranked[0]
+        return best if count >= 2 or len(worker_ids) == 1 else ""
+
+    async def _run_parallel_worker(
+        self,
+        *,
+        event: AstrMessageEvent,
+        task: TaskState,
+        spec: AgentSpec,
+        node: dict[str, Any],
+        shared_instruction: str = "",
+        api_payload: Any = None,
+    ) -> dict[str, Any]:
+        node_id = str(node.get("id") or "").strip()
+        kind = str(node.get("kind") or "state").strip()
+        action = str(node.get("action") or "manual").strip()
+        base = {
+            "node_id": node_id,
+            "title": node.get("title") or node_id,
+            "kind": kind,
+            "action": action,
+            "parallel_group": node.get("parallel_group") or "",
+            "ok": False,
+            "status": "blocked",
+            "summary": "",
+            "details": "",
+        }
+        try:
+            if kind == "api" or action == "call_api":
+                return await self._run_parallel_api_worker(
+                    node,
+                    base,
+                    api_payload=api_payload,
+                )
+            return await self._run_parallel_agent_worker(
+                event=event,
+                task=task,
+                spec=spec,
+                node=node,
+                base=base,
+                shared_instruction=shared_instruction,
+            )
+        except Exception as exc:
+            base["error"] = f"{type(exc).__name__}: {exc}"
+            base["summary"] = base["error"]
+            return base
+
+    async def _run_parallel_api_worker(
+        self,
+        node: dict[str, Any],
+        base: dict[str, Any],
+        *,
+        api_payload: Any = None,
+    ) -> dict[str, Any]:
+        api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
+        if not api_id:
+            base["error"] = "API 节点未绑定 api_id。"
+            base["summary"] = base["error"]
+            return base
+        query_json, body_json, headers_json = self._parallel_api_payload_json(api_payload)
+        result, api_spec, message = await self._call_registered_custom_api(
+            api_id,
+            query_json=query_json,
+            body_json=body_json,
+            headers_json=headers_json,
+        )
+        if message:
+            base["error"] = message
+            base["summary"] = message
+            return base
+        base.update(
+            {
+                "ok": bool(result.get("ok")),
+                "status": "completed" if result.get("ok") else "blocked",
+                "api_id": api_spec.get("api_id") if api_spec else api_id,
+                "summary": f"API {api_spec.get('api_id') if api_spec else api_id} status={result.get('status')}",
+                "details": self._compact_text(
+                    json.dumps(result, ensure_ascii=False, indent=2),
+                    1600,
+                ),
+            }
+        )
+        return base
+
+    async def _run_parallel_agent_worker(
+        self,
+        *,
+        event: AstrMessageEvent,
+        task: TaskState,
+        spec: AgentSpec,
+        node: dict[str, Any],
+        base: dict[str, Any],
+        shared_instruction: str = "",
+    ) -> dict[str, Any]:
+        plugin_name = str(
+            node.get("plugin_name")
+            or (node.get("ref_id") if node.get("ref_type") == "plugin" else "")
+            or ""
+        ).strip()
+        if plugin_name and plugin_name in self._disabled_plugin_names(spec):
+            base["error"] = f"插件模块被当前隔离策略禁用：{plugin_name}"
+            base["summary"] = base["error"]
+            return base
+        provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+        system_prompt = (
+            f"{spec.system_prompt}\n\n"
+            "[Agent Lab Parallel Worker]\n"
+            "你是当前 AstrBot 身份下的并行工作包执行者，不是新的 bot 人设。"
+            "只完成本节点分配的工作；不要调用 agent_lab_finish，不要直接决定任务完成。"
+            "如需使用工具，只能使用本节点允许的工具或插件来源工具，并遵守审批/白名单。"
+        )
+        prompt = self._parallel_worker_prompt(task, node, shared_instruction)
+        resp = await self.context.tool_loop_agent(
+            event=event,
+            chat_provider_id=provider_id,
+            prompt=prompt,
+            system_prompt=system_prompt,
+            tools=self._build_parallel_worker_toolset(spec, node),
+            max_steps=max(1, min(int(_cfg(self.config, "parallel_worker_max_steps", 6) or 6), 12)),
+            tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120)),
+            llm_compress_keep_recent=int(_cfg(self.config, "llm_compress_keep_recent", 4)),
+            truncate_turns=int(_cfg(self.config, "truncate_turns", 2)),
+        )
+        text = (getattr(resp, "completion_text", "") or "").strip()
+        task.add_token_usage(getattr(resp, "usage", None))
+        base.update(
+            {
+                "ok": True,
+                "status": "completed",
+                "summary": self._compact_text(text, 600) or "工作包已完成。",
+                "details": self._compact_text(text, 2200),
+            }
+        )
+        return base
+
+    def _parallel_worker_prompt(
+        self,
+        task: TaskState,
+        node: dict[str, Any],
+        shared_instruction: str = "",
+    ) -> str:
+        return "\n".join(
+            [
+                "执行一个并行工作流节点，输出结构化结果。",
+                f"- task_id: {task.task_id}",
+                f"- root_goal: {task.root_goal}",
+                f"- current_summary: {task.current_summary or '-'}",
+                f"- last_progress: {task.last_confirmed_progress or '-'}",
+                f"- node_id: {node.get('id') or '-'}",
+                f"- title: {node.get('title') or '-'}",
+                f"- kind/action: {node.get('kind') or '-'} / {node.get('action') or '-'}",
+                f"- instruction: {node.get('instruction') or node.get('description') or '-'}",
+                f"- condition: {node.get('condition') or '-'}",
+                f"- node_prompt: {node.get('prompt') or '-'}",
+                f"- shared_instruction: {shared_instruction or '-'}",
+                "",
+                "输出必须包含：结论、证据/工具结果、风险、需要主 Agent 合并的字段。",
+                "不要修改工作流，不要归档任务；由主 Agent 统一合并、校验和退出。",
+            ]
+        )
+
+    def _build_parallel_worker_toolset(self, spec: AgentSpec, node: dict[str, Any]):
+        from astrbot.core.agent.tool import ToolSet
+
+        tmgr = self.context.get_llm_tool_manager()
+        disabled_plugins = self._disabled_plugin_names(spec)
+        toolset = ToolSet()
+        kind = str(node.get("kind") or "").strip()
+        ref_type = str(node.get("ref_type") or "").strip()
+        tool_name = str(node.get("tool_name") or (node.get("ref_id") if ref_type == "tool" else "") or "").strip()
+        plugin_name = str(node.get("plugin_name") or (node.get("ref_id") if ref_type == "plugin" else "") or "").strip()
+        tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
+        selected_tools = set(spec.enabled_tools or [])
+        no_external = tool_mode == "no_external" or NO_EXTERNAL_TOOLS_SENTINEL in selected_tools
+        full_mode = tool_mode == "full" or not selected_tools
+
+        def tool_allowed_by_profile(name: str) -> bool:
+            if not name or no_external:
+                return False
+            if name in {
+                "agent_lab_enter_mode",
+                "agent_lab_tick",
+                "agent_lab_finish",
+                "agent_lab_update_workflow",
+                "agent_lab_run_parallel_workflow",
+            }:
+                return False
+            return full_mode or name in selected_tools
+
+        def add_if_allowed(tool: Any) -> None:
+            name = str(getattr(tool, "name", "") or "")
+            if (
+                tool
+                and tool_allowed_by_profile(name)
+                and self._tool_available_for_agent(tool, disabled_plugins)
+            ):
+                toolset.add_tool(tool)
+
+        if kind == "tool" and tool_name:
+            try:
+                tool = tmgr.get_func(tool_name)
+            except Exception:
+                tool = None
+            add_if_allowed(tool)
+            return toolset
+        if plugin_name:
+            for tool in list(tmgr.func_list):
+                if self._tool_plugin_name(tool) == plugin_name:
+                    add_if_allowed(tool)
+            return toolset
+        if kind == "tool":
+            allowed = set(spec.enabled_tools or [])
+            for name in allowed:
+                if name in {
+                    NO_EXTERNAL_TOOLS_SENTINEL,
+                    "agent_lab_enter_mode",
+                    "agent_lab_tick",
+                    "agent_lab_finish",
+                    "agent_lab_update_workflow",
+                    "agent_lab_run_parallel_workflow",
+                }:
+                    continue
+                try:
+                    tool = tmgr.get_func(name)
+                except Exception:
+                    tool = None
+                add_if_allowed(tool)
+        return toolset
+
+    @staticmethod
+    def _parallel_api_payload_json(api_payload: Any) -> tuple[str, str, str]:
+        if not isinstance(api_payload, dict):
+            return "", "", ""
+        query = api_payload.get("query") or api_payload.get("query_json") or {}
+        body = api_payload.get("body") if "body" in api_payload else api_payload.get("body_json", None)
+        headers = api_payload.get("headers") or api_payload.get("headers_json") or {}
+        return (
+            query if isinstance(query, str) else json.dumps(query, ensure_ascii=False),
+            body if isinstance(body, str) else ("" if body is None else json.dumps(body, ensure_ascii=False)),
+            headers if isinstance(headers, str) else json.dumps(headers, ensure_ascii=False),
         )
 
     def _build_task_extensions_prompt(self, spec: AgentSpec) -> str:
@@ -2660,6 +3085,49 @@ class AgentLabPlugin(Star):
         if len(text) <= limit:
             return text
         return text[: limit - 20] + "\n...[truncated]"
+
+    async def _call_registered_custom_api(
+        self,
+        api_id: str,
+        *,
+        query_json: str = "",
+        body_json: str = "",
+        headers_json: str = "",
+    ) -> tuple[dict[str, Any], dict[str, Any], str]:
+        api_spec = self.storage.get_custom_api(api_id)
+        if not api_spec:
+            return {}, {}, f"未找到已注册自定义 API：{api_id}"
+        if not api_spec.get("url"):
+            return {}, api_spec, f"自定义 API {api_id} 未配置 URL。"
+
+        try:
+            query = self._parse_json_object(query_json, "query_json")
+            headers = self._parse_json_object(headers_json, "headers_json")
+            body = self._parse_json_payload(body_json, "body_json")
+        except ValueError as exc:
+            return {}, api_spec, str(exc)
+
+        headers = {str(k): str(v) for k, v in headers.items()}
+        for key, value in (api_spec.get("headers") or {}).items():
+            headers.setdefault(str(key), str(value))
+
+        credential_id = str(api_spec.get("credential_id") or "").strip()
+        if credential_id:
+            secret = self.storage.get_credential_secret(credential_id)
+            if not secret:
+                return {}, api_spec, f"自定义 API {api_spec.get('name') or api_id} 绑定的凭证为空或无法解密。"
+            self._apply_custom_api_auth(api_spec, headers, query, secret)
+
+        result = await asyncio.to_thread(
+            self._perform_custom_api_http_call,
+            str(api_spec.get("method") or "GET").upper(),
+            str(api_spec.get("url") or ""),
+            query,
+            body,
+            headers,
+            int(api_spec.get("timeout_seconds") or 30),
+        )
+        return result, api_spec, ""
 
     @staticmethod
     def _parse_json_object(raw: str, field_name: str) -> dict[str, Any]:

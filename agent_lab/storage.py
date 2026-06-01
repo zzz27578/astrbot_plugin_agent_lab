@@ -252,6 +252,23 @@ class AgentLabStorage:
                 )
         else:
             lines.append("- none")
+        lines.extend(["", "### Parallel Workflow Runs"])
+        if task.parallel_runs:
+            for item in task.parallel_runs[-20:]:
+                workers = item.get("workers") or []
+                ok_count = sum(1 for worker in workers if worker.get("ok"))
+                lines.append(
+                    f"- {item.get('time')} branch={item.get('branch_node_id') or '-'} "
+                    f"group={item.get('parallel_group') or '-'} merge={item.get('merge_node_id') or '-'} "
+                    f"ok={ok_count}/{len(workers)}: {item.get('summary') or '-'}"
+                )
+                for worker in workers[:8]:
+                    lines.append(
+                        f"  - {worker.get('node_id') or '-'} [{worker.get('kind') or '-'}] "
+                        f"{worker.get('status') or '-'}: {worker.get('summary') or worker.get('error') or '-'}"
+                    )
+        else:
+            lines.append("- none")
         lines.extend(
             [
                 "",
