@@ -41,6 +41,7 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 - `agent_lab_enter_mode`：创建任务状态并进入 Agent Mode。
 - `agent_lab_read_state`：读取当前任务状态。心跳醒来或长任务继续前必须先用。
 - `agent_lab_update_state`：写回当前进度、观察、下一步和阻塞点。每轮结束前必须用。
+- `agent_lab_advance_workflow`：记录当前工作流节点结果并推进到下一节点；多分支、并行分支、审批/校验节点必须用它留下轨迹。
 - `agent_lab_read_task_memory`：读取已归档并暴露的任务记忆；普通模式也可以按标签或关键词查询续写上下文。
 - `agent_lab_update_workflow`：检查、增删改工作流节点和连线；适合用户要求改入口、审批、API、插件模块、工具模块、并行分支、节点提示词、记忆或出口规则时使用。
 - `agent_lab_tick`：推进当前任务一轮。
@@ -56,10 +57,11 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 2. 明确本轮只推进一个有限工作单元。
 3. 工具调用后总结观察结果。
 4. 调用 `agent_lab_update_state` 写回进度、关键改动点、验证结果、下一步、阻塞点。
-5. 判断是否完成、暂停、请求审批或需要心跳。
-6. 任务过程中的时间线和成果属于任务记忆，不直接污染普通聊天记忆；退出时再生成可回流的候选。
-7. 修改工作流后先用 `agent_lab_update_workflow operation=check` 检查入口、出口、入口摘要、隔离快照、任务记忆、审批/人工闸门、不可达节点和模块引用；工作流改变任务模式规则，不改变 bot 身份。
-8. 插件、API、工具、skill 都只是任务模式模块：绑定时写清 `ref_type/ref_id`，必要时补 `prompt`、`condition` 或 `parallel_group`，不要绕过 AgentSpec 的隔离和白名单。
+5. 调用 `agent_lab_advance_workflow` 记录本轮完成或选择的节点；多分支必须明确 next_node_id 和选择原因。
+6. 判断是否完成、暂停、请求审批或需要心跳。
+7. 任务过程中的时间线和成果属于任务记忆，不直接污染普通聊天记忆；退出时再生成可回流的候选。
+8. 修改工作流后先用 `agent_lab_update_workflow operation=check` 检查入口、出口、入口摘要、隔离快照、任务记忆、审批/人工闸门、不可达节点和模块引用；工作流改变任务模式规则，不改变 bot 身份。
+9. 插件、API、工具、skill 都只是任务模式模块：绑定时写清 `ref_type/ref_id`，必要时补 `prompt`、`condition` 或 `parallel_group`，不要绕过 AgentSpec 的隔离和白名单。
 
 ## 审批规则
 

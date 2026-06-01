@@ -548,6 +548,9 @@ class TaskState:
     entry_summary: str = ""
     exit_summary: str = ""
     memory_candidates: list[str] = field(default_factory=list)
+    workflow_current_node_id: str = ""
+    workflow_path: list[str] = field(default_factory=list)
+    workflow_events: list[dict[str, Any]] = field(default_factory=list)
     token_usage: dict[str, int] = field(
         default_factory=lambda: {
             "input_other": 0,
@@ -581,6 +584,28 @@ class TaskState:
             }
         )
         self.state_snapshots = self.state_snapshots[-120:]
+        self.updated_at = now_iso()
+
+    def add_workflow_event(
+        self,
+        node_id: str,
+        *,
+        outcome: str = "",
+        note: str = "",
+        next_node_id: str = "",
+        status: str = "completed",
+    ) -> None:
+        self.workflow_events.append(
+            {
+                "time": now_iso(),
+                "node_id": str(node_id or "").strip(),
+                "status": str(status or "completed").strip(),
+                "outcome": str(outcome or "").strip(),
+                "note": str(note or "").strip(),
+                "next_node_id": str(next_node_id or "").strip(),
+            }
+        )
+        self.workflow_events = self.workflow_events[-120:]
         self.updated_at = now_iso()
 
     def add_token_usage(self, usage: Any) -> None:

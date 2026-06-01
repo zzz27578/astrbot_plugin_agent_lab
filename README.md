@@ -208,8 +208,10 @@ data/plugin_data/astrbot_plugin_agent_lab/
 
 ```text
 读 task_state
+-> 读取当前工作流节点
 -> 执行有限步骤
 -> 记录观察
+-> 推进工作流游标
 -> 更新下一步
 -> 判断完成/审批/心跳/阻塞
 ```
@@ -246,6 +248,8 @@ astrbot_execute_python
 “插件与集成 -> 注册工具”会按来源插件折叠显示工具，并允许为当前 AgentSpec 覆盖 `safe/work/high` 风险等级。右侧审批策略可编辑预授权范围、必须审批动作和审批备注；这些不会硬性截断工具，而是写入任务模式提示，让 bot 在计划和调用工具前主动判断。
 
 工作流画布的工具箱会把 AstrBot 插件、自定义 API 和当前工具白名单作为可点击模块放进流程节点。插件模块会记录 `plugin_name`，API 模块会记录 `api_id` 并通过 `agent_lab_call_custom_api` 调用，工具模块会记录 `tool_name`；节点还能写入 `prompt`、`condition` 和 `parallel_group`，用于并行 Agent 分支或子流程分工。Bot 也可以通过 `agent_lab_update_workflow` 检查、增删改节点/连线、绑定模块和写入节点提示词。
+
+运行中的任务会保存工作流游标：`workflow_current_node_id`、`workflow_path` 和 `workflow_events`。Bot 每轮可以通过 `agent_lab_advance_workflow` 记录当前节点结果并推进下一节点；这让画布不只是说明文字，而是进入 `task_state` 和归档 Markdown 的审计轨迹。
 
 “插件与集成 -> 外部方案蓝图”可以查看、加入、精细配置或导入/更新蓝图 manifest。用户自定义蓝图会写入 `plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json`，框架升级时不会覆盖这部分数据；相同 `module_id` 的用户蓝图会覆盖内置蓝图，方便你按自己的工作流改规则。
 
@@ -330,6 +334,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 - 仪表盘 Agent 资产列表会按配置聚合心跳健康、任务触发、Token 和待审批数量。
 - 任务与记忆控制台支持查看归档任务详情、结构化状态字段、待审批和快照时间线。
 - 命令、LLM 工具、独立 WebUI、心跳、审批、入口/出口摘要均已落地。
+- 任务运行时会记录工作流当前节点、路径和节点事件，WebUI 任务详情可以查看工作流游标。
 - Agent 能在 tick 中显式读写 task_state，并通过 hooks 记录工具调用；tick 结束时会重读最新 task，避免覆盖工具已写回的进度或把已归档任务重新写成 active。
 - 严格插件隔离已落地：任务会话默认关闭普通插件，只保留显式允许项和必要内部能力。
 - 外部方案以集成蓝图形式内置为可扩展收束口。

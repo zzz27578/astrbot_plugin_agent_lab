@@ -2062,10 +2062,54 @@ function taskDetail(task) {
       ${stateField("下一步", task.next_step)}
       ${stateField("最近观察", task.last_observation)}
     </div>
+    ${taskWorkflowDetail(task)}
     <div class="panel-head"><div><p class="card-kicker">审批</p><h3>待审批</h3></div></div>
     <div class="list">${approvalRows(pendingApprovals)}</div>
     <div class="panel-head"><div><p class="card-kicker">快照</p><h3>状态快照时间线</h3></div></div>
     <div class="list">${snapshotRows(task.state_snapshots || [])}</div>
+  `;
+}
+
+function taskWorkflowDetail(task) {
+  const spec = ensureAgent(clone(task.profile_snapshot?.agent || currentAgent || {}));
+  const nodes = spec.workflow_nodes || [];
+  const edges = spec.workflow_edges || [];
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const currentId = task.workflow_current_node_id || task.workflow_path?.[task.workflow_path.length - 1] || "";
+  const current = nodeMap.get(currentId);
+  const candidates = edges
+    .filter((edge) => edge.from === currentId)
+    .map((edge) => nodeMap.get(edge.to))
+    .filter(Boolean);
+  const events = task.workflow_events || [];
+  return `
+    <div class="detail-box workflow-runtime-card">
+      <div class="panel-head"><div><p class="card-kicker">工作流游标</p><h3>${esc(current?.title || currentId || "尚未进入节点")}</h3></div></div>
+      <div class="mini-stats">
+        <span>${esc(currentId || "-")}</span>
+        <span>${esc(workflowStageLabel(current?.stage || "plan"))}</span>
+        <span>${esc(workflowActionLabel(current?.action || "manual"))}</span>
+        <span>路径 ${task.workflow_path?.length || 0}</span>
+      </div>
+      <div class="workflow-path-line">${(task.workflow_path || []).map((id) => `<span>${esc(id)}</span>`).join("") || "<em>暂无路径</em>"}</div>
+      <div class="edge-list">
+        ${candidates.map((node) => `
+          <div class="edge-row">
+            <span>${esc(node.id)} · ${esc(node.title || workflowActionLabel(node.action || "manual"))}</span>
+            ${badge(workflowStageLabel(node.stage || "plan"))}
+          </div>
+        `).join("") || `<div class="empty">当前节点暂无候选下一步。</div>`}
+      </div>
+      <div class="workflow-events">
+        ${events.slice(-6).reverse().map((item) => `
+          <div class="log-row">
+            <span>${esc(item.time || "")}</span>
+            <strong>${esc(item.node_id || "-")} -> ${esc(item.next_node_id || "-")}</strong>
+            <p>${esc(item.outcome || item.note || item.status || "-")}</p>
+          </div>
+        `).join("") || `<div class="empty">暂无节点事件。</div>`}
+      </div>
+    </div>
   `;
 }
 

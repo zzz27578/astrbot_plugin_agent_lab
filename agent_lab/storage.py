@@ -236,6 +236,25 @@ class AgentLabStorage:
                 "## Last Observation",
                 task.last_observation or "-",
                 "",
+                "## Workflow Cursor",
+                f"- current_node: {task.workflow_current_node_id or '-'}",
+                f"- path: {' -> '.join(task.workflow_path or []) or '-'}",
+                "",
+                "### Workflow Events",
+            ]
+        )
+        if task.workflow_events:
+            for item in task.workflow_events[-40:]:
+                lines.append(
+                    f"- {item.get('time')} [{item.get('status') or '-'}] "
+                    f"{item.get('node_id') or '-'} -> {item.get('next_node_id') or '-'}: "
+                    f"{item.get('outcome') or item.get('note') or '-'}"
+                )
+        else:
+            lines.append("- none")
+        lines.extend(
+            [
+                "",
                 "## Pending Approvals",
             ]
         )

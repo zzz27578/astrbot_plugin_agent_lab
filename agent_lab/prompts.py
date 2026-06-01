@@ -67,6 +67,47 @@ def _workflow_text(spec: AgentSpec) -> str:
     )
 
 
+def _workflow_runtime_text(spec: AgentSpec, task: TaskState) -> str:
+    nodes = {
+        str(node.get("id") or ""): node
+        for node in spec.workflow_nodes
+        if isinstance(node, dict)
+    }
+    outgoing: dict[str, list[str]] = {}
+    for edge in spec.workflow_edges:
+        if not isinstance(edge, dict):
+            continue
+        start = str(edge.get("from") or "").strip()
+        end = str(edge.get("to") or "").strip()
+        if start and end:
+            outgoing.setdefault(start, []).append(end)
+    current_id = str(task.workflow_current_node_id or "").strip()
+    if not current_id and task.workflow_path:
+        current_id = str(task.workflow_path[-1] or "").strip()
+    current = nodes.get(current_id, {})
+    candidates = outgoing.get(current_id, [])
+    recent = []
+    for item in (task.workflow_events or [])[-8:]:
+        if not isinstance(item, dict):
+            continue
+        recent.append(
+            f"- {item.get('time')}: {item.get('node_id')} "
+            f"[{item.get('status') or '-'}] -> {item.get('next_node_id') or '-'}; "
+            f"{item.get('outcome') or item.get('note') or '-'}"
+        )
+    return "\n".join(
+        [
+            f"- current_node：{current_id or '-'}",
+            f"- current_title：{current.get('title') or '-'}",
+            f"- current_stage/action/kind：{current.get('stage') or '-'} / {current.get('action') or '-'} / {current.get('kind') or '-'}",
+            f"- next_candidates：{', '.join(candidates) or '-'}",
+            f"- path：{' -> '.join(task.workflow_path or []) or '-'}",
+            "- recent_events：",
+            "\n".join(recent) if recent else "- none",
+        ]
+    )
+
+
 def _entry_policy_text(spec: AgentSpec) -> str:
     entry = spec.entry_policy
     return "\n".join(
@@ -156,6 +197,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 - agent_lab_enter_mode：进入 Agent Mode，创建任务状态。
 - agent_lab_read_state：读取当前任务状态。
 - agent_lab_update_state：写回当前进度、观察、下一步和阻塞点。
+- agent_lab_advance_workflow：记录当前工作流节点结果并推进到下一节点；多分支、并行分支、审批/校验节点必须用它留下节点轨迹。
 - agent_lab_read_task_memory：读取已归档任务记忆，普通模式也可以按标签/关键词查询。
 - agent_lab_update_workflow：检查、增删改工作流节点和连线；当用户要求调整入口、审批、API、插件/工具/skill 模块、并行分支、节点提示词或记忆环节时使用。
 - agent_lab_tick：推进当前任务一轮。
@@ -232,6 +274,9 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 [Workflow]
 {_workflow_text(spec)}
 
+[Workflow Runtime Cursor]
+{_workflow_runtime_text(spec, task)}
+
 [Heartbeat Contract]
 如果这是心跳唤醒，第一步必须读取并相信 task_state；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。
 
@@ -240,6 +285,9 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 
 [Task Memory Contract]
 任务过程中的时间线以 task_state.progress_log 和 state_snapshots 为准。每轮写回时必须说明：几点/哪一轮做了什么、关键改动点、验证结果、下一步。退出时必须用 agent_lab_finish 生成出口摘要和 memory_candidates；候选记忆只保存稳定事实、项目约定、后续续写提示，不保存密钥、一次性 token 或临时噪声。
+
+[Workflow Cursor Contract]
+每轮至少在完成一个工作流节点或选择分支时调用 agent_lab_advance_workflow，记录 node_id、outcome、next_node_id 和选择原因。多分支节点不能靠猜测自动前进；必须说明选择哪条连线。工作流游标是审计轨迹，不替代 task_state。
 
 {modules_prompt}
 """.strip()
@@ -255,9 +303,11 @@ def build_tick_prompt(task: TaskState, reason: str = "") -> str:
 2. 判断是否存在未审批的危险操作；若有，先等待审批。
 3. 只推进一个有限工作单元。
 4. 调用 agent_lab_update_state 写回本轮完成了什么、关键改动点、观察到什么、下一步是什么、是否需要心跳。
-5. 若任务完成，调用 agent_lab_finish，并在 final_summary/memory_candidates 中沉淀任务成果、改动摘要、遗留风险和下次续写提示；若需要审批，调用 agent_lab_request_approval。
+5. 调用 agent_lab_advance_workflow 记录本轮完成或选择的工作流节点；遇到多分支时明确 next_node_id。
+6. 若任务完成，调用 agent_lab_finish，并在 final_summary/memory_candidates 中沉淀任务成果、改动摘要、遗留风险和下次续写提示；若需要审批，调用 agent_lab_request_approval。
 
 当前任务 ID：{task.task_id}
 根目标：{task.root_goal}
 下一步：{task.next_step or "请根据 task_state 判断"}
+当前工作流节点：{task.workflow_current_node_id or "-"}
 """.strip()

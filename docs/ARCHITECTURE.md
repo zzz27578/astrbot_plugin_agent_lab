@@ -13,6 +13,8 @@ flowchart TD
     State --> Runner["tool_loop_agent Tick"]
     Runner --> StateTools["agent_lab_read_state / update_state"]
     StateTools --> State
+    Runner --> FlowStep["agent_lab_advance_workflow"]
+    FlowStep --> State
     Runner --> Approval{"危险操作?"}
     Approval -->|需要审批| Pending["Pending Approval"]
     Approval -->|已授权| Observe["Observe Result"]
@@ -98,3 +100,11 @@ tick 结束时不会直接用进入 tick 前的旧对象覆盖文件，而是重
 - 工具模块：记录 `tool_name`，受工具白名单和来源插件状态约束。
 
 `agent_lab_update_workflow` 是 bot 可调用的结构化编辑工具。它支持检查、增删改节点、增删连线、自动布局、绑定插件/API/工具/skill，以及写入 `prompt`、`condition` 和 `parallel_group`。检查器会把缺少入口/出口、入口摘要、隔离快照、任务记忆、不可达节点和无效模块引用标出来，避免前端画出来但后端无法解释。
+
+运行中的任务会把画布落成可审计状态：
+
+- `workflow_current_node_id`：当前执行到的节点。
+- `workflow_path`：已走过的节点路径。
+- `workflow_events`：每个节点的结果、下一节点和选择原因。
+
+`agent_lab_advance_workflow` 只负责记录和推进游标，不替代实际工具/API 调用；它把 Dify/n8n 风格的可视化连线变成 Agent Lab 的 task_state 证据层。

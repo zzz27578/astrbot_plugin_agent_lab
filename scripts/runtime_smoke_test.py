@@ -327,12 +327,32 @@ async def main() -> None:
         assert task.profile_snapshot["agent"]["name"] == "测试人格 Agent Mode"
         assert task.profile_snapshot["agent"]["workflow_nodes"][0]["stage"] == "entry"
         assert "工作流：" in task.current_summary
+        assert task.workflow_current_node_id == "entry"
+        assert task.workflow_path == ["entry"]
+        assert task.workflow_events and task.workflow_events[0]["status"] == "entered"
         task_prompt = plugin_main.build_task_system_prompt(
             plugin_main.AgentSpec.from_dict(task.profile_snapshot["agent"]),
             task,
         )
         assert "[Workflow]" in task_prompt
+        assert "[Workflow Runtime Cursor]" in task_prompt
+        assert "agent_lab_advance_workflow" in task_prompt
         assert "run_tools" in task_prompt
+        read_state = await plugin.agent_lab_read_state(event)
+        assert "workflow: current=entry" in read_state
+        advanced = await plugin.agent_lab_advance_workflow(
+            event,
+            node_id="entry",
+            outcome="入口摘要已完成。",
+            next_node_id="entry_gate",
+            note="runtime smoke",
+        )
+        assert "entry -> entry_gate" in advanced
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert task.workflow_current_node_id == "entry_gate"
+        assert task.workflow_path[-1] == "entry_gate"
+        assert "## Workflow Cursor" in plugin.storage.render_markdown(task)
         assert plugin._task_payload(task)["heartbeat_health"]["state"] == "off"
 
         approval = await plugin.agent_lab_request_approval(

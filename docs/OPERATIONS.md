@@ -66,6 +66,7 @@ Agent Lab WebUI 是插件启动的独立 Quart 控制台。
 - `/agentlab tick` updates the task markdown.
 - `agent_lab_read_state` can return the active task summary.
 - `agent_lab_update_state` can write progress and next step.
+- `agent_lab_advance_workflow` can move the workflow cursor and task markdown contains `Workflow Cursor`.
 - `/agentlab finish` moves a copy to `archives/`.
 - Completed/cancelled tasks leave the active Tasks list and remain visible under Archives.
 - 独立 WebUI `state` API 返回 agents/tasks/plugins/tools/skills/integrations。

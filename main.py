@@ -164,6 +164,11 @@ BUILTIN_TOOL_CATALOG = [
         "description": "Check or edit Agent Lab workflow nodes and edges.",
         "risk": "work",
     },
+    {
+        "name": "agent_lab_advance_workflow",
+        "description": "Record and advance the current task workflow cursor.",
+        "risk": "safe",
+    },
 ]
 
 
@@ -308,6 +313,7 @@ class AgentLabPlugin(Star):
             f"status: {task.status}\n"
             f"root_goal: {task.root_goal}\n"
             f"completion_conditions: {task.completion_conditions}\n"
+            f"workflow: {self._workflow_runtime_text(task)}\n"
             f"entry_summary: {self._compact_text(task.entry_summary or task.task_brief, 1600)}\n"
             f"current_summary: {task.current_summary or '-'}\n"
             f"last_confirmed_progress: {task.last_confirmed_progress or '-'}\n"
@@ -316,6 +322,42 @@ class AgentLabPlugin(Star):
             f"pending_approvals: {len(task.pending_approvals())}\n"
             f"state_path: {self.storage.task_markdown_path(task.umo, task.task_id)}"
         )
+
+    @filter.llm_tool(name="agent_lab_advance_workflow")
+    async def agent_lab_advance_workflow(
+        self,
+        event: AstrMessageEvent,
+        node_id: str = "",
+        outcome: str = "",
+        next_node_id: str = "",
+        note: str = "",
+        status: str = "completed",
+    ) -> str:
+        """记录当前工作流节点结果，并把任务游标推进到下一节点。
+
+        Args:
+            node_id(string): 当前完成或正在记录的节点 ID；为空时使用 task_state 当前节点。
+            outcome(string): 该节点本轮产出的结果摘要。
+            next_node_id(string): 要进入的下一节点 ID；多分支时必须明确填写。
+            note(string): 补充说明，如为什么选择这个分支。
+            status(string): completed/running/skipped/blocked。
+        """
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            return "当前没有 active task。"
+        spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
+        self._normalize_agent_workflow(spec)
+        result = self._advance_task_workflow(
+            task,
+            spec,
+            node_id=node_id,
+            outcome=outcome,
+            next_node_id=next_node_id,
+            note=note,
+            status=status,
+        )
+        self.storage.save_task(task)
+        return result
 
     @filter.llm_tool(name="agent_lab_update_state")
     async def agent_lab_update_state(
@@ -897,6 +939,7 @@ class AgentLabPlugin(Star):
             },
             heartbeat=spec.heartbeat_policy,
         )
+        self._initialize_task_workflow(task, spec, source=source)
         task.add_log("created", f"goal={goal}; source={source}; risk={risk_level}")
         task.add_snapshot("created", {"source": source, "risk_level": risk_level})
         self.storage.save_task(task)
@@ -1149,6 +1192,7 @@ class AgentLabPlugin(Star):
             "agent_lab_read_state",
             "agent_lab_read_task_memory",
             "agent_lab_update_state",
+            "agent_lab_advance_workflow",
             "agent_lab_request_approval",
             "agent_lab_set_heartbeat",
             "agent_lab_finish",
@@ -1210,6 +1254,135 @@ class AgentLabPlugin(Star):
             if tool:
                 toolset.add_tool(tool)
         return toolset
+
+    def _workflow_runtime_view(self, task: TaskState) -> dict[str, Any]:
+        spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
+        self._normalize_agent_workflow(spec)
+        current_id = task.workflow_current_node_id or self._workflow_entry_id(spec)
+        node_map = {str(node.get("id") or ""): node for node in spec.workflow_nodes}
+        outgoing = self._workflow_outgoing(spec)
+        current = node_map.get(current_id) or {}
+        candidates = [node_map[node_id] for node_id in outgoing.get(current_id, []) if node_id in node_map]
+        return {
+            "current_node_id": current_id,
+            "current_node": current,
+            "next_candidates": candidates,
+            "path": list(task.workflow_path or []),
+            "events": list(task.workflow_events or [])[-12:],
+        }
+
+    def _workflow_runtime_text(self, task: TaskState) -> str:
+        view = self._workflow_runtime_view(task)
+        node = view.get("current_node") or {}
+        candidates = view.get("next_candidates") or []
+        candidate_text = ", ".join(
+            f"{item.get('id')}({item.get('title') or item.get('action')})"
+            for item in candidates[:6]
+        ) or "-"
+        return (
+            f"current={view.get('current_node_id') or '-'} "
+            f"[{node.get('stage') or '-'} / {node.get('action') or '-'} / {node.get('kind') or '-'}] "
+            f"{node.get('title') or '-'}; next_candidates={candidate_text}; "
+            f"path={' -> '.join(view.get('path') or []) or '-'}"
+        )
+
+    def _initialize_task_workflow(self, task: TaskState, spec: AgentSpec, source: str = "") -> None:
+        self._normalize_agent_workflow(spec)
+        entry_id = self._workflow_entry_id(spec)
+        if not entry_id:
+            return
+        task.workflow_current_node_id = entry_id
+        task.workflow_path = [entry_id]
+        task.add_workflow_event(
+            entry_id,
+            status="entered",
+            outcome="任务进入工作流。",
+            note=f"source={source}" if source else "",
+        )
+
+    @staticmethod
+    def _workflow_entry_id(spec: AgentSpec) -> str:
+        for node in spec.workflow_nodes:
+            if node.get("action") == "summarize_entry":
+                return str(node.get("id") or "")
+        for node in spec.workflow_nodes:
+            if node.get("stage") == "entry":
+                return str(node.get("id") or "")
+        return str(spec.workflow_nodes[0].get("id") or "") if spec.workflow_nodes else ""
+
+    @staticmethod
+    def _workflow_outgoing(spec: AgentSpec) -> dict[str, list[str]]:
+        result: dict[str, list[str]] = {}
+        for edge in spec.workflow_edges:
+            start = str(edge.get("from") or "")
+            end = str(edge.get("to") or "")
+            if not start or not end:
+                continue
+            result.setdefault(start, []).append(end)
+        return result
+
+    def _advance_task_workflow(
+        self,
+        task: TaskState,
+        spec: AgentSpec,
+        *,
+        node_id: str = "",
+        outcome: str = "",
+        next_node_id: str = "",
+        note: str = "",
+        status: str = "completed",
+    ) -> str:
+        self._normalize_agent_workflow(spec)
+        node_map = {str(node.get("id") or ""): node for node in spec.workflow_nodes}
+        if not node_map:
+            return "当前 AgentSpec 没有工作流节点。"
+        current_id = str(node_id or task.workflow_current_node_id or self._workflow_entry_id(spec)).strip()
+        if current_id not in node_map:
+            return f"未找到工作流节点：{current_id}"
+        outgoing = self._workflow_outgoing(spec)
+        candidates = outgoing.get(current_id, [])
+        target = str(next_node_id or "").strip()
+        if not target and len(candidates) == 1:
+            target = candidates[0]
+        if target and target not in node_map:
+            return f"未找到下一工作流节点：{target}"
+        if target and candidates and target not in candidates:
+            note = (note + f"\nmanual_jump_from={current_id}").strip()
+
+        task.add_workflow_event(
+            current_id,
+            outcome=outcome,
+            note=note,
+            next_node_id=target,
+            status=status if status in {"completed", "running", "skipped", "blocked", "entered"} else "completed",
+        )
+        if target:
+            task.workflow_current_node_id = target
+            if not task.workflow_path or task.workflow_path[-1] != target:
+                task.workflow_path.append(target)
+                task.workflow_path = task.workflow_path[-80:]
+            task.add_log("workflow", f"{current_id} -> {target}: {self._compact_text(outcome or note, 300)}")
+        else:
+            task.workflow_current_node_id = current_id
+            task.add_log("workflow", f"{current_id}: {self._compact_text(outcome or note, 300)}")
+        task.add_snapshot(
+            "workflow",
+            {
+                "node_id": current_id,
+                "next_node_id": target,
+                "candidates": candidates,
+                "outcome": outcome,
+                "note": note,
+            },
+        )
+        next_candidates = outgoing.get(task.workflow_current_node_id, [])
+        next_text = ", ".join(next_candidates) or "-"
+        return (
+            f"工作流已记录：{current_id}"
+            f"{' -> ' + target if target else ''}。\n"
+            f"当前节点：{task.workflow_current_node_id or current_id}\n"
+            f"下一候选：{next_text}"
+        )
 
     def _build_task_extensions_prompt(self, spec: AgentSpec) -> str:
         sections = []

@@ -89,6 +89,7 @@ Expected:
 - `agents/<agent_id>.json` exists.
 - `sessions/<umo_hash>/task_<id>.json` exists after start.
 - `sessions/<umo_hash>/task_<id>.md` contains progress log.
+- `task_<id>.json` contains `workflow_current_node_id`, `workflow_path`, and `workflow_events`; markdown contains `Workflow Cursor`.
 - `archives/<umo_hash>/task_<id>.md` exists after finish.
 
 ## Heartbeat Checks
