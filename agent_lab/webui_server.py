@@ -90,6 +90,10 @@ class StandaloneWebUIServer:
         async def workflow_check():
             return await self._guard(self.owner.api_workflow_check)
 
+        @app.route("/api/workflow/dry-run", methods=["GET", "POST"])
+        async def workflow_dry_run():
+            return await self._guard(self.owner.api_workflow_dry_run)
+
         @app.route("/api/integrations", methods=["GET", "POST"])
         async def integrations():
             return await self._guard(self.owner.api_modules)

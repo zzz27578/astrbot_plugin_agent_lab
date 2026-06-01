@@ -32,6 +32,17 @@ class FakeWebOwner:
 
         return jsonify({"ok": True, "workflow": {"valid": True, "issues": []}})
 
+    async def api_workflow_dry_run(self):
+        from quart import jsonify
+
+        return jsonify(
+            {
+                "ok": True,
+                "workflow": {"valid": True, "issues": []},
+                "dry_run": {"executable": True, "primary_path": ["entry", "archive"]},
+            }
+        )
+
     api_modules = api_agents
     api_registry = api_agents
     api_memory = api_agents
@@ -57,11 +68,13 @@ async def smoke_webui_server() -> None:
     ok = await client.get("/api/state", headers={"X-Agent-Lab-Token": "secret"})
     modules = await client.get("/api/modules", headers={"X-Agent-Lab-Token": "secret"})
     workflow = await client.post("/api/workflow/check", headers={"X-Agent-Lab-Token": "secret"})
+    dry_run = await client.post("/api/workflow/dry-run", headers={"X-Agent-Lab-Token": "secret"})
     page = await client.get("/")
     assert denied.status_code == 401
     assert ok.status_code == 200
     assert modules.status_code == 200
     assert workflow.status_code == 200
+    assert dry_run.status_code == 200
     assert page.status_code == 200
 
 

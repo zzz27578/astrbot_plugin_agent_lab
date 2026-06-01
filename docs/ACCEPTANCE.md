@@ -32,19 +32,22 @@ Note:
 
 WebUI 预期：
 
-- Shows sidebar pages: Dashboard, Canvas, Tasks/Memory, Monitor, Plugins/Integrations.
+- Shows sidebar pages: Dashboard, Task Mode Settings, Workflow Canvas, Task Memory, Tasks/Memory, Monitor, Plugins/Integrations.
 - Shows current Bot label and identity source; it must come from AstrBot Persona/config when available, not a hardcoded character name.
 - Leaving the Canvas configuration name empty should keep `identity_label_source=astrbot_runtime` and use the current AstrBot Persona/config label.
 - Agents can be selected, duplicated, created, and marked as default in Canvas.
-- Canvas workflow is large enough to pan horizontally, supports zoom, focus mode, minimap, node dragging, blank-canvas panning, edge-port linking from node border dots by drag or click-to-connect, edge deletion, auto layout, workflow check, and standard/emergency/parallel/API/code/memory templates.
-- Canvas node library groups entry, isolation, memory, planning, parallel, tool, API, safety, validation, and exit modules so common task-mode blocks do not require hand-written JSON.
-- Canvas toolbox can add AstrBot plugin, custom API, and whitelisted tool modules as workflow nodes, and node inspector can edit instruction, condition, and node prompt without exposing X/Y coordinate fields.
-- Workflow check reports missing entry/archive, entry summary, isolation snapshot, task memory, unreachable nodes, invalid API refs, isolated plugins, and tools outside whitelist.
+- Task Mode Settings keeps triggers, entry/exit phrases, confirmation copy, isolation, memory, approval, heartbeat, and prompts separate from the large workflow diagram.
+- Workflow Canvas is large enough to pan horizontally, supports zoom, focus mode, minimap, node dragging without snapping viewport back to origin, blank-canvas panning, edge-port linking from node border dots by drag or click-to-connect, colored node-matching edges, right-click copy/delete, edge deletion, auto layout, workflow check, and a dry-run diagnosis.
+- Workflow Canvas collapses the left nav by default, can expand it again, uses a right-side module drawer, and opens a right-side node inspector for left-click editing.
+- Canvas node library groups entry, isolation, input, memory, planning, parallel, tool, API, safety, validation, and exit modules so common task-mode blocks do not require hand-written JSON.
+- Canvas toolbox can add AstrBot plugin, custom API, and whitelisted tool modules as workflow nodes, and node inspector can edit instruction, condition, path/url, input/output variables, tags, and node prompt without forcing users to edit X/Y coordinates.
+- Workflow check and dry-run report missing entry/archive, entry summary, isolation snapshot, task memory, unreachable nodes, invalid API refs, isolated plugins, tools outside whitelist, file/document modules without inputs, dangerous actions without approval gates, and memory save nodes without tags/schema/prompt.
 - Parallel branch nodes can be executed by `agent_lab_run_parallel_workflow`; API workers call registered Custom APIs, prompt/plugin/tool workers run through a restricted AstrBot `tool_loop_agent`, and task details show the resulting worker statuses.
 - Dashboard Agent rows show per-configuration health, active count, trigger count, token total, and pending approval count.
 - Shows active tasks and archives.
 - Task/Memory console can select both active and archived tasks and show structured state fields, pending approvals, and snapshot timeline.
 - Task/memory console has tick/heartbeat/finish/cancel actions.
+- Task Memory page can filter memories, show detail and continuation draft, accept/reject/delete memory rows, and send a memory or archived task into a new task brief.
 - Plugins/Integrations uses sub-pages or equivalent navigation so large plugin/tool/blueprint lists are not one flat page.
 - Shows AstrBot plugins separately from external integration blueprints.
 - Agent Lab plugin itself is locked and cannot be disabled from its own task profile.
@@ -158,13 +161,16 @@ In Agent Lab standalone console:
 10. Toggle an integration blueprint and edit its schema-rendered fine settings; confirm advanced JSON is still available.
 11. Import or update a custom external blueprint manifest from the blueprints page.
 12. Add a workflow node.
-13. Drag a workflow node and confirm the position changes without resizing the canvas oddly.
+13. Drag a workflow node and confirm the position changes without resizing the canvas oddly or snapping the viewport back to the origin.
 14. Add a node from the node material toolbox.
-15. Edit the selected workflow node title/kind/description.
-16. Add and delete a workflow edge.
-17. Save AgentSpec.
-18. Duplicate the AgentSpec.
-19. Set the duplicate as default.
+15. Edit the selected workflow node title/kind/description/path or variable/tags.
+16. Add and delete a workflow edge from the node border dots.
+17. Right-click a workflow node and confirm copy/delete works.
+18. Run workflow check and dry-run diagnosis.
+19. Open Task Memory, select a memory, and send memory/archive context into a new task brief.
+20. Save AgentSpec.
+21. Duplicate the AgentSpec.
+22. Set the duplicate as default.
 20. Refresh.
 
 Expected:
@@ -252,6 +258,6 @@ Expected:
 ## 已知边界
 
 - 第一版默认只支持私聊。
-- 桌面画布支持节点素材、节点拖拽、节点编辑和连线编辑；移动端自动使用按阶段分组的节点卡片。连线拖拽创建、运行态高亮和复杂分组仍属于后续增强。
+- 桌面画布支持节点素材、节点拖拽、节点编辑、圆点拉线、右键复制/删除、彩色连线、静态检查和预跑诊断；移动端自动使用按阶段分组的节点卡片。运行态高亮和复杂分组仍属于后续增强。
 - 外部框架目前是集成蓝图、规范和 adapter contract，还不是内嵌完整 runtime。
 - 真实 shell/file/browser 能力取决于 AstrBot Computer Use runtime 和权限配置。

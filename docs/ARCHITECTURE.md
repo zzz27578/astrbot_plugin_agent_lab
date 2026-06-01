@@ -99,9 +99,11 @@ tick 结束时不会直接用进入 tick 前的旧对象覆盖文件，而是重
 - 自定义 API 模块：记录 `api_id`，运行时通过 `agent_lab_call_custom_api` 调用已注册 API，凭证由后端注入。
 - 工具模块：记录 `tool_name`，受工具白名单和来源插件状态约束。
 
-WebUI 画布使用大横向工作台表达这些节点，节点边框圆点支持拖拽连线和点选起点/终点连线，小地图和专注模式用于处理较大的任务流。节点素材库按入口、隔离、记忆、计划、并行、工具、API、安全、验证和出口分组，运行时插件/API/工具也能一键加入画布。
+WebUI 把“任务模式设置”和“工作流画布”拆开：设置页只管触发、隔离、记忆、审批、心跳和提示词；画布页使用独立大横向工作台表达节点和连线。画布参考 Dify 的 Start/End/Tool 节点边界、n8n 的节点连接心智模型和 React Flow 的 handle/edge 交互：节点边框圆点支持拖拽连线和点选起点/终点连线，小地图和专注模式用于处理较大的任务流，左侧导航进入画布时默认收缩但可展开，右侧素材抽屉和节点编辑抽屉负责添加/编辑模块。节点素材库按入口、隔离、输入、记忆、计划、并行、工具、API、安全、验证和出口分组，运行时插件/API/工具也能一键加入画布。
 
-`agent_lab_update_workflow` 是 bot 可调用的结构化编辑工具。它支持检查、增删改节点、增删连线、自动布局、绑定插件/API/工具/skill，以及写入 `prompt`、`condition` 和 `parallel_group`。检查器会把缺少入口/出口、入口摘要、隔离快照、任务记忆、不可达节点和无效模块引用标出来，避免前端画出来但后端无法解释。
+节点是拼图骨架加局部提示词，不是纯 prompt。结构化字段包括 `kind`、`stage`、`action`、`path/url`、`input_variable`、`output_variable`、`tags`、`condition`、`prompt`、`parallel_group` 和模块引用。开始/结束条件仍由 AgentSpec 的暗号、关键词、确认话术和退出暗号定义，但这些内容会落到入口/出口类节点里，方便在画布上查看和调整。
+
+`agent_lab_update_workflow` 是 bot 可调用的结构化编辑工具。它支持检查、增删改节点、增删连线、自动布局、绑定插件/API/工具/skill，以及写入 `prompt`、`condition` 和 `parallel_group`。检查器和 `/api/workflow/dry-run` 预跑诊断会把缺少入口/出口、入口摘要、隔离快照、任务记忆、不可达节点、未绑定 API、文件/文档类节点缺少输入、危险动作缺少审批和无效模块引用标出来，避免前端画出来但后端无法解释。
 
 运行中的任务会把画布落成可审计状态：
 
@@ -111,3 +113,5 @@ WebUI 画布使用大横向工作台表达这些节点，节点边框圆点支�
 
 `agent_lab_advance_workflow` 只负责记录和推进游标，不替代实际工具/API 调用；它把 Dify/n8n 风格的可视化连线变成 Agent Lab 的 task_state 证据层。
 `agent_lab_run_parallel_workflow` 负责把 `parallel_branch` 后续的独立工作包真正跑起来。API 节点复用已注册自定义 API 与凭证注入，提示词/插件/工具节点通过 AstrBot `tool_loop_agent` 以受限 ToolSet 执行；所有 worker 结果会写入 `parallel_runs`、`workflow_events`、快照和 Markdown。并行 worker 只产出证据和候选结论，主 Agent 仍要在汇总节点做冲突合并、验收和归档。
+
+任务记忆也从普通任务控制台中拆出独立页面：它读取 `memories` registry，展示来源任务、标签、普通模式可读状态、续写入口草稿和归档回档入口。记忆节点负责保存/暴露任务记忆，记忆页负责人工审查、保留/拒绝/删除和把记忆或归档任务带入下一次任务。

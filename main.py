@@ -2029,6 +2029,7 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "Agent Lab state")
         self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST"], "Agent specs")
         self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/check", self.api_workflow_check, ["GET", "POST"], "Check Agent workflow")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/dry-run", self.api_workflow_dry_run, ["GET", "POST"], "Dry-run Agent workflow")
         self.context.register_web_api(f"/{PLUGIN_NAME}/modules", self.api_modules, ["GET", "POST"], "Agent modules")
         self.context.register_web_api(f"/{PLUGIN_NAME}/registry", self.api_registry, ["GET", "POST"], "Agent integrations registry")
         self.context.register_web_api(f"/{PLUGIN_NAME}/memory", self.api_memory, ["GET", "POST", "DELETE"], "Agent memory entries")
@@ -2110,6 +2111,25 @@ class AgentLabPlugin(Star):
         spec = self.storage.get_agent(agent_id or None)
         self._normalize_agent_workflow(spec)
         return jsonify({"ok": True, "workflow": self._workflow_report(spec)})
+
+    async def api_workflow_dry_run(self):
+        if request.method == "POST":
+            payload = await request.get_json(force=True, silent=True) or {}
+            spec_payload = payload.get("agent") if isinstance(payload.get("agent"), dict) else payload
+            spec = AgentSpec.from_dict(spec_payload)
+            self._prepare_agent_spec_for_save(spec)
+        else:
+            agent_id = str(request.args.get("agent_id") or "")
+            spec = self.storage.get_agent(agent_id or None)
+            self._normalize_agent_workflow(spec)
+        workflow = self._workflow_report(spec)
+        return jsonify(
+            {
+                "ok": True,
+                "workflow": workflow,
+                "dry_run": self._workflow_dry_run_report(spec, workflow),
+            }
+        )
 
     async def api_modules(self):
         if request.method == "POST":
@@ -2771,7 +2791,7 @@ class AgentLabPlugin(Star):
             stage_index = stage_order.index(stage)
         except ValueError:
             stage_index = 1
-        return 70 + stage_index * 340, 90 + (index % 4) * 170
+        return 70 + stage_index * 560, 110 + (index % 6) * 215
 
     def _autolayout_workflow(self, spec: AgentSpec) -> None:
         self._normalize_agent_workflow(spec)
@@ -2781,8 +2801,8 @@ class AgentLabPlugin(Star):
             grouped.setdefault(str(node.get("stage") or "plan"), []).append(node)
         for stage_index, stage in enumerate(stage_order):
             for row_index, node in enumerate(grouped.get(stage, [])):
-                node["x"] = 70 + stage_index * 340
-                node["y"] = 90 + row_index * 170
+                node["x"] = 70 + stage_index * 560
+                node["y"] = 110 + row_index * 215
 
     def _workflow_report(self, spec: AgentSpec) -> dict[str, Any]:
         self._normalize_agent_workflow(spec)
@@ -2834,6 +2854,12 @@ class AgentLabPlugin(Star):
             for node in nodes
             if node.get("stage") == "guard" or node.get("kind") in {"guard", "human"}
         ]
+        has_approval_gate = any(
+            node.get("stage") == "guard"
+            or node.get("kind") in {"guard", "human"}
+            or node.get("action") in {"request_approval", "wait_user", "handoff"}
+            for node in nodes
+        )
         action_ids: dict[str, list[str]] = {}
         for node in nodes:
             action_ids.setdefault(str(node.get("action") or ""), []).append(str(node.get("id") or ""))
@@ -2880,6 +2906,36 @@ class AgentLabPlugin(Star):
                     add_issue("warn", "parallel_without_workers", "并行 Agent 分支至少需要两个后续工作包。", node_id)
             if node.get("kind") in {"subflow", "tool", "api"} and node.get("action") in {"manual", ""} and not str(node.get("prompt") or "").strip():
                 add_issue("warn", "module_without_prompt", "模块节点建议写入节点提示词或明确动作，否则运行时只能依赖泛化说明。", node_id)
+            node_text = " ".join(
+                str(node.get(key) or "")
+                for key in ("title", "description", "instruction", "prompt", "action", "kind")
+            ).lower()
+            file_like = bool(
+                re.search(
+                    r"file|path|document|write|delete|remove|\brm\b|patch|edit|文件|文档|路径|删除|写入|改动",
+                    node_text,
+                )
+            )
+            dangerous = bool(
+                re.search(
+                    r"delete|remove|\brm\b|deploy|write|patch|edit|restart|credential|删除|写入|部署|重启|密钥|覆盖",
+                    node_text,
+                )
+            )
+            if file_like and not str(
+                node.get("path")
+                or node.get("url")
+                or node.get("input_variable")
+                or node.get("ref_id")
+                or ""
+            ).strip():
+                add_issue("warn", "file_node_without_input", "文件/文档类模块需要写清 path、url 或上游变量。", node_id)
+            if dangerous and not has_approval_gate and node.get("stage") != "guard":
+                add_issue("warn", "danger_without_approval", "高风险写入/删除/部署动作前建议接入审批模块。", node_id)
+            if node.get("action") == "save_memory" and not str(
+                node.get("tags") or node.get("memory_tags") or node.get("prompt") or node.get("instruction") or ""
+            ).strip():
+                add_issue("warn", "memory_without_schema", "任务记忆模块需要写清标签、摘要规则或保存字段。", node_id)
             if node.get("kind") == "api" or node.get("action") == "call_api":
                 api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
                 if api_id:
@@ -2931,6 +2987,99 @@ class AgentLabPlugin(Star):
             "guard_nodes": guard_ids,
             "memory_nodes": action_ids.get("save_memory", []),
             "issues": issues,
+        }
+
+    def _workflow_dry_run_report(
+        self, spec: AgentSpec, workflow: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        self._normalize_agent_workflow(spec)
+        workflow = workflow or self._workflow_report(spec)
+        nodes = [item for item in spec.workflow_nodes if isinstance(item, dict)]
+        edges = [item for item in spec.workflow_edges if isinstance(item, dict)]
+        node_map = {str(node.get("id") or ""): node for node in nodes}
+        outgoing: dict[str, list[str]] = {node_id: [] for node_id in node_map}
+        incoming: dict[str, list[str]] = {node_id: [] for node_id in node_map}
+        for edge in edges:
+            start = str(edge.get("from") or "")
+            end = str(edge.get("to") or "")
+            if start in node_map and end in node_map:
+                outgoing.setdefault(start, []).append(end)
+                incoming.setdefault(end, []).append(start)
+
+        entry_ids = list(workflow.get("entry_nodes") or []) or [
+            str(node.get("id") or "")
+            for node in nodes
+            if node.get("stage") == "entry" or node.get("action") in {"summarize_entry", "confirm_entry"}
+        ]
+        terminal_ids = set(workflow.get("terminal_nodes") or [])
+        current = entry_ids[0] if entry_ids else ""
+        primary_path: list[str] = []
+        visited: set[str] = set()
+        while current and current not in visited and len(primary_path) < 80:
+            visited.add(current)
+            primary_path.append(current)
+            if current in terminal_ids:
+                break
+            candidates = outgoing.get(current, [])
+            if not candidates:
+                break
+            current = candidates[0]
+
+        branch_nodes = [
+            node_id
+            for node_id, node in node_map.items()
+            if node.get("kind") == "branch" or len(outgoing.get(node_id, [])) > 1
+        ]
+        parallel_nodes = [
+            node_id
+            for node_id, node in node_map.items()
+            if node.get("action") == "parallel_branch"
+        ]
+        merge_candidates = [
+            node_id
+            for node_id, inputs in incoming.items()
+            if len(inputs) > 1
+        ]
+        notes: list[dict[str, str]] = []
+
+        def add_note(level: str, message: str, node_id: str = "") -> None:
+            notes.append({"level": level, "message": message, "node_id": node_id})
+
+        if not entry_ids:
+            add_note("error", "无法预跑：没有入口节点。")
+        if not terminal_ids:
+            add_note("error", "无法证明能结束：没有出口/归档节点。")
+        if primary_path and primary_path[-1] not in terminal_ids:
+            add_note("warn", "主路径没有抵达出口模块，请检查断开的连线。", primary_path[-1])
+        if parallel_nodes and not merge_candidates:
+            add_note("warn", "发现并行分支，但没有明显的多输入汇总节点。", parallel_nodes[0])
+        for node_id in branch_nodes:
+            if len(outgoing.get(node_id, [])) < 2:
+                add_note("warn", "分支/条件节点输出不足，预跑只能走单路径。", node_id)
+        for node_id in primary_path:
+            node = node_map.get(node_id, {})
+            if node.get("kind") == "api" or node.get("action") == "call_api":
+                api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
+                add_note("info" if api_id else "warn", f"API 节点绑定：{api_id or '未绑定'}。", node_id)
+            if node.get("action") in {"request_approval", "wait_user", "handoff"} or node.get("kind") in {"guard", "human"}:
+                add_note("info", "预跑会在这里等待用户确认或审批，不会自动越过。", node_id)
+            if node.get("action") == "save_memory":
+                add_note("info", "任务记忆节点会写入独立记忆区，退出后可回看/续写。", node_id)
+
+        executable = bool(workflow.get("valid")) and bool(primary_path) and (
+            not terminal_ids or primary_path[-1] in terminal_ids
+        )
+        if not notes:
+            add_note("ok", "静态预跑未发现阻塞；真实执行仍会受审批、工具可用性和模型判断影响。")
+        return {
+            "summary": "静态预跑完成" if executable else "静态预跑发现阻塞",
+            "executable": executable,
+            "primary_path": primary_path,
+            "branch_nodes": branch_nodes,
+            "parallel_nodes": parallel_nodes,
+            "merge_candidates": merge_candidates,
+            "notes": notes,
+            "workflow": workflow,
         }
 
     @staticmethod
