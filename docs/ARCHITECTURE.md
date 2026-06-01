@@ -86,3 +86,15 @@ agent_lab_update_state
 同时 `AgentLabRunHooks` 会记录工具开始、工具结束和 agent done 事件，作为审计日志写进 `progress_log`。
 
 tick 结束时不会直接用进入 tick 前的旧对象覆盖文件，而是重新读取最新 active task：如果工具已经调用 `agent_lab_update_state`，则保留工具写回的进度；如果工具已经调用 `agent_lab_finish` 完成归档，则不再重建 active task。
+
+## 工作流画布
+
+工作流不是独立替换 bot 的 Agent，而是 AgentSpec 里的任务模式路线图。运行时提示会把节点、连线、模块引用和节点提示词注入给当前 AstrBot 身份，让 bot 在进入任务模式后按画布执行入口摘要、隔离、计划、执行、审批、记忆和出口归档。
+
+节点可绑定三类真实能力：
+
+- AstrBot 插件模块：记录 `plugin_name`，受 AgentSpec 会话隔离约束，不能复活全局停用插件。
+- 自定义 API 模块：记录 `api_id`，运行时通过 `agent_lab_call_custom_api` 调用已注册 API，凭证由后端注入。
+- 工具模块：记录 `tool_name`，受工具白名单和来源插件状态约束。
+
+`agent_lab_update_workflow` 是 bot 可调用的结构化编辑工具。它支持检查、增删改节点、增删连线、自动布局、绑定插件/API/工具/skill，以及写入 `prompt`、`condition` 和 `parallel_group`。检查器会把缺少入口/出口、入口摘要、隔离快照、任务记忆、不可达节点和无效模块引用标出来，避免前端画出来但后端无法解释。

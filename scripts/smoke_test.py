@@ -27,6 +27,11 @@ class FakeWebOwner:
 
         return jsonify({"ok": True})
 
+    async def api_workflow_check(self):
+        from quart import jsonify
+
+        return jsonify({"ok": True, "workflow": {"valid": True, "issues": []}})
+
     api_modules = api_agents
     api_registry = api_agents
     api_memory = api_agents
@@ -51,10 +56,12 @@ async def smoke_webui_server() -> None:
     denied = await client.get("/api/state")
     ok = await client.get("/api/state", headers={"X-Agent-Lab-Token": "secret"})
     modules = await client.get("/api/modules", headers={"X-Agent-Lab-Token": "secret"})
+    workflow = await client.post("/api/workflow/check", headers={"X-Agent-Lab-Token": "secret"})
     page = await client.get("/")
     assert denied.status_code == 401
     assert ok.status_code == 200
     assert modules.status_code == 200
+    assert workflow.status_code == 200
     assert page.status_code == 200
 
 
@@ -122,6 +129,8 @@ def main() -> None:
         assert {"stage", "action", "instruction", "x", "y"}.issubset(
             spec.workflow_nodes[0]
         )
+        assert any(node.get("id") == "parallel_research" and node.get("prompt") for node in spec.workflow_nodes)
+        assert {"from": "parallel_branch", "to": "parallel_research"} in spec.workflow_edges
         assert store.default_agent_id() == spec.agent_id
 
         credential = store.save_credential(

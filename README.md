@@ -232,7 +232,7 @@ astrbot_execute_python
 独立控制台是 Agent Lab 的主操作面：
 
 - **仪表盘与列表**：看 Agent 资产、当前任务、任务触发量、心跳在线/异常和 Token 消耗概览；每个任务模式配置会汇总运行数、触发数、Token、待审批和在线/离线/报错状态。
-- **可视化编排画布**：配置任务模式补充提示词、触发策略、记忆/审批/心跳策略和流程节点。节点和连线可在面板中编辑，JSON 仅作为高级导入/导出兜底；这里不重建 bot 身份，只继承 AstrBot 运行时解析出的身份。
+- **可视化编排画布**：配置任务模式补充提示词、触发策略、记忆/审批/心跳策略和流程节点。画布支持大尺寸横向流程、缩放、拖拽节点、节点边缘圆点拉线、点击连线删除、工作流检查、模板切换和 JSON 导入/导出兜底；这里不重建 bot 身份，只继承 AstrBot 运行时解析出的身份。
 - **任务与记忆控制台**：用 UMO 创建任务、手动 tick、开心跳、关心跳、完成归档、取消归档；可审查 active 与历史归档任务的结构化状态、待审批、状态快照时间线，并筛选/修剪出口记忆候选。
 - **实例与心跳监控**：查看运行中任务的心跳健康状态、超时告警、状态曲线和实时日志，并进行任务级停止/心跳控制。
 - **插件与集成**：用页内左侧子导航管理 AstrBot 插件隔离、注册工具白名单、自定义 API、凭证、任务专用 skills，以及外部方案蓝图。
@@ -244,6 +244,8 @@ astrbot_execute_python
 “插件与集成 -> AstrBot 插件隔离”只作用于 Agent Mode 会话，不会改 AstrBot 全局插件开关。AstrBot 全局停用的插件固定关闭，Agent Mode 不能绕过原生插件管理把它复活；在 Agent Mode 中关闭某插件时，该插件来源的注册工具会同步从当前 Agent 的工具白名单中移除。后端保存 AgentSpec 时也会再次清理这些工具，防止绕过 WebUI 写回不一致状态。
 
 “插件与集成 -> 注册工具”会按来源插件折叠显示工具，并允许为当前 AgentSpec 覆盖 `safe/work/high` 风险等级。右侧审批策略可编辑预授权范围、必须审批动作和审批备注；这些不会硬性截断工具，而是写入任务模式提示，让 bot 在计划和调用工具前主动判断。
+
+工作流画布的工具箱会把 AstrBot 插件、自定义 API 和当前工具白名单作为可点击模块放进流程节点。插件模块会记录 `plugin_name`，API 模块会记录 `api_id` 并通过 `agent_lab_call_custom_api` 调用，工具模块会记录 `tool_name`；节点还能写入 `prompt`、`condition` 和 `parallel_group`，用于并行 Agent 分支或子流程分工。Bot 也可以通过 `agent_lab_update_workflow` 检查、增删改节点/连线、绑定模块和写入节点提示词。
 
 “插件与集成 -> 外部方案蓝图”可以查看、加入、精细配置或导入/更新蓝图 manifest。用户自定义蓝图会写入 `plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json`，框架升级时不会覆盖这部分数据；相同 `module_id` 的用户蓝图会覆盖内置蓝图，方便你按自己的工作流改规则。
 
@@ -322,7 +324,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 - 默认 Agent 展示名从 AstrBot 运行时身份读取，WebUI 会显示来源是 Persona、配置名称还是兜底占位。
 - 自定义 API、加密凭证和 `agent_lab_call_custom_api` 工具已打通。
 - `agent-mode` Skill 支持 WebUI 自定义规则同步。
-- 可视化编排画布支持节点素材、节点拖拽、节点/连线编辑，不再只能手改 workflow JSON；小屏会自动切成按阶段分组的中文节点卡片，避免在手机上横向拖超宽画布。
+- 可视化编排画布支持节点素材、运行时模块、节点拖拽、圆点拉线、连线删除、缩放、自动布局、工作流检查和多模板切换，不再只能手改 workflow JSON；小屏会自动切成按阶段分组的中文节点卡片，避免在手机上横向拖超宽画布。
 - 工具支持风险分组、风险覆盖和可编辑审批策略。
 - 外部方案蓝图支持按 `settings_schema` 渲染精细设置表单，并保存到 `module_settings`。
 - 仪表盘 Agent 资产列表会按配置聚合心跳健康、任务触发、Token 和待审批数量。
@@ -334,7 +336,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 
 后续可以继续增强：
 
-- 连线拖拽创建、节点分组折叠和运行态高亮。
+- 节点分组折叠、运行态高亮和真正的并行 runner adapter。
 - 更完整的 provider token usage 统计；当前只汇总 provider 已上报的 usage。
 - 更细的工具危险等级和凭证管理。
 - 对接外部 memory store。

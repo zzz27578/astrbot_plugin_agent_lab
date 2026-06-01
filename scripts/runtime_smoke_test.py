@@ -184,6 +184,7 @@ async def main() -> None:
         plugin = plugin_main.AgentLabPlugin(FakeContext(), config={"private_only": True})
         plugin.guard = FakeGuard()
         event = FakeEvent()
+        assert any(route.endswith("/workflow/check") for route, _, _ in plugin.context.web_apis)
         assert plugin.storage.get_agent().name == "测试人格 Agent Mode"
         assert plugin._runtime_identity_payload()["bot_label_source"] == "astrbot_persona"
         spec = plugin.storage.get_agent()
@@ -366,6 +367,50 @@ async def main() -> None:
                 "auth_header": "X-Test-Key",
             }
         )
+        workflow_update = await plugin.agent_lab_update_workflow(
+            event,
+            operation="add_node",
+            title="Runtime API 节点",
+            kind="api",
+            stage="execute",
+            action="call_api",
+            instruction="调用 runtime smoke API。",
+            ref_type="api",
+            ref_id=api_spec["api_id"],
+        )
+        assert '"changed": true' in workflow_update
+        prompt_update = await plugin.agent_lab_update_workflow(
+            event,
+            operation="add_node",
+            title="Runtime Prompt Worker",
+            kind="subflow",
+            stage="execute",
+            action="manual",
+            instruction="并行提示词工作包。",
+            prompt="只处理 runtime smoke 分配的子任务，输出结构化结论。",
+            parallel_group="runtime_smoke",
+        )
+        assert '"changed": true' in prompt_update
+        workflow_report = plugin._workflow_report(plugin.storage.get_agent())
+        assert workflow_report["errors"] == 0
+        assert any(
+            node.get("api_id") == api_spec["api_id"]
+            for node in plugin.storage.get_agent().workflow_nodes
+        )
+        assert any(
+            node.get("parallel_group") == "runtime_smoke" and node.get("prompt")
+            for node in plugin.storage.get_agent().workflow_nodes
+        )
+        invalid_api_spec = plugin_main.AgentSpec(
+            workflow_nodes=[
+                {"id": "entry", "stage": "entry", "action": "summarize_entry", "instruction": "entry"},
+                {"id": "api", "stage": "execute", "kind": "api", "action": "call_api", "api_id": "missing-api", "instruction": "call missing api"},
+                {"id": "archive", "stage": "archive", "action": "exit_summary", "instruction": "archive"},
+            ],
+            workflow_edges=[{"from": "entry", "to": "api"}, {"from": "api", "to": "archive"}],
+        )
+        invalid_report = plugin._workflow_report(invalid_api_spec)
+        assert any(issue["code"] == "missing_api" for issue in invalid_report["issues"])
         api_call = {}
 
         def fake_custom_api_call(method, url, query, body, headers, timeout_seconds):

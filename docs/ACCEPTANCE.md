@@ -36,6 +36,9 @@ WebUI 预期：
 - Shows current Bot label and identity source; it must come from AstrBot Persona/config when available, not a hardcoded character name.
 - Leaving the Canvas configuration name empty should keep `identity_label_source=astrbot_runtime` and use the current AstrBot Persona/config label.
 - Agents can be selected, duplicated, created, and marked as default in Canvas.
+- Canvas workflow is large enough to pan horizontally, supports zoom, node dragging, edge-port linking from node border dots, edge deletion, auto layout, workflow check, and standard/emergency/parallel/API templates.
+- Canvas toolbox can add AstrBot plugin, custom API, and whitelisted tool modules as workflow nodes, and node inspector can edit instruction, condition, and node prompt without exposing X/Y coordinate fields.
+- Workflow check reports missing entry/archive, entry summary, isolation snapshot, task memory, unreachable nodes, invalid API refs, isolated plugins, and tools outside whitelist.
 - Dashboard Agent rows show per-configuration health, active count, trigger count, token total, and pending approval count.
 - Shows active tasks and archives.
 - Task/Memory console can select both active and archived tasks and show structured state fields, pending approvals, and snapshot timeline.

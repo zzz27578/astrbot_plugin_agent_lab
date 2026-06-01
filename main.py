@@ -47,6 +47,45 @@ NO_EXTERNAL_TOOLS_SENTINEL = "__agent_lab_no_external_tools__"
 CUSTOM_API_TOOL_NAME = "agent_lab_call_custom_api"
 DEFAULT_BOT_LABEL = "当前 Bot"
 AGENT_NAME_SUFFIX = " Agent Mode"
+WORKFLOW_KINDS = {
+    "state",
+    "tool",
+    "guard",
+    "human",
+    "api",
+    "memory",
+    "branch",
+    "loop",
+    "transform",
+    "retrieval",
+    "subflow",
+    "notification",
+    "validation",
+}
+WORKFLOW_ACTIONS = {
+    "confirm_entry",
+    "summarize_entry",
+    "restore_isolation",
+    "plan",
+    "route_condition",
+    "parallel_branch",
+    "run_tools",
+    "call_api",
+    "transform_context",
+    "retrieve_memory",
+    "request_approval",
+    "wait_user",
+    "handoff",
+    "validate_output",
+    "retry",
+    "save_state",
+    "save_memory",
+    "heartbeat",
+    "notify",
+    "archive",
+    "exit_summary",
+    "manual",
+}
 AUTO_IDENTITY_LABEL_SOURCES = {
     "astrbot_runtime",
     "astrbot_persona",  # legacy value kept for existing AgentSpec files.
@@ -119,6 +158,11 @@ BUILTIN_TOOL_CATALOG = [
         "name": "agent_lab_read_task_memory",
         "description": "Read tagged Agent Lab task memories without entering Agent Mode.",
         "risk": "safe",
+    },
+    {
+        "name": "agent_lab_update_workflow",
+        "description": "Check or edit Agent Lab workflow nodes and edges.",
+        "risk": "work",
     },
 ]
 
@@ -525,6 +569,186 @@ class AgentLabPlugin(Star):
             self.storage.save_task(task)
         return json.dumps(result, ensure_ascii=False, indent=2)
 
+    @filter.llm_tool(name="agent_lab_update_workflow")
+    async def agent_lab_update_workflow(
+        self,
+        event: AstrMessageEvent,
+        operation: str,
+        agent_id: str = "",
+        node_id: str = "",
+        title: str = "",
+        kind: str = "state",
+        stage: str = "plan",
+        action: str = "manual",
+        description: str = "",
+        instruction: str = "",
+        prompt: str = "",
+        condition: str = "",
+        parallel_group: str = "",
+        from_node: str = "",
+        to_node: str = "",
+        ref_type: str = "",
+        ref_id: str = "",
+    ) -> str:
+        """修改或检查 AgentSpec 工作流，让 Bot 能按用户要求调整某个环节。
+
+        Args:
+            operation(string): check/add_node/update_node/delete_node/add_edge/delete_edge/autolayout。
+            agent_id(string): 可选 AgentSpec ID；为空时修改默认 AgentSpec。
+            node_id(string): 节点 ID。新增时为空会自动生成。
+            title(string): 节点标题。
+            kind(string): state/tool/guard/human/api/memory/branch/loop/transform/retrieval/subflow/notification/validation。
+            stage(string): entry/plan/execute/guard/checkpoint/archive。
+            action(string): 节点动作，如 run_tools、call_api、validate_output。
+            description(string): 节点短说明。
+            instruction(string): 该环节的执行说明。
+            prompt(string): 并行 Agent、子流程或提示词模块的专用提示词。
+            condition(string): 分支或连线判断条件说明。
+            parallel_group(string): 并行分支分组名。
+            from_node(string): 连线起点。
+            to_node(string): 连线终点。
+            ref_type(string): 可选引用类型：plugin/api/tool/skill。
+            ref_id(string): 可选引用 ID，例如 plugin_name、api_id、tool_name、skill_name。
+        """
+        operation = str(operation or "check").strip().lower()
+        spec = self.storage.get_agent(agent_id or None)
+        self._normalize_agent_workflow(spec)
+
+        changed = False
+        if operation == "check":
+            return json.dumps(self._workflow_report(spec), ensure_ascii=False, indent=2)
+        if operation == "autolayout":
+            self._autolayout_workflow(spec)
+            changed = True
+        elif operation == "add_node":
+            ref_type_clean = str(ref_type or "").strip().lower()
+            if not ref_type_clean and ref_id:
+                if kind == "api" or action == "call_api":
+                    ref_type_clean = "api"
+                elif kind == "tool" or action == "run_tools":
+                    ref_type_clean = "tool"
+                elif kind == "subflow":
+                    ref_type_clean = "plugin"
+            base = node_id or title or kind or "node"
+            new_id = self._unique_workflow_id(
+                self._normalize_workflow_id(base),
+                {str(item.get("id") or "") for item in spec.workflow_nodes},
+            )
+            node = {
+                "id": new_id,
+                "title": str(title or new_id).strip()[:80],
+                "kind": kind if kind in WORKFLOW_KINDS else "state",
+                "stage": stage if stage in {"entry", "plan", "execute", "guard", "checkpoint", "archive"} else "plan",
+                "action": action if action in WORKFLOW_ACTIONS else "manual",
+                "description": str(description or "").strip()[:500],
+                "instruction": str(instruction or title or new_id).strip()[:1000],
+            }
+            if prompt:
+                node["prompt"] = str(prompt).strip()[:4000]
+            if condition:
+                node["condition"] = str(condition).strip()[:1000]
+            if parallel_group:
+                node["parallel_group"] = str(parallel_group).strip()[:80]
+            if ref_type_clean:
+                node["ref_type"] = ref_type_clean
+            if ref_id:
+                node["ref_id"] = str(ref_id).strip()
+                if node.get("ref_type") == "api":
+                    node["api_id"] = str(ref_id).strip()
+                if node.get("ref_type") == "plugin":
+                    node["plugin_name"] = str(ref_id).strip()
+                if node.get("ref_type") == "tool":
+                    node["tool_name"] = str(ref_id).strip()
+                if node.get("ref_type") == "skill":
+                    node["skill_name"] = str(ref_id).strip()
+            node["x"], node["y"] = self._workflow_default_position(node["stage"], len(spec.workflow_nodes))
+            spec.workflow_nodes.append(node)
+            node_id = new_id
+            changed = True
+        elif operation == "update_node":
+            node = next((item for item in spec.workflow_nodes if item.get("id") == node_id), None)
+            if not node:
+                return f"未找到工作流节点：{node_id}"
+            if title:
+                node["title"] = str(title).strip()[:80]
+            if kind:
+                node["kind"] = kind if kind in WORKFLOW_KINDS else node.get("kind", "state")
+            if stage:
+                node["stage"] = stage if stage in {"entry", "plan", "execute", "guard", "checkpoint", "archive"} else node.get("stage", "plan")
+            if action:
+                node["action"] = action if action in WORKFLOW_ACTIONS else node.get("action", "manual")
+            if description:
+                node["description"] = str(description).strip()[:500]
+            if instruction:
+                node["instruction"] = str(instruction).strip()[:1000]
+            if prompt:
+                node["prompt"] = str(prompt).strip()[:4000]
+            if condition:
+                node["condition"] = str(condition).strip()[:1000]
+            if parallel_group:
+                node["parallel_group"] = str(parallel_group).strip()[:80]
+            if ref_type:
+                node["ref_type"] = str(ref_type).strip().lower()
+            if ref_id:
+                node["ref_id"] = str(ref_id).strip()
+                if node.get("ref_type") == "api":
+                    node["api_id"] = str(ref_id).strip()
+                if node.get("ref_type") == "plugin":
+                    node["plugin_name"] = str(ref_id).strip()
+                if node.get("ref_type") == "tool":
+                    node["tool_name"] = str(ref_id).strip()
+                if node.get("ref_type") == "skill":
+                    node["skill_name"] = str(ref_id).strip()
+            changed = True
+        elif operation == "delete_node":
+            before = len(spec.workflow_nodes)
+            spec.workflow_nodes = [item for item in spec.workflow_nodes if item.get("id") != node_id]
+            spec.workflow_edges = [
+                edge
+                for edge in spec.workflow_edges
+                if edge.get("from") != node_id and edge.get("to") != node_id
+            ]
+            changed = before != len(spec.workflow_nodes)
+            if not changed:
+                return f"未找到工作流节点：{node_id}"
+        elif operation == "add_edge":
+            if not from_node or not to_node:
+                return "add_edge 需要 from_node 和 to_node。"
+            ids = {item.get("id") for item in spec.workflow_nodes}
+            if from_node not in ids or to_node not in ids or from_node == to_node:
+                return "连线起点或终点无效。"
+            if not any(edge.get("from") == from_node and edge.get("to") == to_node for edge in spec.workflow_edges):
+                spec.workflow_edges.append({"from": from_node, "to": to_node})
+                changed = True
+        elif operation == "delete_edge":
+            before = len(spec.workflow_edges)
+            spec.workflow_edges = [
+                edge
+                for edge in spec.workflow_edges
+                if not (edge.get("from") == from_node and edge.get("to") == to_node)
+            ]
+            changed = before != len(spec.workflow_edges)
+            if not changed:
+                return f"未找到连线：{from_node} -> {to_node}"
+        else:
+            return "operation 必须是 check/add_node/update_node/delete_node/add_edge/delete_edge/autolayout。"
+
+        if changed:
+            self._prepare_agent_spec_for_save(spec)
+            self.storage.save_agent(spec)
+        report = self._workflow_report(spec)
+        return json.dumps(
+            {
+                "ok": True,
+                "changed": changed,
+                "agent_id": spec.agent_id,
+                "selected_node_id": node_id,
+                "workflow": report,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+
     @filter.on_llm_request()
     async def inject_agent_lab_policy(self, event: AstrMessageEvent, req: ProviderRequest):
         if not _bool_cfg(self.config, "inject_agent_mode_policy", True):
@@ -928,6 +1152,7 @@ class AgentLabPlugin(Star):
             "agent_lab_request_approval",
             "agent_lab_set_heartbeat",
             "agent_lab_finish",
+            "agent_lab_update_workflow",
         }
         disabled_plugins = self._disabled_plugin_names(spec)
         tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
@@ -1205,6 +1430,7 @@ class AgentLabPlugin(Star):
             return
         self.context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "Agent Lab state")
         self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST"], "Agent specs")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/check", self.api_workflow_check, ["GET", "POST"], "Check Agent workflow")
         self.context.register_web_api(f"/{PLUGIN_NAME}/modules", self.api_modules, ["GET", "POST"], "Agent modules")
         self.context.register_web_api(f"/{PLUGIN_NAME}/registry", self.api_registry, ["GET", "POST"], "Agent integrations registry")
         self.context.register_web_api(f"/{PLUGIN_NAME}/memory", self.api_memory, ["GET", "POST", "DELETE"], "Agent memory entries")
@@ -1274,6 +1500,18 @@ class AgentLabPlugin(Star):
                 "agents": [item.to_dict() for item in self.storage.list_agents()],
             }
         )
+
+    async def api_workflow_check(self):
+        if request.method == "POST":
+            payload = await request.get_json(force=True, silent=True) or {}
+            spec_payload = payload.get("agent") if isinstance(payload.get("agent"), dict) else payload
+            spec = AgentSpec.from_dict(spec_payload)
+            self._prepare_agent_spec_for_save(spec)
+            return jsonify({"ok": True, "workflow": self._workflow_report(spec)})
+        agent_id = str(request.args.get("agent_id") or "")
+        spec = self.storage.get_agent(agent_id or None)
+        self._normalize_agent_workflow(spec)
+        return jsonify({"ok": True, "workflow": self._workflow_report(spec)})
 
     async def api_modules(self):
         if request.method == "POST":
@@ -1828,7 +2066,7 @@ class AgentLabPlugin(Star):
             used_ids.add(node_id)
             title = str(raw_node.get("title") or node_id).strip() or node_id
             kind = str(raw_node.get("kind") or "state").strip()
-            if kind not in {"state", "tool", "guard", "human", "api", "memory"}:
+            if kind not in WORKFLOW_KINDS:
                 kind = "state"
             stage = cls._workflow_stage(raw_node, kind)
             action = str(raw_node.get("action") or "manual").strip() or "manual"
@@ -1846,10 +2084,23 @@ class AgentLabPlugin(Star):
                     "action": action[:80],
                     "description": description[:500],
                     "instruction": instruction[:1000],
-                    "x": cls._clamp_int(raw_node.get("x"), 0, 3000, 40 + index * 220),
-                    "y": cls._clamp_int(raw_node.get("y"), 0, 1800, 120),
+                    "x": cls._clamp_int(raw_node.get("x"), 0, 6200, 70 + index * 260),
+                    "y": cls._clamp_int(raw_node.get("y"), 0, 3600, 120),
                 }
             )
+            for key, limit in (
+                ("ref_type", 32),
+                ("ref_id", 160),
+                ("api_id", 160),
+                ("plugin_name", 160),
+                ("tool_name", 160),
+                ("skill_name", 160),
+                ("condition", 1000),
+                ("parallel_group", 80),
+                ("prompt", 4000),
+            ):
+                if key in normalized:
+                    normalized[key] = str(normalized.get(key) or "").strip()[:limit]
             nodes.append(normalized)
 
         edges: list[dict[str, str]] = []
@@ -1903,11 +2154,186 @@ class AgentLabPlugin(Star):
             return "checkpoint"
         if "archive" in text or "归档" in text or "出口" in text:
             return "archive"
-        if kind in {"tool", "api"} or "execute" in text or "执行" in text:
+        if kind in {"retrieval", "branch"} or "router" in text or "分流" in text:
+            return "plan"
+        if kind in {"tool", "api", "transform", "subflow"} or "execute" in text or "执行" in text:
             return "execute"
+        if kind in {"validation", "loop"} or "校验" in text:
+            return "checkpoint"
+        if kind in {"notification"}:
+            return "archive"
         if kind in {"guard", "human"} or "approval" in text or "heartbeat" in text:
             return "guard"
         return "plan"
+
+    @staticmethod
+    def _workflow_default_position(stage: str, index: int) -> tuple[int, int]:
+        stage_order = ["entry", "plan", "execute", "guard", "checkpoint", "archive"]
+        try:
+            stage_index = stage_order.index(stage)
+        except ValueError:
+            stage_index = 1
+        return 70 + stage_index * 340, 90 + (index % 4) * 170
+
+    def _autolayout_workflow(self, spec: AgentSpec) -> None:
+        self._normalize_agent_workflow(spec)
+        stage_order = ["entry", "plan", "execute", "guard", "checkpoint", "archive"]
+        grouped: dict[str, list[dict[str, Any]]] = {stage: [] for stage in stage_order}
+        for node in spec.workflow_nodes:
+            grouped.setdefault(str(node.get("stage") or "plan"), []).append(node)
+        for stage_index, stage in enumerate(stage_order):
+            for row_index, node in enumerate(grouped.get(stage, [])):
+                node["x"] = 70 + stage_index * 340
+                node["y"] = 90 + row_index * 170
+
+    def _workflow_report(self, spec: AgentSpec) -> dict[str, Any]:
+        self._normalize_agent_workflow(spec)
+        nodes = [item for item in spec.workflow_nodes if isinstance(item, dict)]
+        edges = [item for item in spec.workflow_edges if isinstance(item, dict)]
+        node_ids = {str(item.get("id") or "") for item in nodes}
+        outgoing: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
+        incoming: dict[str, list[str]] = {node_id: [] for node_id in node_ids}
+        for edge in edges:
+            start = str(edge.get("from") or "")
+            end = str(edge.get("to") or "")
+            if start in outgoing and end in incoming:
+                outgoing[start].append(end)
+                incoming[end].append(start)
+
+        issues: list[dict[str, str]] = []
+
+        def add_issue(level: str, code: str, message: str, node_id: str = "") -> None:
+            issues.append(
+                {
+                    "level": level,
+                    "code": code,
+                    "message": message,
+                    "node_id": node_id,
+                }
+            )
+
+        entry_ids = [
+            str(node.get("id") or "")
+            for node in nodes
+            if node.get("stage") == "entry" or node.get("action") in {"summarize_entry", "confirm_entry"}
+        ]
+        terminal_ids = [
+            str(node.get("id") or "")
+            for node in nodes
+            if node.get("action") in {"archive", "exit_summary"}
+            or (
+                node.get("stage") == "archive"
+                and node.get("action") not in {"notify", "manual"}
+            )
+        ]
+        archive_ids = [
+            str(node.get("id") or "")
+            for node in nodes
+            if node.get("stage") == "archive" or node.get("action") in {"archive", "exit_summary", "notify"}
+        ]
+        guard_ids = [
+            str(node.get("id") or "")
+            for node in nodes
+            if node.get("stage") == "guard" or node.get("kind") in {"guard", "human"}
+        ]
+        action_ids: dict[str, list[str]] = {}
+        for node in nodes:
+            action_ids.setdefault(str(node.get("action") or ""), []).append(str(node.get("id") or ""))
+        if not entry_ids:
+            add_issue("error", "missing_entry", "工作流缺少入口节点。")
+        if not terminal_ids:
+            add_issue("error", "missing_archive", "工作流缺少真正的出口/归档节点，需要 archive 或 exit_summary 动作。")
+        if not guard_ids:
+            add_issue("warn", "missing_guard", "工作流没有审批或人工闸门，高风险任务可能无法停下确认。")
+        if "summarize_entry" not in action_ids:
+            add_issue("warn", "missing_entry_summary", "工作流没有入口摘要节点，普通聊天上文可能无法干净压缩成 task_brief。")
+        if spec.entry_policy.require_confirmation and "confirm_entry" not in action_ids:
+            add_issue("warn", "missing_entry_confirmation", "当前 AgentSpec 要求开启确认，但工作流没有 confirm_entry 节点。")
+        if spec.isolation_policy.mode != "off" and "restore_isolation" not in action_ids:
+            add_issue("warn", "missing_isolation_snapshot", "隔离模式已开启，但工作流没有隔离快照/恢复节点。")
+        if "save_memory" not in action_ids:
+            add_issue("warn", "missing_task_memory", "工作流没有任务记忆节点，续写信息可能只停留在 task_state。")
+        if "exit_summary" not in action_ids:
+            add_issue("warn", "missing_exit_summary", "工作流没有出口摘要节点，任务成果和可回流记忆可能不完整。")
+
+        reachable: set[str] = set()
+        stack = list(entry_ids)
+        while stack:
+            current = stack.pop()
+            if current in reachable:
+                continue
+            reachable.add(current)
+            stack.extend(outgoing.get(current, []))
+        for node in nodes:
+            node_id = str(node.get("id") or "")
+            if entry_ids and node_id not in reachable:
+                add_issue("warn", "unreachable_node", "入口无法到达该节点。", node_id)
+            if node_id not in entry_ids and not incoming.get(node_id):
+                add_issue("warn", "missing_input", "节点没有输入连线。", node_id)
+            if node_id not in terminal_ids and not outgoing.get(node_id):
+                add_issue("warn", "missing_output", "非出口节点没有输出连线。", node_id)
+            if node_id in terminal_ids and outgoing.get(node_id):
+                add_issue("warn", "terminal_has_output", "出口/归档节点通常不应再连到其他节点。", node_id)
+            if node.get("kind") == "branch" and len(outgoing.get(node_id, [])) < 2:
+                add_issue("warn", "branch_single_path", "分支节点最好至少有两条输出连线。", node_id)
+            if node.get("action") == "parallel_branch":
+                workers = outgoing.get(node_id, [])
+                if len(workers) < 2:
+                    add_issue("warn", "parallel_without_workers", "并行 Agent 分支至少需要两个后续工作包。", node_id)
+            if node.get("kind") in {"subflow", "tool", "api"} and node.get("action") in {"manual", ""} and not str(node.get("prompt") or "").strip():
+                add_issue("warn", "module_without_prompt", "模块节点建议写入节点提示词或明确动作，否则运行时只能依赖泛化说明。", node_id)
+            if node.get("kind") == "api" or node.get("action") == "call_api":
+                api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
+                if api_id:
+                    api_spec = self.storage.get_custom_api(api_id)
+                    if not api_spec:
+                        add_issue("error", "missing_api", f"未找到引用的自定义 API：{api_id}", node_id)
+                    elif not api_spec.get("url"):
+                        add_issue("error", "api_without_url", f"自定义 API 未配置 URL：{api_id}", node_id)
+                else:
+                    add_issue("warn", "api_unbound", "API 节点尚未绑定具体自定义 API。", node_id)
+            plugin_name = str(node.get("plugin_name") or "").strip()
+            if plugin_name:
+                plugin = next((item for item in self._plugin_rows() if item.get("name") == plugin_name), None)
+                if not plugin:
+                    add_issue("warn", "missing_plugin", f"未找到引用的 AstrBot 插件：{plugin_name}", node_id)
+                elif not bool(plugin.get("activated", True)):
+                    add_issue("warn", "plugin_inactive", f"引用插件当前未启用：{plugin_name}", node_id)
+                elif plugin_name in self._disabled_plugin_names(spec):
+                    add_issue("warn", "plugin_isolated", f"引用插件会被当前 AgentSpec 隔离策略关闭：{plugin_name}", node_id)
+            tool_name = str(node.get("tool_name") or "").strip()
+            if tool_name:
+                tool = next((item for item in self._tool_rows() if item.get("name") == tool_name), None)
+                if not tool:
+                    add_issue("warn", "missing_tool", f"未找到引用工具：{tool_name}", node_id)
+                elif not bool(tool.get("effective_active", tool.get("active", True))):
+                    add_issue("warn", "tool_inactive", f"引用工具当前不可用：{tool_name}", node_id)
+                elif (
+                    spec.isolation_policy.tool_mode == "whitelist"
+                    and spec.enabled_tools
+                    and NO_EXTERNAL_TOOLS_SENTINEL not in set(spec.enabled_tools or [])
+                    and tool_name not in set(spec.enabled_tools or [])
+                ):
+                    add_issue("warn", "tool_not_whitelisted", f"引用工具不在当前 AgentSpec 工具白名单中：{tool_name}", node_id)
+
+        if entry_ids and terminal_ids and not any(node_id in reachable for node_id in terminal_ids):
+            add_issue("error", "archive_unreachable", "入口路径无法到达任何出口/归档节点。")
+
+        errors = sum(1 for item in issues if item["level"] == "error")
+        warnings = sum(1 for item in issues if item["level"] == "warn")
+        return {
+            "valid": errors == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "nodes": len(nodes),
+            "edges": len(edges),
+            "entry_nodes": entry_ids,
+            "archive_nodes": archive_ids,
+            "terminal_nodes": terminal_ids,
+            "guard_nodes": guard_ids,
+            "memory_nodes": action_ids.get("save_memory", []),
+            "issues": issues,
+        }
 
     @staticmethod
     def _clamp_int(value: Any, low: int, high: int, default: int) -> int:

@@ -20,18 +20,48 @@ const WORKFLOW_STAGES = [
   ["archive", "出口", "归档回流"],
 ];
 
-const WORKFLOW_KINDS = ["state", "tool", "guard", "human", "api", "memory"];
+const WORKFLOW_NODE_WIDTH = 240;
+const WORKFLOW_NODE_HEIGHT = 142;
+const WORKFLOW_LANE_WIDTH = 340;
+const WORKFLOW_CANVAS_MIN_WIDTH = 2280;
+const WORKFLOW_CANVAS_MIN_HEIGHT = 980;
+const WORKFLOW_CANVAS_MAX_X = 6200;
+const WORKFLOW_CANVAS_MAX_Y = 3600;
+const WORKFLOW_KINDS = [
+  "state",
+  "tool",
+  "guard",
+  "human",
+  "api",
+  "memory",
+  "branch",
+  "loop",
+  "transform",
+  "retrieval",
+  "subflow",
+  "notification",
+  "validation",
+];
 const WORKFLOW_ACTIONS = [
   "confirm_entry",
   "summarize_entry",
+  "restore_isolation",
   "plan",
+  "route_condition",
+  "parallel_branch",
   "run_tools",
   "call_api",
+  "transform_context",
+  "retrieve_memory",
   "request_approval",
   "wait_user",
+  "handoff",
+  "validate_output",
+  "retry",
   "save_state",
   "save_memory",
   "heartbeat",
+  "notify",
   "archive",
   "exit_summary",
   "manual",
@@ -55,12 +85,61 @@ const WORKFLOW_NODE_TEMPLATES = [
     instruction: "说明隔离、摘要、状态文件和审批影响，等待用户明确同意。",
   },
   {
+    id: "context_bridge",
+    title: "上下文压缩",
+    kind: "memory",
+    stage: "entry",
+    action: "summarize_entry",
+    instruction: "把普通聊天压缩成 task_brief，只保留目标、约束、授权、风险和接续语气。",
+  },
+  {
+    id: "isolation_gate",
+    title: "隔离快照",
+    kind: "guard",
+    stage: "entry",
+    action: "restore_isolation",
+    instruction: "进入任务前记录当前会话插件状态，并应用任务模式的严格隔离和工具白名单。",
+  },
+  {
+    id: "memory_recall",
+    title: "任务记忆检索",
+    kind: "retrieval",
+    stage: "plan",
+    action: "retrieve_memory",
+    instruction: "按标签或关键词读取已暴露的任务记忆，为续写任务补齐背景。",
+  },
+  {
     id: "plan",
     title: "计划确认",
     kind: "state",
     stage: "plan",
     action: "plan",
     instruction: "拆解完成条件、工具范围、风险等级和本轮有限工作单元。",
+  },
+  {
+    id: "risk_router",
+    title: "风险分流",
+    kind: "branch",
+    stage: "plan",
+    action: "route_condition",
+    instruction: "根据低风险、工作风险、高风险把流程送往工具执行、API 调用或审批闸门。",
+  },
+  {
+    id: "parallel_branch",
+    title: "并行分支",
+    kind: "branch",
+    stage: "plan",
+    action: "parallel_branch",
+    instruction: "把互不依赖的检索、测试、整理任务拆成并行分支，再回收到校验节点。",
+  },
+  {
+    id: "prompt_worker",
+    title: "提示词工作包",
+    kind: "subflow",
+    stage: "execute",
+    action: "manual",
+    instruction: "给这个分支写入独立提示词，让主 Agent 只合并结构化结果。",
+    prompt: "你是一个并行工作包执行者。只处理本节点指定的子任务，输出结论、证据、风险和需要主 Agent 合并的字段。",
   },
   {
     id: "tool",
@@ -79,12 +158,44 @@ const WORKFLOW_NODE_TEMPLATES = [
     instruction: "调用已登记的自定义 API，凭证只由 Agent Lab 注入，不回显给模型。",
   },
   {
+    id: "transform",
+    title: "上下文整理",
+    kind: "transform",
+    stage: "execute",
+    action: "transform_context",
+    instruction: "把工具输出整理成结构化观察，过滤噪声，再交给校验和状态写回。",
+  },
+  {
     id: "approval",
     title: "审批闸门",
     kind: "guard",
     stage: "guard",
     action: "request_approval",
     instruction: "高风险动作前说明影响、回滚方式和等待用户审批。",
+  },
+  {
+    id: "human_handoff",
+    title: "人工接管",
+    kind: "human",
+    stage: "guard",
+    action: "handoff",
+    instruction: "当任务需要用户选择、登录、验证码、业务判断或风险授权时暂停并等待输入。",
+  },
+  {
+    id: "validation",
+    title: "结果校验",
+    kind: "validation",
+    stage: "checkpoint",
+    action: "validate_output",
+    instruction: "对照完成条件检查产出、测试结果和副作用，判断继续、重试或归档。",
+  },
+  {
+    id: "retry_loop",
+    title: "重试循环",
+    kind: "loop",
+    stage: "checkpoint",
+    action: "retry",
+    instruction: "失败时只重试有限次数，并把原因、调整点和阻塞计数写回任务状态。",
   },
   {
     id: "checkpoint",
@@ -109,6 +220,14 @@ const WORKFLOW_NODE_TEMPLATES = [
     stage: "guard",
     action: "heartbeat",
     instruction: "定时唤醒后先读 task_state，再推进一小步，重复阻塞则暂停。",
+  },
+  {
+    id: "notify",
+    title: "完成通知",
+    kind: "notification",
+    stage: "archive",
+    action: "notify",
+    instruction: "归档前把完成情况、验证结果、遗留风险和下一步提示反馈给当前会话。",
   },
   {
     id: "exit",
@@ -142,6 +261,9 @@ let toolFilter = "";
 let blueprintFilter = "";
 let memoryFilter = "all";
 let workflowDrag = null;
+let workflowConnection = null;
+let workflowZoom = 0.9;
+let workflowCheckReport = null;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -260,6 +382,13 @@ function workflowKindLabel(kind) {
     human: "人工",
     api: "API",
     memory: "记忆",
+    branch: "分支",
+    loop: "循环",
+    transform: "整理",
+    retrieval: "检索",
+    subflow: "子流程",
+    notification: "通知",
+    validation: "校验",
   }[kind] || kind;
 }
 
@@ -271,14 +400,23 @@ function workflowActionLabel(action) {
   return {
     summarize_entry: "入口摘要",
     confirm_entry: "开启确认",
+    restore_isolation: "隔离快照",
     plan: "计划拆解",
+    route_condition: "条件分流",
+    parallel_branch: "并行分支",
     run_tools: "工具执行",
     call_api: "API 调用",
+    transform_context: "上下文整理",
+    retrieve_memory: "记忆检索",
     request_approval: "请求审批",
     wait_user: "等待用户",
+    handoff: "人工接管",
+    validate_output: "结果校验",
+    retry: "有限重试",
     save_state: "写回状态",
     save_memory: "任务记忆",
     heartbeat: "心跳续跑",
+    notify: "完成通知",
     archive: "归档退出",
     exit_summary: "结束回流",
     manual: "人工判断",
@@ -511,8 +649,8 @@ function defaultWorkflowNodes() {
       action: "summarize_entry",
       description: "识别命令、暗号、关键词或 WebUI 入口。",
       instruction: "只在命中 AgentSpec 的入口策略时准备进入任务模式；普通问答和闲聊不要进入。",
-      x: 40,
-      y: 160,
+      x: 70,
+      y: 260,
     },
     {
       id: "entry_gate",
@@ -522,8 +660,8 @@ function defaultWorkflowNodes() {
       action: "confirm_entry",
       description: "确认是否真的进入专业任务模式。",
       instruction: "需要确认时，先说明将隔离插件、压缩上下文、创建 task_state，并等待用户明确同意。",
-      x: 260,
-      y: 300,
+      x: 390,
+      y: 420,
     },
     {
       id: "context_bridge",
@@ -533,7 +671,29 @@ function defaultWorkflowNodes() {
       action: "summarize_entry",
       description: "把普通聊天上文压成任务 brief。",
       instruction: "只保留目标、约束、授权、风险和接续语气；日常记忆不直接灌入专业模式。",
-      x: 260,
+      x: 390,
+      y: 100,
+    },
+    {
+      id: "isolation_gate",
+      title: "隔离快照",
+      kind: "guard",
+      stage: "entry",
+      action: "restore_isolation",
+      description: "应用严格隔离并记录恢复点。",
+      instruction: "进入任务前记录当前会话插件状态，只保留 Agent Lab、保留插件和用户允许的插件；退出时恢复快照。",
+      x: 710,
+      y: 260,
+    },
+    {
+      id: "memory_recall",
+      title: "任务记忆检索",
+      kind: "retrieval",
+      stage: "plan",
+      action: "retrieve_memory",
+      description: "读取已暴露的任务记忆。",
+      instruction: "按标签、关键词或 source_task_id 读取候选任务记忆，只带入与当前目标稳定相关的信息。",
+      x: 1040,
       y: 80,
     },
     {
@@ -544,8 +704,56 @@ function defaultWorkflowNodes() {
       action: "plan",
       description: "把目标拆成可验证的小步。",
       instruction: "明确完成条件、风险等级、工具范围、验收方式，并约束每轮只推进一个有限工作单元。",
-      x: 500,
+      x: 1040,
+      y: 300,
+    },
+    {
+      id: "risk_router",
+      title: "风险分流",
+      kind: "branch",
+      stage: "plan",
+      action: "route_condition",
+      description: "按风险和任务性质分支。",
+      instruction: "低风险直接执行；高风险进入审批；需要外部系统时走 API；需要用户判断时交给人工接管。",
+      x: 1360,
+      y: 300,
+    },
+    {
+      id: "parallel_branch",
+      title: "并行分支",
+      kind: "branch",
+      stage: "plan",
+      action: "parallel_branch",
+      description: "拆分互不依赖的小任务。",
+      instruction: "把资料检索、代码阅读、测试准备等互不依赖的步骤拆开推进，再统一进入校验。",
+      x: 1360,
       y: 80,
+    },
+    {
+      id: "parallel_research",
+      title: "并行检索包",
+      kind: "subflow",
+      stage: "execute",
+      action: "manual",
+      description: "只读检索或代码阅读工作包。",
+      instruction: "把资料检索、接口查阅或代码阅读这类只读子任务拆出去，输出证据摘要和风险。",
+      prompt: "你是并行只读检索工作包。只收集证据和结论，不做写入动作；输出：发现、证据来源、风险、建议下一步。",
+      parallel_group: "default",
+      x: 1680,
+      y: 0,
+    },
+    {
+      id: "parallel_verify",
+      title: "并行验证包",
+      kind: "subflow",
+      stage: "execute",
+      action: "manual",
+      description: "验收条件和测试准备工作包。",
+      instruction: "把测试准备、验收条件核对或结果复核拆成独立工作包，再回收到上下文整理。",
+      prompt: "你是并行验证工作包。只围绕完成条件检查证据强度；输出：已验证、未验证、阻塞、需要主 Agent 决策的点。",
+      parallel_group: "default",
+      x: 1680,
+      y: 580,
     },
     {
       id: "execute",
@@ -555,8 +763,30 @@ function defaultWorkflowNodes() {
       action: "run_tools",
       description: "调用白名单工具或自定义 API。",
       instruction: "只使用 AgentSpec 已启用的工具，关键输出必须写回状态。",
-      x: 740,
-      y: 80,
+      x: 1680,
+      y: 160,
+    },
+    {
+      id: "api_call",
+      title: "API 调用",
+      kind: "api",
+      stage: "execute",
+      action: "call_api",
+      description: "调用注册 API 或外部服务。",
+      instruction: "使用 agent_lab_call_custom_api 调用已登记 API，凭证由 Agent Lab 注入，不写入任务记忆。",
+      x: 1680,
+      y: 420,
+    },
+    {
+      id: "transform",
+      title: "上下文整理",
+      kind: "transform",
+      stage: "execute",
+      action: "transform_context",
+      description: "清洗工具输出。",
+      instruction: "把工具/API 返回整理成结构化观察，压缩噪声，保留证据、失败原因和下一步所需字段。",
+      x: 2000,
+      y: 260,
     },
     {
       id: "approval",
@@ -566,8 +796,41 @@ function defaultWorkflowNodes() {
       action: "request_approval",
       description: "危险动作前请求用户确认。",
       instruction: "删除、部署、密钥、重启、全局配置和破坏性数据库操作前必须先说明影响并等待审批。",
-      x: 740,
-      y: 300,
+      x: 1680,
+      y: 660,
+    },
+    {
+      id: "human_handoff",
+      title: "人工接管",
+      kind: "human",
+      stage: "guard",
+      action: "handoff",
+      description: "等待用户选择或授权。",
+      instruction: "遇到登录、验证码、业务判断、未授权范围或连续阻塞时暂停，给出清晰选项等待用户输入。",
+      x: 2000,
+      y: 660,
+    },
+    {
+      id: "validation",
+      title: "结果校验",
+      kind: "validation",
+      stage: "checkpoint",
+      action: "validate_output",
+      description: "检查是否满足完成条件。",
+      instruction: "对照完成条件、测试结果和副作用判断是否完成；失败时说明原因并进入有限重试。",
+      x: 2320,
+      y: 180,
+    },
+    {
+      id: "retry_loop",
+      title: "重试循环",
+      kind: "loop",
+      stage: "checkpoint",
+      action: "retry",
+      description: "失败后有限重试。",
+      instruction: "每次重试都写清调整点和观察结果；同一阻塞重复三次后停止并请求用户介入。",
+      x: 2320,
+      y: 460,
     },
     {
       id: "checkpoint",
@@ -577,8 +840,8 @@ function defaultWorkflowNodes() {
       action: "save_state",
       description: "把本轮结果写入 task_state。",
       instruction: "每轮结束写回 current_summary、progress、next_step、observation 和阻塞点。",
-      x: 960,
-      y: 160,
+      x: 2640,
+      y: 180,
     },
     {
       id: "task_memory",
@@ -588,8 +851,8 @@ function defaultWorkflowNodes() {
       action: "save_memory",
       description: "独立记录任务时间线和关键成果。",
       instruction: "把时间点、关键修改、成果、风险和下次续写提示写入任务记忆；以标签暴露给普通模式读取。",
-      x: 1180,
-      y: 80,
+      x: 2960,
+      y: 120,
     },
     {
       id: "heartbeat",
@@ -599,8 +862,19 @@ function defaultWorkflowNodes() {
       action: "heartbeat",
       description: "长任务定时唤醒。",
       instruction: "心跳醒来先读 task_state，再推进一小步；同一阻塞重复三次则暂停求助。",
-      x: 1180,
-      y: 300,
+      x: 2960,
+      y: 420,
+    },
+    {
+      id: "notify",
+      title: "完成通知",
+      kind: "notification",
+      stage: "archive",
+      action: "notify",
+      description: "向当前会话反馈成果。",
+      instruction: "在退出前向用户说明完成情况、验证结果、遗留风险和下次续写入口。",
+      x: 3280,
+      y: 180,
     },
     {
       id: "archive",
@@ -610,8 +884,8 @@ function defaultWorkflowNodes() {
       action: "exit_summary",
       description: "完成或取消后归档。",
       instruction: "只有完成、取消或用户要求退出时结束；输出成果、关键改动、遗留问题和可回流记忆候选，然后恢复会话插件隔离。",
-      x: 1400,
-      y: 160,
+      x: 3600,
+      y: 180,
     },
   ];
 }
@@ -620,35 +894,105 @@ function defaultWorkflowEdges() {
   return [
     { from: "entry", to: "entry_gate" },
     { from: "entry_gate", to: "context_bridge" },
-    { from: "context_bridge", to: "plan" },
-    { from: "plan", to: "execute" },
-    { from: "execute", to: "approval" },
-    { from: "approval", to: "checkpoint" },
+    { from: "context_bridge", to: "isolation_gate" },
+    { from: "isolation_gate", to: "memory_recall" },
+    { from: "memory_recall", to: "plan" },
+    { from: "plan", to: "risk_router" },
+    { from: "plan", to: "parallel_branch" },
+    { from: "parallel_branch", to: "parallel_research" },
+    { from: "parallel_branch", to: "parallel_verify" },
+    { from: "parallel_branch", to: "execute" },
+    { from: "risk_router", to: "execute" },
+    { from: "risk_router", to: "api_call" },
+    { from: "risk_router", to: "approval" },
+    { from: "approval", to: "human_handoff" },
+    { from: "approval", to: "execute" },
+    { from: "human_handoff", to: "plan" },
+    { from: "execute", to: "transform" },
+    { from: "api_call", to: "transform" },
+    { from: "parallel_research", to: "transform" },
+    { from: "parallel_verify", to: "transform" },
+    { from: "transform", to: "validation" },
+    { from: "validation", to: "checkpoint" },
+    { from: "validation", to: "retry_loop" },
+    { from: "retry_loop", to: "execute" },
     { from: "checkpoint", to: "task_memory" },
     { from: "checkpoint", to: "heartbeat" },
-    { from: "heartbeat", to: "execute" },
-    { from: "task_memory", to: "archive" },
+    { from: "heartbeat", to: "plan" },
+    { from: "task_memory", to: "notify" },
+    { from: "notify", to: "archive" },
   ];
 }
 
 function workflowTemplate(id) {
+  if (id === "emergency") {
+    return {
+      nodes: [
+        { id: "entry", title: "紧急入口", kind: "state", stage: "entry", action: "summarize_entry", description: "快速压缩当前事故背景", instruction: "只提取故障现象、影响范围、已试步骤、不可触碰边界和回滚要求。", x: 70, y: 220 },
+        { id: "confirm", title: "风险确认", kind: "human", stage: "entry", action: "confirm_entry", description: "确认进入紧急任务模式", instruction: "说明会优先排障、保留审批闸门、记录每个改动点，等待用户确认。", x: 410, y: 220 },
+        { id: "triage", title: "分诊计划", kind: "branch", stage: "plan", action: "route_condition", description: "按影响和风险分流", instruction: "先判定是否只读排查、是否需要写入修复、是否需要部署/重启。", x: 750, y: 220 },
+        { id: "readonly_check", title: "只读排查", kind: "tool", stage: "execute", action: "run_tools", description: "日志、状态、配置只读检查", instruction: "优先读取日志、状态和配置，避免写入。", x: 1090, y: 90 },
+        { id: "approval", title: "高危审批", kind: "guard", stage: "guard", action: "request_approval", description: "部署、重启、删除前审批", instruction: "任何部署、重启、批量覆盖、删除或全局配置修改前都要说明影响和回滚方案。", x: 1090, y: 360 },
+        { id: "fix", title: "有限修复", kind: "tool", stage: "execute", action: "run_tools", description: "只做一个可回滚修复单元", instruction: "每次只修改一个有限单元，立刻验证并写回状态。", x: 1430, y: 220 },
+        { id: "validation", title: "恢复验证", kind: "validation", stage: "checkpoint", action: "validate_output", description: "确认服务恢复和副作用", instruction: "检查测试、日志、错误率或用户指定验收条件，失败则进入重试/回滚。", x: 1770, y: 220 },
+        { id: "archive", title: "事故归档", kind: "memory", stage: "archive", action: "exit_summary", description: "沉淀事故、修复和风险", instruction: "归档影响范围、根因线索、实际改动、验证结果、遗留风险和下次接手提示。", x: 2110, y: 220 },
+      ],
+      edges: [
+        { from: "entry", to: "confirm" },
+        { from: "confirm", to: "triage" },
+        { from: "triage", to: "readonly_check" },
+        { from: "triage", to: "approval" },
+        { from: "approval", to: "fix" },
+        { from: "readonly_check", to: "validation" },
+        { from: "fix", to: "validation" },
+        { from: "validation", to: "archive" },
+      ],
+    };
+  }
+  if (id === "parallel_agent") {
+    return {
+      nodes: [
+        { id: "entry", title: "协作入口", kind: "state", stage: "entry", action: "summarize_entry", description: "压缩目标与分工边界", instruction: "提取目标、约束、可并行子任务和每个子 Agent 的权限边界。", x: 70, y: 220 },
+        { id: "plan", title: "主计划", kind: "state", stage: "plan", action: "plan", description: "拆出可并行工作包", instruction: "只把互不依赖的工作分出去，保留主 Agent 的最终集成和验收责任。", x: 410, y: 220 },
+        { id: "agent_branch", title: "并行 Agent", kind: "branch", stage: "plan", action: "parallel_branch", description: "并行提示词/API/工具分支", instruction: "每个分支可以绑定提示词、API、插件或工具，要求输出结构化结论。", x: 750, y: 220 },
+        { id: "api_worker", title: "API 子任务", kind: "api", stage: "execute", action: "call_api", description: "外部服务或模型 API", instruction: "调用预注册 API，返回摘要和可验证证据，不暴露凭证。", x: 1090, y: 80 },
+        { id: "prompt_worker", title: "提示词子任务", kind: "subflow", stage: "execute", action: "manual", description: "独立提示词工作包", instruction: "按节点提示词完成一个边界清晰的子任务，并返回结果、风险和证据。", prompt: "你是并行工作包执行者。只处理分配给你的子任务，输出：结论、证据、风险、需要主 Agent 合并的字段。", parallel_group: "default", x: 1090, y: 280 },
+        { id: "tool_worker", title: "工具子任务", kind: "tool", stage: "execute", action: "run_tools", description: "插件/工具工作包", instruction: "只调用本分支允许的工具，关键输出写入任务状态。", x: 1090, y: 480 },
+        { id: "merge", title: "结果汇总", kind: "transform", stage: "checkpoint", action: "transform_context", description: "合并并去重并行结果", instruction: "合并子任务结果，标注冲突、证据强度和待验证项。", x: 1430, y: 280 },
+        { id: "validation", title: "集成验收", kind: "validation", stage: "checkpoint", action: "validate_output", description: "主 Agent 统一验收", instruction: "主 Agent 对照完成条件验收，不让子 Agent 直接决定完成。", x: 1770, y: 280 },
+        { id: "archive", title: "协作归档", kind: "memory", stage: "archive", action: "exit_summary", description: "归档分工、成果和续写入口", instruction: "保存各分支成果、关键决策、遗留风险和下次续写入口。", x: 2110, y: 280 },
+      ],
+      edges: [
+        { from: "entry", to: "plan" },
+        { from: "plan", to: "agent_branch" },
+        { from: "agent_branch", to: "api_worker" },
+        { from: "agent_branch", to: "prompt_worker" },
+        { from: "agent_branch", to: "tool_worker" },
+        { from: "api_worker", to: "merge" },
+        { from: "prompt_worker", to: "merge" },
+        { from: "tool_worker", to: "merge" },
+        { from: "merge", to: "validation" },
+        { from: "validation", to: "archive" },
+      ],
+    };
+  }
   if (id === "api_review") {
     return {
       nodes: [
-        { id: "entry", title: "入口压缩", kind: "state", stage: "entry", action: "summarize_entry", description: "整理目标与调用约束", instruction: "把用户目标、接口用途、参数边界和授权范围压缩成 task_brief。", x: 40, y: 160 },
-        { id: "plan", title: "调用计划", kind: "state", stage: "plan", action: "plan", description: "明确 API 调用方案", instruction: "确认要调用的注册 API、参数、风险级别和成功判定。", x: 270, y: 90 },
-        { id: "approval", title: "敏感审批", kind: "human", stage: "guard", action: "request_approval", description: "涉及外部写入或敏感数据时审批", instruction: "如果 API 会写入外部系统、发送消息、产生费用或读取敏感数据，先请求用户审批。", x: 500, y: 300 },
-        { id: "call_api", title: "调用 API", kind: "api", stage: "execute", action: "call_api", description: "执行已注册自定义 API", instruction: "使用 agent_lab_call_custom_api 调用已注册 API，隐藏凭证，只保留必要结果摘要。", x: 500, y: 90 },
-        { id: "review", title: "结果复核", kind: "state", stage: "checkpoint", action: "save_state", description: "检查结果并写回状态", instruction: "核对 API 返回是否满足完成条件；写回观察、进度和下一步。", x: 750, y: 160 },
-        { id: "archive", title: "出口归档", kind: "memory", stage: "archive", action: "archive", description: "沉淀可复用信息", instruction: "完成后只归档稳定有用的事实，避免保存密钥、一次性 token 或临时响应。", x: 980, y: 160 },
+        { id: "entry", title: "入口压缩", kind: "state", stage: "entry", action: "summarize_entry", description: "整理目标与调用约束", instruction: "把用户目标、接口用途、参数边界和授权范围压缩成 task_brief。", x: 70, y: 260 },
+        { id: "plan", title: "调用计划", kind: "state", stage: "plan", action: "plan", description: "明确 API 调用方案", instruction: "确认要调用的注册 API、参数、风险级别和成功判定。", x: 410, y: 220 },
+        { id: "approval", title: "敏感审批", kind: "human", stage: "guard", action: "request_approval", description: "涉及外部写入或敏感数据时审批", instruction: "如果 API 会写入外部系统、发送消息、产生费用或读取敏感数据，先请求用户审批。", x: 750, y: 430 },
+        { id: "api_call", title: "调用 API", kind: "api", stage: "execute", action: "call_api", description: "执行已注册自定义 API", instruction: "使用 agent_lab_call_custom_api 调用已注册 API，隐藏凭证，只保留必要结果摘要。", x: 750, y: 170 },
+        { id: "validation", title: "结果校验", kind: "validation", stage: "checkpoint", action: "validate_output", description: "检查结果并写回状态", instruction: "核对 API 返回是否满足完成条件；写回观察、进度和下一步。", x: 1090, y: 220 },
+        { id: "archive", title: "出口归档", kind: "memory", stage: "archive", action: "archive", description: "沉淀可复用信息", instruction: "完成后只归档稳定有用的事实，避免保存密钥、一次性 token 或临时响应。", x: 1430, y: 220 },
       ],
       edges: [
         { from: "entry", to: "plan" },
         { from: "plan", to: "approval" },
-        { from: "approval", to: "call_api" },
-        { from: "plan", to: "call_api" },
-        { from: "call_api", to: "review" },
-        { from: "review", to: "archive" },
+        { from: "approval", to: "api_call" },
+        { from: "plan", to: "api_call" },
+        { from: "api_call", to: "validation" },
+        { from: "validation", to: "archive" },
       ],
     };
   }
@@ -660,7 +1004,9 @@ function applyWorkflowTemplate(id) {
   currentAgent.workflow_nodes = clone(template.nodes);
   currentAgent.workflow_edges = clone(template.edges);
   selectedWorkflowNodeId = currentAgent.workflow_nodes[0]?.id || "";
-  setFeedback(id === "api_review" ? "已套用 API 审批流，保存后会进入任务运行协议。" : "已套用标准工作流，保存后会进入任务运行协议。");
+  workflowCheckReport = null;
+  const names = { api_review: "API 审批流", emergency: "紧急模式", parallel_agent: "并行 Agent 流", linear: "标准工作流" };
+  setFeedback(`已套用${names[id] || "工作流"}，保存后会进入任务运行协议。`);
 }
 
 function addWorkflowTemplateNode(templateId) {
@@ -677,7 +1023,72 @@ function addWorkflowTemplateNode(templateId) {
     y: pos.y,
   });
   selectedWorkflowNodeId = id;
+  workflowCheckReport = null;
   setFeedback(`已添加节点：${template.title}。拖动画布上的节点即可调整位置。`);
+}
+
+function addRuntimeWorkflowNode(refType, refId) {
+  readAgentForm();
+  ensureWorkflow();
+  const ref = String(refType || "").trim();
+  const idValue = String(refId || "").trim();
+  let node = null;
+  if (ref === "plugin") {
+    const plugin = (state.plugins || []).find((item) => item.name === idValue);
+    node = {
+      id: uniqueWorkflowNodeId(`plugin_${idValue || "module"}`),
+      title: plugin?.display_name || plugin?.name || idValue || "插件模块",
+      kind: "subflow",
+      stage: "execute",
+      action: "manual",
+      description: "AstrBot 插件模块",
+      instruction: "把这个 AstrBot 插件视为工作流中的能力模块；若插件关闭或被隔离策略禁用，不要依赖它。",
+      prompt: "说明这个插件在当前任务模式中负责什么、什么时候调用、输出要如何写回 task_state。",
+      ref_type: "plugin",
+      ref_id: idValue,
+      plugin_name: idValue,
+    };
+  }
+  if (ref === "api") {
+    const item = (state.custom_apis || []).find((api) => api.api_id === idValue);
+    node = {
+      id: uniqueWorkflowNodeId(`api_${idValue || "call"}`),
+      title: item?.name || idValue || "API 模块",
+      kind: "api",
+      stage: "execute",
+      action: "call_api",
+      description: item?.description || "自定义 API 模块",
+      instruction: "调用 Agent Lab 注册 API；凭证由后端注入，不把密钥写入提示词、日志或任务记忆。",
+      prompt: "写清 API 调用目的、参数边界、成功判定和结果字段如何进入后续校验。",
+      ref_type: "api",
+      ref_id: idValue,
+      api_id: idValue,
+    };
+  }
+  if (ref === "tool") {
+    const item = (state.tools || []).find((tool) => tool.name === idValue);
+    node = {
+      id: uniqueWorkflowNodeId(`tool_${idValue || "step"}`),
+      title: idValue || "工具模块",
+      kind: "tool",
+      stage: "execute",
+      action: "run_tools",
+      description: item?.description || "工具白名单模块",
+      instruction: "调用该白名单工具前先确认风险等级，关键输出必须写回 task_state。",
+      prompt: "写清这个工具允许做什么、不允许做什么，以及输出要保存到哪个任务状态字段。",
+      ref_type: "tool",
+      ref_id: idValue,
+      tool_name: idValue,
+    };
+  }
+  if (!node) return;
+  const pos = defaultWorkflowPosition(node.stage, currentAgent.workflow_nodes.length);
+  node.x = pos.x;
+  node.y = pos.y;
+  currentAgent.workflow_nodes.push(node);
+  selectedWorkflowNodeId = node.id;
+  workflowCheckReport = null;
+  setFeedback(`已添加模块节点：${node.title}。`);
 }
 
 function clamp(value, min, max) {
@@ -688,8 +1099,8 @@ function clamp(value, min, max) {
 function defaultWorkflowPosition(stage, index = 0) {
   const stageIndex = Math.max(0, WORKFLOW_STAGES.findIndex(([id]) => id === stage));
   return {
-    x: 40 + stageIndex * 220,
-    y: 80 + (index % 3) * 150,
+    x: 70 + stageIndex * WORKFLOW_LANE_WIDTH,
+    y: 90 + (index % 4) * 170,
   };
 }
 
@@ -697,6 +1108,13 @@ function defaultWorkflowAction(node) {
   const stage = String(node?.stage || "").trim();
   const kind = String(node?.kind || "").trim();
   if (stage === "entry") return "summarize_entry";
+  if (kind === "retrieval") return "retrieve_memory";
+  if (kind === "branch") return "route_condition";
+  if (kind === "transform") return "transform_context";
+  if (kind === "validation") return "validate_output";
+  if (kind === "loop") return "retry";
+  if (kind === "notification") return "notify";
+  if (kind === "subflow") return "manual";
   if (stage === "execute" && kind === "api") return "call_api";
   if (stage === "execute") return "run_tools";
   if (stage === "checkpoint" && kind === "memory") return "save_memory";
@@ -715,7 +1133,16 @@ function ensureWorkflow() {
   if (!Array.isArray(currentAgent.workflow_edges) || !currentAgent.workflow_edges.length) {
     currentAgent.workflow_edges = defaultWorkflowEdges();
   }
+  const legacyIds = new Set(["entry", "entry_gate", "context_bridge", "plan", "execute", "approval", "checkpoint", "task_memory", "heartbeat", "archive"]);
+  if (
+    currentAgent.workflow_nodes.length <= legacyIds.size
+    && currentAgent.workflow_nodes.every((node) => legacyIds.has(String(node.id || "")))
+  ) {
+    currentAgent.workflow_nodes = defaultWorkflowNodes();
+    currentAgent.workflow_edges = defaultWorkflowEdges();
+  }
   currentAgent.workflow_nodes = currentAgent.workflow_nodes.map((node, index) => ({
+    ...node,
     id: String(node.id || `node_${index + 1}`).trim(),
     title: String(node.title || node.id || `节点 ${index + 1}`).trim(),
     kind: WORKFLOW_KINDS.includes(String(node.kind || "").trim()) ? String(node.kind).trim() : "state",
@@ -723,8 +1150,11 @@ function ensureWorkflow() {
     action: String(node.action || defaultWorkflowAction(node)).trim() || "manual",
     description: String(node.description || "").trim(),
     instruction: String(node.instruction || node.prompt || node.description || "").trim(),
-    x: clamp(Number(node.x ?? defaultWorkflowPosition(workflowStage(node), index).x), 0, 3000),
-    y: clamp(Number(node.y ?? defaultWorkflowPosition(workflowStage(node), index).y), 0, 1800),
+    condition: String(node.condition || "").trim(),
+    parallel_group: String(node.parallel_group || "").trim(),
+    prompt: String(node.prompt || "").trim(),
+    x: clamp(Number(node.x ?? defaultWorkflowPosition(workflowStage(node), index).x), 0, WORKFLOW_CANVAS_MAX_X),
+    y: clamp(Number(node.y ?? defaultWorkflowPosition(workflowStage(node), index).y), 0, WORKFLOW_CANVAS_MAX_Y),
   }));
   const ids = new Set(currentAgent.workflow_nodes.map((node) => node.id));
   currentAgent.workflow_edges = currentAgent.workflow_edges
@@ -1045,7 +1475,11 @@ function renderCanvas() {
         <div><p class="card-kicker">画布</p><h2>任务模式工作流</h2></div>
         <div class="inline-actions">
           <button class="button secondary" data-action="add-workflow-node" type="button">新增节点</button>
+          <button class="button secondary" data-action="check-workflow" type="button">检查工作流</button>
+          <button class="button secondary" data-action="auto-layout-workflow" type="button">自动整理</button>
           <button class="button secondary" data-action="apply-workflow-template" data-id="linear" type="button">标准流程</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="emergency" type="button">紧急模式</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="parallel_agent" type="button">并行 Agent</button>
           <button class="button secondary" data-action="apply-workflow-template" data-id="api_review" type="button">API 审批流</button>
           <button class="button secondary" data-action="reset-workflow" type="button">恢复默认流程</button>
         </div>
@@ -1103,9 +1537,10 @@ function workflowStage(item) {
   const title = String(item.title || "").toLowerCase();
   if (id.includes("entry") || title.includes("入口")) return "entry";
   if (id.includes("plan") || title.includes("计划")) return "plan";
-  if (["tool", "api"].includes(item.kind) || id.includes("execute") || title.includes("执行")) return "execute";
-  if (id.includes("checkpoint") || title.includes("快照")) return "checkpoint";
-  if (id.includes("archive") || title.includes("归档")) return "archive";
+  if (["retrieval", "branch"].includes(item.kind) || id.includes("router") || title.includes("分流")) return "plan";
+  if (["tool", "api", "transform", "subflow"].includes(item.kind) || id.includes("execute") || title.includes("执行")) return "execute";
+  if (["validation", "loop"].includes(item.kind) || id.includes("checkpoint") || title.includes("快照") || title.includes("校验")) return "checkpoint";
+  if (item.kind === "notification" || id.includes("archive") || title.includes("归档")) return "archive";
   if (["guard", "human"].includes(item.kind) || id.includes("approval") || id.includes("heartbeat")) return "guard";
   return "plan";
 }
@@ -1121,29 +1556,46 @@ function workflowCanvasSize() {
   const maxX = nodes.reduce((value, node) => Math.max(value, Number(node.x || 0)), 0);
   const maxY = nodes.reduce((value, node) => Math.max(value, Number(node.y || 0)), 0);
   return {
-    width: Math.max(1160, maxX + 230),
-    height: Math.max(560, maxY + 150),
+    width: Math.max(WORKFLOW_CANVAS_MIN_WIDTH, maxX + WORKFLOW_NODE_WIDTH + 260),
+    height: Math.max(WORKFLOW_CANVAS_MIN_HEIGHT, maxY + WORKFLOW_NODE_HEIGHT + 180),
   };
 }
 
 function workflowCanvas() {
   ensureWorkflow();
   const size = workflowCanvasSize();
+  const scaledWidth = Math.ceil(size.width * workflowZoom);
+  const scaledHeight = Math.ceil(size.height * workflowZoom);
   return `
+    <div class="workflow-canvas-toolbar">
+      <div class="workflow-canvas-meta">
+        <span>${currentAgent.workflow_nodes.length} 节点</span>
+        <span>${currentAgent.workflow_edges.length} 连线</span>
+        <span>${Math.round(workflowZoom * 100)}%</span>
+      </div>
+      <div class="workflow-zoom-controls">
+        <button class="button tiny secondary" data-action="workflow-zoom-out" type="button">缩小</button>
+        <button class="button tiny secondary" data-action="workflow-fit" type="button">适配</button>
+        <button class="button tiny secondary" data-action="workflow-zoom-reset" type="button">100%</button>
+        <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
+      </div>
+    </div>
     <div class="workflow-canvas-wrap">
-      <div class="workflow-canvas" style="width:${size.width}px;height:${size.height}px">
-        <div class="workflow-lanes">
-          ${WORKFLOW_STAGES.map(([stage, title, meta], index) => `
-            <div class="workflow-lane" data-stage="${stage}" style="left:${index * 220}px">
-              <strong>${esc(title)}</strong>
-              <span>${esc(meta)}</span>
-            </div>
-          `).join("")}
+      <div class="workflow-canvas-space" style="width:${scaledWidth}px;height:${scaledHeight}px">
+        <div class="workflow-canvas" data-zoom="${workflowZoom}" style="width:${size.width}px;height:${size.height}px;transform:scale(${workflowZoom})">
+          <div class="workflow-lanes">
+            ${WORKFLOW_STAGES.map(([stage, title, meta], index) => `
+              <div class="workflow-lane" data-stage="${stage}" style="left:${index * WORKFLOW_LANE_WIDTH}px">
+                <strong>${esc(title)}</strong>
+                <span>${esc(meta)}</span>
+              </div>
+            `).join("")}
+          </div>
+          <svg class="workflow-links" width="${size.width}" height="${size.height}" viewBox="0 0 ${size.width} ${size.height}" aria-hidden="true">
+            ${workflowLinksSvg()}
+          </svg>
+          ${currentAgent.workflow_nodes.map((item) => node(item)).join("")}
         </div>
-        <svg class="workflow-links" width="${size.width}" height="${size.height}" viewBox="0 0 ${size.width} ${size.height}" aria-hidden="true">
-          ${workflowLinksSvg()}
-        </svg>
-        ${currentAgent.workflow_nodes.map((item) => node(item)).join("")}
       </div>
     </div>
     ${workflowCompactBoard()}
@@ -1151,7 +1603,9 @@ function workflowCanvas() {
 }
 
 function workflowToolbox() {
-  const selectedTools = materializedToolSelection().slice(0, 12);
+  const selectedTools = materializedToolSelection();
+  const activePlugins = (state.plugins || []).filter((item) => item.activated !== false);
+  const apis = state.custom_apis || [];
   return `
     <div class="workflow-toolbox">
       <div>
@@ -1166,9 +1620,36 @@ function workflowToolbox() {
         </div>
       </div>
       <div>
-        <strong>当前工具白名单</strong>
+        <strong>AstrBot 插件模块</strong>
+        <div class="toolbox-buttons">
+          ${activePlugins.map((plugin) => `
+            <button class="toolbox-chip" data-action="add-runtime-node" data-ref-type="plugin" data-ref-id="${esc(plugin.name)}" type="button">
+              <span>插件</span>
+              ${esc(plugin.display_name || plugin.name)}
+            </button>
+          `).join("") || "<em>暂无可用插件</em>"}
+        </div>
+      </div>
+      <div>
+        <strong>API 模块</strong>
+        <div class="toolbox-buttons">
+          ${apis.map((item) => `
+            <button class="toolbox-chip" data-action="add-runtime-node" data-ref-type="api" data-ref-id="${esc(item.api_id)}" type="button">
+              <span>${esc(item.method || "API")}</span>
+              ${esc(item.name || item.api_id)}
+            </button>
+          `).join("") || "<em>先在“插件与集成”里注册 API</em>"}
+        </div>
+      </div>
+      <div>
+        <strong>工具白名单模块</strong>
         <div class="toolbox-tools">
-          ${selectedTools.map((name) => `<span>${esc(name)}</span>`).join("") || "<em>仅任务内置工具</em>"}
+          ${selectedTools.map((name) => `
+            <button class="toolbox-chip" data-action="add-runtime-node" data-ref-type="tool" data-ref-id="${esc(name)}" type="button">
+              <span>工具</span>
+              ${esc(name)}
+            </button>
+          `).join("") || "<em>仅任务内置工具</em>"}
         </div>
       </div>
     </div>
@@ -1213,18 +1694,17 @@ function workflowLinksSvg() {
   ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
   const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
-  const paths = edges.map((edge) => {
+  const paths = edges.map((edge, index) => {
     const from = nodes.get(edge.from);
     const to = nodes.get(edge.to);
     if (!from || !to) return "";
-    const x1 = Number(from.x || 0) + 190;
-    const y1 = Number(from.y || 0) + 58;
-    const x2 = Number(to.x || 0);
-    const y2 = Number(to.y || 0) + 58;
-    const bend = Math.max(70, Math.abs(x2 - x1) * 0.45);
-    const d = `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
-    return `<path d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}"></path>`;
+    const d = workflowLinkPath(workflowNodeAnchor(from, "out"), workflowNodeAnchor(to, "in"));
+    return `
+      <path class="workflow-link-hit" d="${d}" data-action="delete-workflow-edge" data-index="${index}"></path>
+      <path class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}"></path>
+    `;
   }).join("");
+  const preview = workflowConnection ? `<path class="workflow-link-preview" d="${workflowLinkPath(workflowConnection.anchor, workflowConnection.pointer)}"></path>` : "";
   return `
     <defs>
       <marker id="workflow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
@@ -1232,7 +1712,25 @@ function workflowLinksSvg() {
       </marker>
     </defs>
     ${paths}
+    ${preview}
   `;
+}
+
+function workflowNodeAnchor(node, port = "out") {
+  return {
+    x: Number(node.x || 0) + (port === "out" ? WORKFLOW_NODE_WIDTH : 0),
+    y: Number(node.y || 0) + WORKFLOW_NODE_HEIGHT / 2,
+  };
+}
+
+function workflowLinkPath(from, to) {
+  const x1 = Number(from.x || 0);
+  const y1 = Number(from.y || 0);
+  const x2 = Number(to.x || 0);
+  const y2 = Number(to.y || 0);
+  const distance = Math.abs(x2 - x1);
+  const bend = clamp(distance * 0.48, 90, 260);
+  return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
 }
 
 function workflowSummaryPanel() {
@@ -1240,6 +1738,7 @@ function workflowSummaryPanel() {
   const nodeCount = currentAgent.workflow_nodes.length;
   const edgeCount = currentAgent.workflow_edges.length;
   const selected = selectedWorkflowNode();
+  const report = workflowCheckReport || localWorkflowReport();
   return `
     <div class="detail-box workflow-summary">
       <div class="panel-head"><div><p class="card-kicker">运行框架</p><h3>${nodeCount} 节点 · ${edgeCount} 连线</h3></div></div>
@@ -1247,10 +1746,69 @@ function workflowSummaryPanel() {
         <span>${esc(workflowStageLabel(selected?.stage || "plan"))}</span>
         <span>${esc(workflowKindLabel(selected?.kind || "state"))}</span>
         <span>${esc(workflowActionLabel(selected?.action || "manual"))}</span>
-        <span>${edgeCount ? "可运行" : "待连线"}</span>
+        <span>${report.valid ? "检查通过" : "需修正"}</span>
+      </div>
+      <div class="workflow-check">
+        ${(report.issues || []).slice(0, 6).map((item) => `
+          <div class="workflow-check-row ${esc(item.level || "warn")}">
+            <b>${esc((item.level || "warn").toUpperCase())}</b>
+            <span>${esc(item.node_id ? `${item.node_id}：${item.message}` : item.message)}</span>
+          </div>
+        `).join("") || `<div class="workflow-check-row ok"><b>OK</b><span>入口、出口和连线检查暂未发现问题。</span></div>`}
       </div>
     </div>
   `;
+}
+
+function localWorkflowReport() {
+  ensureWorkflow();
+  const nodes = currentAgent.workflow_nodes || [];
+  const edges = currentAgent.workflow_edges || [];
+  const ids = new Set(nodes.map((node) => node.id));
+  const incoming = new Map(nodes.map((node) => [node.id, 0]));
+  const outgoing = new Map(nodes.map((node) => [node.id, 0]));
+  for (const edge of edges) {
+    if (!ids.has(edge.from) || !ids.has(edge.to)) continue;
+    outgoing.set(edge.from, (outgoing.get(edge.from) || 0) + 1);
+    incoming.set(edge.to, (incoming.get(edge.to) || 0) + 1);
+  }
+  const issues = [];
+  const entryNodes = nodes.filter((node) => node.stage === "entry" || ["summarize_entry", "confirm_entry"].includes(node.action));
+  const terminalNodes = nodes.filter((node) => ["archive", "exit_summary"].includes(node.action) || (node.stage === "archive" && !["notify", "manual"].includes(node.action)));
+  const actions = new Set(nodes.map((node) => node.action));
+  const guardNodes = nodes.filter((node) => node.stage === "guard" || ["guard", "human"].includes(node.kind));
+  if (!entryNodes.length) issues.push({ level: "error", message: "缺少入口节点。" });
+  if (!terminalNodes.length) issues.push({ level: "error", message: "缺少真正的出口/归档节点。" });
+  if (!guardNodes.length) issues.push({ level: "warn", message: "缺少审批或人工闸门。" });
+  if (!actions.has("summarize_entry")) issues.push({ level: "warn", message: "缺少入口摘要节点。" });
+  if (currentAgent.entry_policy?.require_confirmation !== false && !actions.has("confirm_entry")) issues.push({ level: "warn", message: "当前要求开启确认，但缺少确认节点。" });
+  if (currentAgent.isolation_policy?.mode !== "off" && !actions.has("restore_isolation")) issues.push({ level: "warn", message: "隔离模式已开启，但缺少隔离快照节点。" });
+  if (!actions.has("save_memory")) issues.push({ level: "warn", message: "缺少任务记忆节点。" });
+  if (!actions.has("exit_summary")) issues.push({ level: "warn", message: "缺少出口摘要节点。" });
+  for (const node of nodes) {
+    if (!entryNodes.some((item) => item.id === node.id) && !(incoming.get(node.id) || 0)) {
+      issues.push({ level: "warn", node_id: node.id, message: "没有输入连线。" });
+    }
+    if (!terminalNodes.some((item) => item.id === node.id) && !(outgoing.get(node.id) || 0)) {
+      issues.push({ level: "warn", node_id: node.id, message: "没有输出连线。" });
+    }
+    if (terminalNodes.some((item) => item.id === node.id) && (outgoing.get(node.id) || 0)) {
+      issues.push({ level: "warn", node_id: node.id, message: "出口节点通常不应继续连出。" });
+    }
+    if (node.kind === "branch" && (outgoing.get(node.id) || 0) < 2) {
+      issues.push({ level: "warn", node_id: node.id, message: "分支节点建议至少两条输出。" });
+    }
+    if (node.action === "parallel_branch" && (outgoing.get(node.id) || 0) < 2) {
+      issues.push({ level: "warn", node_id: node.id, message: "并行 Agent 分支至少需要两个后续工作包。" });
+    }
+    if (["subflow", "tool", "api"].includes(node.kind) && (!node.action || node.action === "manual") && !String(node.prompt || "").trim()) {
+      issues.push({ level: "warn", node_id: node.id, message: "模块节点建议写入节点提示词或明确动作。" });
+    }
+  }
+  return {
+    valid: !issues.some((item) => item.level === "error"),
+    issues,
+  };
 }
 
 function edgeText() {
@@ -1263,12 +1821,14 @@ function edgeText() {
 function node(item) {
   const selected = item.id === selectedWorkflowNodeId;
   return `
-    <button class="node flow-node ${selected ? "selected" : ""}" style="left:${Number(item.x || 0)}px;top:${Number(item.y || 0)}px" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" type="button">
+    <article class="node flow-node ${selected ? "selected" : ""}" style="left:${Number(item.x || 0)}px;top:${Number(item.y || 0)}px" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" role="button" tabindex="0">
+      <span class="node-port node-port-in" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>
+      <span class="node-port node-port-out" data-port="out" data-node-id="${esc(item.id)}" title="输出连接点"></span>
       <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
       <strong>${esc(item.title || item.id)}</strong>
       <p>${esc(item.instruction || item.description || item.id)}</p>
-      <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}</span>
-    </button>
+      <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}${item.prompt ? " · 有提示词" : ""}</span>
+    </article>
   `;
 }
 
@@ -1289,11 +1849,17 @@ function workflowInspector() {
         <label>阶段<select id="workflow-node-stage">${labeledOptions(WORKFLOW_STAGES.map(([id]) => id), item.stage || "plan", workflowStageLabel)}</select></label>
         <label>类型<select id="workflow-node-kind">${labeledOptions(WORKFLOW_KINDS, item.kind || "state", workflowKindLabel)}</select></label>
         <label>动作<select id="workflow-node-action">${labeledOptions(WORKFLOW_ACTIONS, item.action || "manual", workflowActionLabel)}</select></label>
-        <label>位置 X<input id="workflow-node-x" type="number" min="0" value="${esc(item.x || 0)}" /></label>
-        <label>位置 Y<input id="workflow-node-y" type="number" min="0" value="${esc(item.y || 0)}" /></label>
       </div>
+      ${(item.ref_type || item.ref_id || item.plugin_name || item.api_id || item.tool_name || item.skill_name) ? `
+        <div class="workflow-ref-line">
+          <span>${esc(item.ref_type || "module")}</span>
+          <b>${esc(item.ref_id || item.plugin_name || item.api_id || item.tool_name || item.skill_name || "")}</b>
+        </div>
+      ` : ""}
+      <label>条件/分支说明<input id="workflow-node-condition" value="${esc(item.condition || "")}" placeholder="例如：高风险、只读排查、API 写入前审批" /></label>
       <label>说明<input id="workflow-node-description" value="${esc(item.description || "")}" /></label>
       <label>执行指令<textarea id="workflow-node-instruction" rows="5">${esc(item.instruction || "")}</textarea></label>
+      <label>节点提示词<textarea id="workflow-node-prompt" rows="5" placeholder="并行 Agent、插件/API/工具模块可在这里写专用提示词。">${esc(item.prompt || "")}</textarea></label>
       <div class="button-row">
         <button class="button" data-action="apply-workflow-node" type="button">应用节点</button>
         <button class="button danger" data-action="delete-workflow-node" type="button">删除节点</button>
@@ -2128,10 +2694,17 @@ function refreshWorkflowCanvasDom() {
   const svg = document.querySelector(".workflow-links");
   if (!svg) return;
   const size = workflowCanvasSize();
+  const space = document.querySelector(".workflow-canvas-space");
   const canvas = document.querySelector(".workflow-canvas");
+  if (space) {
+    space.style.width = `${Math.ceil(size.width * workflowZoom)}px`;
+    space.style.height = `${Math.ceil(size.height * workflowZoom)}px`;
+  }
   if (canvas) {
     canvas.style.width = `${size.width}px`;
     canvas.style.height = `${size.height}px`;
+    canvas.style.transform = `scale(${workflowZoom})`;
+    canvas.dataset.zoom = String(workflowZoom);
   }
   svg.setAttribute("width", String(size.width));
   svg.setAttribute("height", String(size.height));
@@ -2139,7 +2712,72 @@ function refreshWorkflowCanvasDom() {
   svg.innerHTML = workflowLinksSvg();
 }
 
+function workflowCanvasPoint(event) {
+  const canvas = document.querySelector(".workflow-canvas");
+  if (!canvas) return { x: 0, y: 0 };
+  const rect = canvas.getBoundingClientRect();
+  const zoom = Number(canvas.dataset.zoom || workflowZoom || 1) || 1;
+  return {
+    x: (event.clientX - rect.left) / zoom,
+    y: (event.clientY - rect.top) / zoom,
+  };
+}
+
+function addWorkflowEdge(from, to) {
+  ensureWorkflow();
+  if (!from || !to || from === to) return false;
+  const exists = currentAgent.workflow_edges.some((edge) => edge.from === from && edge.to === to);
+  if (exists) return false;
+  currentAgent.workflow_edges.push({ from, to });
+  workflowCheckReport = null;
+  return true;
+}
+
+function autoLayoutWorkflow() {
+  ensureWorkflow();
+  const stageOrder = WORKFLOW_STAGES.map(([id]) => id);
+  const rows = new Map(stageOrder.map((stage) => [stage, 0]));
+  for (const stage of stageOrder) {
+    for (const node of currentAgent.workflow_nodes.filter((item) => workflowStage(item) === stage)) {
+      const row = rows.get(stage) || 0;
+      node.stage = stage;
+      node.x = 70 + stageOrder.indexOf(stage) * WORKFLOW_LANE_WIDTH;
+      node.y = 90 + row * 170;
+      rows.set(stage, row + 1);
+    }
+  }
+  workflowCheckReport = null;
+}
+
+function portFromPoint(clientX, clientY) {
+  return document.elementFromPoint(clientX, clientY)?.closest(".node-port") || null;
+}
+
+function setWorkflowConnectingClass(active) {
+  document.querySelector(".workflow-canvas")?.classList.toggle("is-connecting", active);
+}
+
 document.addEventListener("pointerdown", (event) => {
+  const portEl = event.target.closest(".node-port");
+  if (portEl && document.querySelector(".workflow-canvas")?.contains(portEl)) {
+    const item = workflowNodeById(portEl.dataset.nodeId);
+    if (!item) return;
+    const port = portEl.dataset.port === "in" ? "in" : "out";
+    event.preventDefault();
+    event.stopPropagation();
+    selectedWorkflowNodeId = item.id;
+    workflowConnection = {
+      nodeId: item.id,
+      port,
+      pointerId: event.pointerId,
+      anchor: workflowNodeAnchor(item, port),
+      pointer: workflowCanvasPoint(event),
+    };
+    setWorkflowConnectingClass(true);
+    portEl.setPointerCapture?.(event.pointerId);
+    refreshWorkflowCanvasDom();
+    return;
+  }
   const nodeEl = event.target.closest(".flow-node");
   if (!nodeEl || !document.querySelector(".workflow-canvas")?.contains(nodeEl)) return;
   const item = workflowNodeById(nodeEl.dataset.id);
@@ -2161,20 +2799,43 @@ document.addEventListener("pointerdown", (event) => {
 });
 
 document.addEventListener("pointermove", (event) => {
+  if (workflowConnection && workflowConnection.pointerId === event.pointerId) {
+    workflowConnection.pointer = workflowCanvasPoint(event);
+    refreshWorkflowCanvasDom();
+    return;
+  }
   if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
   const item = workflowNodeById(workflowDrag.id);
   if (!item) return;
   const dx = event.clientX - workflowDrag.startX;
   const dy = event.clientY - workflowDrag.startY;
   workflowDrag.moved ||= Math.abs(dx) + Math.abs(dy) > 3;
-  item.x = clamp(workflowDrag.baseX + dx, 0, 3000);
-  item.y = clamp(workflowDrag.baseY + dy, 0, 1800);
+  item.x = clamp(workflowDrag.baseX + dx / workflowZoom, 0, WORKFLOW_CANVAS_MAX_X);
+  item.y = clamp(workflowDrag.baseY + dy / workflowZoom, 0, WORKFLOW_CANVAS_MAX_Y);
   workflowDrag.element.style.left = `${item.x}px`;
   workflowDrag.element.style.top = `${item.y}px`;
   refreshWorkflowCanvasDom();
 });
 
 document.addEventListener("pointerup", (event) => {
+  if (workflowConnection && workflowConnection.pointerId === event.pointerId) {
+    const start = workflowConnection;
+    const targetPort = portFromPoint(event.clientX, event.clientY);
+    const targetNodeId = targetPort?.dataset.nodeId || "";
+    const targetType = targetPort?.dataset.port || "";
+    let added = false;
+    if (targetNodeId && targetNodeId !== start.nodeId && targetType && targetType !== start.port) {
+      const from = start.port === "out" ? start.nodeId : targetNodeId;
+      const to = start.port === "out" ? targetNodeId : start.nodeId;
+      added = addWorkflowEdge(from, to);
+    }
+    workflowConnection = null;
+    setWorkflowConnectingClass(false);
+    refreshWorkflowCanvasDom();
+    setFeedback(added ? "连线已创建，保存配置后生效。" : "未创建连线：请拖到另一个节点的相反连接点。", added ? "normal" : "error");
+    if (added) render();
+    return;
+  }
   if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
   workflowDrag.element.releasePointerCapture?.(event.pointerId);
   if (workflowDrag.moved) {
@@ -2229,6 +2890,32 @@ document.addEventListener("click", async (event) => {
       currentAgent.entry_channel = ["command", "natural", "webui"].includes(channel) ? channel : "command";
       render();
     }
+    if (action === "workflow-zoom-in" || action === "workflow-zoom-out" || action === "workflow-zoom-reset" || action === "workflow-fit") {
+      readAgentForm();
+      if (action === "workflow-zoom-in") workflowZoom = clamp(workflowZoom + 0.1, 0.45, 1.35);
+      if (action === "workflow-zoom-out") workflowZoom = clamp(workflowZoom - 0.1, 0.45, 1.35);
+      if (action === "workflow-zoom-reset") workflowZoom = 1;
+      if (action === "workflow-fit") {
+        const wrap = document.querySelector(".workflow-canvas-wrap");
+        const size = workflowCanvasSize();
+        const widthFit = wrap ? (wrap.clientWidth - 32) / size.width : 0.9;
+        workflowZoom = clamp(widthFit, 0.45, 1);
+      }
+      render();
+    }
+    if (action === "check-workflow") {
+      readAgentForm();
+      const result = await api("/api/workflow/check", { method: "POST", body: { agent: currentAgent } });
+      workflowCheckReport = result.workflow || null;
+      setFeedback(workflowCheckReport?.valid ? "工作流检查通过。" : "工作流检查发现需要修正的环节。", workflowCheckReport?.valid ? "normal" : "error");
+      render();
+    }
+    if (action === "auto-layout-workflow") {
+      readAgentForm();
+      autoLayoutWorkflow();
+      setFeedback("工作流已按阶段自动整理，保存配置后生效。");
+      render();
+    }
     if (action === "select-workflow-node") {
       readAgentForm();
       selectedWorkflowNodeId = target.dataset.id;
@@ -2251,10 +2938,15 @@ document.addEventListener("click", async (event) => {
         y: pos.y,
       });
       selectedWorkflowNodeId = id;
+      workflowCheckReport = null;
       render();
     }
     if (action === "add-template-node") {
       addWorkflowTemplateNode(target.dataset.id || "plan");
+      render();
+    }
+    if (action === "add-runtime-node") {
+      addRuntimeWorkflowNode(target.dataset.refType, target.dataset.refId);
       render();
     }
     if (action === "apply-workflow-template") {
@@ -2267,6 +2959,7 @@ document.addEventListener("click", async (event) => {
       currentAgent.workflow_nodes = defaultWorkflowNodes();
       currentAgent.workflow_edges = defaultWorkflowEdges();
       selectedWorkflowNodeId = "entry";
+      workflowCheckReport = null;
       render();
     }
     if (action === "apply-workflow-node") {
@@ -2281,15 +2974,18 @@ document.addEventListener("click", async (event) => {
       node.kind = $("workflow-node-kind").value;
       node.stage = $("workflow-node-stage").value;
       node.action = $("workflow-node-action").value;
+      node.condition = $("workflow-node-condition").value.trim();
       node.description = $("workflow-node-description").value.trim();
       node.instruction = $("workflow-node-instruction").value.trim();
-      node.x = clamp(Number($("workflow-node-x").value || node.x || 0), 0, 3000);
-      node.y = clamp(Number($("workflow-node-y").value || node.y || 0), 0, 1800);
+      node.prompt = $("workflow-node-prompt").value.trim();
+      node.x = clamp(Number($("workflow-node-x")?.value || node.x || 0), 0, WORKFLOW_CANVAS_MAX_X);
+      node.y = clamp(Number($("workflow-node-y")?.value || node.y || 0), 0, WORKFLOW_CANVAS_MAX_Y);
       currentAgent.workflow_edges = currentAgent.workflow_edges.map((edge) => ({
         from: edge.from === oldId ? newId : edge.from,
         to: edge.to === oldId ? newId : edge.to,
       }));
       selectedWorkflowNodeId = newId;
+      workflowCheckReport = null;
       render();
     }
     if (action === "delete-workflow-node") {
@@ -2299,6 +2995,7 @@ document.addEventListener("click", async (event) => {
       currentAgent.workflow_nodes = currentAgent.workflow_nodes.filter((node) => node.id !== id);
       currentAgent.workflow_edges = currentAgent.workflow_edges.filter((edge) => edge.from !== id && edge.to !== id);
       selectedWorkflowNodeId = currentAgent.workflow_nodes[0]?.id || "";
+      workflowCheckReport = null;
       render();
     }
     if (action === "add-workflow-edge") {
@@ -2306,15 +3003,13 @@ document.addEventListener("click", async (event) => {
       ensureWorkflow();
       const from = $("workflow-edge-from").value;
       const to = $("workflow-edge-to").value;
-      const exists = currentAgent.workflow_edges.some((edge) => edge.from === from && edge.to === to);
-      if (from && to && from !== to && !exists) {
-        currentAgent.workflow_edges.push({ from, to });
-      }
+      addWorkflowEdge(from, to);
       render();
     }
     if (action === "delete-workflow-edge") {
       readAgentForm();
       currentAgent.workflow_edges.splice(Number(target.dataset.index), 1);
+      workflowCheckReport = null;
       render();
     }
     if (action === "save-agent") await saveAgent(false);

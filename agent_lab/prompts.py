@@ -26,7 +26,30 @@ def _workflow_text(spec: AgentSpec) -> str:
         instruction = str(
             node.get("instruction") or node.get("description") or ""
         ).strip()
+        extras = []
+        ref_type = str(node.get("ref_type") or "").strip()
+        ref_id = str(
+            node.get("ref_id")
+            or node.get("api_id")
+            or node.get("plugin_name")
+            or node.get("tool_name")
+            or node.get("skill_name")
+            or ""
+        ).strip()
+        condition = str(node.get("condition") or "").strip()
+        parallel_group = str(node.get("parallel_group") or "").strip()
+        prompt = str(node.get("prompt") or "").strip()
+        if ref_type or ref_id:
+            extras.append(f"ref={ref_type or 'module'}:{ref_id or '-'}")
+        if condition:
+            extras.append(f"condition={condition[:180]}")
+        if parallel_group:
+            extras.append(f"parallel_group={parallel_group}")
+        if prompt:
+            extras.append(f"node_prompt={prompt[:260]}")
         suffix = f": {instruction}" if instruction else ""
+        if extras:
+            suffix += "；" + "；".join(extras)
         node_lines.append(f"- {node_id} [{stage}/{kind}/{action}] {title}{suffix}")
 
     edge_lines = []
@@ -134,6 +157,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 - agent_lab_read_state：读取当前任务状态。
 - agent_lab_update_state：写回当前进度、观察、下一步和阻塞点。
 - agent_lab_read_task_memory：读取已归档任务记忆，普通模式也可以按标签/关键词查询。
+- agent_lab_update_workflow：检查、增删改工作流节点和连线；当用户要求调整入口、审批、API、插件/工具/skill 模块、并行分支、节点提示词或记忆环节时使用。
 - agent_lab_tick：推进当前任务一轮。
 - agent_lab_request_approval：危险操作前请求审批。
 - agent_lab_set_heartbeat：为长任务开启或关闭心跳。
@@ -149,6 +173,8 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 7. 审批是行为规范：在计划或工具调用前自己判断，不要等工具报错后才补请示。
 8. 工作流是任务推进路线图。每轮按节点指令选择下一步，但不得绕过 task_state、审批和工具白名单。
 9. 记忆必须分层：普通聊天记忆只在入口压缩后进入任务；任务过程中的时间线、关键改动和成果写入 task_state/任务记忆；出口摘要只回流稳定事实。
+10. 调整工作流不是换 bot 身份；只是在当前 AstrBot 身份下改变任务模式的入口、模块、校验、记忆和出口规则。修改后先检查工作流，再继续任务。
+11. 工作流模块必须尊重隔离和白名单：插件模块不能复活全局停用插件，API 模块只能调用已注册 API，工具模块必须在 AgentSpec 允许范围内。
 """.strip()
 
 
