@@ -1,6 +1,6 @@
-# Morning Acceptance Checklist
+# 验收清单
 
-Use this checklist to verify Agent Lab inside a real AstrBot instance.
+用这份清单在真实 AstrBot 实例里验收 Agent Lab。
 
 ## Repository Checks
 
@@ -30,7 +30,7 @@ Note:
 - Host, port, and optional API token are controlled by plugin config.
 - If binding outside localhost, configure `standalone_webui_token`.
 
-Expected WebUI:
+WebUI 预期：
 
 - Shows sidebar pages: Dashboard, Canvas, Tasks/Memory, Monitor, Plugins/Integrations.
 - Shows current Bot label and identity source; it must come from AstrBot Persona/config when available, not a hardcoded character name.
@@ -44,7 +44,8 @@ Expected WebUI:
 - Shows AstrBot plugins separately from external integration blueprints.
 - Agent Lab plugin itself is locked and cannot be disabled from its own task profile.
 - Globally disabled AstrBot plugins show as unavailable and cannot be revived by Agent Mode.
-- Closing an AstrBot plugin in Agent Mode makes tools from that plugin unavailable in the registered tools view and runtime toolset.
+- 新建 AgentSpec 默认使用严格隔离；未显式允许的普通 AstrBot 插件在 Agent Mode 会话中关闭。
+- 关闭某个 AstrBot 插件后，该插件来源工具会在注册工具视图和 runtime toolset 中不可用。
 - Saving an AgentSpec also removes tools that belong to globally disabled or Agent-disabled AstrBot plugins.
 - Shows Tools grouped or collapsible by source, including builtin catalog tools such as `astrbot_execute_shell`.
 - Shows `agent_lab_call_custom_api` when custom API calling is available.
@@ -150,12 +151,14 @@ In Agent Lab standalone console:
 10. Toggle an integration blueprint and edit its schema-rendered fine settings; confirm advanced JSON is still available.
 11. Import or update a custom external blueprint manifest from the blueprints page.
 12. Add a workflow node.
-13. Edit the selected workflow node title/kind/description.
-14. Add and delete a workflow edge.
-15. Save AgentSpec.
-16. Duplicate the AgentSpec.
-17. Set the duplicate as default.
-18. Refresh.
+13. Drag a workflow node and confirm the position changes without resizing the canvas oddly.
+14. Add a node from the node material toolbox.
+15. Edit the selected workflow node title/kind/description.
+16. Add and delete a workflow edge.
+17. Save AgentSpec.
+18. Duplicate the AgentSpec.
+19. Set the duplicate as default.
+20. Refresh.
 
 Expected:
 
@@ -223,9 +226,9 @@ Expected:
 - `agent_lab_call_custom_api` can call only a registered API.
 - Tool result never echoes the stored credential.
 
-## Known Limits In v0.1.0
+## 已知边界
 
-- First version supports private chat only.
-- Canvas is a structured workflow view, not a drag-and-drop runtime yet.
-- External frameworks are integration blueprints/specs and adapter contracts, not embedded full runtimes yet.
-- Real shell/file/browser capability depends on AstrBot Computer Use runtime and permissions.
+- 第一版默认只支持私聊。
+- 桌面画布支持节点素材、节点拖拽、节点编辑和连线编辑；移动端自动使用按阶段分组的节点卡片。连线拖拽创建、运行态高亮和复杂分组仍属于后续增强。
+- 外部框架目前是集成蓝图、规范和 adapter contract，还不是内嵌完整 runtime。
+- 真实 shell/file/browser 能力取决于 AstrBot Computer Use runtime 和权限配置。

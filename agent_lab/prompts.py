@@ -44,14 +44,48 @@ def _workflow_text(spec: AgentSpec) -> str:
     )
 
 
+def _entry_policy_text(spec: AgentSpec) -> str:
+    entry = spec.entry_policy
+    return "\n".join(
+        [
+            "- 开启暗号/命令：",
+            _lines_or_none(entry.trigger_phrases),
+            "- 任务关键词：",
+            _lines_or_none(entry.trigger_keywords),
+            f"- 是否需要开启确认：{'是' if entry.require_confirmation else '否'}",
+            f"- 开启确认话术：{entry.confirmation_text or '-'}",
+            "- 默认完成条件：",
+            _lines_or_none(entry.default_completion_conditions),
+            "- 结束暗号/命令：",
+            _lines_or_none(entry.exit_phrases),
+        ]
+    )
+
+
+def _isolation_policy_text(spec: AgentSpec) -> str:
+    policy = spec.isolation_policy
+    return "\n".join(
+        [
+            f"- 隔离模式：{policy.mode}",
+            f"- 工具模式：{policy.tool_mode}",
+            f"- 退出时恢复会话快照：{'是' if policy.restore_on_exit else '否'}",
+            f"- 保护 Agent Lab 自身：{'是' if policy.protect_self else '否'}",
+            f"- 隐藏已禁用插件工具：{'是' if policy.hide_disabled_plugin_tools else '否'}",
+            f"- 说明：{policy.notes or '-'}",
+        ]
+    )
+
+
 ENTRY_SUMMARY_SYSTEM = """你是 AstrBot Agent Lab 的入口摘要器。
 你的任务是把用户和 bot 在进入 Agent Mode 前商量出的计划压缩成可执行的 task_brief。
-只保留任务目标、约束、已确认计划、用户授权、风险、重要上下文和接续语气。
-不要保留闲聊、情绪碎片、与任务无关的长期记忆。"""
+只保留任务目标、开启方式、完成条件、约束、已确认计划、用户授权、风险、重要上下文和接续语气。
+不要保留闲聊、情绪碎片、与任务无关的长期记忆。
+如果进入前用户已经设定暗号、关键词、手动命令或需要二次确认，必须写入 task_brief。"""
 
 EXIT_SUMMARY_SYSTEM = """你是 AstrBot Agent Lab 的出口归档器。
 你的任务是把一次 Agent Mode 任务压缩成归档摘要和可回流长期记忆候选。
-归档要能让后续任务无缝接续；长期记忆候选只包含未来稳定有用的事实。"""
+归档要能让后续任务无缝接续；长期记忆候选只包含未来稳定有用的事实。
+输出必须覆盖：完成情况、关键改动、验证结果、遗留风险、下次续写入口、可暴露给普通模式读取的任务记忆标签。"""
 
 
 def build_agent_mode_policy(spec: AgentSpec) -> str:
@@ -67,6 +101,10 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 - memory_mode：{spec.memory_policy.mode}
 - approval_mode：{spec.approval_policy.mode}
 - heartbeat_mode：{spec.heartbeat_policy.mode}
+- entry_policy：
+{_entry_policy_text(spec)}
+- isolation_policy：
+{_isolation_policy_text(spec)}
 - preapproved_scopes：
 {_lines_or_none(spec.approval_policy.preapproved_scopes)}
 - require_approval：
@@ -88,11 +126,14 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 6. smart：低风险资料整理、计划、分析可自动进入；涉及文件写入、命令执行、部署、删除、读取密钥、关闭插件等先确认。
 7. always：除简单问答和闲聊外优先进入 Agent Mode；危险动作仍需审批。
 8. 如果已有 active task，不要重复进入，先读取 task_state 再继续。
+9. 画布中的 entry/entry_gate/context_bridge 节点共同定义“如何开启”：暗号、关键词、命令、WebUI、是否二次确认，都以 AgentSpec 和工作流节点为准。
+10. 画布中的 archive/exit_summary 节点定义“如何结束”：只有满足完成条件、用户取消、任务阻塞需归档或用户明确要求退出时，才调用 agent_lab_finish。
 
 可用工具：
 - agent_lab_enter_mode：进入 Agent Mode，创建任务状态。
 - agent_lab_read_state：读取当前任务状态。
 - agent_lab_update_state：写回当前进度、观察、下一步和阻塞点。
+- agent_lab_read_task_memory：读取已归档任务记忆，普通模式也可以按标签/关键词查询。
 - agent_lab_tick：推进当前任务一轮。
 - agent_lab_request_approval：危险操作前请求审批。
 - agent_lab_set_heartbeat：为长任务开启或关闭心跳。
@@ -107,6 +148,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 6. 心跳只是唤醒机制，不是记忆本身；只有长任务、等待型任务或用户要求时才建议启用。
 7. 审批是行为规范：在计划或工具调用前自己判断，不要等工具报错后才补请示。
 8. 工作流是任务推进路线图。每轮按节点指令选择下一步，但不得绕过 task_state、审批和工具白名单。
+9. 记忆必须分层：普通聊天记忆只在入口压缩后进入任务；任务过程中的时间线、关键改动和成果写入 task_state/任务记忆；出口摘要只回流稳定事实。
 """.strip()
 
 
@@ -148,6 +190,10 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 - memory_mode: {spec.memory_policy.mode}
 - approval_mode: {spec.approval_policy.mode}
 - heartbeat_mode: {spec.heartbeat_policy.mode}
+- entry_policy:
+{_entry_policy_text(spec)}
+- isolation_policy:
+{_isolation_policy_text(spec)}
 - preapproved_scopes:
 {_lines_or_none(spec.approval_policy.preapproved_scopes)}
 - require_approval:
@@ -166,6 +212,9 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 [Approval Contract]
 普通读取、创建任务记录、小范围明确文件写入、运行测试无需审批。删除、批量覆盖、git reset/clean、部署/重启服务、密钥读取、数据库破坏性变更、全局插件/系统配置修改必须先请求审批。若某项在 preapproved_scopes 中，仍需先确认它确实属于用户已授权范围；若超出范围，必须调用 agent_lab_request_approval。
 
+[Task Memory Contract]
+任务过程中的时间线以 task_state.progress_log 和 state_snapshots 为准。每轮写回时必须说明：几点/哪一轮做了什么、关键改动点、验证结果、下一步。退出时必须用 agent_lab_finish 生成出口摘要和 memory_candidates；候选记忆只保存稳定事实、项目约定、后续续写提示，不保存密钥、一次性 token 或临时噪声。
+
 {modules_prompt}
 """.strip()
 
@@ -179,8 +228,8 @@ def build_tick_prompt(task: TaskState, reason: str = "") -> str:
 1. 复盘当前 task_state。
 2. 判断是否存在未审批的危险操作；若有，先等待审批。
 3. 只推进一个有限工作单元。
-4. 调用 agent_lab_update_state 写回本轮完成了什么、观察到什么、下一步是什么、是否需要心跳。
-5. 若任务完成，调用 agent_lab_finish；若需要审批，调用 agent_lab_request_approval。
+4. 调用 agent_lab_update_state 写回本轮完成了什么、关键改动点、观察到什么、下一步是什么、是否需要心跳。
+5. 若任务完成，调用 agent_lab_finish，并在 final_summary/memory_candidates 中沉淀任务成果、改动摘要、遗留风险和下次续写提示；若需要审批，调用 agent_lab_request_approval。
 
 当前任务 ID：{task.task_id}
 根目标：{task.root_goal}

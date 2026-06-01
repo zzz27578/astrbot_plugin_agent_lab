@@ -136,6 +136,21 @@ AgentSpec 是用户手搓 Agent 的核心配置：
 {
   "identity_label_source": "astrbot_runtime",
   "trigger_mode": "confirm",
+  "entry_policy": {
+    "trigger_phrases": ["进入任务模式", "/agentlab start"],
+    "trigger_keywords": ["持续推进", "排查", "改代码"],
+    "require_confirmation": true,
+    "confirmation_text": "我会进入任务模式：隔离当前会话插件、压缩上文、创建 task_state，并在高风险动作前请求审批。是否开启？",
+    "default_completion_conditions": ["用户验收通过", "任务成果已归档"],
+    "exit_phrases": ["完成任务", "退出任务模式", "/agentlab finish"]
+  },
+  "isolation_policy": {
+    "mode": "strict",
+    "tool_mode": "whitelist",
+    "restore_on_exit": true,
+    "protect_self": true,
+    "hide_disabled_plugin_tools": true
+  },
   "system_prompt": "...",
   "task_prompt": "...",
   "plugin_overrides": {
@@ -169,6 +184,8 @@ AgentSpec 是用户手搓 Agent 的核心配置：
 ```
 
 默认 AgentSpec 不要求手填 bot 名。`identity_label_source: "astrbot_runtime"` 表示运行时自动读取当前会话/对话/默认 Persona，读不到 Persona 时再读 AstrBot 配置里的机器人展示名；WebUI 的配置名输入框留空时仍按运行时身份生成展示名，只有用户手动输入自定义 `name` 时才会转成 `manual`。
+
+新建 AgentSpec 默认使用 `isolation_policy.mode=strict`。严格隔离会在当前会话默认关闭普通 AstrBot 插件，只保留 Agent Lab、AstrBot 保留插件和用户显式允许的插件；它不改全局插件开关，退出任务时按快照恢复。`tool_mode=whitelist` 会把运行时工具收敛到白名单和 Agent Lab 必要内部工具；如果选择 `no_external`，任务只保留读写任务状态、审批、心跳、归档和任务记忆查询这类内置工具。
 
 任务启动时会复制 AgentSpec 快照，运行中的任务不会被后续模板修改突然影响。
 
@@ -283,10 +300,12 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 - `crewai_flow_adapter`：CrewAI Flow 接入规范。
 - `microsoft_agent_framework_adapter`：Microsoft Agent Framework 中间件/工作流接入规范。
 
-参考：
+调研参考：
 
+- OpenAI Practical Guide to Building Agents: https://cdn.openai.com/business-guides-and-resources/a-practical-guide-to-building-agents.pdf
 - AstrBot Agent Runner: https://github.com/AstrBotDevs/AstrBot/blob/master/docs/en/use/agent-runner.md
 - LangGraph persistence: https://docs.langchain.com/oss/python/langgraph/persistence
+- LangGraph human-in-the-loop: https://docs.langchain.com/oss/python/langgraph/interrupts
 - OpenAI Agents: https://openai.github.io/openai-agents-python/agents/
 - OpenAI Agents guardrails: https://openai.github.io/openai-agents-python/guardrails/
 - OpenAI Agents handoffs: https://openai.github.io/openai-agents-python/handoffs/
@@ -303,18 +322,19 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 - 默认 Agent 展示名从 AstrBot 运行时身份读取，WebUI 会显示来源是 Persona、配置名称还是兜底占位。
 - 自定义 API、加密凭证和 `agent_lab_call_custom_api` 工具已打通。
 - `agent-mode` Skill 支持 WebUI 自定义规则同步。
-- 可视化编排画布支持节点/连线编辑，不再只能手改 workflow JSON。
+- 可视化编排画布支持节点素材、节点拖拽、节点/连线编辑，不再只能手改 workflow JSON；小屏会自动切成按阶段分组的中文节点卡片，避免在手机上横向拖超宽画布。
 - 工具支持风险分组、风险覆盖和可编辑审批策略。
 - 外部方案蓝图支持按 `settings_schema` 渲染精细设置表单，并保存到 `module_settings`。
 - 仪表盘 Agent 资产列表会按配置聚合心跳健康、任务触发、Token 和待审批数量。
 - 任务与记忆控制台支持查看归档任务详情、结构化状态字段、待审批和快照时间线。
 - 命令、LLM 工具、独立 WebUI、心跳、审批、入口/出口摘要均已落地。
-- Agent 能在 tick 中显式读写 task_state，并通过 hooks 记录工具调用。
+- Agent 能在 tick 中显式读写 task_state，并通过 hooks 记录工具调用；tick 结束时会重读最新 task，避免覆盖工具已写回的进度或把已归档任务重新写成 active。
+- 严格插件隔离已落地：任务会话默认关闭普通插件，只保留显式允许项和必要内部能力。
 - 外部方案以集成蓝图形式内置为可扩展收束口。
 
 后续可以继续增强：
 
-- 真正可拖拽的 workflow 画布。
+- 连线拖拽创建、节点分组折叠和运行态高亮。
 - 更完整的 provider token usage 统计；当前只汇总 provider 已上报的 usage。
 - 更细的工具危险等级和凭证管理。
 - 对接外部 memory store。

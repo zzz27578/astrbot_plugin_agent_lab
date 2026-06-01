@@ -145,6 +145,18 @@ class AgentLabStorage:
         active = self.active_task_path(task.umo)
         if active.exists():
             active.unlink()
+        if task.exit_summary.strip():
+            self.save_memory_entry(
+                {
+                    "text": task.exit_summary,
+                    "source_task_id": task.task_id,
+                    "source_umo": task.umo,
+                    "status": "candidate",
+                    "kind": "task_archive",
+                    "tags": ["task", "archive", task.agent_id or "agent"],
+                    "expose_to_normal": True,
+                }
+            )
         for item in task.memory_candidates:
             self.save_memory_entry(
                 {
@@ -152,6 +164,9 @@ class AgentLabStorage:
                     "source_task_id": task.task_id,
                     "source_umo": task.umo,
                     "status": "candidate",
+                    "kind": "memory_candidate",
+                    "tags": ["task", "candidate", task.agent_id or "agent"],
+                    "expose_to_normal": True,
                 }
             )
         return dst_md
@@ -389,8 +404,14 @@ class AgentLabStorage:
         item["memory_id"] = str(item.get("memory_id") or "").strip() or new_id("mem")
         item["text"] = str(item.get("text") or "").strip()
         item["status"] = str(item.get("status") or "candidate").strip()
+        item["kind"] = str(item.get("kind") or "task_memory").strip()
         item["source_task_id"] = str(item.get("source_task_id") or "").strip()
         item["source_umo"] = str(item.get("source_umo") or "").strip()
+        tags = item.get("tags") or []
+        if isinstance(tags, str):
+            tags = [part.strip() for part in tags.replace("，", ",").split(",")]
+        item["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
+        item["expose_to_normal"] = bool(item.get("expose_to_normal", True))
         item["updated_at"] = now_iso()
         item["created_at"] = item.get("created_at") or item["updated_at"]
         items = [existing for existing in items if existing.get("memory_id") != item["memory_id"]]

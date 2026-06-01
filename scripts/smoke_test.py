@@ -111,6 +111,10 @@ def main() -> None:
         assert spec.identity_label_source == "astrbot_runtime"
         assert spec.application_scope == "entry"
         assert spec.entry_channel == "command"
+        assert "进入任务模式" in spec.entry_policy.trigger_phrases
+        assert spec.entry_policy.require_confirmation is True
+        assert spec.isolation_policy.mode == "strict"
+        assert spec.isolation_policy.tool_mode == "whitelist"
         assert isinstance(spec.tool_risk_overrides, dict)
         assert isinstance(spec.module_settings, dict)
         assert spec.workflow_nodes

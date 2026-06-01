@@ -7,6 +7,7 @@ const DEFAULT_ENABLED_TOOLS = [
   "astrbot_file_edit_tool",
   "astrbot_execute_shell",
   "astrbot_execute_python",
+  "agent_lab_read_task_memory",
   "agent_lab_call_custom_api",
 ];
 
@@ -21,6 +22,7 @@ const WORKFLOW_STAGES = [
 
 const WORKFLOW_KINDS = ["state", "tool", "guard", "human", "api", "memory"];
 const WORKFLOW_ACTIONS = [
+  "confirm_entry",
   "summarize_entry",
   "plan",
   "run_tools",
@@ -28,9 +30,94 @@ const WORKFLOW_ACTIONS = [
   "request_approval",
   "wait_user",
   "save_state",
+  "save_memory",
   "heartbeat",
   "archive",
+  "exit_summary",
   "manual",
+];
+
+const WORKFLOW_NODE_TEMPLATES = [
+  {
+    id: "entry",
+    title: "入口识别",
+    kind: "state",
+    stage: "entry",
+    action: "summarize_entry",
+    instruction: "识别暗号、命令、关键词或 WebUI 入口，决定是否准备进入任务模式。",
+  },
+  {
+    id: "entry_gate",
+    title: "开启确认",
+    kind: "human",
+    stage: "entry",
+    action: "confirm_entry",
+    instruction: "说明隔离、摘要、状态文件和审批影响，等待用户明确同意。",
+  },
+  {
+    id: "plan",
+    title: "计划确认",
+    kind: "state",
+    stage: "plan",
+    action: "plan",
+    instruction: "拆解完成条件、工具范围、风险等级和本轮有限工作单元。",
+  },
+  {
+    id: "tool",
+    title: "工具执行",
+    kind: "tool",
+    stage: "execute",
+    action: "run_tools",
+    instruction: "调用白名单工具，并把关键输出写回任务状态。",
+  },
+  {
+    id: "api",
+    title: "自定义 API",
+    kind: "api",
+    stage: "execute",
+    action: "call_api",
+    instruction: "调用已登记的自定义 API，凭证只由 Agent Lab 注入，不回显给模型。",
+  },
+  {
+    id: "approval",
+    title: "审批闸门",
+    kind: "guard",
+    stage: "guard",
+    action: "request_approval",
+    instruction: "高风险动作前说明影响、回滚方式和等待用户审批。",
+  },
+  {
+    id: "checkpoint",
+    title: "状态快照",
+    kind: "state",
+    stage: "checkpoint",
+    action: "save_state",
+    instruction: "写回进度、观察、下一步、阻塞点和验证结果。",
+  },
+  {
+    id: "memory",
+    title: "任务记忆",
+    kind: "memory",
+    stage: "checkpoint",
+    action: "save_memory",
+    instruction: "沉淀时间线、关键改动、成果、风险和下次续写提示。",
+  },
+  {
+    id: "heartbeat",
+    title: "心跳续跑",
+    kind: "guard",
+    stage: "guard",
+    action: "heartbeat",
+    instruction: "定时唤醒后先读 task_state，再推进一小步，重复阻塞则暂停。",
+  },
+  {
+    id: "exit",
+    title: "结束回流",
+    kind: "memory",
+    stage: "archive",
+    action: "exit_summary",
+    instruction: "任务完成或取消时归档成果、改动、风险和可回流记忆候选。",
+  },
 ];
 
 const sections = [
@@ -149,6 +236,22 @@ function heartbeatModeLabel(mode) {
   }[mode] || mode;
 }
 
+function isolationModeLabel(mode) {
+  return {
+    off: "不隔离",
+    session: "会话隔离",
+    strict: "严格隔离",
+  }[mode] || mode;
+}
+
+function toolModeLabel(mode) {
+  return {
+    full: "全部可用工具",
+    whitelist: "工具白名单",
+    no_external: "仅任务内置工具",
+  }[mode] || mode;
+}
+
 function workflowKindLabel(kind) {
   return {
     state: "状态",
@@ -167,14 +270,17 @@ function workflowStageLabel(stage) {
 function workflowActionLabel(action) {
   return {
     summarize_entry: "入口摘要",
+    confirm_entry: "开启确认",
     plan: "计划拆解",
     run_tools: "工具执行",
     call_api: "API 调用",
     request_approval: "请求审批",
     wait_user: "等待用户",
     save_state: "写回状态",
+    save_memory: "任务记忆",
     heartbeat: "心跳续跑",
     archive: "归档退出",
+    exit_summary: "结束回流",
     manual: "人工判断",
   }[action] || action;
 }
@@ -202,6 +308,20 @@ function agentDisplayName(agent) {
 function ensureAgent(agent) {
   agent.application_scope ||= "entry";
   agent.entry_channel ||= "command";
+  agent.entry_policy ||= {};
+  agent.entry_policy.trigger_phrases ||= ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"];
+  agent.entry_policy.trigger_keywords ||= ["持续推进", "长任务", "排查", "部署", "写插件", "改代码", "整理资料"];
+  agent.entry_policy.require_confirmation ??= true;
+  agent.entry_policy.confirmation_text ||= "我会进入任务模式：隔离当前会话插件、压缩上文、创建 task_state，并在高风险动作前请求审批。是否开启？";
+  agent.entry_policy.default_completion_conditions ||= ["用户验收通过", "任务成果已归档", "关键改动和风险已总结"];
+  agent.entry_policy.exit_phrases ||= ["完成任务", "结束任务模式", "退出任务模式", "退出 Agent Mode", "/agentlab finish"];
+  agent.isolation_policy ||= {};
+  agent.isolation_policy.mode ||= "strict";
+  agent.isolation_policy.tool_mode ||= "whitelist";
+  agent.isolation_policy.restore_on_exit ??= true;
+  agent.isolation_policy.protect_self ??= true;
+  agent.isolation_policy.hide_disabled_plugin_tools ??= true;
+  agent.isolation_policy.notes ||= "严格隔离会在当前会话默认关闭普通插件，只保留 Agent Lab、AstrBot 保留插件和用户显式允许的插件；不改 AstrBot 全局插件开关，退出时恢复会话快照。";
   agent.memory_policy ||= {};
   agent.approval_policy ||= {};
   agent.approval_policy.preapproved_scopes ||= [];
@@ -240,6 +360,22 @@ function defaultAgentDraft() {
     application_scope: "entry",
     entry_channel: "command",
     trigger_mode: "confirm",
+    entry_policy: {
+      trigger_phrases: ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"],
+      trigger_keywords: ["持续推进", "长任务", "排查", "部署", "写插件", "改代码", "整理资料"],
+      require_confirmation: true,
+      confirmation_text: "我会进入任务模式：隔离当前会话插件、压缩上文、创建 task_state，并在高风险动作前请求审批。是否开启？",
+      default_completion_conditions: ["用户验收通过", "任务成果已归档", "关键改动和风险已总结"],
+      exit_phrases: ["完成任务", "结束任务模式", "退出任务模式", "退出 Agent Mode", "/agentlab finish"],
+    },
+    isolation_policy: {
+      mode: "strict",
+      tool_mode: "whitelist",
+      restore_on_exit: true,
+      protect_self: true,
+      hide_disabled_plugin_tools: true,
+      notes: "严格隔离会在当前会话默认关闭普通插件，只保留 Agent Lab、AstrBot 保留插件和用户显式允许的插件；不改 AstrBot 全局插件开关，退出时恢复会话快照。",
+    },
     system_prompt: "你仍然是当前 AstrBot 里的原本角色，但进入 Agent Mode 后必须以任务推进为中心。",
     task_prompt: "你在 Agent Mode 中工作。先读取任务状态，再执行一个有限步骤，随后总结并写回状态。",
     plugin_overrides: {},
@@ -302,6 +438,54 @@ function riskTone(risk) {
   return { safe: "ok", work: "warn", high: "bad" }[risk] || "warn";
 }
 
+function taskStatusLabel(status) {
+  return {
+    running: "运行中",
+    paused: "已暂停",
+    blocked: "已阻塞",
+    completed: "已完成",
+    cancelled: "已取消",
+  }[status] || status || "-";
+}
+
+function approvalStatusLabel(status) {
+  return {
+    pending: "待审批",
+    approved: "已通过",
+    rejected: "已拒绝",
+    expired: "已过期",
+  }[status] || status || "-";
+}
+
+function eventKindLabel(kind) {
+  return {
+    created: "已创建",
+    tick: "推进一轮",
+    finished: "已归档",
+    cancelled: "已取消",
+    update_state: "状态写回",
+    approval_requested: "请求审批",
+    approval_resolved: "审批处理",
+    heartbeat_on: "开心跳",
+    heartbeat_off: "关心跳",
+    heartbeat_recommended: "建议心跳",
+    custom_api: "自定义 API",
+    tool_start: "工具开始",
+    tool_end: "工具结束",
+    agent_done: "Agent 完成",
+    state: "状态",
+  }[kind] || kind || "-";
+}
+
+function authTypeLabel(value) {
+  return {
+    bearer: "Bearer 令牌",
+    header: "自定义请求头",
+    query: "查询参数",
+    none: "不鉴权",
+  }[value] || value;
+}
+
 function includesQuery(values, query) {
   const needle = String(query || "").trim().toLowerCase();
   if (!needle) return true;
@@ -321,24 +505,46 @@ function defaultWorkflowNodes() {
   return [
     {
       id: "entry",
-      title: "入口压缩",
+      title: "入口识别",
       kind: "state",
       stage: "entry",
       action: "summarize_entry",
-      description: "进入任务模式前的上下文入口。",
-      instruction: "把任务前确认过的目标、约束、授权和上下文压缩成 task_brief。",
+      description: "识别命令、暗号、关键词或 WebUI 入口。",
+      instruction: "只在命中 AgentSpec 的入口策略时准备进入任务模式；普通问答和闲聊不要进入。",
       x: 40,
       y: 160,
     },
     {
+      id: "entry_gate",
+      title: "开启确认",
+      kind: "human",
+      stage: "entry",
+      action: "confirm_entry",
+      description: "确认是否真的进入专业任务模式。",
+      instruction: "需要确认时，先说明将隔离插件、压缩上下文、创建 task_state，并等待用户明确同意。",
+      x: 260,
+      y: 300,
+    },
+    {
+      id: "context_bridge",
+      title: "上文压缩",
+      kind: "memory",
+      stage: "entry",
+      action: "summarize_entry",
+      description: "把普通聊天上文压成任务 brief。",
+      instruction: "只保留目标、约束、授权、风险和接续语气；日常记忆不直接灌入专业模式。",
+      x: 260,
+      y: 80,
+    },
+    {
       id: "plan",
-      title: "计划拆解",
+      title: "计划确认",
       kind: "state",
       stage: "plan",
       action: "plan",
       description: "把目标拆成可验证的小步。",
-      instruction: "明确完成条件、当前优先级，并约束每轮只推进一个有限工作单元。",
-      x: 260,
+      instruction: "明确完成条件、风险等级、工具范围、验收方式，并约束每轮只推进一个有限工作单元。",
+      x: 500,
       y: 80,
     },
     {
@@ -349,7 +555,7 @@ function defaultWorkflowNodes() {
       action: "run_tools",
       description: "调用白名单工具或自定义 API。",
       instruction: "只使用 AgentSpec 已启用的工具，关键输出必须写回状态。",
-      x: 500,
+      x: 740,
       y: 80,
     },
     {
@@ -360,7 +566,7 @@ function defaultWorkflowNodes() {
       action: "request_approval",
       description: "危险动作前请求用户确认。",
       instruction: "删除、部署、密钥、重启、全局配置和破坏性数据库操作前必须先说明影响并等待审批。",
-      x: 500,
+      x: 740,
       y: 300,
     },
     {
@@ -371,8 +577,19 @@ function defaultWorkflowNodes() {
       action: "save_state",
       description: "把本轮结果写入 task_state。",
       instruction: "每轮结束写回 current_summary、progress、next_step、observation 和阻塞点。",
-      x: 740,
+      x: 960,
       y: 160,
+    },
+    {
+      id: "task_memory",
+      title: "任务记忆",
+      kind: "memory",
+      stage: "checkpoint",
+      action: "save_memory",
+      description: "独立记录任务时间线和关键成果。",
+      instruction: "把时间点、关键修改、成果、风险和下次续写提示写入任务记忆；以标签暴露给普通模式读取。",
+      x: 1180,
+      y: 80,
     },
     {
       id: "heartbeat",
@@ -382,18 +599,18 @@ function defaultWorkflowNodes() {
       action: "heartbeat",
       description: "长任务定时唤醒。",
       instruction: "心跳醒来先读 task_state，再推进一小步；同一阻塞重复三次则暂停求助。",
-      x: 960,
+      x: 1180,
       y: 300,
     },
     {
       id: "archive",
-      title: "出口归档",
-      kind: "state",
+      title: "结束回流",
+      kind: "memory",
       stage: "archive",
-      action: "archive",
+      action: "exit_summary",
       description: "完成或取消后归档。",
-      instruction: "结束时生成出口摘要和可回流长期记忆候选。",
-      x: 1180,
+      instruction: "只有完成、取消或用户要求退出时结束；输出成果、关键改动、遗留问题和可回流记忆候选，然后恢复会话插件隔离。",
+      x: 1400,
       y: 160,
     },
   ];
@@ -401,13 +618,16 @@ function defaultWorkflowNodes() {
 
 function defaultWorkflowEdges() {
   return [
-    { from: "entry", to: "plan" },
+    { from: "entry", to: "entry_gate" },
+    { from: "entry_gate", to: "context_bridge" },
+    { from: "context_bridge", to: "plan" },
     { from: "plan", to: "execute" },
     { from: "execute", to: "approval" },
     { from: "approval", to: "checkpoint" },
+    { from: "checkpoint", to: "task_memory" },
     { from: "checkpoint", to: "heartbeat" },
     { from: "heartbeat", to: "execute" },
-    { from: "checkpoint", to: "archive" },
+    { from: "task_memory", to: "archive" },
   ];
 }
 
@@ -443,6 +663,23 @@ function applyWorkflowTemplate(id) {
   setFeedback(id === "api_review" ? "已套用 API 审批流，保存后会进入任务运行协议。" : "已套用标准工作流，保存后会进入任务运行协议。");
 }
 
+function addWorkflowTemplateNode(templateId) {
+  readAgentForm();
+  ensureWorkflow();
+  const template = WORKFLOW_NODE_TEMPLATES.find((item) => item.id === templateId) || WORKFLOW_NODE_TEMPLATES[0];
+  const id = uniqueWorkflowNodeId(template.id);
+  const pos = defaultWorkflowPosition(template.stage, currentAgent.workflow_nodes.length);
+  currentAgent.workflow_nodes.push({
+    ...clone(template),
+    id,
+    description: template.title,
+    x: pos.x,
+    y: pos.y,
+  });
+  selectedWorkflowNodeId = id;
+  setFeedback(`已添加节点：${template.title}。拖动画布上的节点即可调整位置。`);
+}
+
 function clamp(value, min, max) {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
@@ -462,10 +699,11 @@ function defaultWorkflowAction(node) {
   if (stage === "entry") return "summarize_entry";
   if (stage === "execute" && kind === "api") return "call_api";
   if (stage === "execute") return "run_tools";
+  if (stage === "checkpoint" && kind === "memory") return "save_memory";
   if (stage === "guard" && kind === "human") return "wait_user";
   if (stage === "guard") return "request_approval";
   if (stage === "checkpoint") return "save_state";
-  if (stage === "archive") return "archive";
+  if (stage === "archive") return "exit_summary";
   return "plan";
 }
 
@@ -601,7 +839,7 @@ function renderDashboard() {
       ${metric("任务触发", m.task_triggers ?? 0)}
       ${metric("心跳在线", m.heartbeat_online ?? 0)}
       ${metric("心跳异常", m.heartbeat_stale ?? 0)}
-      ${metric("Token 消耗", m.token_usage ?? 0, "仅统计 provider 上报的 usage")}
+      ${metric("Token 消耗", m.token_usage ?? 0, "仅统计模型供应商上报的 usage")}
     </section>
     <section class="grid two">
       <div class="panel">
@@ -637,7 +875,7 @@ function agentRows() {
               ${badge(agent.enabled === false ? "停用" : "启用", agent.enabled === false ? "bad" : "ok")}
             </span>
           </div>
-          <div class="row-meta">${esc(agent.agent_id)} · 触发：${esc(agent.trigger_mode || "confirm")} · Provider：${esc(agent.provider_id || "当前会话")}</div>
+          <div class="row-meta">${esc(agent.agent_id)} · 触发：${esc(triggerLabel(agent.trigger_mode || "confirm"))} · 模型供应商：${esc(agent.provider_id || "当前会话")}</div>
           <div class="mini-stats">
             <span>运行 ${stats.active}</span>
             <span>触发 ${stats.triggers}</span>
@@ -689,7 +927,7 @@ function agentStats(agent) {
 }
 
 function taskRows(tasks, archive = false) {
-  if (!tasks.length) return `<div class="empty">${archive ? "暂无归档任务。" : "暂无 active task。"}</div>`;
+  if (!tasks.length) return `<div class="empty">${archive ? "暂无归档任务。" : "暂无活跃任务。"}</div>`;
   return tasks
     .map(
       (task) => {
@@ -699,7 +937,7 @@ function taskRows(tasks, archive = false) {
             <div class="row-title">
               <span>${esc(task.root_goal || task.task_id)}</span>
               <span class="row-badges">
-                ${badge(task.status || "-", task.status === "running" ? "ok" : "warn")}
+                ${badge(taskStatusLabel(task.status), task.status === "running" ? "ok" : task.status === "blocked" ? "bad" : "warn")}
                 ${badge(healthLabel(health), health.tone || "warn")}
               </span>
             </div>
@@ -764,7 +1002,7 @@ function renderCanvas() {
           <label>会话 UMO<input id="canvas-umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
           <label>风险级别<select id="canvas-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
           <label class="span-2">任务目标<textarea id="canvas-goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
-          <label class="span-2">完成条件<input id="canvas-completion" value="用户验收通过" /></label>
+          <label class="span-2">完成条件<input id="canvas-completion" value="${esc((currentAgent.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
           <label class="span-2">入口补充<textarea id="canvas-brief" rows="3" placeholder="可写入刚刚确认过的计划、约束、授权范围。"></textarea></label>
           <label class="check-line span-2"><input id="canvas-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
         </div>
@@ -778,15 +1016,25 @@ function renderCanvas() {
         <div class="panel-head"><div><p class="card-kicker">规则配置</p><h2>触发、记忆、审批、心跳</h2></div></div>
         <div class="form-grid">
           <label>任务模式配置名称<input id="agent-name" value="${esc(currentAgent.name || "")}" placeholder="${esc(runtimeAgentName())}" /></label>
-          <label>底层模型 Provider ID<input id="provider-id" value="${esc(currentAgent.provider_id || "")}" placeholder="为空则使用当前会话模型" /></label>
+        <label>底层模型供应商 ID<input id="provider-id" value="${esc(currentAgent.provider_id || "")}" placeholder="为空则使用当前会话模型" /></label>
           <label>配置状态<select id="agent-enabled">${labeledOptions(["true", "false"], String(currentAgent.enabled !== false), (value) => value === "true" ? "启用" : "停用")}</select></label>
           <label>触发模式<select id="trigger-mode">${labeledOptions(["manual", "confirm", "smart", "always"], currentAgent.trigger_mode || "confirm", triggerLabel)}</select></label>
+          <label>开启确认<select id="entry-require-confirmation">${labeledOptions(["true", "false"], String(currentAgent.entry_policy.require_confirmation !== false), (value) => value === "true" ? "需要确认" : "直接开启")}</select></label>
+          <label>隔离模式<select id="isolation-mode">${labeledOptions(["strict", "session", "off"], currentAgent.isolation_policy.mode || "strict", isolationModeLabel)}</select></label>
+          <label>工具模式<select id="tool-mode">${labeledOptions(["whitelist", "no_external", "full"], currentAgent.isolation_policy.tool_mode || "whitelist", toolModeLabel)}</select></label>
+          <label>退出后恢复<select id="restore-on-exit">${labeledOptions(["true", "false"], String(currentAgent.isolation_policy.restore_on_exit !== false), (value) => value === "true" ? "恢复会话隔离快照" : "保留当前会话状态")}</select></label>
           <label>记忆模式<select id="memory-mode">${labeledOptions(["inherit", "task_filtered", "strict"], currentAgent.memory_policy.mode || "task_filtered", memoryModeLabel)}</select></label>
           <label>审批模式<select id="approval-mode">${labeledOptions(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
           <label>心跳模式<select id="heartbeat-mode">${labeledOptions(["off", "manual", "auto"], currentAgent.heartbeat_policy.mode || "manual", heartbeatModeLabel)}</select></label>
           <label>允许心跳<select id="heartbeat-allowed">${labeledOptions(["true", "false"], String(currentAgent.heartbeat_policy.allowed !== false), (value) => value === "true" ? "允许" : "禁止")}</select></label>
           <label>上下文摘要轮数<input id="entry-summary-turns" type="number" min="1" value="${esc(currentAgent.memory_policy.entry_summary_turns || 24)}" /></label>
           <label>心跳 Cron<input id="heartbeat-cron" value="${esc(currentAgent.heartbeat_policy.cron_expression || "*/5 * * * *")}" /></label>
+          <label class="span-2">开启暗号/命令<textarea id="entry-trigger-phrases" rows="3" placeholder="每行一个，例如：进入任务模式">${esc(listToLines(currentAgent.entry_policy.trigger_phrases))}</textarea></label>
+          <label class="span-2">任务关键词<textarea id="entry-trigger-keywords" rows="3" placeholder="每行一个，例如：排查、部署、持续推进">${esc(listToLines(currentAgent.entry_policy.trigger_keywords))}</textarea></label>
+          <label class="span-2">开启确认话术<textarea id="entry-confirmation-text" rows="3">${esc(currentAgent.entry_policy.confirmation_text || "")}</textarea></label>
+          <label class="span-2">默认完成条件<textarea id="default-completion-conditions" rows="3">${esc(listToLines(currentAgent.entry_policy.default_completion_conditions))}</textarea></label>
+          <label class="span-2">结束暗号/命令<textarea id="exit-phrases" rows="3">${esc(listToLines(currentAgent.entry_policy.exit_phrases))}</textarea></label>
+          <label class="span-2">隔离说明<textarea id="isolation-notes" rows="3">${esc(currentAgent.isolation_policy.notes || "")}</textarea></label>
           <div class="span-2 note-line">当前运行时身份：${esc(state.runtime?.bot_label || "等待读取")}；来源：${esc(identitySourceLabel(state.runtime?.bot_label_source))}。这里配置的是任务模式模板名和规则，不会覆盖 AstrBot 当前身份。</div>
         </div>
       </div>
@@ -805,6 +1053,7 @@ function renderCanvas() {
       <div class="workflow-layout">
         <div>
           ${workflowCanvas()}
+          ${workflowToolbox()}
         </div>
         <div class="workflow-side">
           ${workflowSummaryPanel()}
@@ -896,6 +1145,66 @@ function workflowCanvas() {
         </svg>
         ${currentAgent.workflow_nodes.map((item) => node(item)).join("")}
       </div>
+    </div>
+    ${workflowCompactBoard()}
+  `;
+}
+
+function workflowToolbox() {
+  const selectedTools = materializedToolSelection().slice(0, 12);
+  return `
+    <div class="workflow-toolbox">
+      <div>
+        <strong>节点素材</strong>
+        <div class="toolbox-buttons">
+          ${WORKFLOW_NODE_TEMPLATES.map((item) => `
+            <button class="toolbox-chip" data-action="add-template-node" data-id="${esc(item.id)}" type="button">
+              <span>${esc(workflowKindLabel(item.kind))}</span>
+              ${esc(item.title)}
+            </button>
+          `).join("")}
+        </div>
+      </div>
+      <div>
+        <strong>当前工具白名单</strong>
+        <div class="toolbox-tools">
+          ${selectedTools.map((name) => `<span>${esc(name)}</span>`).join("") || "<em>仅任务内置工具</em>"}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function workflowCompactBoard() {
+  ensureWorkflow();
+  const nodesByStage = new Map(WORKFLOW_STAGES.map(([stage]) => [stage, []]));
+  for (const item of currentAgent.workflow_nodes || []) {
+    const stage = workflowStage(item);
+    if (!nodesByStage.has(stage)) nodesByStage.set(stage, []);
+    nodesByStage.get(stage).push(item);
+  }
+  return `
+    <div class="workflow-compact-board">
+      ${WORKFLOW_STAGES.map(([stage, title, meta]) => {
+        const nodes = nodesByStage.get(stage) || [];
+        return `
+          <section class="workflow-compact-stage" data-stage="${esc(stage)}">
+            <div class="workflow-compact-head">
+              <strong>${esc(title)}</strong>
+              <span>${esc(meta)}</span>
+            </div>
+            <div class="workflow-compact-stack">
+              ${nodes.map((item) => `
+                <button class="workflow-compact-node ${item.id === selectedWorkflowNodeId ? "selected" : ""}" data-action="select-workflow-node" data-id="${esc(item.id)}" type="button">
+                  <span>${esc(workflowKindLabel(item.kind))} · ${esc(workflowActionLabel(item.action))}</span>
+                  <strong>${esc(item.title || item.id)}</strong>
+                  <small>${esc(item.instruction || item.description || "点击后在下方编辑这个节点。")}</small>
+                </button>
+              `).join("") || `<div class="small-empty">暂无节点</div>`}
+            </div>
+          </section>
+        `;
+      }).join("")}
     </div>
   `;
 }
@@ -1006,8 +1315,8 @@ function workflowEdgesPanel() {
     <div class="detail-box workflow-editor">
       <div class="panel-head"><div><p class="card-kicker">连线</p><h3>流程连接</h3></div></div>
       <div class="form-grid compact">
-        <label>From<select id="workflow-edge-from">${workflowNodeOptions(selectedWorkflowNodeId)}</select></label>
-        <label>To<select id="workflow-edge-to">${workflowNodeOptions(currentAgent.workflow_nodes[1]?.id || selectedWorkflowNodeId)}</select></label>
+        <label>起点<select id="workflow-edge-from">${workflowNodeOptions(selectedWorkflowNodeId)}</select></label>
+        <label>终点<select id="workflow-edge-to">${workflowNodeOptions(currentAgent.workflow_nodes[1]?.id || selectedWorkflowNodeId)}</select></label>
       </div>
       <div class="button-row"><button class="button secondary" data-action="add-workflow-edge" type="button">新增连线</button></div>
       <div class="edge-list">
@@ -1040,8 +1349,10 @@ function uniqueWorkflowNodeId(base = "node") {
   return `${root}_${index}`;
 }
 
-function options(values, selected) {
-  return values.map((value) => `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>${esc(value)}</option>`).join("");
+function options(values, selected, labeler = (value) => value) {
+  return values
+    .map((value) => `<option value="${esc(value)}" ${value === selected ? "selected" : ""}>${esc(labeler(value))}</option>`)
+    .join("");
 }
 
 function readAgentForm() {
@@ -1058,6 +1369,16 @@ function readAgentForm() {
   currentAgent.application_scope = ["entry", "global"].includes(currentAgent.application_scope) ? currentAgent.application_scope : "entry";
   currentAgent.entry_channel = ["command", "natural", "webui"].includes(currentAgent.entry_channel) ? currentAgent.entry_channel : "command";
   currentAgent.trigger_mode = $("trigger-mode").value;
+  currentAgent.entry_policy.trigger_phrases = linesToList($("entry-trigger-phrases").value);
+  currentAgent.entry_policy.trigger_keywords = linesToList($("entry-trigger-keywords").value);
+  currentAgent.entry_policy.require_confirmation = $("entry-require-confirmation").value === "true";
+  currentAgent.entry_policy.confirmation_text = $("entry-confirmation-text").value.trim();
+  currentAgent.entry_policy.default_completion_conditions = linesToList($("default-completion-conditions").value);
+  currentAgent.entry_policy.exit_phrases = linesToList($("exit-phrases").value);
+  currentAgent.isolation_policy.mode = $("isolation-mode").value;
+  currentAgent.isolation_policy.tool_mode = $("tool-mode").value;
+  currentAgent.isolation_policy.restore_on_exit = $("restore-on-exit").value === "true";
+  currentAgent.isolation_policy.notes = $("isolation-notes").value.trim();
   currentAgent.memory_policy.mode = $("memory-mode").value;
   currentAgent.memory_policy.entry_summary_turns = Number($("entry-summary-turns").value || 24);
   currentAgent.approval_policy.mode = $("approval-mode").value;
@@ -1076,6 +1397,7 @@ function readAgentForm() {
 }
 
 function renderTasks() {
+  currentAgent = ensureAgent(currentAgent || {});
   const task = selectedTask();
   const runnableTask = activeTask();
   $("view").innerHTML = `
@@ -1086,14 +1408,14 @@ function renderTasks() {
           <label>会话 UMO<input id="umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
           <label>风险级别<select id="task-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
           <label class="span-2">任务目标<textarea id="goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
-          <label class="span-2">完成条件<input id="completion" value="用户验收通过" /></label>
+          <label class="span-2">完成条件<input id="completion" value="${esc((currentAgent.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
           <label class="span-2">入口补充<textarea id="brief" rows="3"></textarea></label>
           <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
         </div>
         <div class="button-row"><button class="button" data-action="start-task" type="button">进入任务模式</button></div>
       </div>
       <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">Active</p><h2>当前任务</h2></div></div>
+        <div class="panel-head"><div><p class="card-kicker">当前</p><h2>当前任务</h2></div></div>
         <div class="list">${taskRows(state.tasks || [])}</div>
       </div>
     </section>
@@ -1113,6 +1435,11 @@ function renderTasks() {
       <div class="panel">
         <div class="panel-head"><div><p class="card-kicker">记忆候选</p><h2>出口回流</h2></div></div>
         <label>新增/修剪长期记忆<textarea id="memory-text" rows="4" placeholder="只保存稳定事实、项目约定或后续任务需要复用的要点。"></textarea></label>
+        <div class="form-grid compact">
+          <label>记忆标签<input id="memory-tags" placeholder="任务, 插件, 续写" /></label>
+          <label>初始状态<select id="memory-status">${labeledOptions(["candidate", "accepted"], "candidate", memoryFilterLabel)}</select></label>
+          <label class="span-2">普通模式可读<select id="memory-expose">${labeledOptions(["true", "false"], "true", (value) => value === "true" ? "允许普通模式读取" : "仅任务模式读取")}</select></label>
+        </div>
         <div class="button-row"><button class="button secondary" data-action="save-memory" type="button">保存记忆条目</button></div>
         <div class="tabs compact-tabs">
           ${["all", "candidate", "accepted", "rejected"].map((item) => `
@@ -1123,7 +1450,7 @@ function renderTasks() {
       </div>
     </section>
     <section class="panel">
-      <div class="panel-head"><div><p class="card-kicker">Archive</p><h2>历史异步任务</h2></div></div>
+      <div class="panel-head"><div><p class="card-kicker">归档</p><h2>历史异步任务</h2></div></div>
       <div class="list">${taskRows(state.archives || [], true)}</div>
     </section>
   `;
@@ -1151,7 +1478,7 @@ function taskDetail(task) {
       <div class="row-title">
         <span>${esc(task.root_goal || task.task_id)}</span>
         <span class="row-badges">
-          ${badge(task.status, task.status === "running" ? "ok" : task.status === "blocked" ? "bad" : "warn")}
+          ${badge(taskStatusLabel(task.status), task.status === "running" ? "ok" : task.status === "blocked" ? "bad" : "warn")}
           ${badge(healthLabel(health), health.tone || "warn")}
         </span>
       </div>
@@ -1169,9 +1496,9 @@ function taskDetail(task) {
       ${stateField("下一步", task.next_step)}
       ${stateField("最近观察", task.last_observation)}
     </div>
-    <div class="panel-head"><div><p class="card-kicker">Approvals</p><h3>待审批</h3></div></div>
+    <div class="panel-head"><div><p class="card-kicker">审批</p><h3>待审批</h3></div></div>
     <div class="list">${approvalRows(pendingApprovals)}</div>
-    <div class="panel-head"><div><p class="card-kicker">Snapshots</p><h3>状态快照时间线</h3></div></div>
+    <div class="panel-head"><div><p class="card-kicker">快照</p><h3>状态快照时间线</h3></div></div>
     <div class="list">${snapshotRows(task.state_snapshots || [])}</div>
   `;
 }
@@ -1190,7 +1517,7 @@ function approvalRows(approvals) {
   const task = selectedTask();
   return approvals.map((item) => `
     <div class="list-row">
-      <div class="row-title"><span>${esc(item.operation || item.approval_id)}</span>${badge(item.status || "pending", "warn")}</div>
+      <div class="row-title"><span>${esc(item.operation || item.approval_id)}</span>${badge(approvalStatusLabel(item.status || "pending"), "warn")}</div>
       <div class="row-meta">${esc(item.approval_id)} · ${esc(item.reason || "-")}</div>
       <div class="row-meta">影响：${esc(item.impact || "-")} · 回滚：${esc(item.rollback || "-")}</div>
       <div class="inline-actions approval-actions">
@@ -1205,7 +1532,7 @@ function snapshotRows(snapshots) {
   if (!snapshots.length) return `<div class="empty">暂无状态快照。</div>`;
   return snapshots.slice(-12).reverse().map((item) => `
     <div class="list-row">
-      <div class="row-title"><span>${esc(item.kind || "state")}</span>${badge(item.status || "-")}</div>
+      <div class="row-title"><span>${esc(eventKindLabel(item.kind || "state"))}</span>${badge(taskStatusLabel(item.status || "-"))}</div>
       <div class="row-meta">${esc(item.time || "")} · ${esc(item.next_step || "无下一步")}</div>
     </div>
   `).join("");
@@ -1216,8 +1543,8 @@ function memoryRows() {
   if (!rows.length) return `<div class="empty">暂无可审查记忆。任务结束后会生成候选，也可以手动保存。</div>`;
   return rows.slice(-20).reverse().map((item) => `
     <div class="list-row">
-      <div class="row-title"><span>${esc(item.text)}</span>${badge(item.status || "candidate", item.status === "accepted" ? "ok" : "warn")}</div>
-      <div class="row-meta">${esc(item.memory_id)} · 来源任务：${esc(item.source_task_id || "-")}</div>
+      <div class="row-title"><span>${esc(item.text)}</span>${badge(memoryFilterLabel(item.status || "candidate"), item.status === "accepted" ? "ok" : "warn")}</div>
+      <div class="row-meta">${esc(item.memory_id)} · 来源任务：${esc(item.source_task_id || "-")} · 标签：${esc((item.tags || []).join(", ") || "-")} · ${item.expose_to_normal === false ? "仅任务模式" : "普通模式可读"}</div>
       <div class="inline-actions">
         <button class="button secondary" data-action="accept-memory" data-id="${esc(item.memory_id)}" type="button">保留</button>
         <button class="button secondary" data-action="reject-memory" data-id="${esc(item.memory_id)}" type="button">标记不用</button>
@@ -1304,7 +1631,7 @@ function renderMonitor() {
           const bad = point.status === "blocked" || ["stale", "blocked"].includes(health.state);
           return `<span title="${esc(point.time || "")}" class="${bad ? "bad" : ""}"></span>`;
         }).join("") || "<em>暂无心跳曲线</em>"}</div>
-        <div class="panel-head"><div><p class="card-kicker">Live</p><h3>实时日志流（5 秒刷新）</h3></div></div>
+        <div class="panel-head"><div><p class="card-kicker">实时</p><h3>实时日志流（5 秒刷新）</h3></div></div>
         <div class="log-list">${logRows(task)}</div>
       </div>
     </section>
@@ -1334,7 +1661,7 @@ function renderIntegrations() {
     <section class="integration-shell">
       <div class="panel-head">
         <div><p class="card-kicker">能力边界</p><h2>插件与集成页</h2></div>
-        <button class="button" data-action="save-agent" type="button">保存当前 Agent</button>
+        <button class="button" data-action="save-agent" type="button">保存当前配置</button>
       </div>
       <div class="integration-layout">
         <aside class="subnav">
@@ -1380,8 +1707,8 @@ function pluginPanel() {
       : globallyOff
         ? ["全局停用", "bad"]
         : effective
-          ? ["Agent 中开启", "ok"]
-          : ["Agent 中关闭", "warn"];
+        ? ["任务中开启", "ok"]
+        : ["任务中关闭", "warn"];
     return `
       <label class="toggle-row ${locked ? "disabled" : ""}">
         <input type="checkbox" data-action="toggle-plugin" data-id="${esc(plugin.name)}" ${effective ? "checked" : ""} ${locked ? "disabled" : ""} />
@@ -1435,7 +1762,7 @@ function toolsPanel() {
         <span class="tool-controls">
           ${badge(riskLabel(risk), riskTone(risk))}
           ${badge(disabled ? "随插件关闭" : checked ? "已选择" : "未选择", disabled ? "bad" : checked ? "ok" : "")}
-          <select data-action="set-tool-risk" data-id="${esc(tool.name)}">${options(["safe", "work", "high"], risk)}</select>
+          <select data-action="set-tool-risk" data-id="${esc(tool.name)}">${options(["safe", "work", "high"], risk, riskLabel)}</select>
         </span>
       </div>
     `;
@@ -1478,7 +1805,7 @@ function toolsPanel() {
       </div>
       <div class="detail-box approval-editor">
         <div class="panel-head"><div><p class="card-kicker">审批</p><h3>工具审批策略</h3></div></div>
-        <label>审批模式<select id="tool-approval-mode">${options(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work")}</select></label>
+        <label>审批模式<select id="tool-approval-mode">${options(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
         <label>已授权范围<textarea id="preapproved-scopes" rows="5" placeholder="例如：读取项目文件&#10;运行测试&#10;小范围明确文件编辑">${esc(listToLines(currentAgent.approval_policy.preapproved_scopes))}</textarea></label>
         <label>必须审批动作<textarea id="require-approval" rows="8">${esc(listToLines(currentAgent.approval_policy.require_approval))}</textarea></label>
         <label>审批备注<textarea id="approval-note" rows="4">${esc(currentAgent.approval_policy.note || "")}</textarea></label>
@@ -1524,7 +1851,7 @@ function apisPanel() {
           <label>HTTP 方法<select id="api-method">${options(["GET", "POST", "PUT", "DELETE"], "GET")}</select></label>
           <label class="span-2">URL<input id="api-url" placeholder="https://api.example.com/v1/search" /></label>
           <label>凭证引用<select id="api-credential"><option value="">无</option>${credentials.map((item) => `<option value="${esc(item.credential_id)}">${esc(item.label || item.credential_id)}</option>`).join("")}</select></label>
-          <label>鉴权方式<select id="api-auth-type">${options(["bearer", "header", "query", "none"], "bearer")}</select></label>
+          <label>鉴权方式<select id="api-auth-type">${options(["bearer", "header", "query", "none"], "bearer", authTypeLabel)}</select></label>
           <label>鉴权 Header<input id="api-auth-header" value="Authorization" /></label>
           <label>Query 参数<input id="api-auth-query" value="api_key" /></label>
           <label>超时秒数<input id="api-timeout" type="number" min="1" max="120" value="30" /></label>
@@ -1536,7 +1863,7 @@ function apisPanel() {
       <div class="capability-list">${(state.custom_apis || []).map((item) => `
         <div class="list-row">
           <div class="row-title"><span>${esc(item.name)}</span>${badge(item.method || "GET")}</div>
-          <div class="row-meta">${esc(item.url)} · 凭证：${esc(item.credential_id || "无")} · 鉴权：${esc(item.auth_type || "bearer")}</div>
+          <div class="row-meta">${esc(item.url)} · 凭证：${esc(item.credential_id || "无")} · 鉴权：${esc(authTypeLabel(item.auth_type || "bearer"))}</div>
         </div>
       `).join("") || `<div class="empty">暂无自定义 API。</div>`}</div>
     </section>
@@ -1549,7 +1876,7 @@ function credentialsPanel() {
       <div>
         <div class="form-grid">
           <label>凭证标签<input id="cred-label" placeholder="Grok Search Key" /></label>
-          <label>Provider<input id="cred-provider" placeholder="xai / openai / tavily" /></label>
+          <label>服务商<input id="cred-provider" placeholder="xai / openai / tavily" /></label>
           <label>作用域<input id="cred-scope" value="tool" /></label>
           <label>Secret Value<input id="cred-value" type="password" placeholder="保存后只显示掩码" /></label>
         </div>
@@ -1592,7 +1919,7 @@ function blueprintSettingRows(module, settings) {
     if (Array.isArray(schema?.enum) && schema.enum.length) {
       control = `<select ${attrs}>${options(schema.enum.map(String), String(value))}</select>`;
     } else if (type === "boolean") {
-      control = `<select ${attrs}>${options(["true", "false"], String(Boolean(value)))}</select>`;
+      control = `<select ${attrs}>${options(["true", "false"], String(Boolean(value)), (item) => item === "true" ? "是" : "否")}</select>`;
     } else if (type === "integer" || type === "number") {
       control = `<input ${attrs} type="number" value="${esc(value)}" />`;
     } else if (type === "array") {
@@ -1926,6 +2253,10 @@ document.addEventListener("click", async (event) => {
       selectedWorkflowNodeId = id;
       render();
     }
+    if (action === "add-template-node") {
+      addWorkflowTemplateNode(target.dataset.id || "plan");
+      render();
+    }
     if (action === "apply-workflow-template") {
       readAgentForm();
       applyWorkflowTemplate(target.dataset.id || "linear");
@@ -2078,7 +2409,9 @@ document.addEventListener("click", async (event) => {
         method: "POST",
         body: {
           text: $("memory-text").value,
-          status: "accepted",
+          status: $("memory-status")?.value || "candidate",
+          tags: linesToList($("memory-tags")?.value || ""),
+          expose_to_normal: ($("memory-expose")?.value || "true") === "true",
           source_task_id: task?.task_id || "",
           source_umo: task?.umo || "",
         },
@@ -2182,9 +2515,11 @@ document.addEventListener("click", async (event) => {
       if (selected.has(target.dataset.id)) selected.delete(target.dataset.id);
       else selected.add(target.dataset.id);
       currentAgent.enabled_tools = Array.from(selected).sort();
+      currentAgent.isolation_policy.tool_mode = "whitelist";
       render();
     }
     if (action === "enable-visible-tools") {
+      currentAgent.isolation_policy.tool_mode = "whitelist";
       currentAgent.enabled_tools = (state.tools || [])
         .filter((tool) => tool.active !== false)
         .filter((tool) => {
@@ -2196,6 +2531,7 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "disable-tools") {
+      currentAgent.isolation_policy.tool_mode = "no_external";
       currentAgent.enabled_tools = [EMPTY_TOOLS_SENTINEL];
       render();
     }

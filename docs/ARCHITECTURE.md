@@ -38,6 +38,18 @@ disabled_plugins=[...]
 
 边界是：AstrBot 全局已经停用的插件仍然保持停用，Agent Mode 不负责也不能绕过全局插件管理把它重新启用。Agent Mode 只在当前会话里进一步收窄插件与工具可见性。
 
+隔离模式分三档：
+
+- `off`：不写会话级插件配置，只使用工具白名单约束。
+- `session`：只应用用户在 AgentSpec 中显式配置的插件开关。
+- `strict`：新配置默认值。当前会话默认关闭普通插件，只保留 Agent Lab、自身保护项、AstrBot 保留插件和用户显式允许的插件；退出时恢复进入前快照。
+
+工具隔离分三档：
+
+- `whitelist`：只暴露 AgentSpec 选择的工具和 Agent Lab 必要内部工具。
+- `no_external`：只保留任务状态、审批、心跳、归档、任务记忆读取等内置能力。
+- `full`：暴露当前可用工具集，但仍过滤内部危险递归工具和被隔离插件来源的工具。
+
 ## 为什么不用 AstrBot active_agent cron 直接做心跳
 
 AstrBot active agent cron 会唤醒主 Agent，并默认带入会话历史。Agent Lab 需要更干净的任务状态循环，所以使用 `add_basic_job` 调用插件的 `_heartbeat_tick`：
@@ -72,3 +84,5 @@ agent_lab_update_state
 长任务和心跳醒来时，Agent 应先读状态，再执行，然后用 `agent_lab_update_state` 写回进度、观察、下一步和阻塞点。
 
 同时 `AgentLabRunHooks` 会记录工具开始、工具结束和 agent done 事件，作为审计日志写进 `progress_log`。
+
+tick 结束时不会直接用进入 tick 前的旧对象覆盖文件，而是重新读取最新 active task：如果工具已经调用 `agent_lab_update_state`，则保留工具写回的进度；如果工具已经调用 `agent_lab_finish` 完成归档，则不再重建 active task。

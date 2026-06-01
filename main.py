@@ -115,6 +115,11 @@ BUILTIN_TOOL_CATALOG = [
         "description": "Call an Agent Lab registered custom API with managed credentials.",
         "risk": "work",
     },
+    {
+        "name": "agent_lab_read_task_memory",
+        "description": "Read tagged Agent Lab task memories without entering Agent Mode.",
+        "risk": "safe",
+    },
 ]
 
 
@@ -158,6 +163,7 @@ class AgentLabPlugin(Star):
         self.modules = ModuleRegistry(self.storage.modules_dir)
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
         self.webui_server: StandaloneWebUIServer | None = None
+        self._running_ticks: set[str] = set()
         self.summarizer = AgentSummarizer(
             context,
             {
@@ -399,6 +405,59 @@ class AgentLabPlugin(Star):
             memory_candidates=memory_candidates,
         )
 
+    @filter.llm_tool(name="agent_lab_read_task_memory")
+    async def agent_lab_read_task_memory(
+        self,
+        event: AstrMessageEvent,
+        query: str = "",
+        status: str = "accepted",
+        limit: str = "8",
+    ) -> str:
+        """读取 Agent Lab 暴露的任务记忆。普通模式也可以用来按标签或关键词找续写上下文。
+
+        Args:
+            query(string): 可选关键词，会匹配记忆正文、标签、来源任务 ID。
+            status(string): accepted/candidate/rejected/all，默认只读 accepted。
+            limit(string): 返回条数上限，默认 8。
+        """
+        query = str(query or "").strip().lower()
+        status = str(status or "accepted").strip().lower()
+        try:
+            limit = max(1, min(int(limit or 8), 30))
+        except Exception:
+            limit = 8
+        rows = []
+        for item in reversed(self.storage.list_memory_entries()):
+            item_status = str(item.get("status") or "candidate").strip().lower()
+            if status != "all" and item_status != status:
+                continue
+            if not bool(item.get("expose_to_normal", True)):
+                continue
+            haystack = "\n".join(
+                [
+                    str(item.get("text") or ""),
+                    str(item.get("source_task_id") or ""),
+                    " ".join(str(tag) for tag in item.get("tags") or []),
+                ]
+            ).lower()
+            if query and query not in haystack:
+                continue
+            rows.append(
+                {
+                    "memory_id": item.get("memory_id"),
+                    "status": item_status,
+                    "tags": item.get("tags") or [],
+                    "source_task_id": item.get("source_task_id") or "",
+                    "updated_at": item.get("updated_at") or "",
+                    "text": item.get("text") or "",
+                }
+            )
+            if len(rows) >= limit:
+                break
+        if not rows:
+            return "没有匹配的任务记忆。"
+        return json.dumps(rows, ensure_ascii=False, indent=2)
+
     @filter.llm_tool(name="agent_lab_call_custom_api")
     async def agent_lab_call_custom_api(
         self,
@@ -476,14 +535,24 @@ class AgentLabPlugin(Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if task:
             spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or spec.to_dict())
-            modules_prompt = self._build_task_extensions_prompt(spec)
+            modules_prompt = "\n\n".join(
+                part
+                for part in (
+                    self._build_task_extensions_prompt(spec),
+                    self._build_exposed_task_memory_prompt(),
+                )
+                if part.strip()
+            )
             req.system_prompt += "\n\n" + build_task_system_prompt(
                 spec, task, modules_prompt
             )
         else:
             if not spec.enabled:
                 return
+            memory_prompt = self._build_exposed_task_memory_prompt()
             req.system_prompt += "\n\n" + build_agent_mode_policy(spec)
+            if memory_prompt:
+                req.system_prompt += "\n\n" + memory_prompt
 
     async def _handle_command(self, event: AstrMessageEvent, tail: str) -> str:
         if not tail or tail in ("help", "帮助"):
@@ -571,9 +640,12 @@ class AgentLabPlugin(Star):
         profile_agent = spec.to_dict()
         profile_agent["name"] = effective_agent_name
         profile_agent["runtime_identity"] = runtime_identity
-        session_plugin_snapshot = await self.guard.apply_overrides(
-            umo, spec.plugin_overrides
-        )
+        if spec.isolation_policy.mode == "off":
+            session_plugin_snapshot = {}
+        else:
+            session_plugin_snapshot = await self.guard.apply_overrides(
+                umo, self._effective_session_plugin_overrides(spec)
+            )
         self._refresh_summarizer_rules()
         entry_summary = await self.summarizer.summarize_entry(event, goal, brief)
         task = TaskState(
@@ -586,7 +658,7 @@ class AgentLabPlugin(Star):
                 for line in completion_conditions.replace("；", "\n").splitlines()
                 if line.strip()
             ]
-            or ["用户验收通过"],
+            or list(spec.entry_policy.default_completion_conditions or ["用户验收通过"]),
             task_brief=entry_summary,
             entry_summary=entry_summary,
             current_summary=(
@@ -597,6 +669,7 @@ class AgentLabPlugin(Star):
             profile_snapshot={
                 "agent": profile_agent,
                 "session_plugin_snapshot": session_plugin_snapshot,
+                "restore_session_plugins": bool(spec.isolation_policy.restore_on_exit),
             },
             heartbeat=spec.heartbeat_policy,
         )
@@ -629,11 +702,17 @@ class AgentLabPlugin(Star):
             )
             return f"存在待审批操作，先处理审批再继续：\n{pending}"
 
-        spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
-        modules_prompt = self._build_task_extensions_prompt(spec)
-        system_prompt = build_task_system_prompt(spec, task, modules_prompt)
-        prompt = build_tick_prompt(task, reason)
+        tick_key = f"{task.umo}:{task.task_id}"
+        if tick_key in self._running_ticks:
+            return "当前任务已有一轮 tick 正在执行，已跳过本次触发，避免心跳或手动操作重入。"
+        self._running_ticks.add(tick_key)
+        task_updated_at_before_tick = task.updated_at
+        task_log_count_before_tick = len(task.progress_log)
         try:
+            spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
+            modules_prompt = self._build_task_extensions_prompt(spec)
+            system_prompt = build_task_system_prompt(spec, task, modules_prompt)
+            prompt = build_tick_prompt(task, reason)
             provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(event.unified_msg_origin)
             resp = await self.context.tool_loop_agent(
                 event=event,
@@ -648,11 +727,21 @@ class AgentLabPlugin(Star):
                 agent_hooks=AgentLabRunHooks(self.storage, task.umo, task.task_id),
             )
             text = (getattr(resp, "completion_text", "") or "").strip()
-            task.last_observation = text[-4000:] if text else "本轮没有返回文本。"
-            task.last_confirmed_progress = text[:1200] if text else task.last_confirmed_progress
-            task.current_summary = self._compact_text(text, 1200) if text else task.current_summary
-            task.next_step = "根据上一轮观察继续推进；若涉及危险操作，先请求审批。"
-            task.status = "running"
+            latest_task = self.storage.load_active_task(event.unified_msg_origin)
+            if not latest_task or latest_task.task_id != task.task_id:
+                return f"tick 完成，任务已在本轮结束或切换。\n\n{self._compact_text(text, 1800)}"
+            task = latest_task
+            changed_by_tools = (
+                task.updated_at != task_updated_at_before_tick
+                or len(task.progress_log) != task_log_count_before_tick
+                or task.status not in {"running", "paused"}
+            )
+            if not changed_by_tools:
+                task.last_observation = text[-4000:] if text else "本轮没有返回文本。"
+                task.last_confirmed_progress = text[:1200] if text else task.last_confirmed_progress
+                task.current_summary = self._compact_text(text, 1200) if text else task.current_summary
+                task.next_step = "根据上一轮观察继续推进；若涉及危险操作，先请求审批。"
+                task.status = "running"
             task.add_token_usage(getattr(resp, "usage", None))
             task.add_log("tick", f"reason={reason}; response={self._compact_text(text, 1200)}")
             task.add_snapshot(
@@ -666,16 +755,20 @@ class AgentLabPlugin(Star):
             self.storage.save_task(task)
             return f"tick 完成。\n\n{self._compact_text(text, 1800)}"
         except Exception as exc:
+            task = self.storage.load_active_task(event.unified_msg_origin) or task
             count = task.add_blocker(type(exc).__name__, str(exc))
             if count >= task.heartbeat.max_repeated_failures:
                 task.status = "blocked"
                 await self._disable_heartbeat(task)
             self.storage.save_task(task)
+            self._running_ticks.discard(tick_key)
             return (
                 f"tick 失败：{exc}\n"
                 f"同类问题计数：{count}。"
                 f"{' 已暂停任务并关闭心跳。' if task.status == 'blocked' else ''}"
             )
+        finally:
+            self._running_ticks.discard(tick_key)
 
     async def _finish_task(
         self,
@@ -701,7 +794,8 @@ class AgentLabPlugin(Star):
         task.add_snapshot("finished", {"status": status, "final_summary": final_summary})
         await self._disable_heartbeat(task)
         snapshot = task.profile_snapshot.get("session_plugin_snapshot")
-        await self.guard.restore(task.umo, snapshot)
+        if bool(task.profile_snapshot.get("restore_session_plugins", True)):
+            await self.guard.restore(task.umo, snapshot)
         archive_path = self.storage.archive_task(task)
         return (
             f"Agent Mode 已结束并归档。\n"
@@ -829,13 +923,28 @@ class AgentLabPlugin(Star):
         internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
         essential = {
             "agent_lab_read_state",
+            "agent_lab_read_task_memory",
             "agent_lab_update_state",
             "agent_lab_request_approval",
             "agent_lab_set_heartbeat",
             "agent_lab_finish",
         }
         disabled_plugins = self._disabled_plugin_names(spec)
-        if not spec.enabled_tools:
+        tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
+        if tool_mode == "no_external" or NO_EXTERNAL_TOOLS_SENTINEL in set(spec.enabled_tools or []):
+            from astrbot.core.agent.tool import ToolSet
+
+            toolset = ToolSet()
+            for name in essential:
+                try:
+                    tool = tmgr.get_func(name)
+                except Exception:
+                    tool = None
+                if tool:
+                    toolset.add_tool(tool)
+            return toolset
+
+        if tool_mode == "full" or not spec.enabled_tools:
             toolset = tmgr.get_full_tool_set()
             for name in internal_block:
                 try:
@@ -895,6 +1004,33 @@ class AgentLabPlugin(Star):
         if custom_api_prompt.strip():
             sections.append(custom_api_prompt)
         return "\n\n".join(sections)
+
+    def _build_exposed_task_memory_prompt(self) -> str:
+        rows = []
+        for item in reversed(self.storage.list_memory_entries()):
+            if str(item.get("status") or "candidate").strip().lower() != "accepted":
+                continue
+            if not bool(item.get("expose_to_normal", True)):
+                continue
+            text = self._compact_text(str(item.get("text") or ""), 500)
+            if not text:
+                continue
+            tags = ", ".join(str(tag) for tag in item.get("tags") or [])
+            rows.append(
+                f"- {item.get('memory_id')}: tags=[{tags or 'task'}]; "
+                f"source_task={item.get('source_task_id') or '-'}; {text}"
+            )
+            if len(rows) >= 8:
+                break
+        if not rows:
+            return ""
+        return "\n".join(
+            [
+                "[Agent Lab Exposed Task Memory]",
+                "以下是用户在 Agent Lab 中接受过的任务记忆，可供普通模式或新任务入口参考；不要把 candidate 记忆当作事实，更多条目可用 agent_lab_read_task_memory 查询。",
+                *rows,
+            ]
+        )
 
     def _build_tool_risk_prompt(self, spec: AgentSpec) -> str:
         selected = set(spec.enabled_tools or [])
@@ -1542,12 +1678,13 @@ class AgentLabPlugin(Star):
 
     def _disabled_plugin_names(self, spec: AgentSpec) -> set[str]:
         plugin_rows = {item["name"]: item for item in self._plugin_rows() if item.get("name")}
+        effective_overrides = self._effective_session_plugin_overrides(spec)
         disabled = {
             name
             for name, item in plugin_rows.items()
             if not bool(item.get("activated", True))
         }
-        for plugin_name, enabled in spec.plugin_overrides.items():
+        for plugin_name, enabled in effective_overrides.items():
             if plugin_name == PLUGIN_NAME:
                 disabled.discard(plugin_name)
                 continue
@@ -1560,6 +1697,46 @@ class AgentLabPlugin(Star):
             else:
                 disabled.add(plugin_name)
         return disabled
+
+    def _effective_session_plugin_overrides(self, spec: AgentSpec) -> dict[str, bool]:
+        mode = str(getattr(spec.isolation_policy, "mode", "strict") or "strict").strip()
+        if mode == "off":
+            return {}
+
+        plugin_rows = {item["name"]: item for item in self._plugin_rows() if item.get("name")}
+        overrides: dict[str, bool] = {}
+
+        if mode == "strict":
+            for name, row in plugin_rows.items():
+                if name == PLUGIN_NAME:
+                    overrides[name] = True
+                    continue
+                if bool(row.get("reserved", False)):
+                    overrides[name] = True
+                    continue
+                if not bool(row.get("activated", True)):
+                    overrides[name] = False
+                    continue
+                overrides[name] = False
+
+        for plugin_name, enabled in (spec.plugin_overrides or {}).items():
+            if not plugin_name:
+                continue
+            row = plugin_rows.get(plugin_name)
+            if plugin_name == PLUGIN_NAME:
+                overrides[plugin_name] = True
+                continue
+            if row and bool(row.get("reserved", False)):
+                overrides[plugin_name] = True
+                continue
+            if row and not bool(row.get("activated", True)):
+                overrides[plugin_name] = False
+                continue
+            overrides[plugin_name] = bool(enabled)
+
+        if bool(getattr(spec.isolation_policy, "protect_self", True)):
+            overrides[PLUGIN_NAME] = True
+        return overrides
 
     def _tool_available_for_agent(self, tool: Any, disabled_plugins: set[str]) -> bool:
         if not bool(getattr(tool, "active", True)):
@@ -1584,6 +1761,50 @@ class AgentLabPlugin(Star):
         spec.application_scope = scope if scope in {"entry", "global"} else "entry"
         channel = str(getattr(spec, "entry_channel", "") or "command").strip()
         spec.entry_channel = channel if channel in {"command", "natural", "webui"} else "command"
+        if spec.trigger_mode not in {"manual", "confirm", "smart", "always"}:
+            spec.trigger_mode = "confirm"
+        spec.entry_policy.trigger_phrases = AgentLabPlugin._clean_string_list(
+            spec.entry_policy.trigger_phrases
+        ) or ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"]
+        spec.entry_policy.trigger_keywords = AgentLabPlugin._clean_string_list(
+            spec.entry_policy.trigger_keywords
+        )
+        spec.entry_policy.default_completion_conditions = AgentLabPlugin._clean_string_list(
+            spec.entry_policy.default_completion_conditions
+        ) or ["用户验收通过"]
+        spec.entry_policy.exit_phrases = AgentLabPlugin._clean_string_list(
+            spec.entry_policy.exit_phrases
+        ) or ["完成任务", "结束任务模式", "退出 Agent Mode", "/agentlab finish"]
+        spec.entry_policy.confirmation_text = str(
+            spec.entry_policy.confirmation_text or ""
+        ).strip()
+        spec.isolation_policy.mode = (
+            spec.isolation_policy.mode
+            if spec.isolation_policy.mode in {"off", "session", "strict"}
+            else "session"
+        )
+        spec.isolation_policy.tool_mode = (
+            spec.isolation_policy.tool_mode
+            if spec.isolation_policy.tool_mode in {"full", "whitelist", "no_external"}
+            else "whitelist"
+        )
+        spec.isolation_policy.notes = str(spec.isolation_policy.notes or "").strip()
+
+    @staticmethod
+    def _clean_string_list(items: Any) -> list[str]:
+        if isinstance(items, str):
+            items = re.split(r"[\r\n,，、]+", items)
+        if not isinstance(items, list):
+            return []
+        cleaned = []
+        seen = set()
+        for item in items:
+            text = str(item or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            cleaned.append(text)
+        return cleaned[:80]
 
     @classmethod
     def _normalize_agent_workflow(cls, spec: AgentSpec) -> None:
@@ -1726,6 +1947,9 @@ class AgentLabPlugin(Star):
                 spec.identity_label_source = "manual"
 
     def _sanitize_agent_enabled_tools(self, spec: AgentSpec) -> None:
+        if spec.isolation_policy.tool_mode == "no_external":
+            spec.enabled_tools = [NO_EXTERNAL_TOOLS_SENTINEL]
+            return
         names = []
         seen = set()
         for raw_name in spec.enabled_tools or []:

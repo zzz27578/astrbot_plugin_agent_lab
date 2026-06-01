@@ -83,6 +83,7 @@ class FakeContext:
         self.cron_manager = FakeCronManager()
         self.conversation_manager = FakeConversationManager()
         self.tool_manager = FakeToolManager()
+        self.tool_loop_agent_handler = None
         self.persona_manager = SimpleNamespace(
             selected_default_persona_v3={"name": persona_name} if persona_name else None
         )
@@ -126,9 +127,14 @@ class FakeContext:
         return self.tool_manager
 
     async def get_current_chat_provider_id(self, umo: str):
-        raise RuntimeError("no provider in runtime smoke")
+        return "fake-provider"
 
     async def llm_generate(self, **kwargs):
+        raise RuntimeError("no provider in runtime smoke")
+
+    async def tool_loop_agent(self, **kwargs):
+        if self.tool_loop_agent_handler:
+            return await self.tool_loop_agent_handler(**kwargs)
         raise RuntimeError("no provider in runtime smoke")
 
 
@@ -251,6 +257,7 @@ async def main() -> None:
         assert "入口摘要规则" in skill_text
         assert "出口归档规则" in skill_text
         spec.enabled_tools = ["memory_noise_search", "safe_registered_tool"]
+        spec.isolation_policy.mode = "session"
         spec.plugin_overrides["memory_noise"] = False
         toolset = plugin._build_toolset(spec)
         tool_names = {tool.name for tool in toolset.tools}
@@ -258,10 +265,26 @@ async def main() -> None:
         assert "safe_registered_tool" in tool_names
         tool_rows = {row["name"]: row for row in plugin._tool_rows()}
         assert tool_rows["memory_noise_search"]["plugin_name"] == "memory_noise"
+        strict_spec = plugin_main.AgentSpec(
+            name="严格隔离测试",
+            identity_label_source="manual",
+        )
+        strict_spec.enabled_tools = ["memory_noise_search", "safe_registered_tool"]
+        strict_spec.isolation_policy.mode = "strict"
+        strict_spec.plugin_overrides["safe_plugin"] = True
+        strict_toolset = plugin._build_toolset(strict_spec)
+        strict_tool_names = {tool.name for tool in strict_toolset.tools}
+        assert "memory_noise_search" not in strict_tool_names
+        assert "safe_registered_tool" in strict_tool_names
+        strict_overrides = plugin._effective_session_plugin_overrides(strict_spec)
+        assert strict_overrides["memory_noise"] is False
+        assert strict_overrides["safe_plugin"] is True
+        assert strict_overrides["astrbot_plugin_agent_lab"] is True
         save_spec = plugin_main.AgentSpec(
             name="工具测试",
             identity_label_source="manual",
         )
+        save_spec.isolation_policy.mode = "session"
         save_spec.enabled_tools = [
             "memory_noise_search",
             "safe_registered_tool",
@@ -277,6 +300,7 @@ async def main() -> None:
             config={"private_only": True},
         )
         global_off_spec = global_off_plugin.storage.get_agent()
+        global_off_spec.isolation_policy.mode = "session"
         global_off_spec.enabled_tools = ["memory_noise_search", "safe_registered_tool"]
         global_off_spec.plugin_overrides["memory_noise"] = True
         global_off_toolset = global_off_plugin._build_toolset(global_off_spec)
@@ -393,6 +417,40 @@ async def main() -> None:
         assert len(archives) == 1
         assert archives[0].status == "completed"
         assert plugin.guard.restored
+
+    with TemporaryDirectory() as tmp:
+        plugin_main.StarTools.get_data_dir = staticmethod(
+            lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
+        )
+        context = FakeContext()
+        plugin = plugin_main.AgentLabPlugin(context, config={"private_only": True})
+        plugin.guard = FakeGuard()
+        event = FakeEvent()
+        await plugin._start_task(
+            event,
+            goal="finish inside tick",
+            completion_conditions="archive exists",
+            brief="finish inside tick brief",
+            request_heartbeat=False,
+            source="runtime_smoke",
+            risk_level="work",
+        )
+
+        async def finish_inside_tick(**kwargs):
+            await plugin.agent_lab_finish(
+                event,
+                final_summary="finished from tool call",
+                memory_candidates="- finish did not resurrect active task",
+            )
+            return SimpleNamespace(completion_text="tool finished task", usage=None)
+
+        context.tool_loop_agent_handler = finish_inside_tick
+        result = await plugin._tick(event, "runtime_smoke_finish")
+        assert "任务已在本轮结束或切换" in result
+        assert plugin.storage.load_active_task(event.unified_msg_origin) is None
+        archives = plugin.storage.list_archives(event.unified_msg_origin)
+        assert len(archives) == 1
+        assert archives[0].status == "completed"
 
     with TemporaryDirectory() as tmp:
         plugin_main.StarTools.get_data_dir = staticmethod(
