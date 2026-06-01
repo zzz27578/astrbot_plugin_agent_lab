@@ -532,6 +532,40 @@ button.list-row {
   overflow: hidden;
 }
 
+.workflow-panel.focus {
+  position: fixed;
+  inset: 10px;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 22px 70px rgba(23, 32, 29, 0.22);
+}
+
+.workflow-panel.focus .workflow-layout {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.workflow-panel.focus .workflow-layout > div:first-child {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.workflow-panel.focus .workflow-canvas-wrap {
+  flex: 1;
+  min-height: calc(100vh - 220px);
+  max-height: none;
+}
+
+.workflow-panel.focus .workflow-side {
+  display: none;
+}
+
 .workflow-canvas-toolbar {
   display: flex;
   justify-content: space-between;
@@ -559,9 +593,10 @@ button.list-row {
 }
 
 .workflow-canvas-wrap {
+  position: relative;
   width: 100%;
-  min-height: 760px;
-  max-height: 78vh;
+  min-height: 860px;
+  max-height: 82vh;
   overflow: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -570,6 +605,11 @@ button.list-row {
     linear-gradient(180deg, rgba(23, 32, 29, 0.04) 1px, transparent 1px),
     #fbfcfb;
   background-size: 24px 24px;
+  cursor: grab;
+}
+
+.workflow-canvas-wrap.is-panning {
+  cursor: grabbing;
 }
 
 .workflow-canvas-space {
@@ -598,7 +638,7 @@ button.list-row {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 340px;
+  width: 430px;
   padding: 14px 16px;
   border-right: 1px solid rgba(170, 185, 180, 0.45);
   color: var(--muted);
@@ -657,6 +697,44 @@ button.list-row {
 
 .workflow-links marker path {
   fill: rgba(49, 95, 143, 0.78);
+}
+
+.workflow-minimap {
+  position: sticky;
+  right: 14px;
+  bottom: 14px;
+  left: calc(100% - 238px);
+  z-index: 5;
+  width: 220px;
+  margin: 0 14px 14px auto;
+  pointer-events: none;
+}
+
+.workflow-minimap svg {
+  display: block;
+  filter: drop-shadow(0 12px 24px rgba(30, 45, 41, 0.18));
+}
+
+.workflow-minimap-bg {
+  fill: rgba(255, 255, 255, 0.9);
+  stroke: rgba(170, 185, 180, 0.8);
+}
+
+.workflow-minimap path {
+  fill: none;
+  stroke: rgba(49, 95, 143, 0.35);
+  stroke-width: 16;
+}
+
+.workflow-minimap rect:not(.workflow-minimap-bg) {
+  fill: rgba(49, 95, 143, 0.32);
+  stroke: rgba(49, 95, 143, 0.56);
+  stroke-width: 7;
+}
+
+.workflow-minimap rect.selected {
+  fill: rgba(47, 125, 91, 0.62);
+  stroke: rgba(23, 32, 29, 0.92);
 }
 
 .workflow-board {
@@ -756,13 +834,41 @@ button.list-row {
 
 .workflow-toolbox {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: minmax(360px, 1.4fr) repeat(3, minmax(0, 1fr));
   gap: 12px;
   margin-top: 12px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-2);
+}
+
+.workflow-toolbox-wide {
+  min-width: 0;
+}
+
+.workflow-template-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  max-height: 300px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.workflow-template-group {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.workflow-template-group > span {
+  display: block;
+  margin-bottom: 7px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .workflow-compact-stage {
@@ -861,11 +967,17 @@ button.list-row {
   overflow: auto;
 }
 
+.workflow-template-group .toolbox-buttons {
+  max-height: none;
+  overflow: visible;
+}
+
 .toolbox-chip {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   min-height: 34px;
+  max-width: 100%;
   padding: 7px 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -873,6 +985,10 @@ button.list-row {
   color: var(--ink);
   cursor: pointer;
   text-align: left;
+}
+
+.toolbox-chip span {
+  flex: 0 0 auto;
 }
 
 .toolbox-chip:hover {
@@ -940,7 +1056,7 @@ button.list-row {
 }
 
 .node {
-  min-height: 132px;
+  min-height: 142px;
   padding: 13px;
   box-shadow: none;
   color: var(--ink);
@@ -951,12 +1067,13 @@ button.list-row {
 .flow-node {
   position: absolute;
   z-index: 2;
-  width: 240px;
-  min-height: 142px;
-  padding: 13px 14px;
+  width: 260px;
+  min-height: 152px;
+  padding: 15px 16px;
   background: var(--panel);
   touch-action: none;
   user-select: none;
+  cursor: move;
 }
 
 .flow-node:hover {
@@ -1011,31 +1128,46 @@ button.list-row {
 
 .node-port {
   position: absolute;
-  top: 64px;
+  top: 50%;
   z-index: 4;
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 44px;
+  margin: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  cursor: crosshair;
+  transform: translateY(-50%);
+}
+
+.node-port::after {
   width: 14px;
   height: 14px;
-  margin: 0;
   border: 2px solid var(--panel);
   border-radius: 999px;
   background: var(--blue);
-  box-shadow: 0 0 0 1px rgba(23, 32, 29, 0.18), 0 3px 8px rgba(30, 45, 41, 0.18);
-  cursor: crosshair;
+  box-shadow: 0 0 0 1px rgba(23, 32, 29, 0.2), 0 4px 10px rgba(30, 45, 41, 0.22);
+  content: "";
 }
 
 .node-port-in {
-  left: -8px;
+  left: -20px;
 }
 
 .node-port-out {
-  right: -8px;
+  right: -20px;
 }
 
-.node-port:hover,
-.workflow-canvas.is-connecting .node-port {
+.node-port:hover::after,
+.node-port.pending::after,
+.workflow-canvas.is-connecting .node-port::after {
   background: var(--amber);
-  transform: scale(1.18);
+  box-shadow: 0 0 0 5px rgba(167, 111, 25, 0.14), 0 6px 16px rgba(30, 45, 41, 0.24);
+  transform: scale(1.24);
 }
 
 .node[data-kind="guard"] {

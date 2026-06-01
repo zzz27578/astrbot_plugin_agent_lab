@@ -20,13 +20,13 @@ const WORKFLOW_STAGES = [
   ["archive", "出口", "归档回流"],
 ];
 
-const WORKFLOW_NODE_WIDTH = 240;
-const WORKFLOW_NODE_HEIGHT = 142;
-const WORKFLOW_LANE_WIDTH = 340;
-const WORKFLOW_CANVAS_MIN_WIDTH = 2280;
-const WORKFLOW_CANVAS_MIN_HEIGHT = 980;
-const WORKFLOW_CANVAS_MAX_X = 6200;
-const WORKFLOW_CANVAS_MAX_Y = 3600;
+const WORKFLOW_NODE_WIDTH = 260;
+const WORKFLOW_NODE_HEIGHT = 152;
+const WORKFLOW_LANE_WIDTH = 430;
+const WORKFLOW_CANVAS_MIN_WIDTH = 4200;
+const WORKFLOW_CANVAS_MIN_HEIGHT = 1500;
+const WORKFLOW_CANVAS_MAX_X = 12000;
+const WORKFLOW_CANVAS_MAX_Y = 8000;
 const WORKFLOW_KINDS = [
   "state",
   "tool",
@@ -237,6 +237,172 @@ const WORKFLOW_NODE_TEMPLATES = [
     action: "exit_summary",
     instruction: "任务完成或取消时归档成果、改动、风险和可回流记忆候选。",
   },
+  {
+    id: "command_entry",
+    title: "命令/暗号入口",
+    kind: "state",
+    stage: "entry",
+    action: "summarize_entry",
+    library_group: "入口",
+    instruction: "匹配 /agentlab start、暗号或自定义命令，只产出是否准备进入任务模式的判断。",
+  },
+  {
+    id: "keyword_entry",
+    title: "关键词入口",
+    kind: "branch",
+    stage: "entry",
+    action: "route_condition",
+    library_group: "入口",
+    instruction: "按排查、部署、写插件、整理资料等关键词判断是否进入任务模式，避免普通聊天误触发。",
+  },
+  {
+    id: "manual_webui_entry",
+    title: "WebUI 手动入口",
+    kind: "human",
+    stage: "entry",
+    action: "confirm_entry",
+    library_group: "入口",
+    instruction: "从控制台创建任务时锁定目标、完成条件、风险等级和是否立即开心跳。",
+  },
+  {
+    id: "scope_lock",
+    title: "授权范围锁定",
+    kind: "guard",
+    stage: "entry",
+    action: "restore_isolation",
+    library_group: "隔离",
+    instruction: "进入任务前写清允许读写的目录、外部系统、插件和工具白名单，超出范围必须重新确认。",
+  },
+  {
+    id: "memory_filter",
+    title: "记忆过滤器",
+    kind: "memory",
+    stage: "entry",
+    action: "summarize_entry",
+    library_group: "记忆",
+    instruction: "把普通会话记忆压缩成任务 brief，只带入稳定事实、约束、已授权内容和用户偏好。",
+  },
+  {
+    id: "memory_expose",
+    title: "记忆标签暴露",
+    kind: "memory",
+    stage: "checkpoint",
+    action: "save_memory",
+    library_group: "记忆",
+    instruction: "把可复用成果写成带标签的任务记忆，让普通模式或下一次任务能按标签读取。",
+  },
+  {
+    id: "todo_split",
+    title: "工作包拆分",
+    kind: "transform",
+    stage: "plan",
+    action: "transform_context",
+    library_group: "计划",
+    instruction: "把计划拆成互不依赖、可验收、可回滚的小工作包，再决定串行或并行。",
+  },
+  {
+    id: "parallel_research_worker",
+    title: "并行资料/代码阅读",
+    kind: "subflow",
+    stage: "execute",
+    action: "manual",
+    library_group: "并行",
+    instruction: "只读检索资料、文档或代码路径，输出证据、结论、风险和主 Agent 需要合并的字段。",
+    prompt: "你是只读并行研究工作包。不要写入文件或外部系统；输出：结论、证据、风险、建议下一步。",
+    parallel_group: "default",
+  },
+  {
+    id: "parallel_verify_worker",
+    title: "并行验收复核",
+    kind: "subflow",
+    stage: "execute",
+    action: "manual",
+    library_group: "并行",
+    instruction: "独立检查完成条件、测试证据、边界情况和可能遗漏，回传结构化复核意见。",
+    prompt: "你是并行验收复核工作包。只核对证据强度和遗漏项；输出：通过项、风险项、阻塞项、建议。",
+    parallel_group: "default",
+  },
+  {
+    id: "browser_qa",
+    title: "浏览器 QA",
+    kind: "tool",
+    stage: "execute",
+    action: "run_tools",
+    library_group: "工具",
+    instruction: "用浏览器或截图验证本地 WebUI 的布局、交互、移动端和关键流程，结果写回 task_state。",
+  },
+  {
+    id: "file_patch",
+    title: "文件改动单元",
+    kind: "tool",
+    stage: "execute",
+    action: "run_tools",
+    library_group: "工具",
+    instruction: "只改一个边界清晰的代码或文档单元，改动前后记录关键文件、风险和验证方式。",
+  },
+  {
+    id: "shell_test",
+    title: "命令验证",
+    kind: "tool",
+    stage: "checkpoint",
+    action: "run_tools",
+    library_group: "验证",
+    instruction: "运行格式检查、单测、烟测或项目命令，把命令、结果和失败原因写回任务状态。",
+  },
+  {
+    id: "api_payload_builder",
+    title: "API 参数整理",
+    kind: "transform",
+    stage: "execute",
+    action: "transform_context",
+    library_group: "API",
+    instruction: "在调用外部 API 前整理参数、幂等键、敏感字段和成功判定，避免把密钥写进提示词。",
+  },
+  {
+    id: "api_write_guard",
+    title: "API 写入审批",
+    kind: "guard",
+    stage: "guard",
+    action: "request_approval",
+    library_group: "API",
+    instruction: "API 会写入外部系统、发消息、产生费用或读取敏感数据时，先请求用户明确审批。",
+  },
+  {
+    id: "merge_results",
+    title: "并行结果汇总",
+    kind: "transform",
+    stage: "checkpoint",
+    action: "transform_context",
+    library_group: "并行",
+    instruction: "合并并行工作包结果，标注冲突、证据强度、未验证项和主 Agent 的最终决策。",
+  },
+  {
+    id: "acceptance_check",
+    title: "验收清单",
+    kind: "validation",
+    stage: "checkpoint",
+    action: "validate_output",
+    library_group: "验证",
+    instruction: "对照完成条件逐项确认，明确已完成、未完成、需用户验收和残留风险。",
+  },
+  {
+    id: "rollback_plan",
+    title: "回滚预案",
+    kind: "guard",
+    stage: "guard",
+    action: "request_approval",
+    library_group: "安全",
+    instruction: "部署、批量覆盖或破坏性动作前写清影响范围、回滚步骤和停止条件。",
+  },
+  {
+    id: "cancel_exit",
+    title: "取消退出",
+    kind: "memory",
+    stage: "archive",
+    action: "exit_summary",
+    library_group: "出口",
+    instruction: "用户取消或任务终止时，归档已做事项、未完成原因、恢复状态和可续写入口。",
+  },
 ];
 
 const sections = [
@@ -261,8 +427,11 @@ let toolFilter = "";
 let blueprintFilter = "";
 let memoryFilter = "all";
 let workflowDrag = null;
+let workflowPan = null;
 let workflowConnection = null;
-let workflowZoom = 0.9;
+let workflowPendingPort = null;
+let workflowZoom = 1;
+let workflowFocusMode = false;
 let workflowCheckReport = null;
 
 function clone(value) {
@@ -996,6 +1165,53 @@ function workflowTemplate(id) {
       ],
     };
   }
+  if (id === "code_task") {
+    return {
+      nodes: [
+        { id: "entry", title: "开发入口", kind: "state", stage: "entry", action: "summarize_entry", description: "压缩需求和限制", instruction: "提取目标、验收条件、禁止触碰范围、运行环境和用户最新要求。", x: 80, y: 260 },
+        { id: "confirm", title: "范围确认", kind: "human", stage: "entry", action: "confirm_entry", description: "确认进入代码任务模式", instruction: "说明会隔离普通插件、只使用白名单工具、关键改动会记录到任务记忆。", x: 500, y: 260 },
+        { id: "plan", title: "改动计划", kind: "state", stage: "plan", action: "plan", description: "拆分文件和验证步骤", instruction: "先读代码再定改动；计划必须包含目标文件、风险点和验证命令。", x: 920, y: 260 },
+        { id: "read", title: "代码阅读", kind: "subflow", stage: "execute", action: "manual", description: "只读理解代码路径", instruction: "读取相关文件、入口和测试，不做写入；输出改动边界和局部设计。", prompt: "你是代码阅读工作包。只读不写；输出：涉及文件、现有模式、风险、建议修改点。", parallel_group: "code", x: 1340, y: 90 },
+        { id: "patch", title: "文件改动", kind: "tool", stage: "execute", action: "run_tools", description: "有限代码修改", instruction: "只做计划内最小改动，避免无关重构，关键改动写回 task_state。", x: 1340, y: 300 },
+        { id: "qa", title: "验证命令", kind: "tool", stage: "checkpoint", action: "run_tools", description: "运行语法/测试/烟测", instruction: "运行项目可用验证；失败时记录命令、错误、判断和下一步。", x: 1760, y: 300 },
+        { id: "review", title: "结果校验", kind: "validation", stage: "checkpoint", action: "validate_output", description: "核对需求和副作用", instruction: "对照验收条件、测试结果和 diff 风险，决定继续、重试或归档。", x: 2180, y: 300 },
+        { id: "memory", title: "改动记忆", kind: "memory", stage: "checkpoint", action: "save_memory", description: "记录改动和续写点", instruction: "保存文件变更、关键决策、验证命令、遗留风险和下次接手提示。", x: 2600, y: 300 },
+        { id: "archive", title: "交付退出", kind: "memory", stage: "archive", action: "exit_summary", description: "总结并恢复隔离", instruction: "输出交付内容、验证结果、未完成项和可回流记忆，然后退出任务模式。", x: 3020, y: 300 },
+      ],
+      edges: [
+        { from: "entry", to: "confirm" },
+        { from: "confirm", to: "plan" },
+        { from: "plan", to: "read" },
+        { from: "plan", to: "patch" },
+        { from: "read", to: "patch" },
+        { from: "patch", to: "qa" },
+        { from: "qa", to: "review" },
+        { from: "review", to: "memory" },
+        { from: "memory", to: "archive" },
+      ],
+    };
+  }
+  if (id === "memory_loop") {
+    return {
+      nodes: [
+        { id: "entry", title: "续写入口", kind: "state", stage: "entry", action: "summarize_entry", description: "识别续写目标", instruction: "识别用户要续写的任务、标签或 source_task_id，压缩当前目标。", x: 80, y: 260 },
+        { id: "recall", title: "记忆召回", kind: "retrieval", stage: "plan", action: "retrieve_memory", description: "读取任务记忆", instruction: "按标签读取候选记忆，区分稳定事实、候选判断和过期信息。", x: 500, y: 260 },
+        { id: "plan", title: "续写计划", kind: "state", stage: "plan", action: "plan", description: "确认接续方案", instruction: "把召回记忆转成新的完成条件、边界和下一步计划，等待必要确认。", x: 920, y: 260 },
+        { id: "execute", title: "续写执行", kind: "tool", stage: "execute", action: "run_tools", description: "推进一个小单元", instruction: "只推进当前计划中的一个小单元，并记录和旧记忆的衔接点。", x: 1340, y: 260 },
+        { id: "checkpoint", title: "续写快照", kind: "state", stage: "checkpoint", action: "save_state", description: "写回进度", instruction: "记录当前完成度、新发现、下一步和与原任务不同的地方。", x: 1760, y: 260 },
+        { id: "memory", title: "更新记忆标签", kind: "memory", stage: "checkpoint", action: "save_memory", description: "暴露新记忆", instruction: "更新任务标签、时间线、成果和下次续写入口，避免保存敏感或短期 token。", x: 2180, y: 260 },
+        { id: "archive", title: "续写归档", kind: "memory", stage: "archive", action: "exit_summary", description: "结束或等待下次", instruction: "总结本次续写结果、未解决问题和下次入口。", x: 2600, y: 260 },
+      ],
+      edges: [
+        { from: "entry", to: "recall" },
+        { from: "recall", to: "plan" },
+        { from: "plan", to: "execute" },
+        { from: "execute", to: "checkpoint" },
+        { from: "checkpoint", to: "memory" },
+        { from: "memory", to: "archive" },
+      ],
+    };
+  }
   return { nodes: defaultWorkflowNodes(), edges: defaultWorkflowEdges() };
 }
 
@@ -1005,7 +1221,7 @@ function applyWorkflowTemplate(id) {
   currentAgent.workflow_edges = clone(template.edges);
   selectedWorkflowNodeId = currentAgent.workflow_nodes[0]?.id || "";
   workflowCheckReport = null;
-  const names = { api_review: "API 审批流", emergency: "紧急模式", parallel_agent: "并行 Agent 流", linear: "标准工作流" };
+  const names = { api_review: "API 审批流", code_task: "代码任务流", emergency: "紧急模式", memory_loop: "记忆续写流", parallel_agent: "并行 Agent 流", linear: "标准工作流" };
   setFeedback(`已套用${names[id] || "工作流"}，保存后会进入任务运行协议。`);
 }
 
@@ -1100,7 +1316,7 @@ function defaultWorkflowPosition(stage, index = 0) {
   const stageIndex = Math.max(0, WORKFLOW_STAGES.findIndex(([id]) => id === stage));
   return {
     x: 70 + stageIndex * WORKFLOW_LANE_WIDTH,
-    y: 90 + (index % 4) * 170,
+    y: 110 + (index % 5) * 215,
   };
 }
 
@@ -1470,7 +1686,7 @@ function renderCanvas() {
       </div>
     </section>
 
-    <section class="panel workflow-panel">
+    <section class="panel workflow-panel ${workflowFocusMode ? "focus" : ""}">
       <div class="panel-head">
         <div><p class="card-kicker">画布</p><h2>任务模式工作流</h2></div>
         <div class="inline-actions">
@@ -1481,6 +1697,8 @@ function renderCanvas() {
           <button class="button secondary" data-action="apply-workflow-template" data-id="emergency" type="button">紧急模式</button>
           <button class="button secondary" data-action="apply-workflow-template" data-id="parallel_agent" type="button">并行 Agent</button>
           <button class="button secondary" data-action="apply-workflow-template" data-id="api_review" type="button">API 审批流</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="code_task" type="button">代码任务流</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="memory_loop" type="button">记忆续写流</button>
           <button class="button secondary" data-action="reset-workflow" type="button">恢复默认流程</button>
         </div>
       </div>
@@ -1578,6 +1796,7 @@ function workflowCanvas() {
         <button class="button tiny secondary" data-action="workflow-fit" type="button">适配</button>
         <button class="button tiny secondary" data-action="workflow-zoom-reset" type="button">100%</button>
         <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
+        <button class="button tiny secondary" data-action="workflow-focus" type="button">${workflowFocusMode ? "退出专注" : "专注"}</button>
       </div>
     </div>
     <div class="workflow-canvas-wrap">
@@ -1597,25 +1816,43 @@ function workflowCanvas() {
           ${currentAgent.workflow_nodes.map((item) => node(item)).join("")}
         </div>
       </div>
+      ${workflowMinimap(size)}
     </div>
     ${workflowCompactBoard()}
   `;
+}
+
+function workflowTemplateGroupLabel(item) {
+  return item.library_group || workflowStageLabel(item.stage || "plan");
 }
 
 function workflowToolbox() {
   const selectedTools = materializedToolSelection();
   const activePlugins = (state.plugins || []).filter((item) => item.activated !== false);
   const apis = state.custom_apis || [];
+  const templateGroups = WORKFLOW_NODE_TEMPLATES.reduce((groups, item) => {
+    const group = workflowTemplateGroupLabel(item);
+    groups[group] ||= [];
+    groups[group].push(item);
+    return groups;
+  }, {});
   return `
     <div class="workflow-toolbox">
-      <div>
+      <div class="workflow-toolbox-wide">
         <strong>节点素材</strong>
-        <div class="toolbox-buttons">
-          ${WORKFLOW_NODE_TEMPLATES.map((item) => `
-            <button class="toolbox-chip" data-action="add-template-node" data-id="${esc(item.id)}" type="button">
-              <span>${esc(workflowKindLabel(item.kind))}</span>
-              ${esc(item.title)}
-            </button>
+        <div class="workflow-template-groups">
+          ${Object.entries(templateGroups).map(([group, items]) => `
+            <section class="workflow-template-group">
+              <span>${esc(group)}</span>
+              <div class="toolbox-buttons">
+                ${items.map((item) => `
+                  <button class="toolbox-chip" data-action="add-template-node" data-id="${esc(item.id)}" title="${esc(item.instruction || item.description || item.title)}" type="button">
+                    <span>${esc(workflowKindLabel(item.kind))}</span>
+                    ${esc(item.title)}
+                  </button>
+                `).join("")}
+              </div>
+            </section>
           `).join("")}
         </div>
       </div>
@@ -1713,6 +1950,42 @@ function workflowLinksSvg() {
     </defs>
     ${paths}
     ${preview}
+  `;
+}
+
+function workflowMinimap(size) {
+  const mapWidth = 220;
+  const mapHeight = 132;
+  const scale = Math.min((mapWidth - 18) / size.width, (mapHeight - 18) / size.height);
+  const offsetX = Math.max(8, (mapWidth - size.width * scale) / 2);
+  const offsetY = Math.max(8, (mapHeight - size.height * scale) / 2);
+  const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
+  const edgeLines = (currentAgent.workflow_edges || []).map((edge) => {
+    const from = nodes.get(edge.from);
+    const to = nodes.get(edge.to);
+    if (!from || !to) return "";
+    return `<path d="${workflowLinkPath(workflowNodeAnchor(from, "out"), workflowNodeAnchor(to, "in"))}"></path>`;
+  }).join("");
+  const nodeRects = (currentAgent.workflow_nodes || []).map((item) => `
+    <rect
+      class="${item.id === selectedWorkflowNodeId ? "selected" : ""}"
+      x="${Number(item.x || 0)}"
+      y="${Number(item.y || 0)}"
+      width="${WORKFLOW_NODE_WIDTH}"
+      height="${WORKFLOW_NODE_HEIGHT}"
+      rx="14"
+    ></rect>
+  `).join("");
+  return `
+    <div class="workflow-minimap" aria-hidden="true">
+      <svg width="${mapWidth}" height="${mapHeight}" viewBox="0 0 ${mapWidth} ${mapHeight}">
+        <rect class="workflow-minimap-bg" x="0.5" y="0.5" width="${mapWidth - 1}" height="${mapHeight - 1}" rx="8"></rect>
+        <g transform="translate(${offsetX} ${offsetY}) scale(${scale})">
+          ${edgeLines}
+          ${nodeRects}
+        </g>
+      </svg>
+    </div>
   `;
 }
 
@@ -1820,10 +2093,12 @@ function edgeText() {
 
 function node(item) {
   const selected = item.id === selectedWorkflowNodeId;
+  const pendingIn = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "in";
+  const pendingOut = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "out";
   return `
     <article class="node flow-node ${selected ? "selected" : ""}" style="left:${Number(item.x || 0)}px;top:${Number(item.y || 0)}px" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" role="button" tabindex="0">
-      <span class="node-port node-port-in" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>
-      <span class="node-port node-port-out" data-port="out" data-node-id="${esc(item.id)}" title="输出连接点"></span>
+      <span class="node-port node-port-in ${pendingIn ? "pending" : ""}" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>
+      <span class="node-port node-port-out ${pendingOut ? "pending" : ""}" data-port="out" data-node-id="${esc(item.id)}" title="输出连接点"></span>
       <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
       <strong>${esc(item.title || item.id)}</strong>
       <p>${esc(item.instruction || item.description || item.id)}</p>
@@ -2754,6 +3029,8 @@ function refreshWorkflowCanvasDom() {
   svg.setAttribute("height", String(size.height));
   svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
   svg.innerHTML = workflowLinksSvg();
+  const minimap = document.querySelector(".workflow-minimap");
+  if (minimap) minimap.outerHTML = workflowMinimap(size);
 }
 
 function workflowCanvasPoint(event) {
@@ -2786,7 +3063,7 @@ function autoLayoutWorkflow() {
       const row = rows.get(stage) || 0;
       node.stage = stage;
       node.x = 70 + stageOrder.indexOf(stage) * WORKFLOW_LANE_WIDTH;
-      node.y = 90 + row * 170;
+      node.y = 110 + row * 215;
       rows.set(stage, row + 1);
     }
   }
@@ -2797,55 +3074,128 @@ function portFromPoint(clientX, clientY) {
   return document.elementFromPoint(clientX, clientY)?.closest(".node-port") || null;
 }
 
+function workflowPortInfo(portEl) {
+  if (!portEl) return null;
+  const nodeId = portEl.dataset.nodeId || "";
+  const item = workflowNodeById(nodeId);
+  if (!item) return null;
+  const port = portEl.dataset.port === "in" ? "in" : "out";
+  return {
+    nodeId: item.id,
+    port,
+    anchor: workflowNodeAnchor(item, port),
+  };
+}
+
+function connectWorkflowPorts(start, target) {
+  if (!start || !target || start.nodeId === target.nodeId || start.port === target.port) return false;
+  const from = start.port === "out" ? start.nodeId : target.nodeId;
+  const to = start.port === "out" ? target.nodeId : start.nodeId;
+  return addWorkflowEdge(from, to);
+}
+
 function setWorkflowConnectingClass(active) {
-  document.querySelector(".workflow-canvas")?.classList.toggle("is-connecting", active);
+  document.querySelector(".workflow-canvas")?.classList.toggle("is-connecting", active || Boolean(workflowPendingPort));
+}
+
+function highlightWorkflowPendingPort() {
+  document.querySelectorAll(".node-port.pending").forEach((item) => item.classList.remove("pending"));
+  if (!workflowPendingPort) {
+    setWorkflowConnectingClass(false);
+    return;
+  }
+  Array.from(document.querySelectorAll(`.node-port-${workflowPendingPort.port}`))
+    .find((item) => item.dataset.nodeId === workflowPendingPort.nodeId)
+    ?.classList.add("pending");
+  setWorkflowConnectingClass(false);
 }
 
 document.addEventListener("pointerdown", (event) => {
   const portEl = event.target.closest(".node-port");
   if (portEl && document.querySelector(".workflow-canvas")?.contains(portEl)) {
-    const item = workflowNodeById(portEl.dataset.nodeId);
-    if (!item) return;
-    const port = portEl.dataset.port === "in" ? "in" : "out";
+    const portInfo = workflowPortInfo(portEl);
+    if (!portInfo) return;
     event.preventDefault();
     event.stopPropagation();
-    selectedWorkflowNodeId = item.id;
+    if (workflowPendingPort) {
+      const samePort = workflowPendingPort.nodeId === portInfo.nodeId && workflowPendingPort.port === portInfo.port;
+      const added = !samePort && connectWorkflowPorts(workflowPendingPort, portInfo);
+      workflowPendingPort = added || samePort ? null : portInfo;
+      refreshWorkflowCanvasDom();
+      setFeedback(added ? "连线已创建，保存配置后生效。" : samePort ? "已取消连线起点。" : "已切换连线起点。");
+      if (added) render();
+      else highlightWorkflowPendingPort();
+      return;
+    }
+    selectedWorkflowNodeId = portInfo.nodeId;
     workflowConnection = {
-      nodeId: item.id,
-      port,
+      nodeId: portInfo.nodeId,
+      port: portInfo.port,
       pointerId: event.pointerId,
-      anchor: workflowNodeAnchor(item, port),
+      anchor: portInfo.anchor,
       pointer: workflowCanvasPoint(event),
+      startX: event.clientX,
+      startY: event.clientY,
+      moved: false,
     };
     setWorkflowConnectingClass(true);
     portEl.setPointerCapture?.(event.pointerId);
     refreshWorkflowCanvasDom();
     return;
   }
+  const canvasEl = document.querySelector(".workflow-canvas");
   const nodeEl = event.target.closest(".flow-node");
-  if (!nodeEl || !document.querySelector(".workflow-canvas")?.contains(nodeEl)) return;
-  const item = workflowNodeById(nodeEl.dataset.id);
-  if (!item) return;
-  selectedWorkflowNodeId = item.id;
-  document.querySelectorAll(".flow-node.selected").forEach((node) => node.classList.remove("selected"));
-  nodeEl.classList.add("selected");
-  workflowDrag = {
-    id: item.id,
-    element: nodeEl,
+  if (nodeEl && canvasEl?.contains(nodeEl)) {
+    const item = workflowNodeById(nodeEl.dataset.id);
+    if (!item) return;
+    selectedWorkflowNodeId = item.id;
+    document.querySelectorAll(".flow-node.selected").forEach((node) => node.classList.remove("selected"));
+    nodeEl.classList.add("selected");
+    workflowDrag = {
+      id: item.id,
+      element: nodeEl,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      baseX: Number(item.x || 0),
+      baseY: Number(item.y || 0),
+      moved: false,
+    };
+    nodeEl.setPointerCapture?.(event.pointerId);
+    return;
+  }
+  const wrapEl = event.target.closest(".workflow-canvas-wrap");
+  if (!wrapEl || !canvasEl?.contains(event.target)) return;
+  if (event.target.closest("[data-action='delete-workflow-edge']")) return;
+  event.preventDefault();
+  workflowPan = {
+    element: wrapEl,
     pointerId: event.pointerId,
     startX: event.clientX,
     startY: event.clientY,
-    baseX: Number(item.x || 0),
-    baseY: Number(item.y || 0),
+    scrollLeft: wrapEl.scrollLeft,
+    scrollTop: wrapEl.scrollTop,
     moved: false,
   };
-  nodeEl.setPointerCapture?.(event.pointerId);
+  wrapEl.classList.add("is-panning");
+  wrapEl.setPointerCapture?.(event.pointerId);
 });
 
 document.addEventListener("pointermove", (event) => {
   if (workflowConnection && workflowConnection.pointerId === event.pointerId) {
+    const dx = event.clientX - workflowConnection.startX;
+    const dy = event.clientY - workflowConnection.startY;
+    workflowConnection.moved ||= Math.abs(dx) + Math.abs(dy) > 5;
     workflowConnection.pointer = workflowCanvasPoint(event);
     refreshWorkflowCanvasDom();
+    return;
+  }
+  if (workflowPan && workflowPan.pointerId === event.pointerId) {
+    const dx = event.clientX - workflowPan.startX;
+    const dy = event.clientY - workflowPan.startY;
+    workflowPan.moved ||= Math.abs(dx) + Math.abs(dy) > 5;
+    workflowPan.element.scrollLeft = workflowPan.scrollLeft - dx;
+    workflowPan.element.scrollTop = workflowPan.scrollTop - dy;
     return;
   }
   if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
@@ -2865,19 +3215,39 @@ document.addEventListener("pointerup", (event) => {
   if (workflowConnection && workflowConnection.pointerId === event.pointerId) {
     const start = workflowConnection;
     const targetPort = portFromPoint(event.clientX, event.clientY);
-    const targetNodeId = targetPort?.dataset.nodeId || "";
-    const targetType = targetPort?.dataset.port || "";
+    const target = workflowPortInfo(targetPort);
     let added = false;
-    if (targetNodeId && targetNodeId !== start.nodeId && targetType && targetType !== start.port) {
-      const from = start.port === "out" ? start.nodeId : targetNodeId;
-      const to = start.port === "out" ? targetNodeId : start.nodeId;
-      added = addWorkflowEdge(from, to);
+    let pending = false;
+    if (target) {
+      added = connectWorkflowPorts(start, target);
+      if (!added && !start.moved && target.nodeId === start.nodeId && target.port === start.port) {
+        workflowPendingPort = {
+          nodeId: start.nodeId,
+          port: start.port,
+          anchor: start.anchor,
+        };
+        pending = true;
+      }
+    } else if (!start.moved) {
+      workflowPendingPort = {
+        nodeId: start.nodeId,
+        port: start.port,
+        anchor: start.anchor,
+      };
+      pending = true;
     }
     workflowConnection = null;
     setWorkflowConnectingClass(false);
     refreshWorkflowCanvasDom();
-    setFeedback(added ? "连线已创建，保存配置后生效。" : "未创建连线：请拖到另一个节点的相反连接点。", added ? "normal" : "error");
+    setFeedback(added ? "连线已创建，保存配置后生效。" : pending ? "已选中连线起点，再点另一个节点的相反连接点即可完成。" : "未创建连线：请拖到另一个节点的相反连接点。", added || pending ? "normal" : "error");
     if (added) render();
+    else if (pending) highlightWorkflowPendingPort();
+    return;
+  }
+  if (workflowPan && workflowPan.pointerId === event.pointerId) {
+    workflowPan.element.releasePointerCapture?.(event.pointerId);
+    workflowPan.element.classList.remove("is-panning");
+    workflowPan = null;
     return;
   }
   if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
@@ -2889,6 +3259,11 @@ document.addEventListener("pointerup", (event) => {
 });
 
 document.addEventListener("click", async (event) => {
+  if (event.target.closest(".node-port")) {
+    event.preventDefault();
+    event.stopPropagation();
+    return;
+  }
   const target = event.target.closest("[data-route], [data-action]");
   if (!target) return;
   const action = target.dataset.action;
@@ -2936,15 +3311,20 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "workflow-zoom-in" || action === "workflow-zoom-out" || action === "workflow-zoom-reset" || action === "workflow-fit") {
       readAgentForm();
-      if (action === "workflow-zoom-in") workflowZoom = clamp(workflowZoom + 0.1, 0.45, 1.35);
-      if (action === "workflow-zoom-out") workflowZoom = clamp(workflowZoom - 0.1, 0.45, 1.35);
+      if (action === "workflow-zoom-in") workflowZoom = clamp(workflowZoom + 0.1, 0.35, 1.6);
+      if (action === "workflow-zoom-out") workflowZoom = clamp(workflowZoom - 0.1, 0.35, 1.6);
       if (action === "workflow-zoom-reset") workflowZoom = 1;
       if (action === "workflow-fit") {
         const wrap = document.querySelector(".workflow-canvas-wrap");
         const size = workflowCanvasSize();
         const widthFit = wrap ? (wrap.clientWidth - 32) / size.width : 0.9;
-        workflowZoom = clamp(widthFit, 0.45, 1);
+        workflowZoom = clamp(widthFit, 0.35, 1);
       }
+      render();
+    }
+    if (action === "workflow-focus") {
+      readAgentForm();
+      workflowFocusMode = !workflowFocusMode;
       render();
     }
     if (action === "check-workflow") {

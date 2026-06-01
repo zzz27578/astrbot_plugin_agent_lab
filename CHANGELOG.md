@@ -2,6 +2,8 @@
 
 ## v0.1.1
 
+- Enlarged the workflow editor into a bigger canvas with focus mode, minimap, blank-canvas panning, larger node port hit targets, and drag-or-click edge creation.
+- Expanded the workflow node library with grouped entry/isolation/memory/planning/parallel/tool/API/safety/validation/exit modules plus code-task and memory-resume templates.
 - Rebuilt the Canvas page as the primary task-mode cockpit with explicit global-vs-entry application scope and command/natural/WebUI entry channels.
 - Added persisted AgentSpec fields for application scope and entry channel, and injected them into runtime task-mode prompts.
 - Added WebUI task-entry controls beside the selected AgentSpec and exposed cancel/archive plus approval approve/reject actions from the Tasks page.
