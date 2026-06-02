@@ -26,6 +26,7 @@ const WORKFLOW_NODE_HEIGHT = 168;
 const WORKFLOW_LANE_WIDTH = 560;
 const WORKFLOW_CANVAS_MIN_WIDTH = 7200;
 const WORKFLOW_CANVAS_MIN_HEIGHT = 2800;
+const WORKFLOW_CANVAS_MIN_X = -1400;
 const WORKFLOW_CANVAS_MAX_X = 12000;
 const WORKFLOW_CANVAS_MAX_Y = 8000;
 const WORKFLOW_KINDS = [
@@ -490,6 +491,7 @@ let workflowActionNotice = null;
 let workflowDraggedMaterial = null;
 let workflowMinimapPan = null;
 let workflowRibbonOpen = false;
+let workflowViewportInitialized = false;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -1285,7 +1287,7 @@ function applyWorkflowTemplate(id) {
 function workflowNodeDropPosition(point, fallbackStage, index = 0) {
   const pos = point || defaultWorkflowPosition(fallbackStage || "plan", index);
   return {
-    x: clamp(Number(pos.x || 0) - (point ? WORKFLOW_NODE_WIDTH / 2 : 0), 0, WORKFLOW_CANVAS_MAX_X),
+    x: clamp(Number(pos.x || 0) - (point ? WORKFLOW_NODE_WIDTH / 2 : 0), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X),
     y: clamp(Number(pos.y || 0) - (point ? WORKFLOW_NODE_HEIGHT / 2 : 0), 0, WORKFLOW_CANVAS_MAX_Y),
   };
 }
@@ -1440,7 +1442,7 @@ function ensureWorkflow() {
     condition: String(node.condition || "").trim(),
     parallel_group: String(node.parallel_group || "").trim(),
     prompt: String(node.prompt || "").trim(),
-    x: clamp(Number(node.x ?? defaultWorkflowPosition(workflowStage(node), index).x), 0, WORKFLOW_CANVAS_MAX_X),
+    x: clamp(Number(node.x ?? defaultWorkflowPosition(workflowStage(node), index).x), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X),
     y: clamp(Number(node.y ?? defaultWorkflowPosition(workflowStage(node), index).y), 0, WORKFLOW_CANVAS_MAX_Y),
   }));
   const ids = new Set(currentAgent.workflow_nodes.map((node) => node.id));
@@ -1819,6 +1821,10 @@ function workflowCanvasTransform() {
 function renderWorkflowPage() {
   currentAgent = ensureAgent(currentAgent || {});
   ensureWorkflow();
+  if (!workflowViewportInitialized) {
+    focusWorkflowStart();
+    workflowViewportInitialized = true;
+  }
   const report = workflowCheckReport || localWorkflowReport();
   $("view").innerHTML = `
     <section class="workflow-page ${workflowToolboxOpen ? "toolbox-open" : "toolbox-closed"} ${workflowInspectorOpen ? "inspector-open" : ""} ${workflowRibbonOpen ? "ribbon-open" : ""}">
@@ -2135,10 +2141,18 @@ function workflowCanvasSize() {
   const nodes = currentAgent.workflow_nodes || [];
   const maxX = nodes.reduce((value, node) => Math.max(value, Number(node.x || 0)), 0);
   const maxY = nodes.reduce((value, node) => Math.max(value, Number(node.y || 0)), 0);
+  const minX = Math.min(WORKFLOW_CANVAS_MIN_X, nodes.reduce((value, node) => Math.min(value, Number(node.x || 0)), 0));
   return {
-    width: Math.max(WORKFLOW_CANVAS_MIN_WIDTH, maxX + WORKFLOW_NODE_WIDTH + 260),
+    minX,
+    maxX: Math.max(WORKFLOW_CANVAS_MAX_X, maxX + WORKFLOW_NODE_WIDTH),
+    width: Math.max(WORKFLOW_CANVAS_MIN_WIDTH, maxX - minX + WORKFLOW_NODE_WIDTH + 260),
     height: Math.max(WORKFLOW_CANVAS_MIN_HEIGHT, maxY + WORKFLOW_NODE_HEIGHT + 180),
   };
+}
+
+function workflowWorldOffsetX(size = null) {
+  const data = size || workflowCanvasSize();
+  return Math.abs(Math.min(0, Number(data.minX || 0))) + 140;
 }
 
 function workflowCanvas() {
@@ -2147,6 +2161,7 @@ function workflowCanvas() {
   const scaledWidth = Math.ceil(size.width * workflowZoom);
   const scaledHeight = Math.ceil(size.height * workflowZoom);
   const hasPending = Boolean(workflowPendingPort);
+  const worldOffsetX = workflowWorldOffsetX(size);
   return `
     <div class="workflow-canvas-toolbar">
       <div class="workflow-canvas-meta">
@@ -2164,19 +2179,19 @@ function workflowCanvas() {
     ${workflowActionNotice ? `<div class="workflow-action-notice ${esc(workflowActionNotice.tone || "")}">${esc(workflowActionNotice.message || "")}</div>` : ""}
     <div class="workflow-canvas-wrap">
       <div class="workflow-canvas-space" style="width:${scaledWidth}px;height:${scaledHeight}px">
-        <div class="workflow-canvas ${hasPending ? "is-connecting" : ""}" data-zoom="${workflowZoom}" style="width:${size.width}px;height:${size.height}px;transform:${workflowCanvasTransform()}">
+        <div class="workflow-canvas ${hasPending ? "is-connecting" : ""}" data-zoom="${workflowZoom}" data-world-offset-x="${worldOffsetX}" style="width:${size.width}px;height:${size.height}px;transform:${workflowCanvasTransform()}">
           <div class="workflow-lanes">
             ${WORKFLOW_STAGES.map(([stage, title, meta], index) => `
-              <div class="workflow-lane" data-stage="${stage}" style="left:${index * WORKFLOW_LANE_WIDTH}px">
+              <div class="workflow-lane" data-stage="${stage}" style="left:${worldOffsetX + index * WORKFLOW_LANE_WIDTH}px">
                 <strong>${esc(title)}</strong>
                 <span>${esc(meta)}</span>
               </div>
             `).join("")}
           </div>
           <svg class="workflow-links" width="${size.width}" height="${size.height}" viewBox="0 0 ${size.width} ${size.height}" aria-hidden="true">
-            ${workflowLinksSvg()}
+            ${workflowLinksSvg(worldOffsetX)}
           </svg>
-          ${currentAgent.workflow_nodes.map((item) => node(item)).join("")}
+          ${currentAgent.workflow_nodes.map((item) => node(item, worldOffsetX)).join("")}
         </div>
       </div>
       ${workflowMinimap(size)}
@@ -2290,7 +2305,7 @@ function workflowCompactBoard() {
   `;
 }
 
-function workflowLinksSvg() {
+function workflowLinksSvg(offsetX = workflowWorldOffsetX()) {
   ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
   const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
@@ -2298,7 +2313,7 @@ function workflowLinksSvg() {
     const from = nodes.get(edge.from);
     const to = nodes.get(edge.to);
     if (!from || !to) return "";
-    const d = workflowLinkPath(workflowNodeAnchor(from, "out"), workflowNodeAnchor(to, "in"));
+    const d = workflowLinkPath(workflowNodeAnchor(from, "out", offsetX), workflowNodeAnchor(to, "in", offsetX));
     const color = workflowNodeColor(from);
     const marker = workflowMarkerId(from);
     return `
@@ -2369,13 +2384,14 @@ function workflowMarkerDefs() {
 function workflowMinimap(size) {
   const mapWidth = 220;
   const mapHeight = 132;
+  const minX = Number(size.minX || 0);
   const scale = Math.min((mapWidth - 18) / size.width, (mapHeight - 18) / size.height);
   const offsetX = Math.max(8, (mapWidth - size.width * scale) / 2);
   const offsetY = Math.max(8, (mapHeight - size.height * scale) / 2);
   const viewport = workflowViewportWorldRect();
-  const vx = clamp(viewport.x, 0, Math.max(0, size.width - 80));
+  const vx = clamp(viewport.x, minX, minX + Math.max(0, size.width - 80));
   const vy = clamp(viewport.y, 0, Math.max(0, size.height - 60));
-  const vw = clamp(viewport.width, 80, size.width - vx);
+  const vw = clamp(viewport.width, 80, minX + size.width - vx);
   const vh = clamp(viewport.height, 60, size.height - vy);
   const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
   const edgeLines = (currentAgent.workflow_edges || []).map((edge) => {
@@ -2398,7 +2414,7 @@ function workflowMinimap(size) {
     <div class="workflow-minimap" data-scale="${scale}" data-offset-x="${offsetX}" data-offset-y="${offsetY}" data-map-width="${mapWidth}" data-map-height="${mapHeight}" title="点击或拖动定位画布">
       <svg width="${mapWidth}" height="${mapHeight}" viewBox="0 0 ${mapWidth} ${mapHeight}">
         <rect class="workflow-minimap-bg" x="0.5" y="0.5" width="${mapWidth - 1}" height="${mapHeight - 1}" rx="8"></rect>
-        <g transform="translate(${offsetX} ${offsetY}) scale(${scale})">
+        <g transform="translate(${offsetX - minX * scale} ${offsetY}) scale(${scale})">
           ${edgeLines}
           ${nodeRects}
           <rect class="workflow-minimap-viewport" x="${vx}" y="${vy}" width="${vw}" height="${vh}" rx="18"></rect>
@@ -2413,8 +2429,9 @@ function workflowViewportWorldRect() {
   const width = wrap?.clientWidth || window.innerWidth || 1200;
   const height = wrap?.clientHeight || window.innerHeight || 760;
   const zoom = Number(workflowZoom || 1) || 1;
+  const offsetX = Number(document.querySelector(".workflow-canvas")?.dataset.worldOffsetX || workflowWorldOffsetX()) || 0;
   return {
-    x: -workflowPanX / zoom,
+    x: -workflowPanX / zoom - offsetX,
     y: -workflowPanY / zoom,
     width: width / zoom,
     height: height / zoom,
@@ -2428,19 +2445,21 @@ function centerWorkflowFromMinimap(event, minimap) {
   const offsetX = Number(minimap.dataset.offsetX || 0);
   const offsetY = Number(minimap.dataset.offsetY || 0);
   const size = workflowCanvasSize();
-  const worldX = clamp((event.clientX - rect.left - offsetX) / scale, 0, size.width);
+  const minX = Number(size.minX || 0);
+  const worldX = clamp((event.clientX - rect.left - offsetX) / scale + minX, minX, minX + size.width);
   const worldY = clamp((event.clientY - rect.top - offsetY) / scale, 0, size.height);
+  const renderOffsetX = workflowWorldOffsetX(size);
   const wrap = document.querySelector(".workflow-canvas-wrap");
   const width = wrap?.clientWidth || window.innerWidth || 1200;
   const height = wrap?.clientHeight || window.innerHeight || 760;
-  workflowPanX = Math.round(width / 2 - worldX * workflowZoom);
+  workflowPanX = Math.round(width / 2 - (worldX + renderOffsetX) * workflowZoom);
   workflowPanY = Math.round(height / 2 - worldY * workflowZoom);
   refreshWorkflowCanvasDom();
 }
 
-function workflowNodeAnchor(node, port = "out") {
+function workflowNodeAnchor(node, port = "out", offsetX = 0) {
   return {
-    x: Number(node.x || 0) + (port === "out" ? WORKFLOW_NODE_WIDTH : 0),
+    x: Number(node.x || 0) + offsetX + (port === "out" ? WORKFLOW_NODE_WIDTH : 0),
     y: Number(node.y || 0) + WORKFLOW_NODE_HEIGHT / 2,
   };
 }
@@ -2560,13 +2579,13 @@ function edgeText() {
   return "工作流边：\n" + edges.map((edge) => `${edge.from} -> ${edge.to}`).join("\n");
 }
 
-function node(item) {
+function node(item, offsetX = workflowWorldOffsetX()) {
   const selected = item.id === selectedWorkflowNodeId;
   const pendingIn = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "in";
   const pendingOut = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "out";
   const color = workflowNodeColor(item);
   return `
-    <article class="node flow-node ${selected ? "selected" : ""}" style="left:${Number(item.x || 0)}px;top:${Number(item.y || 0)}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
+    <article class="node flow-node ${selected ? "selected" : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0)}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
       <span class="node-port node-port-in ${pendingIn ? "pending" : ""}" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>
       <span class="node-port node-port-out ${pendingOut ? "pending" : ""}" data-port="out" data-node-id="${esc(item.id)}" title="输出连接点"></span>
       <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
@@ -3542,6 +3561,7 @@ function refreshWorkflowCanvasDom() {
   const svg = document.querySelector(".workflow-links");
   if (!svg) return;
   const size = workflowCanvasSize();
+  const offsetX = workflowWorldOffsetX(size);
   const space = document.querySelector(".workflow-canvas-space");
   const canvas = document.querySelector(".workflow-canvas");
   if (space) {
@@ -3553,17 +3573,31 @@ function refreshWorkflowCanvasDom() {
     canvas.style.height = `${size.height}px`;
     canvas.style.transform = workflowCanvasTransform();
     canvas.dataset.zoom = String(workflowZoom);
+    canvas.dataset.worldOffsetX = String(offsetX);
     canvas.classList.toggle("is-connecting", Boolean(workflowConnection || workflowPendingPort));
   }
   svg.setAttribute("width", String(size.width));
   svg.setAttribute("height", String(size.height));
   svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
-  svg.innerHTML = workflowLinksSvg();
+  svg.innerHTML = workflowLinksSvg(offsetX);
   const minimap = document.querySelector(".workflow-minimap");
   if (minimap && !workflowMinimapPan) minimap.outerHTML = workflowMinimap(size);
 }
 
 function workflowCanvasPoint(event) {
+  const wrap = document.querySelector(".workflow-canvas-wrap");
+  const canvas = document.querySelector(".workflow-canvas");
+  if (!wrap || !canvas) return { x: 0, y: 0 };
+  const rect = wrap.getBoundingClientRect();
+  const zoom = Number(canvas.dataset.zoom || workflowZoom || 1) || 1;
+  const offsetX = Number(canvas.dataset.worldOffsetX || workflowWorldOffsetX()) || 0;
+  return {
+    x: (event.clientX - rect.left - workflowPanX) / zoom - offsetX,
+    y: (event.clientY - rect.top - workflowPanY) / zoom,
+  };
+}
+
+function workflowCanvasRenderPoint(event) {
   const wrap = document.querySelector(".workflow-canvas-wrap");
   const canvas = document.querySelector(".workflow-canvas");
   if (!wrap || !canvas) return { x: 0, y: 0 };
@@ -3604,7 +3638,7 @@ function copyWorkflowNodeById(id) {
   const next = clone(source);
   next.id = uniqueWorkflowNodeId(`${source.id || "node"}_copy`);
   next.title = `${source.title || source.id || "节点"} 副本`;
-  next.x = clamp(Number(source.x || 0) + 80, 0, WORKFLOW_CANVAS_MAX_X);
+  next.x = clamp(Number(source.x || 0) + 80, WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X);
   next.y = clamp(Number(source.y || 0) + 80, 0, WORKFLOW_CANVAS_MAX_Y);
   currentAgent.workflow_nodes.push(next);
   selectedWorkflowNodeId = next.id;
@@ -3633,7 +3667,8 @@ function autoLayoutWorkflow() {
 function focusWorkflowStart() {
   const first = currentAgent.workflow_nodes?.find((item) => workflowStage(item) === "entry") || currentAgent.workflow_nodes?.[0];
   workflowZoom = clamp(workflowZoom || 0.85, 0.55, 1);
-  workflowPanX = first ? Math.round(120 - Number(first.x || 0) * workflowZoom) : 80;
+  const offsetX = workflowWorldOffsetX();
+  workflowPanX = first ? Math.round(120 - (Number(first.x || 0) + offsetX) * workflowZoom) : 80;
   workflowPanY = first ? Math.round(180 - Number(first.y || 0) * workflowZoom) : 120;
 }
 
@@ -3650,7 +3685,7 @@ function workflowPortInfo(portEl) {
   return {
     nodeId: item.id,
     port,
-    anchor: workflowNodeAnchor(item, port),
+    anchor: workflowNodeAnchor(item, port, workflowWorldOffsetX()),
   };
 }
 
@@ -3719,7 +3754,7 @@ document.addEventListener("pointerdown", (event) => {
       port: portInfo.port,
       pointerId: event.pointerId,
       anchor: portInfo.anchor,
-      pointer: workflowCanvasPoint(event),
+      pointer: workflowCanvasRenderPoint(event),
       startX: event.clientX,
       startY: event.clientY,
       moved: false,
@@ -3793,7 +3828,7 @@ document.addEventListener("pointermove", (event) => {
     const dx = event.clientX - workflowConnection.startX;
     const dy = event.clientY - workflowConnection.startY;
     workflowConnection.moved ||= Math.abs(dx) + Math.abs(dy) > 5;
-    workflowConnection.pointer = workflowCanvasPoint(event);
+    workflowConnection.pointer = workflowCanvasRenderPoint(event);
     refreshWorkflowCanvasDom();
     return;
   }
@@ -3812,9 +3847,10 @@ document.addEventListener("pointermove", (event) => {
   const dx = event.clientX - workflowDrag.startX;
   const dy = event.clientY - workflowDrag.startY;
   workflowDrag.moved ||= Math.abs(dx) + Math.abs(dy) > 3;
-  item.x = clamp(workflowDrag.baseX + dx / workflowZoom, 0, WORKFLOW_CANVAS_MAX_X);
+  item.x = clamp(workflowDrag.baseX + dx / workflowZoom, WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X);
   item.y = clamp(workflowDrag.baseY + dy / workflowZoom, 0, WORKFLOW_CANVAS_MAX_Y);
-  workflowDrag.element.style.left = `${item.x}px`;
+  const offsetX = Number(document.querySelector(".workflow-canvas")?.dataset.worldOffsetX || workflowWorldOffsetX()) || 0;
+  workflowDrag.element.style.left = `${item.x + offsetX}px`;
   workflowDrag.element.style.top = `${item.y}px`;
   refreshWorkflowCanvasDom();
 });
@@ -4198,7 +4234,7 @@ document.addEventListener("click", async (event) => {
       if ($("workflow-entry-confirmation-text")) currentAgent.entry_policy.confirmation_text = $("workflow-entry-confirmation-text").value.trim();
       if ($("workflow-exit-phrases")) currentAgent.entry_policy.exit_phrases = linesToList($("workflow-exit-phrases").value);
       if ($("workflow-default-completion-conditions")) currentAgent.entry_policy.default_completion_conditions = linesToList($("workflow-default-completion-conditions").value);
-      node.x = clamp(Number($("workflow-node-x")?.value || node.x || 0), 0, WORKFLOW_CANVAS_MAX_X);
+      node.x = clamp(Number($("workflow-node-x")?.value || node.x || 0), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X);
       node.y = clamp(Number($("workflow-node-y")?.value || node.y || 0), 0, WORKFLOW_CANVAS_MAX_Y);
       currentAgent.workflow_edges = currentAgent.workflow_edges.map((edge) => ({
         from: edge.from === oldId ? newId : edge.from,
@@ -4515,13 +4551,14 @@ document.addEventListener("click", async (event) => {
 document.addEventListener("change", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
-  if (target.dataset.action === "workflow-agent-select") {
+    if (target.dataset.action === "workflow-agent-select") {
     readAgentForm();
     selectedAgentId = target.value;
     currentAgent = ensureAgent(clone((state.agents || []).find((item) => item.agent_id === selectedAgentId) || currentAgent));
     selectedWorkflowNodeId = currentAgent.workflow_nodes?.[0]?.id || "";
     workflowCheckReport = null;
     workflowDryRunReport = null;
+    workflowViewportInitialized = false;
     render();
   }
   if (target.dataset.action === "set-tool-risk") {

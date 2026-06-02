@@ -619,7 +619,6 @@ button.list-row {
   bottom: 0;
   width: 560px;
   padding: 14px 16px;
-  border-right: 1px solid rgba(170, 185, 180, 0.45);
   color: var(--muted);
 }
 
@@ -629,12 +628,22 @@ button.list-row {
 }
 
 .workflow-lane strong {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid rgba(170, 185, 180, 0.38);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.62);
   color: var(--ink);
   font-size: 13px;
+  backdrop-filter: blur(8px);
 }
 
 .workflow-lane span {
-  margin-top: 3px;
+  margin-top: 5px;
+  padding-left: 9px;
+  opacity: 0.72;
   font-size: 12px;
 }
 
