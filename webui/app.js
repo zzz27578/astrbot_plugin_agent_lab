@@ -475,7 +475,8 @@ let workflowPan = null;
 let workflowConnection = null;
 let workflowPendingPort = null;
 let workflowZoom = 1;
-let workflowFocusMode = false;
+let workflowPanX = 0;
+let workflowPanY = 0;
 let workflowCheckReport = null;
 let workflowDryRunReport = null;
 let workflowToolboxOpen = true;
@@ -1493,7 +1494,6 @@ function render() {
   const viewport = route === "workflow" ? workflowViewportSnapshot() : null;
   document.body.dataset.route = route;
   document.body.classList.toggle("workflow-nav-collapsed", route === "workflow" && workflowNavCollapsed);
-  document.body.classList.toggle("workflow-focus-active", route === "workflow" && workflowFocusMode);
   renderNav();
   if (!state) return;
   syncLiveRefresh();
@@ -1784,11 +1784,9 @@ function renderCanvas() {
 }
 
 function workflowViewportSnapshot() {
-  const wrap = document.querySelector(".workflow-canvas-wrap");
-  if (!wrap) return null;
   return {
-    left: wrap.scrollLeft,
-    top: wrap.scrollTop,
+    x: workflowPanX,
+    y: workflowPanY,
     zoom: workflowZoom,
     nodeId: selectedWorkflowNodeId,
   };
@@ -1796,12 +1794,13 @@ function workflowViewportSnapshot() {
 
 function restoreWorkflowViewport(snapshot) {
   if (!snapshot || route !== "workflow") return;
-  requestAnimationFrame(() => {
-    const wrap = document.querySelector(".workflow-canvas-wrap");
-    if (!wrap) return;
-    wrap.scrollLeft = snapshot.left || 0;
-    wrap.scrollTop = snapshot.top || 0;
-  });
+  workflowPanX = Number(snapshot.x || 0);
+  workflowPanY = Number(snapshot.y || 0);
+  workflowZoom = Number(snapshot.zoom || workflowZoom || 1);
+}
+
+function workflowCanvasTransform() {
+  return `translate(${workflowPanX}px, ${workflowPanY}px) scale(${workflowZoom})`;
 }
 
 function renderWorkflowPage() {
@@ -1809,9 +1808,13 @@ function renderWorkflowPage() {
   ensureWorkflow();
   const report = workflowCheckReport || localWorkflowReport();
   $("view").innerHTML = `
-    <section class="workflow-page ${workflowToolboxOpen ? "toolbox-open" : "toolbox-closed"} ${workflowInspectorOpen ? "inspector-open" : ""} ${workflowFocusMode ? "focus" : ""}">
+    <section class="workflow-page ${workflowToolboxOpen ? "toolbox-open" : "toolbox-closed"} ${workflowInspectorOpen ? "inspector-open" : ""}">
+      <button class="workflow-nav-toggle" data-action="toggle-workflow-nav" title="${workflowNavCollapsed ? "展开导航" : "收起导航"}" type="button">${workflowNavCollapsed ? "☰" : "×"}</button>
+      <main class="workflow-main-canvas">
+        ${workflowCanvas()}
+        ${workflowContextMenuHtml()}
+      </main>
       <header class="workflow-page-top">
-        <button class="button tiny secondary" data-action="toggle-workflow-nav" type="button">${workflowNavCollapsed ? "展开导航" : "收起导航"}</button>
         <label class="workflow-agent-picker">
           <span>当前方案</span>
           <select data-action="workflow-agent-select">
@@ -1836,19 +1839,16 @@ function renderWorkflowPage() {
           <button class="button secondary" data-action="toggle-workflow-toolbox" type="button">${workflowToolboxOpen ? "收起素材" : "打开素材"}</button>
         </div>
       </header>
-      <div class="workflow-workbench">
-        <main class="workflow-main-canvas">
-          ${workflowCanvas()}
-          ${workflowContextMenuHtml()}
-        </main>
-        <aside class="workflow-tool-drawer">
-          <div class="drawer-head">
-            <div><p class="card-kicker">模块库</p><h3>拼图素材</h3></div>
-            <button class="button tiny secondary" data-action="toggle-workflow-toolbox" type="button">收起</button>
-          </div>
-          <div class="drawer-scroll">${workflowToolbox()}</div>
-        </aside>
-        <aside class="workflow-inspector-drawer">
+      <aside class="workflow-tool-drawer">
+        <div class="drawer-head">
+          <div><p class="card-kicker">模块库</p><h3>拼图素材</h3></div>
+          <button class="button tiny secondary" data-action="toggle-workflow-toolbox" type="button">收起</button>
+        </div>
+        <div class="drawer-scroll">${workflowToolbox()}</div>
+      </aside>
+      ${workflowInspectorOpen ? `
+        <div class="workflow-modal-backdrop" data-action="close-workflow-inspector"></div>
+        <section class="workflow-inspector-drawer" role="dialog" aria-modal="true">
           <div class="drawer-head">
             <div><p class="card-kicker">节点编辑</p><h3>${esc(selectedWorkflowNode()?.title || "未选择节点")}</h3></div>
             <button class="button tiny secondary" data-action="close-workflow-inspector" type="button">关闭</button>
@@ -1859,8 +1859,8 @@ function renderWorkflowPage() {
             ${workflowSummaryPanel()}
             ${workflowDryRunPanel()}
           </div>
-        </aside>
-      </div>
+        </section>
+      ` : ""}
     </section>
   `;
 }
@@ -2082,12 +2082,11 @@ function workflowCanvas() {
         <button class="button tiny secondary" data-action="workflow-fit" type="button">适配</button>
         <button class="button tiny secondary" data-action="workflow-zoom-reset" type="button">100%</button>
         <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
-        <button class="button tiny secondary" data-action="workflow-focus" type="button">${workflowFocusMode ? "退出专注" : "专注"}</button>
       </div>
     </div>
     <div class="workflow-canvas-wrap">
       <div class="workflow-canvas-space" style="width:${scaledWidth}px;height:${scaledHeight}px">
-        <div class="workflow-canvas ${hasPending ? "is-connecting" : ""}" data-zoom="${workflowZoom}" style="width:${size.width}px;height:${size.height}px;transform:scale(${workflowZoom})">
+        <div class="workflow-canvas ${hasPending ? "is-connecting" : ""}" data-zoom="${workflowZoom}" style="width:${size.width}px;height:${size.height}px;transform:${workflowCanvasTransform()}">
           <div class="workflow-lanes">
             ${WORKFLOW_STAGES.map(([stage, title, meta], index) => `
               <div class="workflow-lane" data-stage="${stage}" style="left:${index * WORKFLOW_LANE_WIDTH}px">
@@ -3420,7 +3419,7 @@ function refreshWorkflowCanvasDom() {
   if (canvas) {
     canvas.style.width = `${size.width}px`;
     canvas.style.height = `${size.height}px`;
-    canvas.style.transform = `scale(${workflowZoom})`;
+    canvas.style.transform = workflowCanvasTransform();
     canvas.dataset.zoom = String(workflowZoom);
     canvas.classList.toggle("is-connecting", Boolean(workflowConnection || workflowPendingPort));
   }
@@ -3433,13 +3432,14 @@ function refreshWorkflowCanvasDom() {
 }
 
 function workflowCanvasPoint(event) {
+  const wrap = document.querySelector(".workflow-canvas-wrap");
   const canvas = document.querySelector(".workflow-canvas");
-  if (!canvas) return { x: 0, y: 0 };
-  const rect = canvas.getBoundingClientRect();
+  if (!wrap || !canvas) return { x: 0, y: 0 };
+  const rect = wrap.getBoundingClientRect();
   const zoom = Number(canvas.dataset.zoom || workflowZoom || 1) || 1;
   return {
-    x: (event.clientX - rect.left) / zoom,
-    y: (event.clientY - rect.top) / zoom,
+    x: (event.clientX - rect.left - workflowPanX) / zoom,
+    y: (event.clientY - rect.top - workflowPanY) / zoom,
   };
 }
 
@@ -3602,8 +3602,8 @@ document.addEventListener("pointerdown", (event) => {
     pointerId: event.pointerId,
     startX: event.clientX,
     startY: event.clientY,
-    scrollLeft: wrapEl.scrollLeft,
-    scrollTop: wrapEl.scrollTop,
+    baseX: workflowPanX,
+    baseY: workflowPanY,
     moved: false,
   };
   wrapEl.classList.add("is-panning");
@@ -3623,8 +3623,9 @@ document.addEventListener("pointermove", (event) => {
     const dx = event.clientX - workflowPan.startX;
     const dy = event.clientY - workflowPan.startY;
     workflowPan.moved ||= Math.abs(dx) + Math.abs(dy) > 5;
-    workflowPan.element.scrollLeft = workflowPan.scrollLeft - dx;
-    workflowPan.element.scrollTop = workflowPan.scrollTop - dy;
+    workflowPanX = workflowPan.baseX + dx;
+    workflowPanY = workflowPan.baseY + dy;
+    refreshWorkflowCanvasDom();
     return;
   }
   if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
@@ -3687,6 +3688,25 @@ document.addEventListener("pointerup", (event) => {
   }
   workflowDrag = null;
 });
+
+document.addEventListener("wheel", (event) => {
+  const wrapEl = event.target.closest(".workflow-canvas-wrap");
+  if (!wrapEl || route !== "workflow") return;
+  event.preventDefault();
+  const oldZoom = workflowZoom;
+  const delta = event.deltaY > 0 ? -0.08 : 0.08;
+  const nextZoom = clamp(oldZoom + delta, 0.35, 1.8);
+  if (nextZoom === oldZoom) return;
+  const rect = wrapEl.getBoundingClientRect();
+  const localX = event.clientX - rect.left;
+  const localY = event.clientY - rect.top;
+  const worldX = (localX - workflowPanX) / oldZoom;
+  const worldY = (localY - workflowPanY) / oldZoom;
+  workflowZoom = nextZoom;
+  workflowPanX = localX - worldX * nextZoom;
+  workflowPanY = localY - worldY * nextZoom;
+  refreshWorkflowCanvasDom();
+}, { passive: false });
 
 document.addEventListener("contextmenu", (event) => {
   const nodeEl = event.target.closest(".flow-node");
@@ -3764,18 +3784,19 @@ document.addEventListener("click", async (event) => {
       readAgentForm();
       if (action === "workflow-zoom-in") workflowZoom = clamp(workflowZoom + 0.1, 0.35, 1.6);
       if (action === "workflow-zoom-out") workflowZoom = clamp(workflowZoom - 0.1, 0.35, 1.6);
-      if (action === "workflow-zoom-reset") workflowZoom = 1;
-      if (action === "workflow-fit") {
-        const wrap = document.querySelector(".workflow-canvas-wrap");
-        const size = workflowCanvasSize();
-        const widthFit = wrap ? (wrap.clientWidth - 32) / size.width : 0.9;
-        workflowZoom = clamp(widthFit, 0.35, 1);
+      if (action === "workflow-zoom-reset") {
+        workflowZoom = 1;
+        workflowPanX = 0;
+        workflowPanY = 0;
       }
-      render();
-    }
-    if (action === "workflow-focus") {
-      readAgentForm();
-      workflowFocusMode = !workflowFocusMode;
+      if (action === "workflow-fit") {
+        const size = workflowCanvasSize();
+        const wrap = document.querySelector(".workflow-canvas-wrap");
+        const widthFit = wrap ? (wrap.clientWidth - 160) / Math.max(size.width, 1) : 0.9;
+        workflowZoom = clamp(widthFit, 0.35, 1);
+        workflowPanX = 80;
+        workflowPanY = 90;
+      }
       render();
     }
     if (action === "toggle-workflow-nav") {

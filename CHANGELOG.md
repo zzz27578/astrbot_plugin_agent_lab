@@ -3,10 +3,11 @@
 ## v0.1.1
 
 - Split task-mode settings, workflow canvas, and task memory into separate WebUI pages so the canvas can occupy the full workspace while settings stay readable.
+- Reworked the workflow page into a full-screen background canvas with hidden normal topbar/feedback chrome, floating controls, wheel zoom, blank-canvas panning, a nav expand icon, and modal node editing.
 - Added a Dify/n8n-style workflow workbench with collapsible left nav, right module drawer, right node inspector, right-click copy/delete, colored node-matching edges, viewport preservation after drag, and workflow dry-run diagnosis.
 - Added workflow node fields for path/URL, upstream variable, output variable, and memory tags, plus fixed modules for document input, task-memory read/write, and rollback/resume entry.
 - Added a dedicated task memory page with detail, accept/reject/delete actions, continuation draft, and archived-task rollback entry.
-- Enlarged the workflow editor into a bigger canvas with focus mode, minimap, blank-canvas panning, larger node port hit targets, and drag-or-click edge creation.
+- Enlarged the workflow editor into a full-screen canvas with minimap, blank-canvas panning, wheel zoom, larger node port hit targets, and drag-or-click edge creation.
 - Expanded the workflow node library with grouped entry/isolation/memory/planning/parallel/tool/API/safety/validation/exit modules plus code-task and memory-resume templates.
 - Added executable parallel workflow branches through `agent_lab_run_parallel_workflow`, including registered API workers, restricted prompt/plugin/tool workers, `parallel_runs` state, and task-detail visibility.
 - Rebuilt the Canvas page as the primary task-mode cockpit with explicit global-vs-entry application scope and command/natural/WebUI entry channels.
