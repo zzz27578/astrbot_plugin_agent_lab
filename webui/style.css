@@ -240,6 +240,59 @@ label > textarea {
   color: var(--red);
 }
 
+.toast-stack {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 120;
+  display: grid;
+  gap: 8px;
+  width: min(360px, calc(100vw - 36px));
+  pointer-events: none;
+}
+
+.toast {
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--ink);
+  box-shadow: 0 16px 34px rgba(30, 45, 41, 0.16);
+  font-size: 13px;
+  line-height: 1.45;
+  animation: toast-in 150ms ease-out;
+}
+
+.toast.ok {
+  border-color: rgba(47, 125, 91, 0.42);
+}
+
+.toast.warn {
+  border-color: rgba(167, 111, 25, 0.5);
+}
+
+.toast.error {
+  border-color: rgba(180, 67, 58, 0.5);
+  color: var(--red);
+}
+
+.toast.leaving {
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .view {
   display: grid;
   gap: 14px;
@@ -687,20 +740,22 @@ button.list-row {
   right: 18px;
   bottom: 18px;
   z-index: 24;
-  width: 220px;
   margin: 0;
   cursor: crosshair;
   pointer-events: auto;
+  background: #fff;
+  border: 1px solid rgba(170, 185, 180, 0.8);
+  border-radius: 6px;
+  box-shadow: 0 12px 24px rgba(30, 45, 41, 0.16);
 }
 
 .workflow-minimap svg {
   display: block;
-  filter: drop-shadow(0 12px 24px rgba(30, 45, 41, 0.18));
 }
 
 .workflow-minimap-bg {
-  fill: rgba(255, 255, 255, 0.9);
-  stroke: rgba(170, 185, 180, 0.8);
+  fill: #fff;
+  stroke: transparent;
 }
 
 .workflow-minimap path {
@@ -716,15 +771,27 @@ button.list-row {
 }
 
 .workflow-minimap .workflow-minimap-viewport {
-  fill: rgba(180, 67, 58, 0.08);
-  stroke: #d72720;
-  stroke-width: 18;
+  fill: rgba(255, 255, 255, 0.56);
+  stroke: #17201d;
+  stroke-width: 14;
   vector-effect: non-scaling-stroke;
 }
 
 .workflow-minimap rect.selected {
   fill: rgba(47, 125, 91, 0.62);
   stroke: rgba(23, 32, 29, 0.92);
+}
+
+.workflow-minimap-resize {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: #fff;
+  cursor: nwse-resize;
 }
 
 .workflow-board {
@@ -824,13 +891,34 @@ button.list-row {
 
 .workflow-toolbox {
   display: grid;
-  grid-template-columns: minmax(360px, 1.4fr) repeat(3, minmax(0, 1fr));
+  grid-template-columns: 1fr;
   gap: 12px;
   margin-top: 12px;
   padding: 12px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-2);
+}
+
+.workflow-toolbox-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.62);
+}
+
+.workflow-toolbox-section > summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.workflow-toolbox-section > .toolbox-buttons,
+.workflow-toolbox-section > .toolbox-tools {
+  padding: 0 10px 10px;
 }
 
 .workflow-toolbox-wide {
@@ -848,17 +936,23 @@ button.list-row {
 
 .workflow-template-group {
   min-width: 0;
-  padding: 9px;
+  padding: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.52);
 }
 
-.workflow-template-group > span {
-  display: block;
-  margin-bottom: 7px;
+.workflow-template-group > summary {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 9px;
   color: var(--muted);
+  cursor: pointer;
   font-size: 12px;
+}
+
+.workflow-template-group > .toolbox-buttons {
+  padding: 0 9px 9px;
 }
 
 .workflow-compact-stage {
@@ -984,6 +1078,7 @@ button.list-row {
 .toolbox-chip:hover {
   border-color: var(--line-strong);
   background: #fbfcfb;
+  transform: translateY(-1px);
 }
 
 .toolbox-chip span,
@@ -1115,6 +1210,11 @@ button.list-row {
 .node.selected {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
+}
+
+.node.multi-selected {
+  outline: 2px dashed var(--blue);
+  outline-offset: 5px;
 }
 
 .node-port {
@@ -1352,14 +1452,18 @@ button.list-row {
   right: 18px;
   z-index: 31;
   min-height: 42px;
-  padding: 0 13px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.92);
   color: var(--ink);
   box-shadow: 0 14px 30px rgba(30, 45, 41, 0.14);
   cursor: pointer;
-  writing-mode: vertical-rl;
+  font-size: 20px;
 }
 
 .workflow-page.toolbox-open .workflow-toolbox-tab {
@@ -1492,8 +1596,8 @@ button.list-row {
 
 .workflow-action-notice {
   position: absolute;
-  top: 56px;
-  left: 72px;
+  right: 18px;
+  bottom: 172px;
   z-index: 24;
   max-width: min(560px, calc(100vw - 160px));
   padding: 10px 12px;
@@ -1503,6 +1607,72 @@ button.list-row {
   color: var(--muted);
   box-shadow: 0 12px 28px rgba(30, 45, 41, 0.1);
   backdrop-filter: blur(14px);
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  font-size: 16px;
+}
+
+.game-icon {
+  display: block;
+  width: 18px;
+  height: 18px;
+  object-fit: contain;
+}
+
+.icon-button .game-icon,
+.workflow-toolbox-tab .game-icon {
+  width: 21px;
+  height: 21px;
+}
+
+.workflow-material-preview {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.workflow-material-preview p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.workflow-selection-box {
+  position: fixed;
+  z-index: 80;
+  border: 1px solid var(--blue);
+  background: rgba(49, 95, 143, 0.12);
+  pointer-events: none;
+}
+
+.workflow-canvas-wrap.is-dropping::after {
+  position: absolute;
+  inset: 18px;
+  display: grid;
+  place-items: center;
+  border: 2px dashed rgba(47, 125, 91, 0.5);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.48);
+  color: var(--green);
+  font-weight: 700;
+  content: "松开鼠标，添加节点";
+  pointer-events: none;
+}
+
+.compact-note {
+  margin-top: 8px;
+  margin-bottom: 10px;
+  padding: 9px 10px;
 }
 
 .workflow-action-notice.ok,
@@ -2164,8 +2334,8 @@ pre {
   }
 
   .workflow-action-notice {
-    left: 62px;
     right: 10px;
+    bottom: 142px;
     max-width: none;
   }
 
@@ -2182,7 +2352,6 @@ pre {
   .workflow-minimap {
     right: 10px;
     bottom: 70px;
-    width: 180px;
     transform: scale(0.82);
     transform-origin: right bottom;
   }
