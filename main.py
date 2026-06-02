@@ -2027,7 +2027,7 @@ class AgentLabPlugin(Star):
         if jsonify is None:
             return
         self.context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "Agent Lab state")
-        self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST"], "Agent specs")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST", "DELETE"], "Agent specs")
         self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/check", self.api_workflow_check, ["GET", "POST"], "Check Agent workflow")
         self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/dry-run", self.api_workflow_dry_run, ["GET", "POST"], "Dry-run Agent workflow")
         self.context.register_web_api(f"/{PLUGIN_NAME}/modules", self.api_modules, ["GET", "POST"], "Agent modules")
@@ -2093,6 +2093,22 @@ class AgentLabPlugin(Star):
             if make_default:
                 self.storage.set_default_agent(spec.agent_id)
             return jsonify({"ok": True, "agent": spec.to_dict()})
+        if request.method == "DELETE":
+            payload = await request.get_json(force=True, silent=True) or {}
+            agent_id = str(payload.get("agent_id") or request.args.get("agent_id") or "").strip()
+            agents = self.storage.list_agents()
+            if len(agents) <= 1:
+                return jsonify({"ok": False, "error": "cannot delete the last agent"})
+            if not any(item.agent_id == agent_id for item in agents):
+                return jsonify({"ok": False, "error": "agent not found"})
+            ok = self.storage.delete_agent(agent_id)
+            next_default = self.storage.default_agent_id()
+            if not next_default:
+                remaining = self.storage.list_agents()
+                if remaining:
+                    self.storage.set_default_agent(remaining[0].agent_id)
+                    next_default = remaining[0].agent_id
+            return jsonify({"ok": ok, "default_agent_id": next_default})
         return jsonify(
             {
                 "default_agent_id": self.storage.default_agent_id(),

@@ -82,7 +82,7 @@ class StandaloneWebUIServer:
         async def state():
             return await self._guard(self.owner.api_state)
 
-        @app.route("/api/agents", methods=["GET", "POST"])
+        @app.route("/api/agents", methods=["GET", "POST", "DELETE"])
         async def agents():
             return await self._guard(self.owner.api_agents)
 

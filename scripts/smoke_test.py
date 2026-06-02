@@ -69,12 +69,14 @@ async def smoke_webui_server() -> None:
     modules = await client.get("/api/modules", headers={"X-Agent-Lab-Token": "secret"})
     workflow = await client.post("/api/workflow/check", headers={"X-Agent-Lab-Token": "secret"})
     dry_run = await client.post("/api/workflow/dry-run", headers={"X-Agent-Lab-Token": "secret"})
+    agents_delete = await client.delete("/api/agents", headers={"X-Agent-Lab-Token": "secret"})
     page = await client.get("/")
     assert denied.status_code == 401
     assert ok.status_code == 200
     assert modules.status_code == 200
     assert workflow.status_code == 200
     assert dry_run.status_code == 200
+    assert agents_delete.status_code == 200
     assert page.status_code == 200
 
 
@@ -145,7 +147,6 @@ def main() -> None:
         assert any(node.get("id") == "parallel_research" and node.get("prompt") for node in spec.workflow_nodes)
         assert {"from": "parallel_branch", "to": "parallel_research"} in spec.workflow_edges
         assert store.default_agent_id() == spec.agent_id
-
         credential = store.save_credential(
             {"label": "Smoke Key", "provider": "test", "value": "secret-value"}
         )
@@ -185,6 +186,8 @@ def main() -> None:
         assert store.set_default_agent(second_spec.agent_id)
         assert store.get_agent().agent_id == second_spec.agent_id
 
+    with TemporaryDirectory() as tmp:
+        store = AgentLabStorage(Path(tmp))
         task = TaskState(
             agent_id=spec.agent_id,
             agent_name=spec.name,
@@ -210,6 +213,17 @@ def main() -> None:
         archived = store.list_archives("test:private:1")
         assert len(archived) == 1
         assert archived[0].task_id == task.task_id
+
+    with TemporaryDirectory() as tmp:
+        store = AgentLabStorage(Path(tmp))
+        delete_target = AgentSpec(name="delete smoke")
+        delete_fallback = AgentSpec(name="fallback smoke")
+        store.save_agent(delete_target)
+        store.save_agent(delete_fallback)
+        store.set_default_agent(delete_target.agent_id)
+        assert store.delete_agent(delete_target.agent_id) is True
+        assert store.default_agent_id() != delete_target.agent_id
+        assert store.delete_agent("missing") is False
 
     print("Agent Lab smoke test passed.")
 

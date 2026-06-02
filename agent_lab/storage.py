@@ -82,6 +82,22 @@ class AgentLabStorage:
         if not self.default_agent_id():
             self.set_default_agent(spec.agent_id)
 
+    def delete_agent(self, agent_id: str) -> bool:
+        agent_id = str(agent_id or "").strip()
+        if not agent_id:
+            return False
+        path = self.agents_dir / f"{agent_id}.json"
+        if not path.exists():
+            return False
+        path.unlink()
+        remaining = self.list_agents()
+        if self.default_agent_id() == agent_id:
+            if remaining:
+                self.set_default_agent(remaining[0].agent_id)
+            elif self.default_agent_path.exists():
+                self.default_agent_path.unlink()
+        return True
+
     def default_agent_id(self) -> str:
         if not self.default_agent_path.exists():
             return ""
