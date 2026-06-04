@@ -82,6 +82,104 @@ const WORKFLOW_ACTIONS = [
   "manual",
 ];
 
+const WORKFLOW_ACTION_RUNTIME_TYPES = {
+  summarize_entry: "entry",
+  confirm_entry: "entry",
+  restore_isolation: "entry",
+  retrieve_memory: "memory",
+  save_memory: "memory",
+  save_state: "state",
+  heartbeat: "state",
+  transform_context: "state",
+  route_condition: "decision",
+  parallel_branch: "parallel",
+  run_tools: "tool",
+  call_api: "api",
+  request_approval: "guard",
+  wait_user: "guard",
+  handoff: "guard",
+  validate_output: "validation",
+  retry: "decision",
+  notify: "notification",
+  archive: "terminal",
+  exit_summary: "terminal",
+  manual: "react",
+};
+const WORKFLOW_KIND_RUNTIME_TYPES = {
+  state: "state",
+  tool: "tool",
+  guard: "guard",
+  human: "guard",
+  api: "api",
+  memory: "memory",
+  branch: "decision",
+  loop: "decision",
+  transform: "state",
+  retrieval: "memory",
+  subflow: "react",
+  notification: "notification",
+  validation: "validation",
+};
+const WORKFLOW_EXECUTABLE_ACTIONS = new Set([
+  "summarize_entry",
+  "confirm_entry",
+  "restore_isolation",
+  "save_state",
+  "heartbeat",
+  "transform_context",
+  "retrieve_memory",
+  "save_memory",
+  "parallel_branch",
+  "call_api",
+  "run_tools",
+  "route_condition",
+  "retry",
+  "validate_output",
+  "request_approval",
+  "wait_user",
+  "handoff",
+  "notify",
+  "archive",
+  "exit_summary",
+]);
+const WORKFLOW_RUNTIME_LABELS = {
+  entry: "入口",
+  state: "状态",
+  decision: "分支",
+  parallel: "并行",
+  tool: "工具",
+  api: "API",
+  memory: "记忆",
+  guard: "安全",
+  validation: "校验",
+  notification: "通知",
+  terminal: "出口",
+  react: "ReAct",
+};
+const WORKFLOW_NODE_GROUPS = [
+  { id: "entry_context", title: "开始与上下文", hint: "入口命令、确认、摘要和任务隔离。", icon: "book", open: true },
+  { id: "plan_route", title: "计划与分支", hint: "拆解任务、选择路线、控制重试。", icon: "gridAdd", open: true },
+  { id: "tool_exec", title: "执行工具", hint: "绑定 AstrBot 工具并把结果写入状态。", icon: "tool", open: true },
+  { id: "api_external", title: "API 与外部系统", hint: "调用已注册 API，凭证由后端注入。", icon: "gridAdd", open: false },
+  { id: "memory_state", title: "记忆与回写", hint: "读取任务记忆，保存进度和完成记录。", icon: "memory", open: true },
+  { id: "safety_human", title: "审批与安全", hint: "高风险动作、人工接管、范围锁定。", icon: "select", open: false },
+  { id: "validate_exit", title: "校验与出口", hint: "验收、通知、归档和退出回流。", icon: "copy", open: false },
+  { id: "parallel_pack", title: "并行工作包", hint: "可拆给并行 Agent 的只读/复核/汇总单元。", icon: "gridAdd", open: false },
+];
+const WORKFLOW_LIBRARY_GROUP_ALIASES = {
+  "入口": "entry_context",
+  "输入": "entry_context",
+  "隔离": "entry_context",
+  "计划": "plan_route",
+  "工具": "tool_exec",
+  "API": "api_external",
+  "记忆": "memory_state",
+  "安全": "safety_human",
+  "验证": "validate_exit",
+  "出口": "validate_exit",
+  "并行": "parallel_pack",
+};
+
 const WORKFLOW_NODE_TEMPLATES = [
   {
     id: "entry",
@@ -500,7 +598,6 @@ let workflowContextMenu = null;
 let workflowSuppressClick = false;
 let workflowReportOpen = false;
 let workflowReportMode = "check";
-let workflowActionNotice = null;
 let workflowDraggedMaterial = null;
 let workflowMinimapPan = null;
 let workflowRibbonOpen = false;
@@ -510,7 +607,8 @@ let workflowToolboxScrollTop = 0;
 let workflowInspectorFocusScrollTop = 0;
 let workflowToastTimer = null;
 let workflowMaterialDraft = null;
-let workflowToolboxOpenGroups = new Set(["节点素材"]);
+let workflowMaterialFilter = "";
+let workflowToolboxOpenGroups = new Set(["entry_context"]);
 let workflowMinimapWidth = 160;
 let workflowMinimapHeight = 112;
 let workflowMinimapResize = null;
@@ -543,6 +641,98 @@ function workflowMaterialIcon(kind, refType = "") {
   if (refType === "tool" || kind === "tool") return "tool";
   if (kind === "memory" || kind === "retrieval") return "memory";
   return "book";
+}
+
+function workflowRuntimeType(item = {}) {
+  const explicit = String(item.runtime_type || "").trim();
+  if (explicit && WORKFLOW_RUNTIME_LABELS[explicit]) return explicit;
+  const action = String(item.action || "").trim();
+  if (WORKFLOW_ACTION_RUNTIME_TYPES[action]) return WORKFLOW_ACTION_RUNTIME_TYPES[action];
+  const kind = String(item.kind || "").trim();
+  if (WORKFLOW_KIND_RUNTIME_TYPES[kind]) return WORKFLOW_KIND_RUNTIME_TYPES[kind];
+  return "react";
+}
+
+function workflowRuntimeLabel(item = {}) {
+  return WORKFLOW_RUNTIME_LABELS[workflowRuntimeType(item)] || "ReAct";
+}
+
+function workflowNodeRuntimeInfo(item = {}) {
+  const report = workflowCheckReport?.node_runtime?.[item.id] || null;
+  if (report) return report;
+  const action = String(item.action || "").trim();
+  const runtimeType = workflowRuntimeType(item);
+  const hasExecutor = WORKFLOW_EXECUTABLE_ACTIONS.has(action);
+  return {
+    runtime_type: runtimeType,
+    action,
+    has_executor: hasExecutor,
+    react_handoff: !hasExecutor || action === "manual" || action === "plan" || ["react", "terminal"].includes(runtimeType),
+  };
+}
+
+function workflowNodeBindingHint(item = {}) {
+  const action = String(item.action || "").trim();
+  const kind = String(item.kind || "").trim();
+  if ((action === "call_api" || kind === "api") && !String(item.api_id || item.ref_id || "").trim()) return "需要先绑定已注册 API";
+  if ((action === "run_tools" || kind === "tool") && !String(item.tool_name || item.ref_id || "").trim()) return "需要先绑定 AstrBot 工具";
+  if ((action === "run_tools" || kind === "tool") && !String(item.tool_args || item.arguments || item.params || item.input_variable || "").trim()) return "未填参数时会交给 ReAct 调用";
+  if (kind === "subflow" || action === "manual") return "由 ReAct 判断和执行";
+  return "";
+}
+
+function workflowNodeExecutorState(item = {}) {
+  const info = workflowNodeRuntimeInfo(item);
+  const binding = workflowNodeBindingHint(item);
+  if (binding && binding.startsWith("需要")) return { label: "需配置", tone: "warn", hint: binding };
+  if (binding) return { label: "半自动", tone: "warn", hint: binding };
+  if (info.has_executor && !info.react_handoff) return { label: "可执行", tone: "ok", hint: "后端 executor 可直接推进这个节点" };
+  if (info.has_executor && info.react_handoff) return { label: "半自动", tone: "warn", hint: "有 executor，但这里仍可能需要 ReAct 收束" };
+  return { label: "ReAct", tone: "react", hint: "需要模型按节点说明判断下一步" };
+}
+
+function workflowNodeGroupKey(item = {}) {
+  const group = String(item.library_group || "").trim();
+  if (WORKFLOW_LIBRARY_GROUP_ALIASES[group]) return WORKFLOW_LIBRARY_GROUP_ALIASES[group];
+  const action = String(item.action || "").trim();
+  const kind = String(item.kind || "").trim();
+  const runtimeType = workflowRuntimeType(item);
+  const stage = String(item.stage || "").trim();
+  if (["entry"].includes(runtimeType) || stage === "entry") return "entry_context";
+  if (["parallel"].includes(runtimeType) || action === "parallel_branch") return "parallel_pack";
+  if (["tool"].includes(runtimeType) || kind === "tool") return "tool_exec";
+  if (["api"].includes(runtimeType) || kind === "api") return "api_external";
+  if (["memory"].includes(runtimeType) || ["memory", "retrieval"].includes(kind)) return "memory_state";
+  if (["guard"].includes(runtimeType) || ["guard", "human"].includes(kind)) return "safety_human";
+  if (["validation", "notification", "terminal"].includes(runtimeType) || stage === "archive") return "validate_exit";
+  if (["decision"].includes(runtimeType) || ["branch", "loop"].includes(kind) || stage === "plan") return "plan_route";
+  return "plan_route";
+}
+
+function workflowNodeGroupConfig(key) {
+  return WORKFLOW_NODE_GROUPS.find((item) => item.id === key) || WORKFLOW_NODE_GROUPS[1];
+}
+
+function workflowMaterialHint(item = {}) {
+  const binding = workflowNodeBindingHint(item);
+  if (binding) return binding;
+  return item.config_hint || item.instruction || item.description || "拖到画布，或点“应用节点”添加。";
+}
+
+function workflowMaterialMeta(item = {}) {
+  const stateInfo = workflowNodeExecutorState(item);
+  return [
+    `${stateInfo.label}`,
+    `${workflowRuntimeLabel(item)}节点`,
+    item.output_variable ? `输出 ${item.output_variable}` : "",
+    item.input_variable ? `输入 ${item.input_variable}` : "",
+  ].filter(Boolean);
+}
+
+function workflowNodeParamsJson(item = {}) {
+  const raw = item.params ?? item.tool_args ?? item.arguments ?? item.api_payload ?? item.payload ?? "";
+  if (raw && typeof raw === "object") return JSON.stringify(raw, null, 2);
+  return String(raw || "");
 }
 
 function token() {
@@ -989,6 +1179,19 @@ function renderAndRestoreInput(action, value) {
   if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
 }
 
+function renderWorkflowFilterInput(action, value) {
+  rememberWorkflowPanelScroll();
+  render();
+  restoreWorkflowPanelScroll();
+  requestAnimationFrame(() => {
+    const input = document.querySelector(`[data-action="${action}"]`);
+    if (!input) return;
+    input.focus();
+    const end = String(value || "").length;
+    if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
+  });
+}
+
 function defaultWorkflowNodes() {
   return [
     {
@@ -1433,7 +1636,6 @@ function addWorkflowTemplateNode(templateId, point = null) {
   workflowDryRunReport = null;
   workflowCheckReport = null;
   setFeedback(`已添加节点：${template.title}。拖动画布上的节点即可调整位置。`);
-  workflowActionNotice = { message: `已添加节点：${template.title}`, tone: "ok" };
 }
 
 function addRuntimeWorkflowNode(refType, refId, point = null) {
@@ -1456,6 +1658,7 @@ function addRuntimeWorkflowNode(refType, refId, point = null) {
       ref_type: "plugin",
       ref_id: idValue,
       plugin_name: idValue,
+      output_variable: `plugin.${normalizeWorkflowId(idValue || "module")}.result`,
     };
   }
   if (ref === "api") {
@@ -1472,6 +1675,7 @@ function addRuntimeWorkflowNode(refType, refId, point = null) {
       ref_type: "api",
       ref_id: idValue,
       api_id: idValue,
+      output_variable: `api.${normalizeWorkflowId(idValue || "call")}.result`,
     };
   }
   if (ref === "tool") {
@@ -1488,6 +1692,7 @@ function addRuntimeWorkflowNode(refType, refId, point = null) {
       ref_type: "tool",
       ref_id: idValue,
       tool_name: idValue,
+      output_variable: `tool.${normalizeWorkflowId(idValue || "step")}.result`,
     };
   }
   if (!node) return;
@@ -1501,7 +1706,6 @@ function addRuntimeWorkflowNode(refType, refId, point = null) {
   workflowCheckReport = null;
   workflowDryRunReport = null;
   setFeedback(`已添加模块节点：${node.title}。`);
-  workflowActionNotice = { message: `已添加模块节点：${node.title}`, tone: "ok" };
 }
 
 function clamp(value, min, max) {
@@ -2173,7 +2377,6 @@ function workflowReportPanel() {
         <button class="button tiny secondary" data-action="close-workflow-report" type="button">关闭</button>
       </div>
       <div class="drawer-scroll">
-        ${workflowActionNotice ? `<div class="section-note ${esc(workflowActionNotice.tone || "")}">${esc(workflowActionNotice.message || "")}</div>` : ""}
         <div class="mini-stats workflow-report-stats">
           <span>${currentAgent.workflow_nodes.length} 节点</span>
           <span>${currentAgent.workflow_edges.length} 连线</span>
@@ -2303,7 +2506,6 @@ function workflowCanvas() {
         <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
       </div>
     </div>
-    ${workflowActionNotice ? `<div class="workflow-action-notice ${esc(workflowActionNotice.tone || "")}">${esc(workflowActionNotice.message || "")}</div>` : ""}
     <div class="workflow-canvas-wrap">
       <div class="workflow-canvas-space" style="width:${scaledWidth}px;height:${scaledHeight}px">
         <div class="workflow-canvas ${hasPending ? "is-connecting" : ""}" data-zoom="${workflowZoom}" data-world-offset-x="${worldOffsetX}" style="width:${size.width}px;height:${size.height}px;transform:${workflowCanvasTransform()}">
@@ -2331,68 +2533,189 @@ function workflowTemplateGroupLabel(item) {
   return item.library_group || workflowStageLabel(item.stage || "plan");
 }
 
+function workflowMaterialChip(item, options = {}) {
+  const stateInfo = workflowNodeExecutorState(item);
+  const meta = workflowMaterialMeta(item);
+  const hint = workflowMaterialHint(item);
+  const action = options.action || "preview-template-node";
+  const icon = options.icon || workflowMaterialIcon(item.kind, item.ref_type);
+  const dragKind = options.dragKind || "template";
+  const idAttrs = dragKind === "template"
+    ? `data-id="${esc(item.id)}" data-drag-id="${esc(item.id)}"`
+    : `data-ref-type="${esc(item.ref_type || options.refType || "")}" data-ref-id="${esc(item.ref_id || options.refId || "")}"`;
+  return `
+    <button class="toolbox-chip workflow-material-chip"
+      data-action="${esc(action)}"
+      ${idAttrs}
+      data-title="${esc(item.title || item.id || "")}"
+      data-instruction="${esc(hint)}"
+      data-runtime-type="${esc(workflowRuntimeType(item))}"
+      draggable="true"
+      data-drag-kind="${esc(dragKind)}"
+      title="拖到画布添加：${esc(hint)}"
+      type="button">
+      ${iconImg(icon, item.title || item.id || "节点")}
+      <span class="toolbox-chip-main">
+        <strong>${esc(item.title || item.id || "节点")}</strong>
+        <small>${esc(hint)}</small>
+      </span>
+      <span class="toolbox-chip-badges">
+        <b class="runtime-badge ${esc(stateInfo.tone)}">${esc(stateInfo.label)}</b>
+        <em>${esc(meta[1] || workflowRuntimeLabel(item))}</em>
+      </span>
+    </button>
+  `;
+}
+
+function workflowRuntimeModuleNode(refType, refId) {
+  const ref = String(refType || "").trim();
+  const idValue = String(refId || "").trim();
+  if (ref === "plugin") {
+    const plugin = (state.plugins || []).find((item) => item.name === idValue);
+    return {
+      id: `plugin_${idValue || "module"}`,
+      title: plugin?.display_name || plugin?.name || idValue || "插件模块",
+      kind: "subflow",
+      stage: "execute",
+      action: "manual",
+      instruction: "插件作为能力模块接入；需要在节点说明里写清什么时候调用、返回什么、如何写回任务状态。",
+      ref_type: "plugin",
+      ref_id: idValue,
+      output_variable: `plugin.${normalizeWorkflowId(idValue || "module")}.result`,
+    };
+  }
+  if (ref === "api") {
+    const item = (state.custom_apis || []).find((api) => api.api_id === idValue);
+    return {
+      id: `api_${idValue || "call"}`,
+      title: item?.name || idValue || "API 模块",
+      kind: "api",
+      stage: "execute",
+      action: "call_api",
+      instruction: item?.description || "调用已登记 API；凭证由后端注入，参数和输出字段需要在节点里写清。",
+      ref_type: "api",
+      ref_id: idValue,
+      api_id: idValue,
+      output_variable: `api.${normalizeWorkflowId(idValue || "call")}.result`,
+    };
+  }
+  if (ref === "tool") {
+    const item = (state.tools || []).find((tool) => tool.name === idValue);
+    return {
+      id: `tool_${idValue || "step"}`,
+      title: idValue || "工具模块",
+      kind: "tool",
+      stage: "execute",
+      action: "run_tools",
+      instruction: item?.description || "调用 AstrBot 工具；若未填写工具参数或输入变量，会交给 ReAct 判断调用。",
+      ref_type: "tool",
+      ref_id: idValue,
+      tool_name: idValue,
+      output_variable: `tool.${normalizeWorkflowId(idValue || "step")}.result`,
+    };
+  }
+  return null;
+}
+
 function workflowToolbox() {
   const selectedTools = materializedToolSelection();
   const activePlugins = (state.plugins || []).filter((item) => item.activated !== false);
   const apis = state.custom_apis || [];
-  const templateGroups = WORKFLOW_NODE_TEMPLATES.reduce((groups, item) => {
-    const group = workflowTemplateGroupLabel(item);
-    groups[group] ||= [];
-    groups[group].push(item);
-    return groups;
-  }, {});
-  const sections = [
-    ["节点素材", Object.entries(templateGroups).map(([group, items]) => `
-      <details class="workflow-template-group" open>
-        <summary>${esc(group)} <span>${items.length}</span></summary>
-        <div class="toolbox-buttons">
-          ${items.map((item) => `
-            <button class="toolbox-chip" data-action="preview-template-node" data-id="${esc(item.id)}" draggable="true" data-drag-kind="template" data-drag-id="${esc(item.id)}" title="拖到画布添加：${esc(item.instruction || item.description || item.title)}" type="button">
-              ${iconImg(workflowMaterialIcon(item.kind), item.title)}
-              <span>${esc(workflowKindLabel(item.kind))}</span>
-              ${esc(item.title)}
-            </button>
-          `).join("")}
-        </div>
-      </details>
-    `).join("")],
-    ["插件模块", activePlugins.map((plugin) => `
-      <button class="toolbox-chip" data-action="preview-runtime-node" data-ref-type="plugin" data-ref-id="${esc(plugin.name)}" draggable="true" data-drag-kind="runtime" data-ref-type="plugin" data-ref-id="${esc(plugin.name)}" type="button">
-        ${iconImg(workflowMaterialIcon("subflow", "plugin"), plugin.display_name || plugin.name)}
-        <span>插件</span>
-        ${esc(plugin.display_name || plugin.name)}
-      </button>
-    `).join("") || "<em>暂无可用插件</em>"],
-    ["API 模块", apis.map((item) => `
-      <button class="toolbox-chip" data-action="preview-runtime-node" data-ref-type="api" data-ref-id="${esc(item.api_id)}" draggable="true" data-drag-kind="runtime" data-ref-type="api" data-ref-id="${esc(item.api_id)}" type="button">
-        ${iconImg("gridAdd", item.name || item.api_id)}
-        <span>${esc(item.method || "API")}</span>
-        ${esc(item.name || item.api_id)}
-      </button>
-    `).join("") || "<em>先在“插件与集成”里注册 API</em>"],
-    ["工具模块", selectedTools.map((name) => `
-      <button class="toolbox-chip" data-action="preview-runtime-node" data-ref-type="tool" data-ref-id="${esc(name)}" draggable="true" data-drag-kind="runtime" data-ref-type="tool" data-ref-id="${esc(name)}" type="button">
-        ${iconImg("tool", name)}
-        <span>工具</span>
-        ${esc(name)}
-      </button>
-    `).join("") || "<em>仅任务内置工具</em>"],
+  const filter = workflowMaterialFilter.trim();
+  const templates = WORKFLOW_NODE_TEMPLATES.filter((item) =>
+    includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
+  );
+  const groupedTemplates = WORKFLOW_NODE_GROUPS
+    .map((group) => ({ group, items: templates.filter((item) => workflowNodeGroupKey(item) === group.id) }))
+    .filter(({ items }) => items.length || !filter);
+  const runtimeSections = [
+    {
+      id: "runtime_plugins",
+      title: "插件模块",
+      hint: "把已启用 AstrBot 插件作为能力来源。",
+      items: activePlugins
+        .map((plugin) => workflowRuntimeModuleNode("plugin", plugin.name))
+        .filter(Boolean)
+        .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
+      empty: "暂无可用插件",
+    },
+    {
+      id: "runtime_apis",
+      title: "API 模块",
+      hint: "调用 Agent Lab 注册 API，不在节点里暴露密钥。",
+      items: apis
+        .map((item) => workflowRuntimeModuleNode("api", item.api_id))
+        .filter(Boolean)
+        .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
+      empty: "先在“插件与集成”里注册 API",
+    },
+    {
+      id: "runtime_tools",
+      title: "工具模块",
+      hint: "从当前任务工具白名单里生成可执行工具节点。",
+      items: selectedTools
+        .map((name) => workflowRuntimeModuleNode("tool", name))
+        .filter(Boolean)
+        .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
+      empty: "仅任务内置工具",
+    },
   ];
   return `
     <div class="workflow-toolbox">
-      ${sections.map(([title, body]) => {
-        const open = workflowToolboxOpenGroups.has(title);
+      <div class="workflow-toolbox-intro">
+        <strong>节点素材</strong>
+        <span>按任务流分类；点击看配置，拖拽或点应用节点才会加入画布。</span>
+      </div>
+      <input class="filter-input workflow-material-filter" data-action="filter-workflow-materials" value="${esc(workflowMaterialFilter)}" placeholder="搜索节点、工具、API 或插件" />
+      <div class="workflow-template-groups">
+        ${groupedTemplates.map(({ group, items }) => {
+          const open = workflowToolboxOpenGroups.has(group.id) || Boolean(filter && items.length);
+          return `
+            <details class="workflow-template-group" data-group="${esc(group.id)}" ${open ? "open" : ""}>
+              <summary data-action="toggle-toolbox-group" data-id="${esc(group.id)}">
+                <span class="workflow-template-title">${iconImg(group.icon, group.title)}<b>${esc(group.title)}</b></span>
+                <span>${items.length}</span>
+              </summary>
+              <p>${esc(group.hint)}</p>
+              <div class="toolbox-buttons">
+                ${items.map((item) => workflowMaterialChip(item)).join("") || `<em>暂无匹配节点</em>`}
+              </div>
+            </details>
+          `;
+        }).join("")}
+      </div>
+      ${runtimeSections.map((section) => {
+        const open = workflowToolboxOpenGroups.has(section.id) || Boolean(filter && section.items.length);
         return `
-          <details class="workflow-toolbox-section" data-group="${esc(title)}" ${open ? "open" : ""}>
-            <summary data-action="toggle-toolbox-group" data-id="${esc(title)}">${esc(title)}</summary>
-            <div class="${title === "工具模块" ? "toolbox-tools" : "toolbox-buttons"}">${body}</div>
+          <details class="workflow-toolbox-section" data-group="${esc(section.id)}" ${open ? "open" : ""}>
+            <summary data-action="toggle-toolbox-group" data-id="${esc(section.id)}">
+              <span>${esc(section.title)}</span>
+              <small>${section.items.length}</small>
+            </summary>
+            <p>${esc(section.hint)}</p>
+            <div class="toolbox-buttons">
+              ${section.items.map((item) => workflowMaterialChip(item, {
+                action: "preview-runtime-node",
+                dragKind: "runtime",
+                refType: item.ref_type,
+                refId: item.ref_id,
+                icon: workflowMaterialIcon(item.kind, item.ref_type),
+              })).join("") || `<em>${esc(section.empty)}</em>`}
+            </div>
           </details>
         `;
       }).join("")}
       ${workflowMaterialDraft ? `
         <div class="workflow-material-preview">
-          <strong>${esc(workflowMaterialDraft.title || "素材预览")}</strong>
-          <p>${esc(workflowMaterialDraft.instruction || workflowMaterialDraft.description || "拖到画布，或在节点编辑中点“应用节点”。")}</p>
+          <div class="workflow-material-preview-head">
+            ${iconImg(workflowMaterialIcon(workflowMaterialDraft.kind, workflowMaterialDraft.ref_type || workflowMaterialDraft.refType), workflowMaterialDraft.title || "素材预览")}
+            <strong>${esc(workflowMaterialDraft.title || "素材预览")}</strong>
+          </div>
+          <div class="workflow-material-preview-meta">
+            ${workflowMaterialMeta(workflowMaterialDraft).map((item) => `<span>${esc(item)}</span>`).join("")}
+          </div>
+          <p>${esc(workflowMaterialHint(workflowMaterialDraft))}</p>
+          ${workflowMaterialDraft.refType || workflowMaterialDraft.ref_type ? `<small>来源：${esc(workflowMaterialDraft.refType || workflowMaterialDraft.ref_type)} / ${esc(workflowMaterialDraft.refId || workflowMaterialDraft.ref_id || "")}</small>` : ""}
           <button class="button secondary" data-action="apply-material-node" type="button">应用节点</button>
         </div>
       ` : ""}
@@ -2715,14 +3038,20 @@ function node(item, offsetX = workflowWorldOffsetX()) {
   const pendingIn = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "in";
   const pendingOut = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "out";
   const color = workflowNodeColor(item);
+  const runtime = workflowNodeRuntimeInfo(item);
+  const executorState = workflowNodeExecutorState(item);
   return `
     <article class="node flow-node ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0)}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
       <span class="node-port node-port-in ${pendingIn ? "pending" : ""}" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>
       <span class="node-port node-port-out ${pendingOut ? "pending" : ""}" data-port="out" data-node-id="${esc(item.id)}" title="输出连接点"></span>
       <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
+      <span class="node-runtime">
+        <b class="runtime-badge ${esc(executorState.tone)}">${esc(executorState.label)}</b>
+        <em>${esc(WORKFLOW_RUNTIME_LABELS[runtime.runtime_type] || runtime.runtime_type || "ReAct")}</em>
+      </span>
       <strong>${esc(item.title || item.id)}</strong>
       <p>${esc(item.instruction || item.description || item.id)}</p>
-      <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}${item.prompt ? " · 有提示词" : ""}</span>
+      <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}${item.output_variable ? ` · 输出 ${esc(item.output_variable)}` : ""}${item.prompt ? " · 有提示词" : ""}</span>
     </article>
   `;
 }
@@ -2738,33 +3067,45 @@ function workflowInspector() {
   const stage = workflowStage(item);
   const isEntryNode = stage === "entry" || ["summarize_entry", "confirm_entry"].includes(item.action);
   const isExitNode = stage === "archive" || ["archive", "exit_summary"].includes(item.action);
+  const runtime = workflowNodeRuntimeInfo(item);
+  const executorState = workflowNodeExecutorState(item);
+  const bindingHint = workflowNodeBindingHint(item);
   return `
     <div class="detail-box workflow-editor">
       <div class="panel-head"><div><p class="card-kicker">节点</p><h3>编辑节点</h3></div></div>
-      <label>节点 ID<input id="workflow-node-id" value="${esc(item.id)}" /></label>
-      <label>标题<input id="workflow-node-title" value="${esc(item.title)}" /></label>
-      <div class="form-grid compact">
-        <label>阶段<select id="workflow-node-stage">${labeledOptions(WORKFLOW_STAGES.map(([id]) => id), item.stage || "plan", workflowStageLabel)}</select></label>
-        <label>类型<select id="workflow-node-kind">${labeledOptions(WORKFLOW_KINDS, item.kind || "state", workflowKindLabel)}</select></label>
-        <label>节点要做什么<select id="workflow-node-action">${labeledOptions(WORKFLOW_ACTIONS, item.action || "manual", workflowActionLabel)}</select></label>
+      <div class="workflow-editor-runtime">
+        <span class="runtime-badge ${esc(executorState.tone)}">${esc(executorState.label)}</span>
+        <span>${esc(WORKFLOW_RUNTIME_LABELS[runtime.runtime_type] || runtime.runtime_type || "ReAct")}节点</span>
+        <small>${esc(executorState.hint || bindingHint || "保存方案后由任务运行时读取。")}</small>
       </div>
-      <div class="section-note compact-note">插件节点通常选“工具执行”或“保存任务记录”。要让日记本插件先查相似内容，可以把“节点要做什么”设为“工具执行”，在“执行指令”里写：先用日记本插件查找相似记录，再把相关内容交给下一步。</div>
+      <label>节点标识<input id="workflow-node-id" value="${esc(item.id)}" /></label>
+      <div class="field-hint">用于连线和运行记录，建议用英文或拼音，保存后会同步更新连线。</div>
+      <label>节点名称<input id="workflow-node-title" value="${esc(item.title)}" /></label>
+      <div class="form-grid compact">
+        <label>放在哪一步<select id="workflow-node-stage">${labeledOptions(WORKFLOW_STAGES.map(([id]) => id), item.stage || "plan", workflowStageLabel)}</select></label>
+        <label>节点用途<select id="workflow-node-kind">${labeledOptions(WORKFLOW_KINDS, item.kind || "state", workflowKindLabel)}</select></label>
+        <label>运行方式<select id="workflow-node-action">${labeledOptions(WORKFLOW_ACTIONS, item.action || "manual", workflowActionLabel)}</select></label>
+      </div>
+      <div class="section-note compact-note">工具/API 节点要想直接执行，需要绑定工具名或 API，并提供输入变量或 JSON 参数；没有明确参数时会转给 ReAct 判断。</div>
       ${(item.ref_type || item.ref_id || item.plugin_name || item.api_id || item.tool_name || item.skill_name) ? `
         <div class="workflow-ref-line">
-          <span>${esc(item.ref_type || "module")}</span>
+          <span>绑定能力：${esc(item.ref_type || "module")}</span>
           <b>${esc(item.ref_id || item.plugin_name || item.api_id || item.tool_name || item.skill_name || "")}</b>
         </div>
       ` : ""}
       <div class="form-grid compact">
-        <label>路径/URL<input id="workflow-node-path" value="${esc(item.path || item.url || "")}" placeholder="文件路径、文档地址或 API 目标 URL" /></label>
-        <label>上游变量<input id="workflow-node-input-variable" value="${esc(item.input_variable || "")}" placeholder="例如 task_state.result 或 branch.output" /></label>
-        <label>记忆标签<input id="workflow-node-tags" value="${esc(Array.isArray(item.tags) ? item.tags.join(", ") : item.tags || item.memory_tags || "")}" placeholder="任务, 续写, 代码改动" /></label>
-        <label>输出变量<input id="workflow-node-output-variable" value="${esc(item.output_variable || "")}" placeholder="例如 node.summary" /></label>
+        <label>文件或接口地址<input id="workflow-node-path" value="${esc(item.path || item.url || "")}" placeholder="文件路径、文档地址或 API 目标 URL" /></label>
+        <label>输入来源<input id="workflow-node-input-variable" value="${esc(item.input_variable || "")}" placeholder="例如 memory.context 或 tool.result" /></label>
+        <label>任务记忆标签<input id="workflow-node-tags" value="${esc(Array.isArray(item.tags) ? item.tags.join(", ") : item.tags || item.memory_tags || "")}" placeholder="任务, 续写, 代码改动" /></label>
+        <label>结果保存名<input id="workflow-node-output-variable" value="${esc(item.output_variable || "")}" placeholder="例如 search.result 或 node.summary" /></label>
       </div>
-      <label>条件/分支说明<input id="workflow-node-condition" value="${esc(item.condition || "")}" placeholder="例如：高风险、只读排查、API 写入前审批" /></label>
-      <label>说明<input id="workflow-node-description" value="${esc(item.description || "")}" /></label>
-      <label>执行指令<textarea id="workflow-node-instruction" rows="5">${esc(item.instruction || "")}</textarea></label>
-      <label>节点提示词<textarea id="workflow-node-prompt" rows="5" placeholder="并行 Agent、插件/API/工具模块可在这里写专用提示词。">${esc(item.prompt || "")}</textarea></label>
+      <div class="field-hint">输入来源读取上游节点保存的变量；结果保存名会写入 task_state.workflow_data.variables，后续节点可继续读取。</div>
+      <label>分支条件<input id="workflow-node-condition" value="${esc(item.condition || "")}" placeholder="例如：高风险、只读排查、API 写入前审批" /></label>
+      <label>一句话说明<input id="workflow-node-description" value="${esc(item.description || "")}" /></label>
+      <label>参数 JSON<textarea id="workflow-node-params" rows="4" placeholder='工具参数或 API 参数，例如 {"query":{"q":"关键词"}}'>${esc(workflowNodeParamsJson(item))}</textarea></label>
+      <div class="field-hint">工具节点会保存为 tool_args，API 节点会保存为 api_payload；留空时可改用输入来源或交给 ReAct 判断。</div>
+      <label>执行说明<textarea id="workflow-node-instruction" rows="5" placeholder="写清这个节点要做什么、成功标准、失败时交给哪个节点。">${esc(item.instruction || "")}</textarea></label>
+      <label>需要模型判断时的提示<textarea id="workflow-node-prompt" rows="5" placeholder="并行 Agent、插件/API/工具模块可在这里写专用提示。">${esc(item.prompt || "")}</textarea></label>
       ${isEntryNode ? `
         <div class="workflow-node-rule-box">
           <div class="panel-head"><div><p class="card-kicker">入口规则</p><h3>进入任务模式</h3></div></div>
@@ -2777,7 +3118,7 @@ function workflowInspector() {
         <div class="workflow-node-rule-box">
           <div class="panel-head"><div><p class="card-kicker">出口规则</p><h3>结束回流</h3></div></div>
           <label>结束暗号/命令<textarea id="workflow-exit-phrases" rows="3" placeholder="每行一个，例如：完成任务">${esc(listToLines(currentAgent.entry_policy.exit_phrases))}</textarea></label>
-          <label>默认完成条件<textarea id="workflow-default-completion-conditions" rows="3">${esc(listToLines(currentAgent.entry_policy.default_completion_conditions))}</textarea></label>
+          <label>默认验收条件<textarea id="workflow-default-completion-conditions" rows="3">${esc(listToLines(currentAgent.entry_policy.default_completion_conditions))}</textarea></label>
         </div>
       ` : ""}
       <div class="button-row">
@@ -4343,13 +4684,16 @@ document.addEventListener("click", async (event) => {
       renderWorkflowStable();
     }
     if (action === "preview-runtime-node") {
-      workflowMaterialDraft = {
-        title: target.textContent.trim(),
-        instruction: "这是运行时模块。拖到画布添加，或点应用节点添加到当前视图。",
-        materialKind: "runtime",
-        refType: target.dataset.refType || "",
-        refId: target.dataset.refId || "",
-      };
+      const runtimeNode = workflowRuntimeModuleNode(target.dataset.refType || "", target.dataset.refId || "");
+      workflowMaterialDraft = runtimeNode
+        ? { ...runtimeNode, materialKind: "runtime", refType: runtimeNode.ref_type, refId: runtimeNode.ref_id }
+        : {
+            title: target.dataset.title || target.textContent.trim(),
+            instruction: target.dataset.instruction || "这是运行时模块。拖到画布添加，或点应用节点添加到当前视图。",
+            materialKind: "runtime",
+            refType: target.dataset.refType || "",
+            refId: target.dataset.refId || "",
+          };
       setFeedback("已打开模块预览，拖到画布或点应用节点添加。");
       renderWorkflowStable();
     }
@@ -4421,10 +4765,6 @@ document.addEventListener("click", async (event) => {
       workflowCheckReport = result.workflow || null;
       workflowReportMode = "check";
       workflowReportOpen = true;
-      workflowActionNotice = {
-        message: workflowCheckReport?.valid ? "静态检查通过：入口、出口和关键连线已可运行。" : "静态检查发现问题：请按下方列表修正节点或连线。",
-        tone: workflowCheckReport?.valid ? "ok" : "warn",
-      };
       setFeedback(workflowCheckReport?.valid ? "工作流检查通过。" : "工作流检查发现需要修正的环节。", workflowCheckReport?.valid ? "normal" : "error");
       render();
     }
@@ -4435,10 +4775,6 @@ document.addEventListener("click", async (event) => {
       workflowCheckReport = result.workflow || workflowDryRunReport?.workflow || workflowCheckReport;
       workflowReportMode = "dry_run";
       workflowReportOpen = true;
-      workflowActionNotice = {
-        message: workflowDryRunReport?.executable ? "预跑路径可进入：请重点确认高风险节点。" : "预跑发现阻塞：下方路径和诊断会指出卡点。",
-        tone: workflowDryRunReport?.executable ? "ok" : "warn",
-      };
       setFeedback(workflowDryRunReport?.executable ? "预跑路径可进入，仍需人工确认高风险步骤。" : "预跑发现阻塞，请查看诊断。", workflowDryRunReport?.executable ? "normal" : "error");
       render();
     }
@@ -4449,7 +4785,6 @@ document.addEventListener("click", async (event) => {
       focusWorkflowStart();
       workflowReportMode = "layout";
       workflowReportOpen = true;
-      workflowActionNotice = { message: "已自动整理节点，并把画布视角移动到入口附近。", tone: "ok" };
       setFeedback("工作流已按阶段自动整理，保存配置后生效。");
       render();
     }
@@ -4505,7 +4840,7 @@ document.addEventListener("click", async (event) => {
       selectedWorkflowNodeId = "entry";
       workflowCheckReport = null;
       workflowDryRunReport = null;
-      workflowActionNotice = { message: "已恢复默认工作流。保存方案后生效。", tone: "ok" };
+      setFeedback("已恢复默认工作流。保存方案后生效。");
       focusWorkflowStart();
       render();
     }
@@ -4517,6 +4852,18 @@ document.addEventListener("click", async (event) => {
       const oldId = node.id;
       const requestedId = normalizeWorkflowId($("workflow-node-id").value);
       const newId = requestedId === oldId ? oldId : uniqueWorkflowNodeId(requestedId);
+      const paramsValue = $("workflow-node-params")?.value.trim() || "";
+      let parsedParams = null;
+      if (paramsValue) {
+        try {
+          parsedParams = JSON.parse(paramsValue);
+        } catch (error) {
+          throw new Error("参数 JSON 格式不正确，请检查括号、逗号和引号。");
+        }
+        if (!parsedParams || typeof parsedParams !== "object" || Array.isArray(parsedParams)) {
+          throw new Error("参数 JSON 需要是对象，例如 {\"query\":{\"q\":\"关键词\"}}。");
+        }
+      }
       node.id = newId;
       node.title = $("workflow-node-title").value.trim() || newId;
       node.kind = $("workflow-node-kind").value;
@@ -4537,6 +4884,17 @@ document.addEventListener("click", async (event) => {
       node.input_variable = $("workflow-node-input-variable")?.value.trim() || "";
       node.output_variable = $("workflow-node-output-variable")?.value.trim() || "";
       node.tags = linesToList($("workflow-node-tags")?.value || "");
+      delete node.tool_args;
+      delete node.arguments;
+      delete node.api_payload;
+      delete node.payload;
+      delete node.params;
+      if (parsedParams) {
+        const serializedParams = JSON.stringify(parsedParams);
+        if (node.action === "call_api" || node.kind === "api") node.api_payload = serializedParams;
+        else if (node.action === "run_tools" || node.kind === "tool") node.tool_args = serializedParams;
+        else node.params = serializedParams;
+      }
       if ($("workflow-entry-trigger-phrases")) currentAgent.entry_policy.trigger_phrases = linesToList($("workflow-entry-trigger-phrases").value);
       if ($("workflow-entry-trigger-keywords")) currentAgent.entry_policy.trigger_keywords = linesToList($("workflow-entry-trigger-keywords").value);
       if ($("workflow-entry-confirmation-text")) currentAgent.entry_policy.confirmation_text = $("workflow-entry-confirmation-text").value.trim();
@@ -4551,7 +4909,7 @@ document.addEventListener("click", async (event) => {
       selectedWorkflowNodeId = newId;
       workflowCheckReport = null;
       workflowDryRunReport = null;
-      workflowActionNotice = { message: "节点配置已应用。保存方案后生效。", tone: "ok" };
+      setFeedback("节点配置已应用。保存方案后生效。");
       render();
     }
     if (action === "delete-workflow-node") {
@@ -4893,6 +5251,10 @@ document.addEventListener("input", (event) => {
   if (target.dataset.action === "filter-blueprints") {
     blueprintFilter = target.value;
     renderAndRestoreInput("filter-blueprints", blueprintFilter);
+  }
+  if (target.dataset.action === "filter-workflow-materials") {
+    workflowMaterialFilter = target.value;
+    renderWorkflowFilterInput("filter-workflow-materials", workflowMaterialFilter);
   }
 });
 
