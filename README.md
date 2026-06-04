@@ -257,6 +257,8 @@ astrbot_execute_python
 
 并行分支可以通过 `agent_lab_run_parallel_workflow` 真实运行。它会从当前或指定 `parallel_branch` 找到后续工作包，受限并发执行：API 节点复用已注册自定义 API 和凭证注入逻辑，提示词/插件/工具节点使用受限的 AstrBot `tool_loop_agent` 工作包执行。结果会写入 `parallel_runs`、`workflow_events` 和任务快照，前端任务详情可直接看到每个工作包的完成/阻塞状态。
 
+`tick` 现在会先进入轻量 `WorkflowRuntime`：入口确认、隔离快照、任务记忆检查点、心跳检查点等确定性节点由插件运行时直接推进；并行分支会优先走真实并发执行；只有计划、条件分支、工具/API、验证、归档这类需要开放式判断的节点才交给 ReAct/tool-loop 单步处理。这让画布从“提示词说明”进一步变成任务游标和节点执行器。
+
 “插件与集成 -> 外部方案蓝图”可以查看、加入、精细配置或导入/更新蓝图 manifest。用户自定义蓝图会写入 `plugin_data/astrbot_plugin_agent_lab/modules/<module_id>.json`，框架升级时不会覆盖这部分数据；相同 `module_id` 的用户蓝图会覆盖内置蓝图，方便你按自己的工作流改规则。
 
 ## 外部方案库

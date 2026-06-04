@@ -168,8 +168,8 @@ class AgentLabStorage:
                     "source_task_id": task.task_id,
                     "source_umo": task.umo,
                     "status": "candidate",
-                    "kind": "task_archive",
-                    "tags": ["task", "archive", task.agent_id or "agent"],
+                    "kind": "task_archive_summary",
+                    "tags": ["task", "archive", "summary", task.agent_id or "agent"],
                     "expose_to_normal": True,
                 }
             )
@@ -181,8 +181,8 @@ class AgentLabStorage:
                     "source_umo": task.umo,
                     "status": "candidate",
                     "kind": "memory_candidate",
-                    "tags": ["task", "candidate", task.agent_id or "agent"],
-                    "expose_to_normal": True,
+                    "tags": ["task", "candidate", "private", task.agent_id or "agent"],
+                    "expose_to_normal": False,
                 }
             )
         return dst_md
@@ -463,7 +463,10 @@ class AgentLabStorage:
         if isinstance(tags, str):
             tags = [part.strip() for part in tags.replace("，", ",").split(",")]
         item["tags"] = [str(tag).strip() for tag in tags if str(tag).strip()]
-        item["expose_to_normal"] = bool(item.get("expose_to_normal", True))
+        if "expose_to_normal" in item:
+            item["expose_to_normal"] = bool(item.get("expose_to_normal"))
+        else:
+            item["expose_to_normal"] = item["kind"] == "task_archive_summary"
         item["updated_at"] = now_iso()
         item["created_at"] = item.get("created_at") or item["updated_at"]
         items = [existing for existing in items if existing.get("memory_id") != item["memory_id"]]

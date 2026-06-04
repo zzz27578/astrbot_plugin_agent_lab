@@ -365,6 +365,50 @@ async def main() -> None:
         assert "## Workflow Cursor" in plugin.storage.render_markdown(task)
         assert plugin._task_payload(task)["heartbeat_health"]["state"] == "off"
 
+        runtime_react_calls = []
+
+        async def fake_runtime_react(**kwargs):
+            runtime_react_calls.append(
+                {
+                    "prompt": str(kwargs.get("prompt") or ""),
+                    "system_prompt": str(kwargs.get("system_prompt") or ""),
+                }
+            )
+            return SimpleNamespace(
+                completion_text="runtime react reached plan node",
+                usage=SimpleNamespace(input_other=2, input_cached=0, output=3, total=5),
+            )
+
+        plugin.context.tool_loop_agent_handler = fake_runtime_react
+        tick_result = await plugin._tick(event, "runtime_smoke_workflow_runtime")
+        assert "runtime react reached plan node" in tick_result
+        assert runtime_react_calls
+        assert "node_id: plan" in runtime_react_calls[0]["prompt"]
+        assert "Run one bounded ReAct step" in runtime_react_calls[0]["prompt"]
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert task.workflow_current_node_id == "plan"
+        assert task.workflow_path[-1] == "plan"
+        assert "entry_gate" in task.workflow_path
+        assert any(item.get("kind") == "workflow_runtime" for item in task.progress_log)
+        plugin.storage.save_memory_entry(
+            {
+                "text": "private active runtime memory",
+                "source_task_id": task.task_id,
+                "source_umo": task.umo,
+                "status": "candidate",
+                "kind": "workflow_private_memory",
+                "tags": ["runtime", "private"],
+                "expose_to_normal": False,
+            }
+        )
+        active_private_memory = await plugin.agent_lab_read_task_memory(
+            event,
+            query="private active runtime memory",
+        )
+        assert "private active runtime memory" in active_private_memory
+        plugin.context.tool_loop_agent_handler = None
+
         approval = await plugin.agent_lab_request_approval(
             event,
             operation="delete test directory",
@@ -680,6 +724,12 @@ async def main() -> None:
         assert len(archives) == 1
         assert archives[0].status == "completed"
         assert plugin.guard.restored
+        normal_private_memory = await plugin.agent_lab_read_task_memory(
+            event,
+            query="Agent Lab runtime smoke passed",
+            status="all",
+        )
+        assert "Agent Lab runtime smoke passed" not in normal_private_memory
 
     with TemporaryDirectory() as tmp:
         debug("second runtime fixture")

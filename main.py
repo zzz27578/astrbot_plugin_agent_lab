@@ -31,6 +31,7 @@ from .agent_lab.prompts import (
     build_task_system_prompt,
     build_tick_prompt,
 )
+from .agent_lab.runtime import WorkflowRuntime, WorkflowRuntimeRun
 from .agent_lab.session_guard import SessionPluginGuard
 from .agent_lab.summarizer import AgentSummarizer
 from .agent_lab.webui_server import StandaloneWebUIServer
@@ -218,6 +219,9 @@ class AgentLabPlugin(Star):
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
         self.webui_server: StandaloneWebUIServer | None = None
         self._running_ticks: set[str] = set()
+        self.workflow_runtime = WorkflowRuntime(
+            max_auto_steps=int(_cfg(self.config, "workflow_auto_steps_per_tick", 6))
+        )
         self.summarizer = AgentSummarizer(
             context,
             {
@@ -517,13 +521,33 @@ class AgentLabPlugin(Star):
             limit = max(1, min(int(limit or 8), 30))
         except Exception:
             limit = 8
+        active_task = self.storage.load_active_task(event.unified_msg_origin)
+        allow_private = bool(active_task)
         rows = []
         for item in reversed(self.storage.list_memory_entries()):
             item_status = str(item.get("status") or "candidate").strip().lower()
-            if status != "all" and item_status != status:
+            exposed = bool(item.get("expose_to_normal", False))
+            private_same_scope = False
+            if allow_private and not exposed:
+                source_umo = str(item.get("source_umo") or "")
+                source_task_id = str(item.get("source_task_id") or "")
+                private_same_scope = (
+                    (source_umo and source_umo == event.unified_msg_origin)
+                    or (active_task is not None and source_task_id == active_task.task_id)
+                )
+            if status != "all":
+                if allow_private and not exposed and status == "accepted":
+                    if not private_same_scope or item_status not in {"accepted", "candidate"}:
+                        continue
+                elif item_status != status:
+                    continue
+            if status == "all" and not allow_private and item_status != "accepted":
                 continue
-            if not bool(item.get("expose_to_normal", True)):
+            if not allow_private and not exposed:
                 continue
+            if allow_private and not exposed:
+                if not private_same_scope:
+                    continue
             haystack = "\n".join(
                 [
                     str(item.get("text") or ""),
@@ -1008,9 +1032,30 @@ class AgentLabPlugin(Star):
         task_log_count_before_tick = len(task.progress_log)
         try:
             spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
+            self._normalize_agent_workflow(spec)
+            runtime_run = await self._run_workflow_runtime(
+                event=event,
+                task=task,
+                spec=spec,
+                reason=reason,
+            )
+            if runtime_run.changed:
+                self.storage.save_task(task)
+            latest_task = self.storage.load_active_task(event.unified_msg_origin)
+            if not latest_task or latest_task.task_id != task.task_id:
+                return "tick 完成，任务已在工作流运行时阶段结束或切换。"
+            task = latest_task
+            if task.status == "blocked" or runtime_run.blocked:
+                self.storage.save_task(task)
+                return f"tick 已暂停：工作流运行时阻塞。\n\n{self._compact_text(runtime_run.summary(), 1800)}"
+            if runtime_run.changed and not runtime_run.needs_react:
+                self.storage.save_task(task)
+                return f"tick 完成：工作流运行时已推进。\n\n{self._compact_text(runtime_run.summary(), 1800)}"
+            task_updated_at_before_tick = task.updated_at
+            task_log_count_before_tick = len(task.progress_log)
             modules_prompt = self._build_task_extensions_prompt(spec)
             system_prompt = build_task_system_prompt(spec, task, modules_prompt)
-            prompt = build_tick_prompt(task, reason)
+            prompt = self._workflow_react_prompt(task=task, spec=spec, reason=reason)
             provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(event.unified_msg_origin)
             resp = await self.context.tool_loop_agent(
                 event=event,
@@ -1330,6 +1375,177 @@ class AgentLabPlugin(Star):
             status="entered",
             outcome="任务进入工作流。",
             note=f"source={source}" if source else "",
+        )
+
+    async def _run_workflow_runtime(
+        self,
+        *,
+        event: AstrMessageEvent,
+        task: TaskState,
+        spec: AgentSpec,
+        reason: str,
+    ) -> WorkflowRuntimeRun:
+        runtime_run = WorkflowRuntimeRun()
+        for _ in range(self.workflow_runtime.max_auto_steps):
+            decision = self.workflow_runtime.inspect(spec, task)
+            if decision.blocked:
+                runtime_run.steps.append(decision)
+                runtime_run.blocked = True
+                task.add_blocker("workflow_runtime", decision.outcome)
+                task.status = "blocked"
+                task.add_snapshot(
+                    "workflow_runtime",
+                    {
+                        "node_id": decision.node_id,
+                        "status": "blocked",
+                        "reason": decision.outcome,
+                    },
+                )
+                break
+
+            if str(decision.node.get("action") or "").strip() == "parallel_branch":
+                parallel = await self._run_parallel_workflow(
+                    event=event,
+                    task=task,
+                    spec=spec,
+                    branch_node_id=decision.node_id,
+                    parallel_group=str(decision.node.get("parallel_group") or ""),
+                    shared_instruction=f"tick_reason={reason}",
+                    max_concurrency=max(
+                        1,
+                        min(
+                            int(_cfg(self.config, "workflow_parallel_concurrency", 3) or 3),
+                            6,
+                        ),
+                    ),
+                )
+                decision.status = "completed" if parallel.get("ok") else "blocked"
+                decision.next_node_id = str(parallel.get("merge_node_id") or "")
+                decision.outcome = str(
+                    parallel.get("summary")
+                    or parallel.get("error")
+                    or "parallel workflow finished"
+                )
+                decision.note = "workflow_runtime_parallel"
+                runtime_run.steps.append(decision)
+                if not parallel.get("ok"):
+                    runtime_run.blocked = True
+                    if not decision.next_node_id:
+                        task.status = "blocked"
+                    break
+                if not decision.next_node_id:
+                    runtime_run.needs_react = True
+                    runtime_run.react_node_id = decision.node_id
+                    break
+                continue
+
+            if decision.terminal or decision.needs_react:
+                runtime_run.needs_react = True
+                runtime_run.react_node_id = decision.node_id
+                runtime_run.terminal = decision.terminal
+                break
+
+            if str(decision.node.get("action") or "").strip() == "save_memory":
+                self._save_workflow_private_memory(task, decision.node, decision.outcome)
+
+            self._advance_task_workflow(
+                task,
+                spec,
+                node_id=decision.node_id,
+                outcome=decision.outcome,
+                next_node_id=decision.next_node_id,
+                note=decision.note,
+                status=decision.status,
+            )
+            runtime_run.steps.append(decision)
+            if not decision.next_node_id:
+                runtime_run.needs_react = True
+                runtime_run.react_node_id = decision.node_id
+                break
+
+        if runtime_run.changed:
+            task.add_log("workflow_runtime", self._compact_text(runtime_run.summary(), 1000))
+            task.add_snapshot(
+                "workflow_runtime",
+                {
+                    "reason": reason,
+                    "steps": [
+                        {
+                            "node_id": step.node_id,
+                            "next_node_id": step.next_node_id,
+                            "status": step.status,
+                            "outcome": step.outcome,
+                            "note": step.note,
+                        }
+                        for step in runtime_run.steps
+                    ],
+                    "needs_react": runtime_run.needs_react,
+                    "react_node_id": runtime_run.react_node_id,
+                    "blocked": runtime_run.blocked,
+                },
+            )
+        return runtime_run
+
+    def _save_workflow_private_memory(
+        self,
+        task: TaskState,
+        node: dict[str, Any],
+        outcome: str = "",
+    ) -> None:
+        tags = node.get("tags") or node.get("memory_tags") or []
+        if isinstance(tags, str):
+            tags = [part.strip() for part in tags.replace("，", ",").split(",")]
+        tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+        tags = ["task", "workflow", "private", *(tags or ["checkpoint"])]
+        text = "\n".join(
+            part
+            for part in (
+                f"Task: {task.task_id}",
+                f"Goal: {task.root_goal}",
+                f"Workflow node: {node.get('id') or '-'} / {node.get('title') or '-'}",
+                f"Summary: {task.current_summary or '-'}",
+                f"Progress: {task.last_confirmed_progress or '-'}",
+                f"Observation: {task.last_observation or outcome or '-'}",
+                f"Next step: {task.next_step or '-'}",
+            )
+            if part.strip()
+        )
+        self.storage.save_memory_entry(
+            {
+                "text": text,
+                "source_task_id": task.task_id,
+                "source_umo": task.umo,
+                "status": "candidate",
+                "kind": "workflow_private_memory",
+                "tags": tags,
+                "expose_to_normal": False,
+            }
+        )
+        task.add_log("task_memory", f"workflow_private_memory saved at {node.get('id') or '-'}")
+
+    def _workflow_react_prompt(
+        self,
+        *,
+        task: TaskState,
+        spec: AgentSpec,
+        reason: str,
+    ) -> str:
+        nodes = self.workflow_runtime.node_map(spec)
+        outgoing = self.workflow_runtime.outgoing(spec)
+        current_id = self.workflow_runtime.current_node_id(spec, task)
+        node = nodes.get(current_id) or {}
+        candidates = [
+            nodes[node_id]
+            for node_id in outgoing.get(current_id, [])
+            if node_id in nodes
+        ]
+        if not node:
+            return build_tick_prompt(task, reason)
+        return self.workflow_runtime.build_react_prompt(
+            task=task,
+            node=node,
+            next_candidates=candidates,
+            reason=reason,
         )
 
     @staticmethod
