@@ -30,7 +30,7 @@ const WORKFLOW_STAGES = [
   ["plan", "计划", "拆解任务"],
   ["execute", "执行", "调用工具"],
   ["guard", "闸门", "审批/人工"],
-  ["checkpoint", "快照", "写回状态"],
+  ["checkpoint", "记录", "保存进度"],
   ["archive", "出口", "归档回流"],
 ];
 
@@ -42,6 +42,12 @@ const WORKFLOW_CANVAS_MIN_HEIGHT = 2800;
 const WORKFLOW_CANVAS_MIN_X = -1400;
 const WORKFLOW_CANVAS_MAX_X = 12000;
 const WORKFLOW_CANVAS_MAX_Y = 8000;
+const WORKFLOW_MINIMAP_MIN_WIDTH = 104;
+const WORKFLOW_MINIMAP_MIN_HEIGHT = 84;
+const WORKFLOW_MINIMAP_MAX_WIDTH = 360;
+const WORKFLOW_MINIMAP_MAX_HEIGHT = 260;
+const WORKFLOW_FIELD_SELECTOR = ".workflow-inspector-drawer input, .workflow-inspector-drawer select, .workflow-inspector-drawer textarea, .workflow-tool-drawer input";
+const WORKFLOW_CANVAS_BLOCKER_SELECTOR = ".workflow-tool-drawer, .workflow-inspector-drawer, .workflow-page-top, .workflow-context-menu, .workflow-report-panel, .workflow-minimap, .workflow-nav-toggle, .workflow-toolbox-tab";
 const WORKFLOW_KINDS = [
   "state",
   "tool",
@@ -559,14 +565,14 @@ const WORKFLOW_NODE_TEMPLATES = [
 const sections = [
   ["dashboard", "仪表盘与列表", "看大盘"],
   ["canvas", "可视化编排画布", "捏任务模式"],
-  ["tasks", "任务与记忆控制台", "管状态"],
+  ["tasks", "任务运行台", "推进/暂停"],
   ["monitor", "实例与心跳监控", "搞运维"],
   ["integrations", "插件与集成", "装工具"],
 ];
 
 sections[1] = ["canvas", "任务模式设置", "定规则"];
 sections.splice(2, 0, ["workflow", "工作流画布", "拼流程"]);
-sections.splice(3, 0, ["memory", "完成记录", "查历史"]);
+sections.splice(3, 0, ["memory", "任务记录库", "查完成"]);
 
 let state = null;
 let route = "dashboard";
@@ -608,15 +614,16 @@ let workflowInspectorFocusScrollTop = 0;
 let workflowToastTimer = null;
 let workflowMaterialDraft = null;
 let workflowMaterialFilter = "";
-let workflowToolboxOpenGroups = new Set(["entry_context"]);
-let workflowMinimapWidth = 160;
-let workflowMinimapHeight = 112;
+let workflowToolboxOpenGroups = new Set();
+let workflowMinimapWidth = 128;
+let workflowMinimapHeight = 128;
 let workflowMinimapResize = null;
 let workflowSelectionMode = false;
 let workflowSelectionDrag = null;
 let workflowSelectedNodeIds = new Set();
 let workflowHistoryPast = [];
 let workflowHistoryFuture = [];
+let workflowDragGhostEl = null;
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -820,10 +827,81 @@ function restoreWorkflowPanelScroll() {
   });
 }
 
+function workflowActiveFieldSnapshot() {
+  const active = document.activeElement;
+  if (!active?.matches?.(WORKFLOW_FIELD_SELECTOR)) return null;
+  return {
+    id: active.id || "",
+    action: active.dataset?.action || "",
+    start: typeof active.selectionStart === "number" ? active.selectionStart : null,
+    end: typeof active.selectionEnd === "number" ? active.selectionEnd : null,
+  };
+}
+
+function workflowFindField(snapshot) {
+  if (!snapshot) return null;
+  if (snapshot.id) {
+    const byId = document.getElementById(snapshot.id);
+    if (byId?.matches?.(WORKFLOW_FIELD_SELECTOR)) return byId;
+  }
+  if (snapshot.action) {
+    return Array.from(document.querySelectorAll(WORKFLOW_FIELD_SELECTOR))
+      .find((item) => item.dataset?.action === snapshot.action) || null;
+  }
+  return null;
+}
+
+function workflowUiSnapshot() {
+  const inspector = document.querySelector(".workflow-inspector-drawer .drawer-scroll");
+  const toolbox = document.querySelector(".workflow-tool-drawer .drawer-scroll");
+  return {
+    viewport: workflowViewportSnapshot(),
+    inspectorScrollTop: inspector?.scrollTop ?? workflowInspectorScrollTop ?? 0,
+    toolboxScrollTop: toolbox?.scrollTop ?? workflowToolboxScrollTop ?? 0,
+    activeField: workflowActiveFieldSnapshot(),
+  };
+}
+
+function restoreWorkflowUiSnapshot(snapshot = null) {
+  if (!snapshot || route !== "workflow") return;
+  restoreWorkflowViewport(snapshot.viewport);
+  workflowInspectorScrollTop = snapshot.inspectorScrollTop || 0;
+  workflowToolboxScrollTop = snapshot.toolboxScrollTop || 0;
+  requestAnimationFrame(() => {
+    const inspector = document.querySelector(".workflow-inspector-drawer .drawer-scroll");
+    if (inspector) inspector.scrollTop = snapshot.inspectorScrollTop || 0;
+    const toolbox = document.querySelector(".workflow-tool-drawer .drawer-scroll");
+    if (toolbox) toolbox.scrollTop = snapshot.toolboxScrollTop || 0;
+    const field = workflowFindField(snapshot.activeField);
+    if (field) {
+      field.focus({ preventScroll: true });
+      if (typeof field.setSelectionRange === "function" && snapshot.activeField.start !== null) {
+        const start = snapshot.activeField.start;
+        const end = snapshot.activeField.end ?? start;
+        field.setSelectionRange(start, end);
+      }
+      const scroller = field.closest(".drawer-scroll");
+      if (scroller) scroller.scrollTop = field.closest(".workflow-inspector-drawer")
+        ? snapshot.inspectorScrollTop || 0
+        : snapshot.toolboxScrollTop || 0;
+    }
+  });
+}
+
 function renderWorkflowStable() {
-  rememberWorkflowPanelScroll();
+  const snapshot = workflowUiSnapshot();
   render();
-  if (route === "workflow") restoreWorkflowPanelScroll();
+  restoreWorkflowUiSnapshot(snapshot);
+}
+
+function workflowCurrentViewCenter() {
+  const wrap = document.querySelector(".workflow-canvas-wrap");
+  if (!wrap) return null;
+  const rect = wrap.getBoundingClientRect();
+  return workflowCanvasPoint({
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2,
+  });
 }
 
 function identitySourceLabel(source) {
@@ -1174,19 +1252,19 @@ function renderAndRestoreInput(action, value) {
   render();
   const input = document.querySelector(`[data-action="${action}"]`);
   if (!input) return;
-  input.focus();
+  input.focus({ preventScroll: true });
   const end = String(value || "").length;
   if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
 }
 
 function renderWorkflowFilterInput(action, value) {
-  rememberWorkflowPanelScroll();
+  const snapshot = workflowUiSnapshot();
   render();
-  restoreWorkflowPanelScroll();
+  restoreWorkflowUiSnapshot(snapshot);
   requestAnimationFrame(() => {
     const input = document.querySelector(`[data-action="${action}"]`);
     if (!input) return;
-    input.focus();
+    input.focus({ preventScroll: true });
     const end = String(value || "").length;
     if (typeof input.setSelectionRange === "function") input.setSelectionRange(end, end);
   });
@@ -1901,7 +1979,7 @@ function renderNav() {
 }
 
 function render() {
-  const viewport = route === "workflow" ? workflowViewportSnapshot() : null;
+  const viewport = route === "workflow" && workflowViewportInitialized ? workflowViewportSnapshot() : null;
   document.body.dataset.route = route;
   document.body.classList.toggle("workflow-nav-collapsed", route === "workflow" && workflowNavCollapsed);
   renderNav();
@@ -1915,6 +1993,7 @@ function render() {
   if (route === "monitor") renderMonitor();
   if (route === "integrations") renderIntegrations();
   restoreWorkflowViewport(viewport);
+  if (route === "workflow") refreshWorkflowCanvasDom();
 }
 
 function syncLiveRefresh() {
@@ -2266,7 +2345,6 @@ function renderWorkflowPage() {
       <aside class="workflow-tool-drawer">
         <div class="drawer-head">
           <div><p class="card-kicker">模块库</p><h3>拼图素材 <small>可直接拖拽</small></h3></div>
-          <button class="button tiny secondary" data-action="toggle-workflow-toolbox" type="button">收起</button>
         </div>
         <div class="drawer-scroll">${workflowToolbox()}</div>
       </aside>
@@ -2455,7 +2533,7 @@ function workflowReportPanel() {
         </div>
         ${workflowReportMode === "layout" ? `
           <div class="workflow-check">
-            <div class="workflow-check-row ok"><b>OK</b><span>已按入口、计划、执行、闸门、快照、出口重新排布节点，并把视图拉回流程起点。</span></div>
+            <div class="workflow-check-row ok"><b>OK</b><span>已按入口、计划、执行、闸门、记录、出口重新排布节点，并把视图拉回流程起点。</span></div>
             <div class="workflow-path-line">${stageCounts}</div>
           </div>
         ` : ""}
@@ -2903,18 +2981,44 @@ function workflowMarkerDefs() {
   `;
 }
 
+function workflowMinimapBounds(size) {
+  const nodes = currentAgent.workflow_nodes || [];
+  const viewport = workflowViewportWorldRect();
+  const xs = [viewport.x, viewport.x + viewport.width];
+  const ys = [viewport.y, viewport.y + viewport.height];
+  for (const item of nodes) {
+    const x = Number(item.x || 0);
+    const y = Number(item.y || 0);
+    xs.push(x, x + WORKFLOW_NODE_WIDTH);
+    ys.push(y, y + WORKFLOW_NODE_HEIGHT);
+  }
+  const minX = Math.min(...xs) - 180;
+  const minY = Math.min(...ys) - 160;
+  const maxX = Math.max(...xs) + 180;
+  const maxY = Math.max(...ys) + 160;
+  const fallbackMinX = Number(size.minX || 0);
+  return {
+    minX: Number.isFinite(minX) ? minX : fallbackMinX,
+    minY: Number.isFinite(minY) ? Math.min(0, minY) : 0,
+    maxX: Number.isFinite(maxX) ? maxX : Number(size.width || 1),
+    maxY: Number.isFinite(maxY) ? maxY : Number(size.height || 1),
+  };
+}
+
 function workflowMinimap(size) {
   const mapWidth = workflowMinimapWidth;
   const mapHeight = workflowMinimapHeight;
-  const minX = Number(size.minX || 0);
-  const scale = Math.min((mapWidth - 18) / size.width, (mapHeight - 18) / size.height);
-  const offsetX = Math.max(8, (mapWidth - size.width * scale) / 2);
-  const offsetY = Math.max(8, (mapHeight - size.height * scale) / 2);
+  const bounds = workflowMinimapBounds(size);
+  const boundsWidth = Math.max(1, bounds.maxX - bounds.minX);
+  const boundsHeight = Math.max(1, bounds.maxY - bounds.minY);
+  const scale = Math.min((mapWidth - 18) / boundsWidth, (mapHeight - 18) / boundsHeight);
+  const offsetX = Math.max(8, (mapWidth - boundsWidth * scale) / 2);
+  const offsetY = Math.max(8, (mapHeight - boundsHeight * scale) / 2);
   const viewport = workflowViewportWorldRect();
-  const vx = clamp(viewport.x, minX, minX + Math.max(0, size.width - 80));
-  const vy = clamp(viewport.y, 0, Math.max(0, size.height - 60));
-  const vw = clamp(viewport.width, 80, minX + size.width - vx);
-  const vh = clamp(viewport.height, 60, size.height - vy);
+  const vx = clamp(viewport.x, bounds.minX, bounds.maxX);
+  const vy = clamp(viewport.y, bounds.minY, bounds.maxY);
+  const vw = clamp(viewport.width, 80, Math.max(80, bounds.maxX - vx));
+  const vh = clamp(viewport.height, 60, Math.max(60, bounds.maxY - vy));
   const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
   const edgeLines = (currentAgent.workflow_edges || []).map((edge) => {
     const from = nodes.get(edge.from);
@@ -2936,13 +3040,15 @@ function workflowMinimap(size) {
     <div class="workflow-minimap" style="width:${mapWidth}px;height:${mapHeight}px" data-scale="${scale}" data-offset-x="${offsetX}" data-offset-y="${offsetY}" data-map-width="${mapWidth}" data-map-height="${mapHeight}" title="点击或拖动定位画布">
       <svg width="${mapWidth}" height="${mapHeight}" viewBox="0 0 ${mapWidth} ${mapHeight}">
         <rect class="workflow-minimap-bg" x="0.5" y="0.5" width="${mapWidth - 1}" height="${mapHeight - 1}" rx="4"></rect>
-        <g transform="translate(${offsetX - minX * scale} ${offsetY}) scale(${scale})">
+        <g transform="translate(${offsetX - bounds.minX * scale} ${offsetY - bounds.minY * scale}) scale(${scale})">
           ${edgeLines}
           ${nodeRects}
-          <rect class="workflow-minimap-viewport" x="${vx}" y="${vy}" width="${vw}" height="${vh}" rx="18"></rect>
+          <rect class="workflow-minimap-viewport" x="${vx}" y="${vy}" width="${vw}" height="${vh}" rx="10"></rect>
         </g>
       </svg>
-      <span class="workflow-minimap-resize" data-action="resize-workflow-minimap" title="拖动调整小地图大小"></span>
+      <span class="workflow-minimap-resize is-east" data-edge="e" title="拖动调整小地图宽度"></span>
+      <span class="workflow-minimap-resize is-south" data-edge="s" title="拖动调整小地图高度"></span>
+      <span class="workflow-minimap-resize is-corner" data-edge="se" title="拖动调整小地图大小"></span>
     </div>
   `;
 }
@@ -2968,9 +3074,9 @@ function centerWorkflowFromMinimap(event, minimap) {
   const offsetX = Number(minimap.dataset.offsetX || 0);
   const offsetY = Number(minimap.dataset.offsetY || 0);
   const size = workflowCanvasSize();
-  const minX = Number(size.minX || 0);
-  const worldX = clamp((event.clientX - rect.left - offsetX) / scale + minX, minX, minX + size.width);
-  const worldY = clamp((event.clientY - rect.top - offsetY) / scale, 0, size.height);
+  const bounds = workflowMinimapBounds(size);
+  const worldX = clamp((event.clientX - rect.left - offsetX) / scale + bounds.minX, bounds.minX, bounds.maxX);
+  const worldY = clamp((event.clientY - rect.top - offsetY) / scale + bounds.minY, bounds.minY, bounds.maxY);
   const renderOffsetX = workflowWorldOffsetX(size);
   const wrap = document.querySelector(".workflow-canvas-wrap");
   const width = wrap?.clientWidth || window.innerWidth || 1200;
@@ -4124,7 +4230,7 @@ function refreshWorkflowCanvasDom() {
   svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
   svg.innerHTML = workflowLinksSvg(offsetX);
   const minimap = document.querySelector(".workflow-minimap");
-  if (minimap && !workflowMinimapPan) minimap.outerHTML = workflowMinimap(size);
+  if (minimap && !workflowMinimapPan && !workflowMinimapResize) minimap.outerHTML = workflowMinimap(size);
 }
 
 function workflowCanvasPoint(event) {
@@ -4261,11 +4367,46 @@ function highlightWorkflowPendingPort() {
   setWorkflowConnectingClass(false);
 }
 
+function removeWorkflowContextMenuDom() {
+  document.querySelector(".workflow-context-menu")?.remove();
+}
+
+function removeWorkflowDragGhost() {
+  workflowDragGhostEl?.remove();
+  workflowDragGhostEl = null;
+}
+
+function createWorkflowDragGhost(chip) {
+  removeWorkflowDragGhost();
+  const ghost = document.createElement("div");
+  ghost.className = "workflow-drag-ghost";
+  const icon = chip.querySelector(".game-icon")?.cloneNode(true);
+  if (icon) ghost.appendChild(icon);
+  const title = document.createElement("strong");
+  title.textContent = chip.dataset.title || chip.querySelector("strong")?.textContent || "节点";
+  ghost.appendChild(title);
+  const hint = document.createElement("span");
+  hint.textContent = "拖到画布添加";
+  ghost.appendChild(hint);
+  document.body.appendChild(ghost);
+  return ghost;
+}
+
 document.addEventListener("pointerdown", (event) => {
-  workflowContextMenu = null;
-  const inspectorField = event.target.closest?.(".workflow-inspector-drawer input, .workflow-inspector-drawer select, .workflow-inspector-drawer textarea");
-  if (inspectorField && route === "workflow") {
-    workflowInspectorFocusScrollTop = inspectorField.closest(".drawer-scroll")?.scrollTop || 0;
+  if (route === "workflow" && workflowContextMenu && !event.target.closest(".workflow-context-menu")) {
+    workflowContextMenu = null;
+    removeWorkflowContextMenuDom();
+  }
+  const workflowField = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
+  if (workflowField && route === "workflow") {
+    const scroller = workflowField.closest(".drawer-scroll");
+    if (workflowField.closest(".workflow-inspector-drawer")) {
+      workflowInspectorFocusScrollTop = scroller?.scrollTop || 0;
+      workflowInspectorScrollTop = workflowInspectorFocusScrollTop;
+    }
+    if (workflowField.closest(".workflow-tool-drawer")) {
+      workflowToolboxScrollTop = scroller?.scrollTop || 0;
+    }
   }
   if (route === "workflow" && event.target.closest(".workflow-ribbon-hover-zone")) {
     event.preventDefault();
@@ -4282,6 +4423,7 @@ document.addEventListener("pointerdown", (event) => {
       startY: event.clientY,
       baseWidth: workflowMinimapWidth,
       baseHeight: workflowMinimapHeight,
+      edge: minimapResize.dataset.edge || "se",
       element: minimap,
     };
     minimapResize.setPointerCapture?.(event.pointerId);
@@ -4307,7 +4449,7 @@ document.addEventListener("pointerdown", (event) => {
       workflowPendingPort = added || samePort ? null : portInfo;
       refreshWorkflowCanvasDom();
       setFeedback(added ? "连线已创建，保存配置后生效。" : samePort ? "已取消连线起点。" : "已切换连线起点。");
-      if (added) render();
+      if (added) renderWorkflowStable();
       else highlightWorkflowPendingPort();
       return;
     }
@@ -4352,6 +4494,7 @@ document.addEventListener("pointerdown", (event) => {
   }
   const wrapEl = event.target.closest(".workflow-canvas-wrap");
   if (!wrapEl || !document.querySelector(".workflow-main-canvas")?.contains(wrapEl)) return;
+  if (event.target.closest(WORKFLOW_CANVAS_BLOCKER_SELECTOR)) return;
   if (event.target.closest("[data-action='delete-workflow-edge']")) return;
   event.preventDefault();
   if (workflowSelectionMode) {
@@ -4389,25 +4532,28 @@ document.addEventListener("pointerover", (event) => {
 });
 
 document.addEventListener("focusin", (event) => {
-  const field = event.target.closest?.(".workflow-inspector-drawer input, .workflow-inspector-drawer select, .workflow-inspector-drawer textarea");
+  const field = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
   if (!field || route !== "workflow") return;
   const scroller = field.closest(".drawer-scroll");
   if (!scroller) return;
   const before = scroller.scrollTop;
   const expected = Math.max(before, workflowInspectorFocusScrollTop || 0);
-  workflowInspectorScrollTop = before;
+  if (field.closest(".workflow-inspector-drawer")) workflowInspectorScrollTop = before;
+  if (field.closest(".workflow-tool-drawer")) workflowToolboxScrollTop = before;
   requestAnimationFrame(() => {
     const current = scroller.scrollTop;
-    if (document.activeElement === field && expected > 80 && current < expected - 80) {
+    if (field.closest(".workflow-inspector-drawer") && document.activeElement === field && expected > 80 && current < expected - 80) {
       scroller.scrollTop = expected;
     }
   });
 });
 
 document.addEventListener("input", (event) => {
-  const field = event.target.closest?.(".workflow-inspector-drawer input, .workflow-inspector-drawer select, .workflow-inspector-drawer textarea");
+  const field = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
   if (!field || route !== "workflow") return;
-  workflowInspectorScrollTop = field.closest(".drawer-scroll")?.scrollTop || workflowInspectorScrollTop;
+  const scrollTop = field.closest(".drawer-scroll")?.scrollTop || 0;
+  if (field.closest(".workflow-inspector-drawer")) workflowInspectorScrollTop = scrollTop || workflowInspectorScrollTop;
+  if (field.closest(".workflow-tool-drawer")) workflowToolboxScrollTop = scrollTop || workflowToolboxScrollTop;
 }, true);
 
 document.addEventListener("pointerout", (event) => {
@@ -4422,8 +4568,15 @@ document.addEventListener("pointerout", (event) => {
 
 document.addEventListener("pointermove", (event) => {
   if (workflowMinimapResize && workflowMinimapResize.pointerId === event.pointerId) {
-    workflowMinimapWidth = clamp(workflowMinimapResize.baseWidth + event.clientX - workflowMinimapResize.startX, 96, 360);
-    workflowMinimapHeight = clamp(workflowMinimapResize.baseHeight + event.clientY - workflowMinimapResize.startY, 72, 260);
+    const dx = event.clientX - workflowMinimapResize.startX;
+    const dy = event.clientY - workflowMinimapResize.startY;
+    const edge = workflowMinimapResize.edge || "se";
+    if (edge.includes("e")) {
+      workflowMinimapWidth = clamp(workflowMinimapResize.baseWidth + dx, WORKFLOW_MINIMAP_MIN_WIDTH, WORKFLOW_MINIMAP_MAX_WIDTH);
+    }
+    if (edge.includes("s")) {
+      workflowMinimapHeight = clamp(workflowMinimapResize.baseHeight + dy, WORKFLOW_MINIMAP_MIN_HEIGHT, WORKFLOW_MINIMAP_MAX_HEIGHT);
+    }
     const size = workflowCanvasSize();
     const minimap = document.querySelector(".workflow-minimap");
     if (minimap) minimap.outerHTML = workflowMinimap(size);
@@ -4495,6 +4648,7 @@ document.addEventListener("pointerup", (event) => {
       if (hit && node.dataset.id) workflowSelectedNodeIds.add(node.dataset.id);
     });
     setFeedback(workflowSelectedNodeIds.size ? `已框选 ${workflowSelectedNodeIds.size} 个节点，可复制或删除。` : "没有框选到节点。", workflowSelectedNodeIds.size ? "normal" : "warn");
+    renderWorkflowStable();
     return;
   }
   if (workflowMinimapPan && workflowMinimapPan.pointerId === event.pointerId) {
@@ -4531,7 +4685,7 @@ document.addEventListener("pointerup", (event) => {
     setWorkflowConnectingClass(false);
     refreshWorkflowCanvasDom();
     setFeedback(added ? "连线已创建，保存配置后生效。" : pending ? "已选中连线起点，再点另一个节点的相反连接点即可完成。" : "未创建连线：请拖到另一个节点的相反连接点。", added || pending ? "normal" : "error");
-    if (added) render();
+    if (added) renderWorkflowStable();
     else if (pending) highlightWorkflowPendingPort();
     return;
   }
@@ -4585,7 +4739,7 @@ document.addEventListener("contextmenu", (event) => {
     x: event.clientX,
     y: event.clientY,
   };
-  render();
+  renderWorkflowStable();
 });
 
 document.addEventListener("dragstart", (event) => {
@@ -4598,7 +4752,11 @@ document.addEventListener("dragstart", (event) => {
     refId: chip.dataset.refId || "",
   };
   event.dataTransfer?.setData("application/x-agent-lab-node", JSON.stringify(workflowDraggedMaterial));
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = "copy";
+  const ghost = createWorkflowDragGhost(chip);
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setDragImage?.(ghost, 22, 22);
+  }
 });
 
 document.addEventListener("dragover", (event) => {
@@ -4632,7 +4790,14 @@ document.addEventListener("drop", (event) => {
   if (material.kind === "template") addWorkflowTemplateNode(material.id || "plan", point);
   else addRuntimeWorkflowNode(material.refType, material.refId, point);
   workflowDraggedMaterial = null;
-  render();
+  removeWorkflowDragGhost();
+  renderWorkflowStable();
+});
+
+document.addEventListener("dragend", () => {
+  workflowDraggedMaterial = null;
+  document.querySelector(".workflow-canvas-wrap.is-dropping")?.classList.remove("is-dropping");
+  removeWorkflowDragGhost();
 });
 
 document.addEventListener("click", async (event) => {
@@ -4707,17 +4872,17 @@ document.addEventListener("click", async (event) => {
     if (action === "workflow-select-mode") {
       workflowSelectionMode = !workflowSelectionMode;
       setFeedback(workflowSelectionMode ? "框选已开启：在画布空白处拖出选择框。" : "框选已关闭。");
-      render();
+      renderWorkflowStable();
     }
     if (action === "workflow-undo") {
       const ok = undoWorkflow();
       setFeedback(ok ? "已回到上一步。" : "没有可撤销的操作。", ok ? "normal" : "warn");
-      render();
+      renderWorkflowStable();
     }
     if (action === "workflow-redo") {
       const ok = redoWorkflow();
       setFeedback(ok ? "已恢复下一步。" : "没有可恢复的操作。", ok ? "normal" : "warn");
-      render();
+      renderWorkflowStable();
     }
     if (action === "copy-selected-workflow-nodes") {
       if (!workflowSelectedNodeIds.size) return;
@@ -4729,7 +4894,7 @@ document.addEventListener("click", async (event) => {
         if (copied) workflowSelectedNodeIds.add(copied.id);
       });
       setFeedback(`已复制 ${workflowSelectedNodeIds.size} 个节点。`);
-      render();
+      renderWorkflowStable();
     }
     if (action === "delete-selected-workflow-nodes") {
       if (!workflowSelectedNodeIds.size) return;
@@ -4739,12 +4904,14 @@ document.addEventListener("click", async (event) => {
       workflowSelectedNodeIds.clear();
       workflowInspectorOpen = false;
       setFeedback(`已删除 ${count} 个节点。`);
-      render();
+      renderWorkflowStable();
     }
     if (action === "toggle-toolbox-group") {
+      event.preventDefault();
       const group = target.dataset.id || "";
       if (workflowToolboxOpenGroups.has(group)) workflowToolboxOpenGroups.delete(group);
       else workflowToolboxOpenGroups.add(group);
+      renderWorkflowStable();
       return;
     }
     if (action === "preview-template-node") {
@@ -4769,8 +4936,9 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "apply-material-node") {
       if (!workflowMaterialDraft) return;
-      if (workflowMaterialDraft.materialKind === "template") addWorkflowTemplateNode(workflowMaterialDraft.id || "plan");
-      else addRuntimeWorkflowNode(workflowMaterialDraft.refType, workflowMaterialDraft.refId);
+      const point = workflowCurrentViewCenter();
+      if (workflowMaterialDraft.materialKind === "template") addWorkflowTemplateNode(workflowMaterialDraft.id || "plan", point);
+      else addRuntimeWorkflowNode(workflowMaterialDraft.refType, workflowMaterialDraft.refId, point);
       renderWorkflowStable();
     }
     if (action === "workflow-zoom-in" || action === "workflow-zoom-out" || action === "workflow-zoom-reset" || action === "workflow-fit") {
@@ -4790,27 +4958,27 @@ document.addEventListener("click", async (event) => {
         workflowPanX = 80;
         workflowPanY = 90;
       }
-      render();
+      renderWorkflowStable();
     }
     if (action === "toggle-workflow-nav") {
       workflowNavCollapsed = !workflowNavCollapsed;
-      render();
+      renderWorkflowStable();
     }
     if (action === "toggle-workflow-toolbox") {
       workflowToolboxOpen = !workflowToolboxOpen;
-      render();
+      renderWorkflowStable();
     }
     if (action === "close-workflow-inspector") {
       workflowInspectorOpen = false;
-      render();
+      renderWorkflowStable();
     }
     if (action === "close-workflow-report") {
       workflowReportOpen = false;
-      render();
+      renderWorkflowStable();
     }
     if (action === "close-workflow-menu") {
       workflowContextMenu = null;
-      render();
+      renderWorkflowStable();
     }
     if (action === "copy-workflow-node") {
       readAgentForm();
@@ -4818,7 +4986,7 @@ document.addEventListener("click", async (event) => {
       const copied = copyWorkflowNodeById(target.dataset.id || selectedWorkflowNodeId);
       workflowContextMenu = null;
       setFeedback(copied ? "节点已复制，保存配置后生效。" : "未找到要复制的节点。", copied ? "normal" : "error");
-      render();
+      renderWorkflowStable();
     }
     if (action === "delete-workflow-node-menu") {
       readAgentForm();
@@ -4827,7 +4995,7 @@ document.addEventListener("click", async (event) => {
       workflowContextMenu = null;
       workflowInspectorOpen = false;
       setFeedback(ok ? "节点已删除，保存配置后生效。" : "未找到要删除的节点。", ok ? "normal" : "error");
-      render();
+      renderWorkflowStable();
     }
     if (action === "check-workflow") {
       readAgentForm();
@@ -4836,7 +5004,7 @@ document.addEventListener("click", async (event) => {
       workflowReportMode = "check";
       workflowReportOpen = true;
       setFeedback(workflowCheckReport?.valid ? "工作流检查通过。" : "工作流检查发现需要修正的环节。", workflowCheckReport?.valid ? "normal" : "error");
-      render();
+      renderWorkflowStable();
     }
     if (action === "dry-run-workflow") {
       readAgentForm();
@@ -4846,7 +5014,7 @@ document.addEventListener("click", async (event) => {
       workflowReportMode = "dry_run";
       workflowReportOpen = true;
       setFeedback(workflowDryRunReport?.executable ? "预跑路径可进入，仍需人工确认高风险步骤。" : "预跑发现阻塞，请查看诊断。", workflowDryRunReport?.executable ? "normal" : "error");
-      render();
+      renderWorkflowStable();
     }
     if (action === "auto-layout-workflow") {
       readAgentForm();
@@ -4856,14 +5024,14 @@ document.addEventListener("click", async (event) => {
       workflowReportMode = "layout";
       workflowReportOpen = true;
       setFeedback("工作流已按阶段自动整理，保存配置后生效。");
-      render();
+      renderWorkflowStable();
     }
     if (action === "select-workflow-node") {
       readAgentForm();
       selectedWorkflowNodeId = target.dataset.id;
       workflowInspectorOpen = true;
       workflowContextMenu = null;
-      render();
+      renderWorkflowStable();
     }
     if (action === "add-workflow-node") {
       readAgentForm();
@@ -4886,21 +5054,21 @@ document.addEventListener("click", async (event) => {
       workflowInspectorOpen = true;
       workflowCheckReport = null;
       workflowDryRunReport = null;
-      render();
+      renderWorkflowStable();
     }
     if (action === "add-template-node") {
       addWorkflowTemplateNode(target.dataset.id || "plan");
-      render();
+      renderWorkflowStable();
     }
     if (action === "add-runtime-node") {
       addRuntimeWorkflowNode(target.dataset.refType, target.dataset.refId);
-      render();
+      renderWorkflowStable();
     }
     if (action === "apply-workflow-template") {
       readAgentForm();
       pushWorkflowHistory();
       applyWorkflowTemplate(target.dataset.id || "linear");
-      render();
+      renderWorkflowStable();
     }
     if (action === "reset-workflow") {
       readAgentForm();
@@ -4912,7 +5080,7 @@ document.addEventListener("click", async (event) => {
       workflowDryRunReport = null;
       setFeedback("已恢复默认工作流。保存方案后生效。");
       focusWorkflowStart();
-      render();
+      renderWorkflowStable();
     }
     if (action === "apply-workflow-node") {
       readAgentForm();
@@ -4980,14 +5148,14 @@ document.addEventListener("click", async (event) => {
       workflowCheckReport = null;
       workflowDryRunReport = null;
       setFeedback("节点配置已应用。保存方案后生效。");
-      render();
+      renderWorkflowStable();
     }
     if (action === "delete-workflow-node") {
       readAgentForm();
       pushWorkflowHistory();
       deleteWorkflowNodeById(selectedWorkflowNodeId);
       workflowInspectorOpen = false;
-      render();
+      renderWorkflowStable();
     }
     if (action === "add-workflow-edge") {
       readAgentForm();
@@ -4996,7 +5164,7 @@ document.addEventListener("click", async (event) => {
       const to = $("workflow-edge-to").value;
       addWorkflowEdge(from, to);
       workflowDryRunReport = null;
-      render();
+      renderWorkflowStable();
     }
     if (action === "delete-workflow-edge") {
       readAgentForm();
@@ -5004,7 +5172,7 @@ document.addEventListener("click", async (event) => {
       currentAgent.workflow_edges.splice(Number(target.dataset.index), 1);
       workflowCheckReport = null;
       workflowDryRunReport = null;
-      render();
+      renderWorkflowStable();
     }
     if (action === "save-agent") await saveAgent(false);
     if (action === "make-default") await saveAgent(true);
