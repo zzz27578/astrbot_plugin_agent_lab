@@ -37,6 +37,96 @@ class HeartbeatPolicy:
 
 
 @dataclass
+class TaskLease:
+    owner: str = ""
+    token: str = ""
+    acquired_at: str = ""
+    expires_at: str = ""
+    reason: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "TaskLease":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        return base
+
+
+@dataclass
+class WatchdogState:
+    last_tick_at: str = ""
+    last_tick_reason: str = ""
+    last_progress_at: str = ""
+    last_progress_hash: str = ""
+    consecutive_failures: int = 0
+    last_error: str = ""
+    last_decision: str = ""
+    paused_reason: str = ""
+    needs_user: bool = False
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "WatchdogState":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        try:
+            base.consecutive_failures = int(base.consecutive_failures or 0)
+        except Exception:
+            base.consecutive_failures = 0
+        base.needs_user = bool(base.needs_user)
+        return base
+
+
+@dataclass
+class TaskBudget:
+    max_nodes_per_tick: int = 6
+    max_tools_per_tick: int = 12
+    max_seconds_per_tick: int = 240
+    max_tokens_per_tick: int = 12000
+    max_total_ticks: int = 120
+    max_total_tool_calls: int = 240
+    max_total_tokens: int = 240000
+    ticks_used: int = 0
+    nodes_used: int = 0
+    tool_calls_used: int = 0
+    tokens_used: int = 0
+    tick_started_at: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "TaskBudget":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        for key in (
+            "max_nodes_per_tick",
+            "max_tools_per_tick",
+            "max_seconds_per_tick",
+            "max_tokens_per_tick",
+            "max_total_ticks",
+            "max_total_tool_calls",
+            "max_total_tokens",
+            "ticks_used",
+            "nodes_used",
+            "tool_calls_used",
+            "tokens_used",
+        ):
+            try:
+                setattr(base, key, int(getattr(base, key) or 0))
+            except Exception:
+                setattr(base, key, int(getattr(cls(), key)))
+        return base
+
+
+@dataclass
 class ApprovalPolicy:
     mode: str = "work"  # observe | work | high_risk_review | delegated
     preapproved_scopes: list[str] = field(default_factory=list)
@@ -546,6 +636,9 @@ class TaskState:
     repeated_issue_counts: dict[str, int] = field(default_factory=dict)
     approvals: list[dict[str, Any]] = field(default_factory=list)
     heartbeat: HeartbeatPolicy = field(default_factory=HeartbeatPolicy)
+    lease: TaskLease = field(default_factory=TaskLease)
+    watchdog: WatchdogState = field(default_factory=WatchdogState)
+    budget: TaskBudget = field(default_factory=TaskBudget)
     entry_summary: str = ""
     exit_summary: str = ""
     memory_candidates: list[str] = field(default_factory=list)
@@ -663,6 +756,9 @@ class TaskState:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["heartbeat"] = asdict(self.heartbeat)
+        payload["lease"] = asdict(self.lease)
+        payload["watchdog"] = asdict(self.watchdog)
+        payload["budget"] = asdict(self.budget)
         return payload
 
     @classmethod
@@ -671,6 +767,9 @@ class TaskState:
             return cls()
         payload = dict(payload)
         payload["heartbeat"] = HeartbeatPolicy.from_dict(payload.get("heartbeat"))
+        payload["lease"] = TaskLease.from_dict(payload.get("lease"))
+        payload["watchdog"] = WatchdogState.from_dict(payload.get("watchdog"))
+        payload["budget"] = TaskBudget.from_dict(payload.get("budget"))
         base = cls()
         for key in asdict(base):
             if key in payload:

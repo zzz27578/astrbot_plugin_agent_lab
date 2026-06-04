@@ -1596,6 +1596,70 @@ function workflowTemplate(id) {
       ],
     };
   }
+  if (id === "research_task") {
+    return {
+      nodes: [
+        { id: "entry", title: "明确问题", kind: "state", stage: "entry", action: "summarize_entry", description: "压缩研究目标", instruction: "提取要回答的问题、必须核实的事实、时间范围、来源偏好和不能假设的地方。", x: 80, y: 260 },
+        { id: "memory_recall", title: "查相似研究", kind: "retrieval", stage: "plan", action: "retrieve_memory", description: "先查历史任务记忆", instruction: "检索 accepted_memory 和 archive_summary，若命中相似研究，记录 memory_id/source_task_id 并复用已验证结论。", output_variable: "memory", output_schema: { type: "object", properties: { rows: { type: "array" } } }, x: 460, y: 260 },
+        { id: "plan", title: "研究步骤", kind: "state", stage: "plan", action: "plan", description: "拆分检索与核验", instruction: "列出需要搜索或抓取的来源、交叉验证策略、成功标准和本轮最多推进的一小步。", x: 840, y: 260 },
+        { id: "search", title: "搜索/抓取", kind: "tool", stage: "execute", action: "run_tools", description: "调用搜索或网页工具", instruction: "只调用白名单中的搜索、网页或 API 工具，把结果整理为 sources/results/疑点。", permission_profile: "web", output_variable: "research", output_schema: { type: "object", properties: { results: { type: "array" }, sources: { type: "array" } } }, x: 1220, y: 260 },
+        { id: "verify", title: "交叉验证", kind: "validation", stage: "checkpoint", action: "validate_output", description: "核验结论可靠性", instruction: "区分已核实、未核实、冲突来源和需要用户判断的问题。", input_variable: "research", input_schema: { type: "object" }, output_variable: "validation", output_schema: { type: "object", properties: { passed: { type: "boolean" } } }, x: 1600, y: 260 },
+        { id: "memory", title: "记忆候选", kind: "memory", stage: "checkpoint", action: "save_memory", description: "沉淀可复用研究结论", instruction: "只保存稳定事实、引用来源和下次续写提示；未核实内容保留为 candidate_memory。", tags: ["research", "source"], x: 1980, y: 260 },
+        { id: "archive", title: "研究归档", kind: "memory", stage: "archive", action: "exit_summary", description: "输出结论与引用", instruction: "归档结论、来源、置信度、未解决问题和后续检索入口。", x: 2360, y: 260 },
+      ],
+      edges: [
+        { from: "entry", to: "memory_recall" },
+        { from: "memory_recall", to: "plan" },
+        { from: "plan", to: "search" },
+        { from: "search", to: "verify" },
+        { from: "verify", to: "memory" },
+        { from: "memory", to: "archive" },
+      ],
+    };
+  }
+  if (id === "plugin_call") {
+    return {
+      nodes: [
+        { id: "entry", title: "插件任务入口", kind: "state", stage: "entry", action: "summarize_entry", description: "明确要调用的插件能力", instruction: "提取用户想让插件完成的动作、输入数据、成功标准和权限边界。", x: 80, y: 260 },
+        { id: "similar_memory", title: "查相似记忆", kind: "retrieval", stage: "plan", action: "retrieve_memory", description: "先找可复用内容", instruction: "工具创建前先查相似任务或日记/记忆内容；命中则读取、复用或更新，未命中再新建。", output_variable: "memory", output_schema: { type: "object", properties: { rows: { type: "array" } } }, x: 460, y: 260 },
+        { id: "choose_plugin", title: "选择插件能力", kind: "branch", stage: "plan", action: "route_condition", description: "按能力选择插件或工具", instruction: "根据 capability 在 memory/search/file/web/database/image/api 中选择对应插件节点；不要让用户猜动作字段。", x: 840, y: 260 },
+        { id: "plugin_tool", title: "执行插件工具", kind: "tool", stage: "execute", action: "run_tools", description: "绑定 AstrBot 工具", instruction: "从工具 schema 填写参数；结果必须写成 observation，再交给校验节点。", permission_profile: "work", input_variable: "memory", input_schema: { type: "object" }, output_variable: "tool_result", output_schema: { type: "object" }, x: 1220, y: 260 },
+        { id: "validate", title: "校验插件结果", kind: "validation", stage: "checkpoint", action: "validate_output", description: "确认执行结果", instruction: "检查 tool_result.ok、返回内容、是否需要用户确认或重试。", input_variable: "tool_result", input_schema: { type: "object" }, output_variable: "validation", output_schema: { type: "object", properties: { passed: { type: "boolean" } } }, x: 1600, y: 260 },
+        { id: "save_state", title: "写回状态", kind: "state", stage: "checkpoint", action: "save_state", description: "保存 observation", instruction: "把插件调用结果、错误、下一步和需要用户补充的信息写回 task_state。", x: 1980, y: 260 },
+        { id: "archive", title: "插件调用归档", kind: "memory", stage: "archive", action: "exit_summary", description: "归档结果", instruction: "只归档完成情况、插件名称、关键结果和可复用提示，不保存敏感输入。", x: 2360, y: 260 },
+      ],
+      edges: [
+        { from: "entry", to: "similar_memory" },
+        { from: "similar_memory", to: "choose_plugin" },
+        { from: "choose_plugin", to: "plugin_tool" },
+        { from: "plugin_tool", to: "validate" },
+        { from: "validate", to: "save_state" },
+        { from: "save_state", to: "archive" },
+      ],
+    };
+  }
+  if (id === "long_heartbeat") {
+    return {
+      nodes: [
+        { id: "entry", title: "长任务入口", kind: "state", stage: "entry", action: "summarize_entry", description: "压缩长任务目标", instruction: "明确总目标、完成条件、预算、用户可接受的自动推进范围和需要暂停的条件。", x: 80, y: 260 },
+        { id: "resume", title: "读取恢复点", kind: "state", stage: "plan", action: "save_state", description: "恢复 workflow 当前节点", instruction: "每轮先读取 workflow_current_node_id、node_outputs、last_observation 和 watchdog 状态，不依赖上一轮聊天上下文。", output_variable: "resume", output_schema: { type: "object" }, x: 460, y: 260 },
+        { id: "watchdog", title: "卡住检查", kind: "guard", stage: "guard", action: "heartbeat", description: "检查是否卡住或超预算", instruction: "检查 lease、预算、连续失败、是否等待审批或用户输入；需要用户时暂停，不继续乱跑。", input_variable: "resume", input_schema: { type: "object" }, output_variable: "watchdog", output_schema: { type: "object", properties: { needs_user: { type: "boolean" } } }, x: 840, y: 260 },
+        { id: "step", title: "推进一步", kind: "tool", stage: "execute", action: "run_tools", description: "只推进有限步骤", instruction: "每轮最多执行一个小工作单元，所有工具结果必须写成 observation。", permission_profile: "work", output_variable: "step_result", output_schema: { type: "object" }, x: 1220, y: 260 },
+        { id: "checkpoint", title: "写回观察", kind: "state", stage: "checkpoint", action: "save_state", description: "保存 observation 和 next_step", instruction: "写回 last_observation、current_summary、next_step、预算消耗和是否继续。", input_variable: "step_result", input_schema: { type: "object" }, x: 1600, y: 260 },
+        { id: "continue_check", title: "继续判断", kind: "branch", stage: "checkpoint", action: "route_condition", description: "决定继续、暂停或归档", instruction: "若 validation.passed == false 且预算允许则回到计划；若需要用户则暂停；若完成则归档。", x: 1980, y: 260 },
+        { id: "archive", title: "长任务归档", kind: "memory", stage: "archive", action: "exit_summary", description: "归档长任务结果", instruction: "归档完成内容、暂停原因、剩余工作和下次恢复入口。", x: 2360, y: 260 },
+      ],
+      edges: [
+        { from: "entry", to: "resume" },
+        { from: "resume", to: "watchdog" },
+        { from: "watchdog", to: "step" },
+        { from: "step", to: "checkpoint" },
+        { from: "checkpoint", to: "continue_check" },
+        { from: "continue_check", to: "resume" },
+        { from: "continue_check", to: "archive" },
+      ],
+    };
+  }
   return { nodes: defaultWorkflowNodes(), edges: defaultWorkflowEdges() };
 }
 
@@ -1605,7 +1669,7 @@ function applyWorkflowTemplate(id) {
   currentAgent.workflow_edges = clone(template.edges);
   selectedWorkflowNodeId = currentAgent.workflow_nodes[0]?.id || "";
   workflowCheckReport = null;
-  const names = { api_review: "API 审批流", code_task: "代码任务流", emergency: "紧急模式", memory_loop: "记忆续写流", parallel_agent: "并行 Agent 流", linear: "标准工作流" };
+  const names = { api_review: "API 审批流", code_task: "代码任务流", emergency: "紧急模式", memory_loop: "记忆续写流", parallel_agent: "并行 Agent 流", research_task: "资料研究流", plugin_call: "插件调用流", long_heartbeat: "长任务心跳流", linear: "标准工作流" };
   setFeedback(`已套用${names[id] || "工作流"}，保存后会进入任务运行协议。`);
 }
 
@@ -2178,6 +2242,12 @@ function renderWorkflowPage() {
           ${badge(`${currentAgent.workflow_nodes.length} 节点`)}
           ${badge(`${currentAgent.workflow_edges.length} 连线`)}
           ${badge(report.valid ? "检查通过" : `${report.errors || 0} 错误 / ${report.warnings || 0} 提醒`, report.valid ? "ok" : "warn")}
+        </div>
+        <div class="workflow-template-bar">
+          <button class="button secondary" data-action="apply-workflow-template" data-id="code_task" type="button">代码任务</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="research_task" type="button">资料研究</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="plugin_call" type="button">插件调用</button>
+          <button class="button secondary" data-action="apply-workflow-template" data-id="long_heartbeat" type="button">长任务心跳</button>
         </div>
       <div class="workflow-page-actions">
           <button class="button secondary icon-button" data-action="workflow-select-mode" title="${workflowSelectionMode ? "退出框选" : "框选节点"}" type="button">${iconImg("select", "框选")}</button>

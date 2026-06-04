@@ -74,5 +74,47 @@
     "type": "int",
     "description": "Agent loop 触发截断时丢弃轮数",
     "default": 2
+  },
+  "workflow_auto_steps_per_tick": {
+    "type": "int",
+    "description": "Workflow auto node steps per tick",
+    "default": 6,
+    "hint": "Limits deterministic canvas node execution before handing control to ReAct."
+  },
+  "task_lease_ttl_seconds": {
+    "type": "int",
+    "description": "Task lease TTL seconds",
+    "default": 600,
+    "hint": "Prevents duplicated heartbeat/manual ticks from running the same task concurrently."
+  },
+  "max_seconds_per_tick": {
+    "type": "int",
+    "description": "Max seconds per tick",
+    "default": 240,
+    "hint": "Watchdog pauses a task when one tick exceeds this runtime budget."
+  },
+  "max_tokens_per_tick": {
+    "type": "int",
+    "description": "Max tokens per tick",
+    "default": 12000,
+    "hint": "Per-tick token budget recorded from provider usage."
+  },
+  "max_total_ticks": {
+    "type": "int",
+    "description": "Max total task ticks",
+    "default": 120,
+    "hint": "Total task heartbeat/manual progress budget."
+  },
+  "max_total_tool_calls": {
+    "type": "int",
+    "description": "Max total task tool calls",
+    "default": 240,
+    "hint": "Total budget for concrete tool/API executions across the task."
+  },
+  "max_total_tokens": {
+    "type": "int",
+    "description": "Max total task tokens",
+    "default": 240000,
+    "hint": "Total token budget across the task."
   }
 }

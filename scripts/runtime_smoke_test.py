@@ -60,6 +60,12 @@ class FakeCallableTool:
         self.description = description
         self.handler_module_path = handler_module_path
         self.calls = calls
+        self.parameters = {
+            "type": "object",
+            "properties": {"value": {"type": "string"}},
+            "required": ["value"],
+            "additionalProperties": False,
+        }
 
     async def call(self, context, **kwargs):
         self.calls.append({"tool": self.name, "args": dict(kwargs)})
@@ -296,6 +302,13 @@ async def main() -> None:
         assert "safe_registered_tool" in tool_names
         tool_rows = {row["name"]: row for row in plugin._tool_rows()}
         assert tool_rows["memory_noise_search"]["plugin_name"] == "memory_noise"
+        assert tool_rows["safe_registered_tool"]["parameters_schema"]["required"] == ["value"]
+        assert tool_rows["safe_registered_tool"]["input_schema"]["properties"]["value"]["type"] == "string"
+        assert tool_rows["safe_registered_tool"]["output_schema"]["type"] == "object"
+        assert "work" in tool_rows["safe_registered_tool"]["permission_profiles"]
+        plugin_rows = {row["name"]: row for row in plugin._plugin_rows()}
+        assert "memory" in plugin_rows["memory_noise"]["capabilities"]
+        assert plugin_rows["memory_noise"]["tool_count"] == 1
         strict_spec = plugin_main.AgentSpec(
             name="严格隔离测试",
             identity_label_source="manual",
@@ -361,6 +374,47 @@ async def main() -> None:
         assert task.workflow_current_node_id == "entry"
         assert task.workflow_path == ["entry"]
         assert task.workflow_events and task.workflow_events[0]["status"] == "entered"
+        lease_ok, lease_token = plugin._acquire_task_lease(
+            task,
+            reason="runtime_smoke_lease",
+            ttl_seconds=60,
+        )
+        assert lease_ok
+        lease_again, lease_message = plugin._acquire_task_lease(
+            task,
+            reason="runtime_smoke_lease",
+            ttl_seconds=60,
+        )
+        assert not lease_again
+        assert "lease" in lease_message.lower()
+        plugin._release_task_lease(task, lease_token)
+        plugin.storage.save_task(task)
+
+        budget_task = plugin_main.TaskState(
+            umo=event.unified_msg_origin,
+            root_goal="budget smoke",
+        )
+        budget_task.budget.max_nodes_per_tick = 1
+        assert plugin._budget_before_tick(budget_task, "runtime_smoke_budget") == ""
+        assert plugin._consume_node_budget(budget_task, {"id": "budget_a"}) == ""
+        budget_pause = plugin._consume_node_budget(budget_task, {"id": "budget_b"})
+        assert budget_pause
+        plugin._pause_task_for_budget(budget_task, budget_pause)
+        assert budget_task.status == "paused"
+        assert budget_task.watchdog.needs_user
+
+        condition_task = plugin_main.TaskState(umo=event.unified_msg_origin)
+        condition_task.workflow_data = {"variables": {"api_result": {"ok": True}}}
+        route_target = plugin._route_target_from_node(
+            condition_task,
+            {"id": "route", "action": "route_condition"},
+            ["route_ok", "route_else"],
+            [
+                {"id": "route_ok", "condition": "api_result.ok == true"},
+                {"id": "route_else", "condition": "else"},
+            ],
+        )
+        assert route_target == "route_ok"
         task_prompt = plugin_main.build_task_system_prompt(
             plugin_main.AgentSpec.from_dict(task.profile_snapshot["agent"]),
             task,
@@ -389,6 +443,11 @@ async def main() -> None:
         runtime_react_calls = []
 
         async def fake_runtime_react(**kwargs):
+            hooks = kwargs.get("agent_hooks")
+            if hooks:
+                fake_tool = SimpleNamespace(name="safe_registered_tool")
+                await hooks.on_tool_start(None, fake_tool, {"value": "react_tool"})
+                await hooks.on_tool_end(None, fake_tool, {"value": "react_tool"}, {"ok": True})
             runtime_react_calls.append(
                 {
                     "prompt": str(kwargs.get("prompt") or ""),
@@ -415,6 +474,11 @@ async def main() -> None:
         assert task.workflow_data["react_traces"]
         assert task.workflow_data["react_traces"][-1]["node_id"] == "plan"
         assert "runtime react reached plan node" in task.workflow_data["react_traces"][-1]["response"]
+        assert '"source": "tool_loop"' in task.last_observation
+        assert task.workflow_data["observations"][-1]["source"] == "tool_loop"
+        assert task.workflow_data["resume"]["last_observation"] == task.last_observation
+        assert task.workflow_data["resume"]["workflow_current_node_id"] == "plan"
+        assert task.token_usage["total"] == 5
         report_with_runtime = plugin._workflow_report(plugin_main.AgentSpec.from_dict(task.profile_snapshot["agent"]))
         assert "api_call" in report_with_runtime["executor_nodes"]
         assert report_with_runtime["node_runtime"]["plan"]["react_handoff"] is True
@@ -621,6 +685,43 @@ async def main() -> None:
         rendered = plugin.storage.render_markdown(task)
         assert "Workflow Node Outputs" in rendered
         assert "api_exec" in rendered
+
+        schema_block_spec = plugin_main.AgentSpec(
+            workflow_nodes=[
+                {
+                    "id": "schema_tool",
+                    "stage": "execute",
+                    "kind": "tool",
+                    "action": "run_tools",
+                    "tool_name": "safe_registered_tool",
+                    "tool_args": {},
+                    "instruction": "should be blocked by missing required tool args",
+                }
+            ],
+            workflow_edges=[],
+        )
+        schema_block_spec.enabled_tools = ["safe_registered_tool"]
+        schema_block_spec.plugin_overrides["safe_plugin"] = True
+        plugin._normalize_agent_workflow(schema_block_spec)
+        schema_call_count = len(plugin.context.tool_manager.calls)
+        task.status = "running"
+        task.blockers = []
+        task.profile_snapshot["agent"] = schema_block_spec.to_dict()
+        task.workflow_current_node_id = "schema_tool"
+        task.workflow_path = ["schema_tool"]
+        task.workflow_data = {}
+        schema_block_run = await plugin._run_workflow_runtime(
+            event=event,
+            task=task,
+            spec=schema_block_spec,
+            reason="runtime_smoke_tool_schema",
+        )
+        assert schema_block_run.blocked
+        assert len(plugin.context.tool_manager.calls) == schema_call_count
+        assert task.workflow_data["node_outputs"]["schema_tool"]["note"] == "node_executor_tool_schema_mismatch"
+        assert "required" in task.workflow_data["node_outputs"]["schema_tool"]["outcome"]
+        task.status = "running"
+        task.blockers = []
 
         blocked_spec = plugin_main.AgentSpec(
             workflow_nodes=[

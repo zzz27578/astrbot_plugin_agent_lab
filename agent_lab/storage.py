@@ -167,8 +167,9 @@ class AgentLabStorage:
                     "text": task.exit_summary,
                     "source_task_id": task.task_id,
                     "source_umo": task.umo,
-                    "status": "candidate",
+                    "status": "accepted",
                     "kind": "task_archive_summary",
+                    "layer": "archive_summary",
                     "tags": ["task", "archive", "summary", task.agent_id or "agent"],
                     "expose_to_normal": True,
                 }
@@ -181,6 +182,7 @@ class AgentLabStorage:
                     "source_umo": task.umo,
                     "status": "candidate",
                     "kind": "memory_candidate",
+                    "layer": "candidate_memory",
                     "tags": ["task", "candidate", "private", task.agent_id or "agent"],
                     "expose_to_normal": False,
                 }
@@ -480,7 +482,7 @@ class AgentLabStorage:
         item = dict(payload or {})
         item["memory_id"] = str(item.get("memory_id") or "").strip() or new_id("mem")
         item["text"] = str(item.get("text") or "").strip()
-        item["status"] = str(item.get("status") or "candidate").strip()
+        item["status"] = str(item.get("status") or "candidate").strip().lower()
         item["kind"] = str(item.get("kind") or "task_memory").strip()
         item["source_task_id"] = str(item.get("source_task_id") or "").strip()
         item["source_umo"] = str(item.get("source_umo") or "").strip()
@@ -492,6 +494,18 @@ class AgentLabStorage:
             item["expose_to_normal"] = bool(item.get("expose_to_normal"))
         else:
             item["expose_to_normal"] = item["kind"] == "task_archive_summary"
+        item["layer"] = self._normalize_memory_layer(item)
+        if item["layer"] == "archive_summary":
+            item["status"] = "accepted"
+            item["expose_to_normal"] = True
+        elif item["layer"] == "accepted_memory":
+            item["status"] = "accepted"
+            item["expose_to_normal"] = True
+        elif item["layer"] in {"private_task_memory", "candidate_memory"}:
+            item["expose_to_normal"] = False
+            if item["status"] not in {"accepted", "rejected"}:
+                item["status"] = "candidate"
+        item["evidence"] = self._normalize_memory_evidence(item)
         item["updated_at"] = now_iso()
         item["created_at"] = item.get("created_at") or item["updated_at"]
         items = [existing for existing in items if existing.get("memory_id") != item["memory_id"]]
@@ -499,6 +513,44 @@ class AgentLabStorage:
             items.append(item)
         self._write_json(self.memory_entries_path, items)
         return item
+
+    @staticmethod
+    def _normalize_memory_layer(item: dict[str, Any]) -> str:
+        valid = {
+            "private_task_memory",
+            "accepted_memory",
+            "candidate_memory",
+            "archive_summary",
+        }
+        explicit = str(item.get("layer") or "").strip()
+        if explicit in valid:
+            return explicit
+        kind = str(item.get("kind") or "").strip()
+        status = str(item.get("status") or "candidate").strip().lower()
+        exposed = bool(item.get("expose_to_normal"))
+        if kind == "task_archive_summary":
+            return "archive_summary"
+        if kind == "workflow_private_memory":
+            return "private_task_memory"
+        if kind == "memory_candidate":
+            return "candidate_memory"
+        if exposed and status == "accepted":
+            return "accepted_memory"
+        if not exposed:
+            return "private_task_memory"
+        return "candidate_memory"
+
+    @staticmethod
+    def _normalize_memory_evidence(item: dict[str, Any]) -> dict[str, Any]:
+        evidence = item.get("evidence")
+        if not isinstance(evidence, dict):
+            evidence = {}
+        evidence.setdefault("memory_id", item.get("memory_id") or "")
+        evidence.setdefault("source_task_id", item.get("source_task_id") or "")
+        evidence.setdefault("source_umo", item.get("source_umo") or "")
+        evidence.setdefault("kind", item.get("kind") or "")
+        evidence.setdefault("layer", item.get("layer") or "")
+        return evidence
 
     def delete_memory_entry(self, memory_id: str) -> bool:
         items = self.list_memory_entries()

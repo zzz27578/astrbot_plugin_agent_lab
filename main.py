@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import shutil
 import asyncio
+import hashlib
 import re
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
@@ -23,6 +25,12 @@ except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
     request = None
 
 from .agent_lab import AgentLabStorage, AgentSpec, ApprovalRequest, TaskState
+from .agent_lab.conditions import (
+    evaluate_condition,
+    resolve_path,
+    schema_compatible,
+    schema_validation_errors,
+)
 from .agent_lab.hooks import AgentLabRunHooks
 from .agent_lab.models import new_id, now_iso
 from .agent_lab.modules import ModuleRegistry
@@ -533,28 +541,23 @@ class AgentLabPlugin(Star):
         rows = []
         for item in reversed(self.storage.list_memory_entries()):
             item_status = str(item.get("status") or "candidate").strip().lower()
-            exposed = bool(item.get("expose_to_normal", False))
-            private_same_scope = False
-            if allow_private and not exposed:
-                source_umo = str(item.get("source_umo") or "")
-                source_task_id = str(item.get("source_task_id") or "")
-                private_same_scope = (
-                    (source_umo and source_umo == event.unified_msg_origin)
-                    or (active_task is not None and source_task_id == active_task.task_id)
-                )
+            layer = str(item.get("layer") or "").strip()
+            visible, private_same_scope = self._memory_entry_visible(
+                item,
+                umo=event.unified_msg_origin,
+                active_task=active_task,
+                allow_private=allow_private,
+            )
             if status != "all":
-                if allow_private and not exposed and status == "accepted":
+                if allow_private and layer == "private_task_memory" and status == "accepted":
                     if not private_same_scope or item_status not in {"accepted", "candidate"}:
                         continue
                 elif item_status != status:
                     continue
             if status == "all" and not allow_private and item_status != "accepted":
                 continue
-            if not allow_private and not exposed:
+            if not visible:
                 continue
-            if allow_private and not exposed:
-                if not private_same_scope:
-                    continue
             haystack = "\n".join(
                 [
                     str(item.get("text") or ""),
@@ -564,16 +567,7 @@ class AgentLabPlugin(Star):
             ).lower()
             if query and query not in haystack:
                 continue
-            rows.append(
-                {
-                    "memory_id": item.get("memory_id"),
-                    "status": item_status,
-                    "tags": item.get("tags") or [],
-                    "source_task_id": item.get("source_task_id") or "",
-                    "updated_at": item.get("updated_at") or "",
-                    "text": item.get("text") or "",
-                }
-            )
+            rows.append(self._memory_entry_row(item, include_text=True))
             if len(rows) >= limit:
                 break
         if not rows:
@@ -1029,6 +1023,172 @@ class AgentLabPlugin(Star):
             pending = "\n".join(
                 f"- {item.approval_id}: {item.operation}" for item in task.pending_approvals()
             )
+            task.watchdog.needs_user = True
+            task.watchdog.last_decision = "waiting_approval"
+            self.storage.save_task(task)
+            return f"存在待审批操作，先处理审批再继续：\n{pending}"
+
+        tick_key = f"{task.umo}:{task.task_id}"
+        if tick_key in self._running_ticks:
+            return "当前任务已有一轮 tick 正在执行，已跳过本次触发，避免心跳或手动操作重入。"
+        self._running_ticks.add(tick_key)
+        lease_token = ""
+        before_hash = self._progress_hash(task)
+        try:
+            lease_ok, lease_message = self._acquire_task_lease(task, reason=reason)
+            if not lease_ok:
+                return lease_message
+            lease_token = lease_message
+            task = self.storage.load_active_task(event.unified_msg_origin) or task
+            watchdog_message = self._watchdog_before_tick(task, reason)
+            if watchdog_message:
+                self.storage.save_task(task)
+                return watchdog_message
+
+            spec = AgentSpec.from_dict(
+                task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
+            )
+            self._normalize_agent_workflow(spec)
+            runtime_run = await self._run_workflow_runtime(
+                event=event,
+                task=task,
+                spec=spec,
+                reason=reason,
+            )
+            if runtime_run.changed:
+                self.storage.save_task(task)
+
+            latest_task = self.storage.load_active_task(event.unified_msg_origin)
+            if not latest_task or latest_task.task_id != task.task_id:
+                return "tick 完成，任务已在工作流运行时阶段结束或切换。"
+            task = latest_task
+            if task.status in {"blocked", "paused"} or runtime_run.blocked:
+                self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
+                self.storage.save_task(task)
+                return f"tick 已暂停：工作流运行时阻塞或等待。\n\n{self._compact_text(runtime_run.summary(), 1800)}"
+            if runtime_run.changed and not runtime_run.needs_react:
+                self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
+                self.storage.save_task(task)
+                return f"tick 完成：工作流运行时已推进。\n\n{self._compact_text(runtime_run.summary(), 1800)}"
+
+            task_updated_at_before_tick = task.updated_at
+            task_log_count_before_tick = len(task.progress_log)
+            modules_prompt = self._build_task_extensions_prompt(spec)
+            system_prompt = build_task_system_prompt(spec, task, modules_prompt)
+            prompt = self._workflow_react_prompt(task=task, spec=spec, reason=reason)
+            provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(
+                event.unified_msg_origin
+            )
+            remaining_tool_steps = self._budget_remaining_tools(task)
+            if remaining_tool_steps <= 0:
+                self._pause_task_for_budget(task, "本轮工具预算已用尽，未进入 LLM 工具循环。")
+                self.storage.save_task(task)
+                return "tick 已暂停：本轮工具预算已用尽。"
+            resp = await self.context.tool_loop_agent(
+                event=event,
+                chat_provider_id=provider_id,
+                prompt=prompt,
+                system_prompt=system_prompt,
+                tools=self._build_toolset(spec),
+                max_steps=remaining_tool_steps,
+                tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120)),
+                llm_compress_keep_recent=int(_cfg(self.config, "llm_compress_keep_recent", 6)),
+                truncate_turns=int(_cfg(self.config, "truncate_turns", 2)),
+                agent_hooks=AgentLabRunHooks(
+                    self.storage,
+                    task.umo,
+                    task.task_id,
+                    budget_max_tools=remaining_tool_steps,
+                ),
+            )
+            text = (getattr(resp, "completion_text", "") or "").strip()
+            latest_task = self.storage.load_active_task(event.unified_msg_origin)
+            if not latest_task or latest_task.task_id != task.task_id:
+                return f"tick 完成，任务已在本轮结束或切换。\n\n{self._compact_text(text, 1800)}"
+            task = latest_task
+            self._record_react_trace(
+                task,
+                node_id=runtime_run.react_node_id or task.workflow_current_node_id,
+                prompt=prompt,
+                response=text,
+                reason=reason,
+            )
+            changed_by_tools = (
+                task.updated_at != task_updated_at_before_tick
+                or len(task.progress_log) != task_log_count_before_tick
+                or task.status not in {"running", "paused"}
+            )
+            if not changed_by_tools:
+                task.last_observation = text[-4000:] if text else "本轮没有返回文本。"
+                task.last_confirmed_progress = text[:1200] if text else task.last_confirmed_progress
+                task.current_summary = self._compact_text(text, 1200) if text else task.current_summary
+                task.next_step = "根据上一轮 observation 继续推进；如果涉及危险操作，先请求审批。"
+                task.status = "running"
+                self._record_explicit_observation(
+                    task,
+                    source="react",
+                    node_id=runtime_run.react_node_id or task.workflow_current_node_id,
+                    payload={"text": task.last_observation},
+                )
+            budget_message = self._consume_token_budget(task, getattr(resp, "usage", None))
+            task.add_token_usage(getattr(resp, "usage", None))
+            task.add_log("tick", f"reason={reason}; response={self._compact_text(text, 1200)}")
+            task.add_snapshot(
+                "tick",
+                {
+                    "reason": reason,
+                    "provider_id": provider_id,
+                    "token_usage": task.token_usage,
+                    "budget": {
+                        "ticks_used": task.budget.ticks_used,
+                        "nodes_used": task.budget.nodes_used,
+                        "tool_calls_used": task.budget.tool_calls_used,
+                        "tokens_used": task.budget.tokens_used,
+                    },
+                },
+            )
+            if budget_message:
+                self._pause_task_for_budget(task, budget_message)
+            self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
+            self.storage.save_task(task)
+            if task.status == "paused" and task.watchdog.paused_reason:
+                return f"tick 已暂停：{task.watchdog.paused_reason}\n\n{self._compact_text(text, 1800)}"
+            return f"tick 完成。\n\n{self._compact_text(text, 1800)}"
+        except Exception as exc:
+            task = self.storage.load_active_task(event.unified_msg_origin) or task
+            count = task.add_blocker(type(exc).__name__, str(exc))
+            self._watchdog_after_tick(
+                task,
+                before_hash=before_hash,
+                reason=reason,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            if count >= task.heartbeat.max_repeated_failures or task.status == "paused":
+                task.status = "paused"
+                await self._disable_heartbeat(task)
+            self.storage.save_task(task)
+            return (
+                f"tick 失败：{exc}\n"
+                f"同类问题计数：{count}。"
+                f"{' 已暂停任务并关闭心跳。' if task.status == 'paused' else ''}"
+            )
+        finally:
+            latest = self.storage.load_active_task(event.unified_msg_origin)
+            if latest and latest.task_id == task.task_id:
+                self._release_task_lease(latest, lease_token)
+                self.storage.save_task(latest)
+            self._running_ticks.discard(tick_key)
+
+    async def _tick_legacy(self, event: AstrMessageEvent, reason: str) -> str:
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            return "当前没有 active task。可以先 /agentlab start <目标>。"
+        if task.status not in ("running", "paused"):
+            return f"当前任务状态为 {task.status}，不执行 tick。"
+        if task.pending_approvals():
+            pending = "\n".join(
+                f"- {item.approval_id}: {item.operation}" for item in task.pending_approvals()
+            )
             return f"存在待审批操作，先处理审批再继续：\n{pending}"
 
         tick_key = f"{task.umo}:{task.task_id}"
@@ -1435,12 +1595,480 @@ class AgentLabPlugin(Star):
     def _single_next(outgoing: list[str]) -> str:
         return outgoing[0] if len(outgoing) == 1 else ""
 
+    def _task_lease_owner(self) -> str:
+        return f"agent_lab:{id(self)}"
+
+    def _lease_expired(self, expires_at: str) -> bool:
+        stamp = self._parse_iso_datetime(expires_at)
+        if stamp is None:
+            return True
+        return datetime.now(timezone.utc) >= stamp.astimezone(timezone.utc)
+
+    def _acquire_task_lease(
+        self,
+        task: TaskState,
+        *,
+        reason: str,
+        ttl_seconds: int | None = None,
+    ) -> tuple[bool, str]:
+        ttl = max(30, int(ttl_seconds or _cfg(self.config, "task_lease_ttl_seconds", 600) or 600))
+        current = task.lease
+        if current.token and not self._lease_expired(current.expires_at):
+            owner = current.owner or "unknown"
+            return False, f"任务正在由 {owner} 执行，lease 到期时间：{current.expires_at}"
+        acquired = datetime.now(timezone.utc).astimezone()
+        task.lease.owner = self._task_lease_owner()
+        task.lease.token = new_id("lease")
+        task.lease.acquired_at = acquired.isoformat(timespec="seconds")
+        task.lease.expires_at = (acquired + timedelta(seconds=ttl)).isoformat(timespec="seconds")
+        task.lease.reason = str(reason or "").strip()
+        self.storage.save_task(task)
+        return True, task.lease.token
+
+    def _release_task_lease(self, task: TaskState, lease_token: str) -> None:
+        if not lease_token or task.lease.token != lease_token:
+            return
+        task.lease.owner = ""
+        task.lease.token = ""
+        task.lease.acquired_at = ""
+        task.lease.expires_at = ""
+        task.lease.reason = ""
+
+    def _configure_task_budget(self, task: TaskState) -> None:
+        budget = task.budget
+        config_defaults = {
+            "max_nodes_per_tick": ("workflow_auto_steps_per_tick", 6),
+            "max_tools_per_tick": ("max_steps_per_tick", 12),
+            "max_seconds_per_tick": ("max_seconds_per_tick", 240),
+            "max_tokens_per_tick": ("max_tokens_per_tick", 12000),
+            "max_total_ticks": ("max_total_ticks", 120),
+            "max_total_tool_calls": ("max_total_tool_calls", 240),
+            "max_total_tokens": ("max_total_tokens", 240000),
+        }
+        for attr, (key, default) in config_defaults.items():
+            current = int(getattr(budget, attr, 0) or 0)
+            if current <= 0:
+                setattr(budget, attr, int(_cfg(self.config, key, default) or default))
+
+    def _budget_before_tick(self, task: TaskState, reason: str) -> str:
+        self._configure_task_budget(task)
+        budget = task.budget
+        if budget.max_total_ticks and budget.ticks_used >= budget.max_total_ticks:
+            return f"任务 tick 总预算已用尽：{budget.ticks_used}/{budget.max_total_ticks}"
+        if budget.max_total_tool_calls and budget.tool_calls_used >= budget.max_total_tool_calls:
+            return f"任务工具调用总预算已用尽：{budget.tool_calls_used}/{budget.max_total_tool_calls}"
+        if budget.max_total_tokens and budget.tokens_used >= budget.max_total_tokens:
+            return f"任务 token 总预算已用尽：{budget.tokens_used}/{budget.max_total_tokens}"
+        budget.ticks_used += 1
+        budget.tick_started_at = now_iso()
+        data = self._ensure_workflow_data(task)
+        data["tick_budget"] = {
+            "reason": reason,
+            "started_at": budget.tick_started_at,
+            "nodes_used": 0,
+            "tool_calls_used": 0,
+            "tokens_used": 0,
+            "max_nodes": max(1, int(budget.max_nodes_per_tick or 1)),
+            "max_tools": max(1, int(budget.max_tools_per_tick or 1)),
+            "max_seconds": max(1, int(budget.max_seconds_per_tick or 1)),
+        }
+        return ""
+
+    def _budget_tick_payload(self, task: TaskState) -> dict[str, Any]:
+        data = self._ensure_workflow_data(task)
+        tick = data.setdefault("tick_budget", {})
+        if not isinstance(tick, dict):
+            tick = {}
+            data["tick_budget"] = tick
+        return tick
+
+    def _budget_remaining_tools(self, task: TaskState) -> int:
+        self._configure_task_budget(task)
+        tick = self._budget_tick_payload(task)
+        max_tools = int(tick.get("max_tools") or task.budget.max_tools_per_tick or 1)
+        used = int(tick.get("tool_calls_used") or 0)
+        total_remaining = max(0, int(task.budget.max_total_tool_calls or 0) - int(task.budget.tool_calls_used or 0))
+        if task.budget.max_total_tool_calls <= 0:
+            total_remaining = max_tools
+        return max(0, min(max_tools - used, total_remaining))
+
+    def _budget_elapsed_seconds(self, task: TaskState) -> int:
+        tick = self._budget_tick_payload(task)
+        started = self._parse_iso_datetime(str(tick.get("started_at") or task.budget.tick_started_at or ""))
+        if started is None:
+            return 0
+        return max(0, int((datetime.now(timezone.utc) - started.astimezone(timezone.utc)).total_seconds()))
+
+    def _consume_node_budget(self, task: TaskState, node: dict[str, Any]) -> str:
+        self._configure_task_budget(task)
+        tick = self._budget_tick_payload(task)
+        tick["nodes_used"] = int(tick.get("nodes_used") or 0) + 1
+        task.budget.nodes_used += 1
+        max_nodes = int(tick.get("max_nodes") or task.budget.max_nodes_per_tick or 1)
+        if tick["nodes_used"] > max_nodes:
+            return f"本轮节点预算已用尽：{tick['nodes_used']}/{max_nodes}"
+        max_seconds = int(tick.get("max_seconds") or task.budget.max_seconds_per_tick or 1)
+        elapsed = self._budget_elapsed_seconds(task)
+        if elapsed > max_seconds:
+            return f"本轮时间预算已用尽：{elapsed}/{max_seconds}s"
+        return ""
+
+    def _consume_tool_budget(self, task: TaskState, tool_name: str = "") -> str:
+        self._configure_task_budget(task)
+        tick = self._budget_tick_payload(task)
+        tick["tool_calls_used"] = int(tick.get("tool_calls_used") or 0) + 1
+        task.budget.tool_calls_used += 1
+        max_tools = int(tick.get("max_tools") or task.budget.max_tools_per_tick or 1)
+        if tick["tool_calls_used"] > max_tools:
+            return f"本轮工具预算已用尽：{tick['tool_calls_used']}/{max_tools}"
+        if task.budget.max_total_tool_calls and task.budget.tool_calls_used > task.budget.max_total_tool_calls:
+            return f"任务工具调用总预算已用尽：{task.budget.tool_calls_used}/{task.budget.max_total_tool_calls}"
+        return ""
+
+    def _consume_token_budget(self, task: TaskState, usage: Any) -> str:
+        if not usage:
+            return ""
+        total = int(getattr(usage, "total", 0) or 0)
+        if total <= 0:
+            return ""
+        tick = self._budget_tick_payload(task)
+        tick["tokens_used"] = int(tick.get("tokens_used") or 0) + total
+        task.budget.tokens_used += total
+        if task.budget.max_tokens_per_tick and tick["tokens_used"] > task.budget.max_tokens_per_tick:
+            return f"本轮 token 预算已用尽：{tick['tokens_used']}/{task.budget.max_tokens_per_tick}"
+        if task.budget.max_total_tokens and task.budget.tokens_used > task.budget.max_total_tokens:
+            return f"任务 token 总预算已用尽：{task.budget.tokens_used}/{task.budget.max_total_tokens}"
+        return ""
+
+    def _pause_task_for_budget(self, task: TaskState, reason: str) -> None:
+        task.status = "paused"
+        task.watchdog.paused_reason = reason
+        task.watchdog.last_decision = "paused_budget"
+        task.watchdog.needs_user = True
+        task.add_blocker("budget_exhausted", reason)
+        task.add_log("paused", reason)
+        task.add_snapshot("budget_pause", {"reason": reason})
+
+    def _watchdog_before_tick(self, task: TaskState, reason: str) -> str:
+        task.watchdog.last_tick_at = now_iso()
+        task.watchdog.last_tick_reason = str(reason or "").strip()
+        if task.watchdog.paused_reason and task.status == "paused":
+            return f"任务已暂停：{task.watchdog.paused_reason}"
+        if task.pending_approvals():
+            task.watchdog.needs_user = True
+            task.watchdog.last_decision = "waiting_approval"
+            return "任务正在等待审批，不能由心跳继续推进。"
+        budget_reason = self._budget_before_tick(task, reason)
+        if budget_reason:
+            self._pause_task_for_budget(task, budget_reason)
+            return budget_reason
+        self._prepare_resume_anchor(task, reason=reason)
+        return ""
+
+    def _watchdog_after_tick(
+        self,
+        task: TaskState,
+        *,
+        before_hash: str,
+        reason: str,
+        error: str = "",
+    ) -> None:
+        current_hash = self._progress_hash(task)
+        progressed = bool(current_hash and current_hash != before_hash)
+        task.watchdog.last_tick_at = now_iso()
+        task.watchdog.last_tick_reason = str(reason or "").strip()
+        if error:
+            task.watchdog.consecutive_failures += 1
+            task.watchdog.last_error = error
+            task.watchdog.last_decision = "error"
+            if task.watchdog.consecutive_failures >= int(task.heartbeat.max_repeated_failures or 3):
+                task.status = "paused"
+                task.watchdog.paused_reason = f"连续失败 {task.watchdog.consecutive_failures} 次：{error}"
+                task.watchdog.needs_user = True
+            self._prepare_resume_anchor(task, reason=reason)
+            return
+        if progressed:
+            task.watchdog.consecutive_failures = 0
+            task.watchdog.last_error = ""
+            task.watchdog.last_progress_at = now_iso()
+            task.watchdog.last_progress_hash = current_hash
+            task.watchdog.last_decision = "continue" if task.status == "running" else task.status
+        else:
+            task.watchdog.consecutive_failures += 1
+            task.watchdog.last_error = "no_progress"
+            task.watchdog.last_decision = "no_progress"
+            if task.watchdog.consecutive_failures >= int(task.heartbeat.max_repeated_failures or 3):
+                task.status = "paused"
+                task.watchdog.paused_reason = "连续 tick 没有产生新 observation 或 workflow 进展。"
+                task.watchdog.needs_user = True
+        self._prepare_resume_anchor(task, reason=reason)
+
+    def _prepare_resume_anchor(self, task: TaskState, *, reason: str = "") -> None:
+        data = self._ensure_workflow_data(task)
+        node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
+        node_output_items = list(node_outputs.items())[-12:] if isinstance(node_outputs, dict) else []
+        data["resume"] = {
+            "task_id": task.task_id,
+            "updated_at": now_iso(),
+            "reason": reason,
+            "workflow_current_node_id": task.workflow_current_node_id,
+            "workflow_path_tail": list(task.workflow_path or [])[-12:],
+            "last_observation": task.last_observation,
+            "node_outputs": {key: value for key, value in node_output_items},
+            "node_output_ids": list((node_outputs or {}).keys())[-40:],
+            "variable_names": list((data.get("variables") or {}).keys())[-40:],
+        }
+
+    def _progress_hash(self, task: TaskState) -> str:
+        data = self._ensure_workflow_data(task)
+        payload = {
+            "status": task.status,
+            "node": task.workflow_current_node_id,
+            "path": list(task.workflow_path or [])[-12:],
+            "events": list(task.workflow_events or [])[-8:],
+            "observation": task.last_observation,
+            "summary": task.current_summary,
+            "progress": task.last_confirmed_progress,
+            "node_outputs": list((data.get("node_outputs") or {}).keys())[-16:],
+        }
+        return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _parse_iso_datetime(raw: str) -> datetime | None:
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        try:
+            stamp = datetime.fromisoformat(text)
+        except Exception:
+            return None
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp
+
+    def _condition_context(self, task: TaskState) -> dict[str, Any]:
+        data = self._ensure_workflow_data(task)
+        variables = data.get("variables") if isinstance(data.get("variables"), dict) else {}
+        node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
+        observations = data.get("observations") if isinstance(data.get("observations"), list) else []
+        last_observation: Any = task.last_observation
+        if isinstance(last_observation, str) and last_observation.strip().startswith(("{", "[")):
+            try:
+                last_observation = json.loads(last_observation)
+            except Exception:
+                pass
+        context = {
+            "task": task.to_dict(),
+            "variables": variables,
+            "node_outputs": node_outputs,
+            "observations": observations,
+            "last_observation": last_observation,
+            "memory": variables.get("memory") or variables.get("memory_result") or {},
+            "api_result": variables.get("api_result") or {},
+            "tool_result": variables.get("tool_result") or {},
+            "validation": variables.get("validation") or {},
+        }
+        for key, value in variables.items():
+            context.setdefault(str(key), value)
+        return context
+
+    def _node_schema(self, node: dict[str, Any], key: str) -> dict[str, Any]:
+        raw = node.get(key)
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    def _validate_node_input_schema(self, task: TaskState, node: dict[str, Any]) -> str:
+        input_schema = self._node_schema(node, "input_schema")
+        if not input_schema:
+            return ""
+        input_variable = str(node.get("input_variable") or "").strip()
+        if not input_variable:
+            return ""
+        value = self._workflow_variable(task, input_variable)
+        return self._schema_validation_message(input_schema, value, f"Node input {input_variable}")
+
+    def _schema_validation_message(
+        self,
+        schema: dict[str, Any] | None,
+        value: Any,
+        subject: str,
+    ) -> str:
+        errors = schema_validation_errors(schema, value)
+        if not errors:
+            return ""
+        details = "; ".join(errors[:6])
+        if len(errors) > 6:
+            details += f"; ... {len(errors) - 6} more"
+        return f"{subject} schema mismatch: {details}"
+
+    def _loop_guard_before_node(self, task: TaskState, node: dict[str, Any]) -> str:
+        data = self._ensure_workflow_data(task)
+        guard = data.setdefault("loop_guard", {})
+        if not isinstance(guard, dict):
+            guard = {}
+            data["loop_guard"] = guard
+        node_id = str(node.get("id") or "").strip()
+        if not node_id:
+            return ""
+        counts = data.get("execution_counts") if isinstance(data.get("execution_counts"), dict) else {}
+        max_repeats = max(
+            2,
+            min(int(node.get("max_repeats") or task.heartbeat.max_repeated_failures or 3), 12),
+        )
+        current = int(counts.get(node_id, 0) or 0)
+        if current >= max_repeats and str(node.get("action") or "") not in {"wait_user", "handoff"}:
+            reason = f"Loop guard stopped repeated node {node_id}: {current}/{max_repeats}"
+            guard["last_stop"] = {"time": now_iso(), "node_id": node_id, "reason": reason}
+            task.status = "paused"
+            task.watchdog.paused_reason = reason
+            task.watchdog.needs_user = True
+            task.add_blocker("loop_guard", reason)
+            return reason
+        return ""
+
+    def _loop_guard_after_node(
+        self,
+        task: TaskState,
+        node: dict[str, Any],
+        result: NodeExecutionResult,
+    ) -> str:
+        data = self._ensure_workflow_data(task)
+        guard = data.setdefault("loop_guard", {})
+        if not isinstance(guard, dict):
+            guard = {}
+            data["loop_guard"] = guard
+        signature = "|".join(
+            [
+                str(node.get("id") or ""),
+                str(node.get("action") or ""),
+                str(result.note or ""),
+                self._compact_text(result.outcome or "", 160),
+            ]
+        )
+        digest = hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16]
+        repeats = guard.setdefault("result_repeats", {})
+        repeats[digest] = int(repeats.get(digest, 0) or 0) + 1
+        max_repeats = max(2, min(int(node.get("max_error_repeats") or task.heartbeat.max_repeated_failures or 3), 12))
+        if (not result.ok or result.blocked) and repeats[digest] >= max_repeats:
+            reason = f"Loop guard stopped repeated result at {node.get('id')}: {result.note or result.outcome}"
+            guard["last_stop"] = {"time": now_iso(), "node_id": node.get("id") or "", "reason": reason}
+            task.status = "paused"
+            task.watchdog.paused_reason = reason
+            task.watchdog.needs_user = True
+            task.add_blocker("loop_guard", reason)
+            return reason
+        return ""
+
+    def _tool_schema(self, tool: Any = None, name: str = "", description: str = "") -> dict[str, Any]:
+        schema = None
+        if tool is not None:
+            for attr in ("parameters", "parameters_schema", "schema", "args_schema"):
+                value = getattr(tool, attr, None)
+                if value:
+                    if callable(value) and attr == "schema":
+                        try:
+                            value = value()
+                        except Exception:
+                            pass
+                    schema = value
+                    break
+        for method_name in ("model_json_schema", "schema"):
+            method = getattr(schema, method_name, None)
+            if callable(method):
+                try:
+                    schema = method()
+                    break
+                except Exception:
+                    pass
+        if isinstance(schema, str):
+            try:
+                schema = json.loads(schema)
+            except Exception:
+                schema = None
+        if isinstance(schema, dict):
+            return schema
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+            "description": description or (getattr(tool, "description", "") if tool is not None else ""),
+        }
+
+    @staticmethod
+    def _infer_capability(name: str, description: str = "", module_path: str = "") -> str:
+        text = f"{name} {description} {module_path}".lower()
+        buckets = [
+            ("memory", ("memory", "memo", "note", "diary", "journal", "recall", "remember", "记忆", "日记", "笔记")),
+            ("search", ("search", "query", "grok", "grep", "find", "检索", "搜索", "查询")),
+            ("file", ("file", "path", "read", "write", "edit", "document", "文件", "目录")),
+            ("web", ("web", "http", "url", "browser", "crawl", "网页", "联网")),
+            ("database", ("database", "sql", "db", "table", "数据库")),
+            ("image", ("image", "photo", "vision", "draw", "图片", "图像")),
+            ("code", ("code", "python", "shell", "terminal", "execute", "代码", "命令")),
+            ("api", ("api", "post", "request", "endpoint", "接口")),
+        ]
+        for capability, keywords in buckets:
+            if any(keyword in text for keyword in keywords):
+                return capability
+        return "unknown"
+
+    def _permission_allows_tool(
+        self,
+        node: dict[str, Any],
+        *,
+        capability: str,
+        risk: str,
+    ) -> bool:
+        profile = str(node.get("permission_profile") or node.get("profile") or "work").strip()
+        if profile == "danger":
+            return True
+        if risk == "high":
+            return False
+        if profile == "ordinary":
+            return risk == "safe" and capability not in {"shell", "code", "database"}
+        if profile == "work":
+            return risk in {"safe", "work"} and capability not in {"database"}
+        if profile == "code":
+            return capability in {"file", "code", "search", "memory", "api", "unknown"} and risk in {"safe", "work"}
+        if profile == "web":
+            return capability in {"web", "search", "api", "memory", "unknown"} and risk in {"safe", "work"}
+        return risk == "safe"
+
+    @staticmethod
+    def _permission_profiles_for(capability: str, risk: str) -> list[str]:
+        if risk == "high":
+            return ["danger"]
+        profiles = ["work", "danger"]
+        if risk == "safe" and capability not in {"code", "database"}:
+            profiles.insert(0, "ordinary")
+        if capability in {"file", "code", "search", "memory", "api", "unknown"}:
+            profiles.append("code")
+        if capability in {"web", "search", "api", "memory", "unknown"}:
+            profiles.append("web")
+        seen: set[str] = set()
+        result = []
+        for item in profiles:
+            if item not in seen:
+                seen.add(item)
+                result.append(item)
+        return result
+
     def _ensure_workflow_data(self, task: TaskState) -> dict[str, Any]:
         data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
         data.setdefault("node_outputs", {})
         data.setdefault("variables", {})
         data.setdefault("react_traces", [])
         data.setdefault("execution_counts", {})
+        data.setdefault("observations", [])
+        data.setdefault("loop_guard", {})
+        data.setdefault("resume", {})
         task.workflow_data = data
         return data
 
@@ -1486,6 +2114,35 @@ class AgentLabPlugin(Star):
             json.dumps(payload, ensure_ascii=False, indent=2),
             4000,
         )
+        self._record_explicit_observation(
+            task,
+            source="node_executor",
+            node_id=node_id,
+            payload=payload,
+        )
+        self._prepare_resume_anchor(task, reason=f"node:{node_id}")
+
+    def _record_explicit_observation(
+        self,
+        task: TaskState,
+        *,
+        source: str,
+        node_id: str = "",
+        payload: Any = None,
+    ) -> None:
+        data = self._ensure_workflow_data(task)
+        observations = data.setdefault("observations", [])
+        if not isinstance(observations, list):
+            observations = []
+        observations.append(
+            {
+                "time": now_iso(),
+                "source": str(source or "runtime"),
+                "node_id": str(node_id or task.workflow_current_node_id or ""),
+                "payload": payload,
+            }
+        )
+        data["observations"] = observations[-160:]
 
     def _record_react_trace(
         self,
@@ -1498,16 +2155,104 @@ class AgentLabPlugin(Star):
     ) -> None:
         data = self._ensure_workflow_data(task)
         traces = data.setdefault("react_traces", [])
+        current_node = str(node_id or task.workflow_current_node_id or "").strip()
+        data_snapshot = {
+            "node_id": current_node,
+            "goal": self._compact_text(task.root_goal, 500),
+            "action_summary": self._compact_text(response, 700),
+            "observation": self._compact_text(task.last_observation, 700),
+            "next_decision": self._compact_text(task.next_step, 500),
+        }
         traces.append(
             {
                 "time": now_iso(),
-                "node_id": node_id,
+                "node_id": current_node,
                 "reason": reason,
-                "prompt": self._compact_text(prompt, 1200),
-                "response": self._compact_text(response, 1600),
+                "response": data_snapshot["action_summary"],
+                **data_snapshot,
             }
         )
         data["react_traces"] = traces[-80:]
+
+    def _memory_entry_visible(
+        self,
+        item: dict[str, Any],
+        *,
+        umo: str = "",
+        active_task: TaskState | None = None,
+        allow_private: bool = False,
+    ) -> tuple[bool, bool]:
+        layer = str(item.get("layer") or "").strip()
+        exposed = bool(item.get("expose_to_normal", False))
+        status = str(item.get("status") or "candidate").strip().lower()
+        source_umo = str(item.get("source_umo") or "")
+        source_task_id = str(item.get("source_task_id") or "")
+        same_scope = bool(
+            allow_private
+            and (
+                (source_umo and source_umo == umo)
+                or (active_task is not None and source_task_id == active_task.task_id)
+            )
+        )
+        if layer in {"private_task_memory", "candidate_memory"}:
+            return same_scope, same_scope
+        if layer in {"accepted_memory", "archive_summary"}:
+            return status == "accepted" and exposed, False
+        if exposed and status == "accepted":
+            return True, False
+        return same_scope, same_scope
+
+    def _memory_entry_row(
+        self,
+        item: dict[str, Any],
+        *,
+        include_text: bool = True,
+        text_limit: int = 0,
+    ) -> dict[str, Any]:
+        text = str(item.get("text") or "")
+        if text_limit > 0:
+            text = self._compact_text(text, text_limit)
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        row = {
+            "memory_id": item.get("memory_id"),
+            "layer": item.get("layer") or "",
+            "status": str(item.get("status") or "candidate").strip().lower(),
+            "kind": item.get("kind") or "",
+            "tags": item.get("tags") or [],
+            "source_task_id": item.get("source_task_id") or "",
+            "source_umo": item.get("source_umo") or "",
+            "updated_at": item.get("updated_at") or "",
+            "evidence": {
+                "memory_id": evidence.get("memory_id") or item.get("memory_id") or "",
+                "source_task_id": evidence.get("source_task_id") or item.get("source_task_id") or "",
+                "source_umo": evidence.get("source_umo") or item.get("source_umo") or "",
+                "kind": evidence.get("kind") or item.get("kind") or "",
+                "layer": evidence.get("layer") or item.get("layer") or "",
+            },
+        }
+        if include_text:
+            row["text"] = text
+        return row
+
+    @staticmethod
+    def _memory_similarity_score(query: str, haystack: str) -> int:
+        needle = str(query or "").strip().lower()
+        text = str(haystack or "").strip().lower()
+        if not needle:
+            return 1
+        if needle in text:
+            return 1000 + len(needle)
+        query_terms = {
+            token
+            for token in re.findall(r"[\w\u4e00-\u9fff]+", needle)
+            if len(token) >= 2
+        }
+        if not query_terms:
+            return 0
+        text_terms = set(re.findall(r"[\w\u4e00-\u9fff]+", text))
+        score = sum(3 for token in query_terms if token in text_terms)
+        score += sum(1 for token in query_terms if token in text)
+        return score
 
     def _node_result_to_decision(
         self,
@@ -1584,6 +2329,20 @@ class AgentLabPlugin(Star):
                 target = str(route_map.get(key) or "").strip()
                 if target in outgoing:
                     return target
+        context = self._condition_context(task)
+        default_target = ""
+        for item in candidates:
+            target = str(item.get("id") or "").strip()
+            condition = str(item.get("condition") or item.get("when") or "").strip()
+            if not condition:
+                continue
+            lowered = condition.lower()
+            if lowered in {"default", "else", "otherwise"}:
+                default_target = target
+                continue
+            result = evaluate_condition(condition, context)
+            if result is True and target in outgoing:
+                return target
         if task.pending_approvals():
             return self._candidate_by_action(candidates, {"wait_user", "handoff"}) or self._candidate_by_stage(candidates, {"guard"})
 
@@ -1603,7 +2362,7 @@ class AgentLabPlugin(Star):
         if passed:
             return self._candidate_by_action(candidates, {"save_state", "save_memory", "notify", "exit_summary", "archive"})
 
-        default_target = ""
+        default_target = default_target
         for item in candidates:
             condition = str(item.get("condition") or "").strip().lower()
             if condition in {"default", "else", "otherwise"}:
@@ -1668,12 +2427,12 @@ class AgentLabPlugin(Star):
             or ctx.node.get("condition")
             or ctx.task.root_goal
             or ""
-        ).strip().lower()
+        ).strip()
         try:
             limit = max(1, min(int(ctx.node.get("limit") or 5), 12))
         except Exception:
             limit = 5
-        rows = []
+        scored_rows: list[tuple[int, dict[str, Any]]] = []
         for item in reversed(self.storage.list_memory_entries()):
             text = str(item.get("text") or "")
             haystack = "\n".join(
@@ -1682,33 +2441,26 @@ class AgentLabPlugin(Star):
                     str(item.get("source_task_id") or ""),
                     " ".join(str(tag) for tag in item.get("tags") or []),
                 ]
-            ).lower()
-            if query and query not in haystack:
-                continue
-            exposed = bool(item.get("expose_to_normal", False))
-            same_scope = (
-                str(item.get("source_umo") or "") == ctx.task.umo
-                or str(item.get("source_task_id") or "") == ctx.task.task_id
             )
-            if not exposed and not same_scope:
+            score = self._memory_similarity_score(query, haystack)
+            if query and score <= 0:
                 continue
-            rows.append(
-                {
-                    "memory_id": item.get("memory_id"),
-                    "status": item.get("status") or "candidate",
-                    "kind": item.get("kind") or "",
-                    "tags": item.get("tags") or [],
-                    "source_task_id": item.get("source_task_id") or "",
-                    "text": self._compact_text(text, 900),
-                }
+            visible, _ = self._memory_entry_visible(
+                item,
+                umo=ctx.task.umo,
+                active_task=ctx.task,
+                allow_private=True,
             )
-            if len(rows) >= limit:
-                break
+            if not visible:
+                continue
+            scored_rows.append((score, self._memory_entry_row(item, text_limit=900)))
+        scored_rows.sort(key=lambda row: row[0], reverse=True)
+        rows = [row for _, row in scored_rows[:limit]]
         outcome = f"Retrieved {len(rows)} task memory item(s)."
         return NodeExecutionResult(
             outcome=outcome,
             next_node_id=self._single_next(ctx.outgoing),
-            data={"query": query, "rows": rows},
+            data={"query": query.lower(), "rows": rows},
             needs_react=len(ctx.outgoing) > 1,
             advance=len(ctx.outgoing) <= 1,
             note="node_executor_memory_retrieve",
@@ -1762,6 +2514,17 @@ class AgentLabPlugin(Star):
                 advance=False,
                 note="node_executor_api_not_allowed",
             )
+        budget_reason = self._consume_tool_budget(ctx.task, CUSTOM_API_TOOL_NAME)
+        if budget_reason:
+            self._pause_task_for_budget(ctx.task, budget_reason)
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=budget_reason,
+                blocked=True,
+                advance=False,
+                note="node_executor_api_budget",
+            )
         base = {
             "node_id": str(ctx.node.get("id") or ""),
             "title": ctx.node.get("title") or ctx.node.get("id") or "",
@@ -1797,9 +2560,9 @@ class AgentLabPlugin(Star):
         variable_payload = self._node_payload_from_variable(ctx.task, ctx.node)
         if isinstance(variable_payload, dict):
             call_args = {**call_args, **variable_payload}
-        if not tool_name or not call_args:
+        if not tool_name:
             return NodeExecutionResult(
-                outcome="Tool node needs ReAct because no concrete tool_name/tool_args are bound.",
+                outcome="Tool node needs ReAct because no concrete tool_name is bound.",
                 needs_react=True,
                 advance=False,
                 note="node_executor_tool_react_fallback",
@@ -1826,6 +2589,62 @@ class AgentLabPlugin(Star):
                 blocked=True,
                 advance=False,
                 note="node_executor_tool_unavailable",
+            )
+        capability = self._infer_capability(
+            tool_name,
+            getattr(tool, "description", ""),
+            getattr(tool, "handler_module_path", ""),
+        )
+        risk = self._effective_tool_risk(
+            ctx.spec,
+            tool_name,
+            self._infer_tool_risk(tool_name, getattr(tool, "description", "")),
+        )
+        parameter_schema = self._normalize_tool_input_schema(
+            self._tool_schema(
+                tool,
+                name=tool_name,
+                description=getattr(tool, "description", ""),
+            )
+        )
+        schema_reason = self._schema_validation_message(
+            parameter_schema,
+            call_args,
+            f"Tool arguments for {tool_name}",
+        )
+        if schema_reason:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=schema_reason,
+                blocked=True,
+                advance=False,
+                data={
+                    "tool_name": tool_name,
+                    "args": call_args,
+                    "parameters_schema": parameter_schema,
+                },
+                note="node_executor_tool_schema_mismatch",
+            )
+        if not self._permission_allows_tool(ctx.node, capability=capability, risk=risk):
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"Tool permission profile blocks {tool_name}: capability={capability}, risk={risk}",
+                blocked=True,
+                advance=False,
+                note="node_executor_tool_permission_blocked",
+            )
+        budget_reason = self._consume_tool_budget(ctx.task, tool_name)
+        if budget_reason:
+            self._pause_task_for_budget(ctx.task, budget_reason)
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=budget_reason,
+                blocked=True,
+                advance=False,
+                note="node_executor_tool_budget",
             )
         try:
             from astrbot.core.agent.run_context import ContextWrapper
@@ -2017,6 +2836,53 @@ class AgentLabPlugin(Star):
         self._ensure_workflow_data(task)
         for _ in range(self.workflow_runtime.max_auto_steps):
             decision = self.workflow_runtime.inspect(spec, task)
+            budget_reason = self._consume_node_budget(task, decision.node)
+            if budget_reason:
+                self._pause_task_for_budget(task, budget_reason)
+                runtime_run.steps.append(
+                    WorkflowDecision(
+                        node_id=decision.node_id,
+                        node=decision.node,
+                        status="blocked",
+                        outcome=budget_reason,
+                        note="budget_exhausted",
+                        blocked=True,
+                    )
+                )
+                runtime_run.blocked = True
+                break
+            schema_reason = self._validate_node_input_schema(task, decision.node)
+            if schema_reason:
+                task.status = "paused"
+                task.watchdog.paused_reason = schema_reason
+                task.watchdog.needs_user = True
+                task.add_blocker("schema_mismatch", schema_reason)
+                runtime_run.steps.append(
+                    WorkflowDecision(
+                        node_id=decision.node_id,
+                        node=decision.node,
+                        status="blocked",
+                        outcome=schema_reason,
+                        note="schema_mismatch",
+                        blocked=True,
+                    )
+                )
+                runtime_run.blocked = True
+                break
+            loop_reason = self._loop_guard_before_node(task, decision.node)
+            if loop_reason:
+                runtime_run.steps.append(
+                    WorkflowDecision(
+                        node_id=decision.node_id,
+                        node=decision.node,
+                        status="blocked",
+                        outcome=loop_reason,
+                        note="loop_guard",
+                        blocked=True,
+                    )
+                )
+                runtime_run.blocked = True
+                break
             if decision.blocked:
                 runtime_run.steps.append(decision)
                 runtime_run.blocked = True
@@ -2050,8 +2916,17 @@ class AgentLabPlugin(Star):
                 )
                 result = await self.node_executors.execute(ctx)
                 self._record_node_execution(task, decision.node, result)
+                loop_after_reason = self._loop_guard_after_node(task, decision.node, result)
                 executed = self._node_result_to_decision(decision.node, result)
+                if loop_after_reason:
+                    executed.blocked = True
+                    executed.status = "blocked"
+                    executed.note = "loop_guard"
+                    executed.outcome = loop_after_reason
+                    runtime_run.blocked = True
                 runtime_run.steps.append(executed)
+                if loop_after_reason:
+                    break
 
                 if result.terminal:
                     runtime_run.needs_react = True
@@ -3145,7 +4020,27 @@ class AgentLabPlugin(Star):
 
     def _plugin_rows(self) -> list[dict[str, Any]]:
         rows = []
+        capabilities_by_plugin: dict[str, set[str]] = {}
+        tool_count_by_plugin: dict[str, int] = {}
+        try:
+            tools = list(self.context.get_llm_tool_manager().func_list)
+        except Exception:
+            tools = []
+        for tool in tools:
+            plugin_name = self._tool_plugin_name(tool)
+            if not plugin_name:
+                continue
+            capability = self._infer_capability(
+                getattr(tool, "name", ""),
+                getattr(tool, "description", ""),
+                getattr(tool, "handler_module_path", ""),
+            )
+            capabilities_by_plugin.setdefault(plugin_name, set()).add(capability)
+            tool_count_by_plugin[plugin_name] = tool_count_by_plugin.get(plugin_name, 0) + 1
         for plugin in self.context.get_all_stars():
+            capabilities = sorted(
+                item for item in capabilities_by_plugin.get(plugin.name, set()) if item
+            )
             rows.append(
                 {
                     "name": plugin.name,
@@ -3156,6 +4051,9 @@ class AgentLabPlugin(Star):
                     "desc": plugin.desc,
                     "module_path": getattr(plugin, "module_path", "") or "",
                     "root_dir_name": getattr(plugin, "root_dir_name", "") or "",
+                    "capabilities": capabilities,
+                    "capability_summary": ", ".join(capabilities) if capabilities else "unknown",
+                    "tool_count": tool_count_by_plugin.get(plugin.name, 0),
                 }
             )
         return rows
@@ -3205,7 +4103,89 @@ class AgentLabPlugin(Star):
                     "risk": item["risk"],
                 }
             )
+        for row in rows:
+            self._hydrate_tool_registry_row(row)
         return rows
+
+    def _hydrate_tool_registry_row(self, row: dict[str, Any]) -> None:
+        name = str(row.get("name") or "")
+        description = str(row.get("description") or "")
+        handler_module_path = str(row.get("handler_module_path") or "")
+        capability = self._infer_capability(name, description, handler_module_path)
+        risk = str(row.get("risk") or self._infer_tool_risk(name, description))
+        tool = None
+        if row.get("source") == "registered":
+            try:
+                tool = self.context.get_llm_tool_manager().get_func(name)
+            except Exception:
+                tool = None
+        parameters_schema = self._tool_schema(
+            tool,
+            name=name,
+            description=description,
+        )
+        row.setdefault("risk", risk)
+        row["capability"] = capability
+        row["parameters_schema"] = parameters_schema
+        row["input_schema"] = self._normalize_tool_input_schema(parameters_schema)
+        row["output_schema"] = self._tool_output_schema(name, capability)
+        row["permission_profiles"] = self._permission_profiles_for(capability, risk)
+
+    @staticmethod
+    def _normalize_tool_input_schema(parameters_schema: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(parameters_schema, dict):
+            return {"type": "object", "properties": {}, "additionalProperties": True}
+        if parameters_schema.get("type") == "object":
+            return parameters_schema
+        if "properties" in parameters_schema:
+            return {
+                "type": "object",
+                "properties": parameters_schema.get("properties") or {},
+                "required": parameters_schema.get("required") or [],
+                "additionalProperties": parameters_schema.get("additionalProperties", True),
+            }
+        return {"type": "object", "properties": {}, "additionalProperties": True}
+
+    @staticmethod
+    def _tool_output_schema(name: str, capability: str) -> dict[str, Any]:
+        if capability == "memory":
+            return {
+                "type": "object",
+                "properties": {
+                    "rows": {"type": "array"},
+                    "memory_id": {"type": "string"},
+                    "source_task_id": {"type": "string"},
+                },
+            }
+        if capability in {"search", "web"}:
+            return {
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "results": {"type": "array"},
+                    "sources": {"type": "array"},
+                },
+            }
+        if capability == "file":
+            return {
+                "type": "object",
+                "properties": {
+                    "ok": {"type": "boolean"},
+                    "path": {"type": "string"},
+                    "content": {"type": "string"},
+                },
+            }
+        return {
+            "type": "object",
+            "properties": {
+                "ok": {"type": "boolean"},
+                "tool_name": {"type": "string"},
+                "result": {
+                    "type": ["object", "array", "string", "number", "boolean", "null"],
+                },
+            },
+            "description": f"Output produced by {name}.",
+        }
 
     @staticmethod
     def _infer_tool_risk(name: str, description: str = "") -> str:
@@ -3858,6 +4838,22 @@ class AgentLabPlugin(Star):
                     and tool_name not in set(spec.enabled_tools or [])
                 ):
                     add_issue("warn", "tool_not_whitelisted", f"引用工具不在当前 AgentSpec 工具白名单中：{tool_name}", node_id)
+
+        node_lookup = {str(item.get("id") or ""): item for item in nodes}
+        for edge in edges:
+            start = str(edge.get("from") or "")
+            end = str(edge.get("to") or "")
+            source_node = node_lookup.get(start) or {}
+            target_node = node_lookup.get(end) or {}
+            source_schema = self._node_schema(source_node, "output_schema")
+            target_schema = self._node_schema(target_node, "input_schema")
+            if source_schema and target_schema and not schema_compatible(source_schema, target_schema):
+                add_issue(
+                    "warn",
+                    "schema_incompatible_edge",
+                    f"Node schema mismatch: {start} output cannot feed {end} input.",
+                    end,
+                )
 
         if entry_ids and terminal_ids and not any(node_id in reachable for node_id in terminal_ids):
             add_issue("error", "archive_unreachable", "入口路径无法到达任何出口/归档节点。")
