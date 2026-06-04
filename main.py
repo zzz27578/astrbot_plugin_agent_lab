@@ -31,7 +31,12 @@ from .agent_lab.prompts import (
     build_task_system_prompt,
     build_tick_prompt,
 )
-from .agent_lab.runtime import WorkflowRuntime, WorkflowRuntimeRun
+from .agent_lab.node_runtime import (
+    NodeExecutionContext,
+    NodeExecutionResult,
+    NodeExecutorRegistry,
+)
+from .agent_lab.runtime import WorkflowDecision, WorkflowRuntime, WorkflowRuntimeRun
 from .agent_lab.session_guard import SessionPluginGuard
 from .agent_lab.summarizer import AgentSummarizer
 from .agent_lab.webui_server import StandaloneWebUIServer
@@ -222,6 +227,8 @@ class AgentLabPlugin(Star):
         self.workflow_runtime = WorkflowRuntime(
             max_auto_steps=int(_cfg(self.config, "workflow_auto_steps_per_tick", 6))
         )
+        self.node_executors = NodeExecutorRegistry()
+        self._register_node_executors()
         self.summarizer = AgentSummarizer(
             context,
             {
@@ -1074,6 +1081,13 @@ class AgentLabPlugin(Star):
             if not latest_task or latest_task.task_id != task.task_id:
                 return f"tick 完成，任务已在本轮结束或切换。\n\n{self._compact_text(text, 1800)}"
             task = latest_task
+            self._record_react_trace(
+                task,
+                node_id=runtime_run.react_node_id or task.workflow_current_node_id,
+                prompt=prompt,
+                response=text,
+                reason=reason,
+            )
             changed_by_tools = (
                 task.updated_at != task_updated_at_before_tick
                 or len(task.progress_log) != task_log_count_before_tick
@@ -1332,6 +1346,25 @@ class AgentLabPlugin(Star):
                 toolset.add_tool(tool)
         return toolset
 
+    def _tool_allowed_by_agent_profile(self, spec: AgentSpec, tool_name: str) -> bool:
+        name = str(tool_name or "").strip()
+        if not name:
+            return False
+        if name in {
+            NO_EXTERNAL_TOOLS_SENTINEL,
+            "agent_lab_enter_mode",
+            "agent_lab_tick",
+            "agent_lab_finish",
+            "agent_lab_update_workflow",
+            "agent_lab_run_parallel_workflow",
+        }:
+            return False
+        tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
+        selected_tools = set(spec.enabled_tools or [])
+        if tool_mode == "no_external" or NO_EXTERNAL_TOOLS_SENTINEL in selected_tools:
+            return False
+        return tool_mode == "full" or not selected_tools or name in selected_tools
+
     def _workflow_runtime_view(self, task: TaskState) -> dict[str, Any]:
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
         self._normalize_agent_workflow(spec)
@@ -1365,6 +1398,7 @@ class AgentLabPlugin(Star):
 
     def _initialize_task_workflow(self, task: TaskState, spec: AgentSpec, source: str = "") -> None:
         self._normalize_agent_workflow(spec)
+        self._ensure_workflow_data(task)
         entry_id = self._workflow_entry_id(spec)
         if not entry_id:
             return
@@ -1377,6 +1411,600 @@ class AgentLabPlugin(Star):
             note=f"source={source}" if source else "",
         )
 
+    def _register_node_executors(self) -> None:
+        for action in ("summarize_entry", "confirm_entry", "restore_isolation"):
+            self.node_executors.register(action, self._execute_entry_node)
+        for action in ("save_state", "heartbeat", "transform_context"):
+            self.node_executors.register(action, self._execute_state_node)
+        self.node_executors.register("retrieve_memory", self._execute_retrieve_memory_node)
+        self.node_executors.register("save_memory", self._execute_save_memory_node)
+        self.node_executors.register("parallel_branch", self._execute_parallel_branch_node)
+        self.node_executors.register("call_api", self._execute_api_node)
+        self.node_executors.register("run_tools", self._execute_tool_node)
+        self.node_executors.register("route_condition", self._execute_route_node)
+        self.node_executors.register("retry", self._execute_retry_node)
+        self.node_executors.register("validate_output", self._execute_validation_node)
+        self.node_executors.register("request_approval", self._execute_approval_node)
+        self.node_executors.register("wait_user", self._execute_wait_node)
+        self.node_executors.register("handoff", self._execute_wait_node)
+        self.node_executors.register("notify", self._execute_notify_node)
+        self.node_executors.register("archive", self._execute_terminal_node)
+        self.node_executors.register("exit_summary", self._execute_terminal_node)
+
+    @staticmethod
+    def _single_next(outgoing: list[str]) -> str:
+        return outgoing[0] if len(outgoing) == 1 else ""
+
+    def _ensure_workflow_data(self, task: TaskState) -> dict[str, Any]:
+        data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
+        data.setdefault("node_outputs", {})
+        data.setdefault("variables", {})
+        data.setdefault("react_traces", [])
+        data.setdefault("execution_counts", {})
+        task.workflow_data = data
+        return data
+
+    def _workflow_variable(self, task: TaskState, name: str, default: Any = None) -> Any:
+        data = self._ensure_workflow_data(task)
+        return (data.get("variables") or {}).get(str(name or "").strip(), default)
+
+    def _record_node_execution(
+        self,
+        task: TaskState,
+        node: dict[str, Any],
+        result: NodeExecutionResult,
+    ) -> None:
+        data = self._ensure_workflow_data(task)
+        node_id = str(result.node_id or node.get("id") or "").strip()
+        if not node_id:
+            return
+        counts = data.setdefault("execution_counts", {})
+        counts[node_id] = int(counts.get(node_id, 0) or 0) + 1
+        payload = {
+            "time": now_iso(),
+            "node_id": node_id,
+            "title": node.get("title") or node_id,
+            "runtime_type": node.get("runtime_type") or NodeExecutorRegistry.runtime_type(node),
+            "action": node.get("action") or "",
+            "status": result.status,
+            "ok": result.ok,
+            "outcome": result.outcome,
+            "note": result.note,
+            "next_node_id": result.next_node_id,
+            "data": result.data,
+        }
+        data.setdefault("node_outputs", {})[node_id] = payload
+        output_variable = str(
+            node.get("output_variable")
+            or node.get("variable")
+            or node.get("output")
+            or ""
+        ).strip()
+        if output_variable:
+            data.setdefault("variables", {})[output_variable] = result.data or result.outcome
+        task.last_observation = self._compact_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            4000,
+        )
+
+    def _record_react_trace(
+        self,
+        task: TaskState,
+        *,
+        node_id: str,
+        prompt: str,
+        response: str,
+        reason: str,
+    ) -> None:
+        data = self._ensure_workflow_data(task)
+        traces = data.setdefault("react_traces", [])
+        traces.append(
+            {
+                "time": now_iso(),
+                "node_id": node_id,
+                "reason": reason,
+                "prompt": self._compact_text(prompt, 1200),
+                "response": self._compact_text(response, 1600),
+            }
+        )
+        data["react_traces"] = traces[-80:]
+
+    def _node_result_to_decision(
+        self,
+        node: dict[str, Any],
+        result: NodeExecutionResult,
+    ) -> WorkflowDecision:
+        return WorkflowDecision(
+            node_id=result.node_id or str(node.get("id") or ""),
+            node=node,
+            next_node_id=result.next_node_id,
+            status=result.status,
+            outcome=result.outcome,
+            note=result.note,
+            needs_react=result.needs_react,
+            terminal=result.terminal,
+            blocked=result.blocked,
+        )
+
+    def _node_json_object(self, node: dict[str, Any], *keys: str) -> dict[str, Any]:
+        for key in keys:
+            raw = node.get(key)
+            if raw in (None, ""):
+                continue
+            if isinstance(raw, dict):
+                return raw
+            if isinstance(raw, str):
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+        return {}
+
+    def _node_payload_from_variable(self, task: TaskState, node: dict[str, Any]) -> Any:
+        input_variable = str(node.get("input_variable") or "").strip()
+        if not input_variable:
+            return None
+        return self._workflow_variable(task, input_variable)
+
+    @staticmethod
+    def _candidate_by_action(candidates: list[dict[str, Any]], actions: set[str]) -> str:
+        for item in candidates:
+            if str(item.get("action") or "").strip() in actions:
+                return str(item.get("id") or "").strip()
+        return ""
+
+    @staticmethod
+    def _candidate_by_stage(candidates: list[dict[str, Any]], stages: set[str]) -> str:
+        for item in candidates:
+            if str(item.get("stage") or "").strip() in stages:
+                return str(item.get("id") or "").strip()
+        return ""
+
+    def _route_target_from_node(
+        self,
+        task: TaskState,
+        node: dict[str, Any],
+        outgoing: list[str],
+        candidates: list[dict[str, Any]],
+    ) -> str:
+        if len(outgoing) == 1:
+            return outgoing[0]
+        for key in ("next_node_id", "target_node_id", "route_to", "default_next"):
+            target = str(node.get(key) or "").strip()
+            if target in outgoing:
+                return target
+
+        route_map = self._node_json_object(node, "route_map", "routes")
+        route_variable = str(node.get("route_variable") or node.get("input_variable") or "").strip()
+        if route_map and route_variable:
+            value = self._workflow_variable(task, route_variable)
+            for key in (str(value), str(value).lower()):
+                target = str(route_map.get(key) or "").strip()
+                if target in outgoing:
+                    return target
+        if task.pending_approvals():
+            return self._candidate_by_action(candidates, {"wait_user", "handoff"}) or self._candidate_by_stage(candidates, {"guard"})
+
+        state_text = "\n".join(
+            [
+                task.status or "",
+                task.current_summary or "",
+                task.last_confirmed_progress or "",
+                task.last_observation or "",
+                " ".join(item.get("issue", "") for item in task.blockers[-3:]),
+            ]
+        ).lower()
+        failed = any(word in state_text for word in ("fail", "failed", "error", "blocked", "失败", "错误", "阻塞"))
+        passed = any(word in state_text for word in ("pass", "passed", "ok", "success", "完成", "通过", "成功")) and not failed
+        if failed:
+            return self._candidate_by_action(candidates, {"retry", "request_approval", "wait_user", "handoff"})
+        if passed:
+            return self._candidate_by_action(candidates, {"save_state", "save_memory", "notify", "exit_summary", "archive"})
+
+        default_target = ""
+        for item in candidates:
+            condition = str(item.get("condition") or "").strip().lower()
+            if condition in {"default", "else", "otherwise"}:
+                default_target = str(item.get("id") or "").strip()
+        return default_target if default_target in outgoing else ""
+
+    async def _execute_entry_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        action = str(ctx.node.get("action") or "").strip()
+        if action == "summarize_entry":
+            outcome = f"Entry brief is available for task {ctx.task.task_id}."
+        elif action == "confirm_entry":
+            outcome = "Entry confirmation is satisfied because the task exists."
+        else:
+            outcome = "Session isolation snapshot is already applied for this task."
+        return NodeExecutionResult(
+            outcome=outcome,
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"action": action, "task_id": ctx.task.task_id},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_entry",
+        )
+
+    async def _execute_state_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        action = str(ctx.node.get("action") or "").strip()
+        if action == "heartbeat":
+            ctx.task.heartbeat.last_pulse_at = now_iso()
+            outcome = "Heartbeat checkpoint recorded."
+            data = {"heartbeat_enabled": ctx.task.heartbeat.enabled}
+        elif action == "transform_context":
+            source = self._node_payload_from_variable(ctx.task, ctx.node)
+            if source is None:
+                source = ctx.task.last_observation or ctx.task.current_summary or ctx.task.last_confirmed_progress
+            text = self._compact_text(
+                source if isinstance(source, str) else json.dumps(source, ensure_ascii=False),
+                1600,
+            )
+            if text:
+                ctx.task.current_summary = text
+            outcome = "Context transformed into compact observation."
+            data = {"summary": text}
+        else:
+            outcome = "Task checkpoint saved."
+            data = {
+                "current_summary": ctx.task.current_summary,
+                "progress": ctx.task.last_confirmed_progress,
+                "next_step": ctx.task.next_step,
+            }
+        return NodeExecutionResult(
+            outcome=outcome,
+            next_node_id=self._single_next(ctx.outgoing),
+            data=data,
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_state",
+        )
+
+    async def _execute_retrieve_memory_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        query = str(
+            ctx.node.get("query")
+            or ctx.node.get("memory_query")
+            or ctx.node.get("condition")
+            or ctx.task.root_goal
+            or ""
+        ).strip().lower()
+        try:
+            limit = max(1, min(int(ctx.node.get("limit") or 5), 12))
+        except Exception:
+            limit = 5
+        rows = []
+        for item in reversed(self.storage.list_memory_entries()):
+            text = str(item.get("text") or "")
+            haystack = "\n".join(
+                [
+                    text,
+                    str(item.get("source_task_id") or ""),
+                    " ".join(str(tag) for tag in item.get("tags") or []),
+                ]
+            ).lower()
+            if query and query not in haystack:
+                continue
+            exposed = bool(item.get("expose_to_normal", False))
+            same_scope = (
+                str(item.get("source_umo") or "") == ctx.task.umo
+                or str(item.get("source_task_id") or "") == ctx.task.task_id
+            )
+            if not exposed and not same_scope:
+                continue
+            rows.append(
+                {
+                    "memory_id": item.get("memory_id"),
+                    "status": item.get("status") or "candidate",
+                    "kind": item.get("kind") or "",
+                    "tags": item.get("tags") or [],
+                    "source_task_id": item.get("source_task_id") or "",
+                    "text": self._compact_text(text, 900),
+                }
+            )
+            if len(rows) >= limit:
+                break
+        outcome = f"Retrieved {len(rows)} task memory item(s)."
+        return NodeExecutionResult(
+            outcome=outcome,
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"query": query, "rows": rows},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_memory_retrieve",
+        )
+
+    async def _execute_save_memory_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        outcome = "Private task memory checkpoint saved."
+        self._save_workflow_private_memory(ctx.task, ctx.node, outcome)
+        return NodeExecutionResult(
+            outcome=outcome,
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"kind": "workflow_private_memory", "expose_to_normal": False},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_memory_save",
+        )
+
+    async def _execute_parallel_branch_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        parallel = await self._run_parallel_workflow(
+            event=ctx.event,
+            task=ctx.task,
+            spec=ctx.spec,
+            branch_node_id=str(ctx.node.get("id") or ""),
+            parallel_group=str(ctx.node.get("parallel_group") or ""),
+            shared_instruction=f"tick_reason={ctx.reason}",
+            max_concurrency=max(
+                1,
+                min(int(_cfg(self.config, "workflow_parallel_concurrency", 3) or 3), 6),
+            ),
+        )
+        ok = bool(parallel.get("ok"))
+        return NodeExecutionResult(
+            ok=ok,
+            status="completed" if ok else "blocked",
+            outcome=str(parallel.get("summary") or parallel.get("error") or "Parallel workflow finished."),
+            next_node_id=str(parallel.get("merge_node_id") or ""),
+            data=parallel,
+            blocked=not ok and not parallel.get("merge_node_id"),
+            needs_react=not parallel.get("merge_node_id"),
+            advance=False,
+            note="node_executor_parallel",
+        )
+
+    async def _execute_api_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        if not self._tool_allowed_by_agent_profile(ctx.spec, CUSTOM_API_TOOL_NAME):
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="Custom API execution is outside the Agent tool profile.",
+                blocked=True,
+                advance=False,
+                note="node_executor_api_not_allowed",
+            )
+        base = {
+            "node_id": str(ctx.node.get("id") or ""),
+            "title": ctx.node.get("title") or ctx.node.get("id") or "",
+            "kind": ctx.node.get("kind") or "api",
+            "action": ctx.node.get("action") or "call_api",
+            "ok": False,
+            "status": "blocked",
+            "summary": "",
+            "details": "",
+        }
+        payload = self._node_payload_from_variable(ctx.task, ctx.node)
+        if payload is None:
+            payload = self._node_json_object(ctx.node, "api_payload", "payload", "params")
+        worker = await self._run_parallel_api_worker(ctx.node, base, api_payload=payload)
+        ok = bool(worker.get("ok"))
+        return NodeExecutionResult(
+            ok=ok,
+            status="completed" if ok else "blocked",
+            outcome=str(worker.get("summary") or worker.get("error") or ""),
+            next_node_id=self._single_next(ctx.outgoing) if ok else "",
+            data=worker,
+            blocked=not ok,
+            note="node_executor_api",
+        )
+
+    async def _execute_tool_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        tool_name = str(
+            ctx.node.get("tool_name")
+            or (ctx.node.get("ref_id") if ctx.node.get("ref_type") == "tool" else "")
+            or ""
+        ).strip()
+        call_args = self._node_json_object(ctx.node, "tool_args", "arguments", "params")
+        variable_payload = self._node_payload_from_variable(ctx.task, ctx.node)
+        if isinstance(variable_payload, dict):
+            call_args = {**call_args, **variable_payload}
+        if not tool_name or not call_args:
+            return NodeExecutionResult(
+                outcome="Tool node needs ReAct because no concrete tool_name/tool_args are bound.",
+                needs_react=True,
+                advance=False,
+                note="node_executor_tool_react_fallback",
+            )
+        if not self._tool_allowed_by_agent_profile(ctx.spec, tool_name):
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"Tool is outside the Agent tool profile: {tool_name}",
+                blocked=True,
+                advance=False,
+                note="node_executor_tool_not_allowed",
+            )
+        tmgr = self.context.get_llm_tool_manager()
+        try:
+            tool = tmgr.get_func(tool_name)
+        except Exception:
+            tool = None
+        if not tool or not self._tool_available_for_agent(tool, self._disabled_plugin_names(ctx.spec)):
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"Tool is unavailable or isolated: {tool_name}",
+                blocked=True,
+                advance=False,
+                note="node_executor_tool_unavailable",
+            )
+        try:
+            from astrbot.core.agent.run_context import ContextWrapper
+
+            result = await tool.call(
+                ContextWrapper(context=ctx.event, tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120))),
+                **call_args,
+            )
+        except NotImplementedError:
+            return NodeExecutionResult(
+                outcome=f"Tool {tool_name} has no direct callable executor; ReAct/tool-loop is required.",
+                needs_react=True,
+                advance=False,
+                note="node_executor_tool_react_fallback",
+            )
+        except Exception as exc:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"{type(exc).__name__}: {exc}",
+                blocked=True,
+                advance=False,
+                note="node_executor_tool_error",
+            )
+        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        return NodeExecutionResult(
+            outcome=self._compact_text(text, 1000) or f"Tool {tool_name} completed.",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"tool_name": tool_name, "args": call_args, "result": self._compact_text(text, 2400)},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_tool",
+        )
+
+    async def _execute_route_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        target = self._route_target_from_node(ctx.task, ctx.node, ctx.outgoing, ctx.next_candidates)
+        if not target:
+            return NodeExecutionResult(
+                outcome="Decision node has no deterministic route; ReAct must choose a branch.",
+                needs_react=True,
+                advance=False,
+                note="node_executor_route_react",
+            )
+        return NodeExecutionResult(
+            outcome=f"Decision routed to {target}.",
+            next_node_id=target,
+            data={"selected": target, "candidates": ctx.outgoing},
+            note="node_executor_route",
+        )
+
+    async def _execute_retry_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        data = self._ensure_workflow_data(ctx.task)
+        node_id = str(ctx.node.get("id") or "")
+        count = int((data.get("execution_counts") or {}).get(node_id, 0) or 0)
+        max_retries = max(1, min(int(ctx.node.get("max_retries") or ctx.task.heartbeat.max_repeated_failures or 3), 8))
+        if count >= max_retries:
+            ctx.task.status = "blocked"
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"Retry limit reached ({count}/{max_retries}).",
+                blocked=True,
+                advance=False,
+                data={"count": count, "max_retries": max_retries},
+                note="node_executor_retry_limit",
+            )
+        return NodeExecutionResult(
+            outcome=f"Retry allowed ({count + 1}/{max_retries}).",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"count": count + 1, "max_retries": max_retries},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_retry",
+        )
+
+    async def _execute_validation_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        text = "\n".join(
+            [
+                ctx.task.current_summary or "",
+                ctx.task.last_confirmed_progress or "",
+                ctx.task.last_observation or "",
+            ]
+        ).lower()
+        fail_words = ("fail", "failed", "error", "blocked", "失败", "错误", "阻塞", "未通过")
+        pass_words = ("pass", "passed", "ok", "success", "完成", "通过", "成功")
+        failed = any(word in text for word in fail_words)
+        passed = any(word in text for word in pass_words) and not failed
+        if not passed and len(ctx.outgoing) > 1:
+            retry_target = self._candidate_by_action(ctx.next_candidates, {"retry"}) or self._candidate_by_stage(
+                ctx.next_candidates, {"checkpoint", "execute"}
+            )
+            if failed and retry_target:
+                return NodeExecutionResult(
+                    ok=False,
+                    status="blocked",
+                    outcome=f"Validation did not pass; routed to {retry_target}.",
+                    next_node_id=retry_target,
+                    data={"passed": False},
+                    note="node_executor_validation_retry",
+                )
+            return NodeExecutionResult(
+                outcome="Validation requires ReAct because pass/fail is unclear.",
+                needs_react=True,
+                advance=False,
+                data={"passed": False, "ambiguous": True},
+                note="node_executor_validation_react",
+            )
+        return NodeExecutionResult(
+            outcome="Validation passed." if passed else "Validation checkpoint recorded.",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"passed": passed, "ambiguous": not passed},
+            needs_react=len(ctx.outgoing) > 1 and not passed,
+            advance=len(ctx.outgoing) <= 1 or passed,
+            note="node_executor_validation",
+        )
+
+    async def _execute_approval_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        if ctx.task.pending_approvals():
+            ctx.task.status = "paused"
+            return NodeExecutionResult(
+                ok=False,
+                status="running",
+                outcome="Waiting for existing approval request.",
+                advance=False,
+                data={"pending": [item.approval_id for item in ctx.task.pending_approvals()]},
+                note="node_executor_approval_wait",
+            )
+        operation = str(ctx.node.get("operation") or ctx.node.get("title") or "workflow approval").strip()
+        reason = str(ctx.node.get("reason") or ctx.node.get("instruction") or "Workflow guard requires approval.").strip()
+        impact = str(ctx.node.get("impact") or "Task execution is paused until the user approves.").strip()
+        approval = ApprovalRequest(operation=operation, reason=reason, impact=impact)
+        ctx.task.approvals.append(approval.to_dict())
+        ctx.task.status = "paused"
+        ctx.task.add_log("approval_requested", f"{approval.approval_id}: {operation}")
+        return NodeExecutionResult(
+            ok=False,
+            status="running",
+            outcome=f"Approval requested: {approval.approval_id}",
+            advance=False,
+            data=approval.to_dict(),
+            note="node_executor_approval",
+        )
+
+    async def _execute_wait_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        ctx.task.status = "paused"
+        return NodeExecutionResult(
+            ok=False,
+            status="running",
+            outcome=str(ctx.node.get("instruction") or "Waiting for user input."),
+            advance=False,
+            data={"wait": True},
+            note="node_executor_wait",
+        )
+
+    async def _execute_notify_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        outcome = self._compact_text(
+            str(ctx.node.get("message") or ctx.task.current_summary or ctx.task.last_confirmed_progress or "Notification checkpoint."),
+            1000,
+        )
+        ctx.task.add_log("notify", outcome)
+        return NodeExecutionResult(
+            outcome=outcome,
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"message": outcome},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_notify",
+        )
+
+    async def _execute_terminal_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        return NodeExecutionResult(
+            outcome="Terminal node requires final summary and finish decision.",
+            needs_react=True,
+            terminal=True,
+            advance=False,
+            note="node_executor_terminal_react",
+        )
+
+
     async def _run_workflow_runtime(
         self,
         *,
@@ -1386,6 +2014,7 @@ class AgentLabPlugin(Star):
         reason: str,
     ) -> WorkflowRuntimeRun:
         runtime_run = WorkflowRuntimeRun()
+        self._ensure_workflow_data(task)
         for _ in range(self.workflow_runtime.max_auto_steps):
             decision = self.workflow_runtime.inspect(spec, task)
             if decision.blocked:
@@ -1403,39 +2032,60 @@ class AgentLabPlugin(Star):
                 )
                 break
 
-            if str(decision.node.get("action") or "").strip() == "parallel_branch":
-                parallel = await self._run_parallel_workflow(
+            if self.node_executors.can_execute(decision.node):
+                nodes = self.workflow_runtime.node_map(spec)
+                outgoing = [
+                    node_id
+                    for node_id in self.workflow_runtime.outgoing(spec).get(decision.node_id, [])
+                    if node_id in nodes
+                ]
+                ctx = NodeExecutionContext(
                     event=event,
                     task=task,
                     spec=spec,
-                    branch_node_id=decision.node_id,
-                    parallel_group=str(decision.node.get("parallel_group") or ""),
-                    shared_instruction=f"tick_reason={reason}",
-                    max_concurrency=max(
-                        1,
-                        min(
-                            int(_cfg(self.config, "workflow_parallel_concurrency", 3) or 3),
-                            6,
-                        ),
-                    ),
+                    node=decision.node,
+                    outgoing=outgoing,
+                    next_candidates=[nodes[node_id] for node_id in outgoing],
+                    reason=reason,
                 )
-                decision.status = "completed" if parallel.get("ok") else "blocked"
-                decision.next_node_id = str(parallel.get("merge_node_id") or "")
-                decision.outcome = str(
-                    parallel.get("summary")
-                    or parallel.get("error")
-                    or "parallel workflow finished"
-                )
-                decision.note = "workflow_runtime_parallel"
-                runtime_run.steps.append(decision)
-                if not parallel.get("ok"):
-                    runtime_run.blocked = True
-                    if not decision.next_node_id:
-                        task.status = "blocked"
-                    break
-                if not decision.next_node_id:
+                result = await self.node_executors.execute(ctx)
+                self._record_node_execution(task, decision.node, result)
+                executed = self._node_result_to_decision(decision.node, result)
+                runtime_run.steps.append(executed)
+
+                if result.terminal:
                     runtime_run.needs_react = True
-                    runtime_run.react_node_id = decision.node_id
+                    runtime_run.react_node_id = executed.node_id
+                    runtime_run.terminal = True
+                    break
+
+                if result.needs_react:
+                    runtime_run.needs_react = True
+                    runtime_run.react_node_id = executed.node_id
+                    break
+
+                if result.blocked:
+                    runtime_run.blocked = True
+                    if result.status == "blocked":
+                        task.status = "blocked"
+                        task.add_blocker("workflow_runtime", result.outcome)
+                    break
+
+                if result.advance:
+                    self._advance_task_workflow(
+                        task,
+                        spec,
+                        node_id=executed.node_id,
+                        outcome=result.outcome,
+                        next_node_id=result.next_node_id,
+                        note=result.note,
+                        status=result.status,
+                    )
+                    if not result.next_node_id:
+                        runtime_run.needs_react = True
+                        runtime_run.react_node_id = executed.node_id
+                        break
+                else:
                     break
                 continue
 
@@ -1444,9 +2094,6 @@ class AgentLabPlugin(Star):
                 runtime_run.react_node_id = decision.node_id
                 runtime_run.terminal = decision.terminal
                 break
-
-            if str(decision.node.get("action") or "").strip() == "save_memory":
-                self._save_workflow_private_memory(task, decision.node, decision.outcome)
 
             self._advance_task_workflow(
                 task,
@@ -1812,6 +2459,10 @@ class AgentLabPlugin(Star):
         }
         try:
             if kind == "api" or action == "call_api":
+                if not self._tool_allowed_by_agent_profile(spec, CUSTOM_API_TOOL_NAME):
+                    base["error"] = "Custom API worker is outside the Agent tool profile."
+                    base["summary"] = base["error"]
+                    return base
                 return await self._run_parallel_api_worker(
                     node,
                     base,
@@ -1954,23 +2605,9 @@ class AgentLabPlugin(Star):
         ref_type = str(node.get("ref_type") or "").strip()
         tool_name = str(node.get("tool_name") or (node.get("ref_id") if ref_type == "tool" else "") or "").strip()
         plugin_name = str(node.get("plugin_name") or (node.get("ref_id") if ref_type == "plugin" else "") or "").strip()
-        tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
-        selected_tools = set(spec.enabled_tools or [])
-        no_external = tool_mode == "no_external" or NO_EXTERNAL_TOOLS_SENTINEL in selected_tools
-        full_mode = tool_mode == "full" or not selected_tools
 
         def tool_allowed_by_profile(name: str) -> bool:
-            if not name or no_external:
-                return False
-            if name in {
-                "agent_lab_enter_mode",
-                "agent_lab_tick",
-                "agent_lab_finish",
-                "agent_lab_update_workflow",
-                "agent_lab_run_parallel_workflow",
-            }:
-                return False
-            return full_mode or name in selected_tools
+            return self._tool_allowed_by_agent_profile(spec, name)
 
         def add_if_allowed(tool: Any) -> None:
             name = str(getattr(tool, "name", "") or "")
@@ -2938,6 +3575,7 @@ class AgentLabPlugin(Star):
                     "y": cls._clamp_int(raw_node.get("y"), 0, 3600, 120),
                 }
             )
+            NodeExecutorRegistry.normalize_node_runtime_type(normalized)
             for key, limit in (
                 ("ref_type", 32),
                 ("ref_id", 160),
@@ -3093,8 +3731,27 @@ class AgentLabPlugin(Star):
             for node in nodes
         )
         action_ids: dict[str, list[str]] = {}
+        runtime_type_ids: dict[str, list[str]] = {}
+        executor_nodes: list[str] = []
+        react_handoff_nodes: list[str] = []
+        node_runtime: dict[str, dict[str, Any]] = {}
         for node in nodes:
-            action_ids.setdefault(str(node.get("action") or ""), []).append(str(node.get("id") or ""))
+            node_id = str(node.get("id") or "")
+            action = str(node.get("action") or "")
+            runtime_type = NodeExecutorRegistry.runtime_type(node)
+            has_executor = self.node_executors.can_execute(node)
+            action_ids.setdefault(action, []).append(node_id)
+            runtime_type_ids.setdefault(runtime_type, []).append(node_id)
+            if has_executor:
+                executor_nodes.append(node_id)
+            if not has_executor or action in {"plan", "manual"} or runtime_type in {"react", "terminal"}:
+                react_handoff_nodes.append(node_id)
+            node_runtime[node_id] = {
+                "runtime_type": runtime_type,
+                "action": action,
+                "has_executor": has_executor,
+                "react_handoff": node_id in react_handoff_nodes,
+            }
         if not entry_ids:
             add_issue("error", "missing_entry", "工作流缺少入口节点。")
         if not terminal_ids:
@@ -3218,6 +3875,10 @@ class AgentLabPlugin(Star):
             "terminal_nodes": terminal_ids,
             "guard_nodes": guard_ids,
             "memory_nodes": action_ids.get("save_memory", []),
+            "runtime_types": runtime_type_ids,
+            "executor_nodes": executor_nodes,
+            "react_handoff_nodes": react_handoff_nodes,
+            "node_runtime": node_runtime,
             "issues": issues,
         }
 

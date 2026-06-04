@@ -552,6 +552,14 @@ class TaskState:
     workflow_current_node_id: str = ""
     workflow_path: list[str] = field(default_factory=list)
     workflow_events: list[dict[str, Any]] = field(default_factory=list)
+    workflow_data: dict[str, Any] = field(
+        default_factory=lambda: {
+            "node_outputs": {},
+            "variables": {},
+            "react_traces": [],
+            "execution_counts": {},
+        }
+    )
     parallel_runs: list[dict[str, Any]] = field(default_factory=list)
     token_usage: dict[str, int] = field(
         default_factory=lambda: {

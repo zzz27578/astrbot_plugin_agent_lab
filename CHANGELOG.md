@@ -2,6 +2,12 @@
 
 ## v0.1.1
 
+- Added `NodeExecutorRegistry` and canonical workflow runtime types so canvas nodes normalize into entry/state/decision/parallel/tool/api/memory/guard/validation/notification/terminal/react categories.
+- Added real backend executors for entry checkpoints, state checkpoints, task-memory read/write, registered API calls, deterministic route/retry/validation, approval/wait gates, notifications, terminal handoff, and parallel branches.
+- Added `TaskState.workflow_data` with `node_outputs`, `variables`, `react_traces`, and execution counts so node outputs can feed later nodes and ReAct handoffs are auditable.
+- Added workflow-report fields for executable nodes vs ReAct handoff nodes, plus archived Markdown visibility for node outputs and ReAct handoff summaries.
+- Enforced AgentSpec tool isolation for direct tool nodes, direct API nodes, and parallel API workers so executable canvas nodes cannot bypass whitelist/no-external settings.
+- Added `docs/RUNTIME_EXECUTOR.md` as a third-party audit reference for executable nodes, ReAct handoffs, node data flow, and isolation boundaries.
 - Added a lightweight `WorkflowRuntime` so `tick` first advances deterministic canvas nodes, executes parallel branches, and hands only open-ended nodes to ReAct/tool-loop execution.
 - Tightened task-memory isolation: archive summaries remain reviewable exposure candidates, while workflow/private memory candidates are hidden from normal chat unless explicitly exposed.
 - Split task-mode settings, workflow canvas, and task memory into separate WebUI pages so the canvas can occupy the full workspace while settings stay readable.

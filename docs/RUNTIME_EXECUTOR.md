@@ -1,0 +1,98 @@
+# Runtime Executor Layer
+
+This document is the implementation-level check for whether Agent Lab is acting as a task runtime instead of only rendering a large visual prompt.
+
+## References Adapted
+
+- LangGraph: graph/state/nodes/edges/checkpoint ideas. Agent Lab does not import LangGraph; it adapts the same separation between state, executable nodes, and routing.
+- OpenAI Agents SDK: tools, handoffs, guardrails, and traces. Agent Lab adapts those ideas into AstrBot-native tool profiles, session plugin isolation, workflow handoffs, and task logs.
+- ReAct: interleaved reasoning, action, and observation. Agent Lab uses ReAct only where deterministic execution is not possible, then records the handoff.
+
+References:
+
+- https://docs.langchain.com/oss/python/langgraph/graph-api
+- https://docs.langchain.com/oss/python/langgraph/persistence
+- https://platform.openai.com/docs/guides/agents-sdk/
+- https://platform.openai.com/docs/guides/agents
+- https://openai.github.io/openai-agents-js/guides/handoffs/
+- https://openai.github.io/openai-agents-js/guides/guardrails
+- https://arxiv.org/abs/2210.03629
+
+## What Is Executable Now
+
+`agent_lab/node_runtime.py` introduces `NodeExecutorRegistry`. Canvas nodes are normalized into these runtime types:
+
+```text
+entry, state, decision, parallel, tool, api, memory, guard,
+validation, notification, terminal, react
+```
+
+Registered executors now cover:
+
+- `summarize_entry`, `confirm_entry`, `restore_isolation`
+- `save_state`, `heartbeat`, `transform_context`
+- `retrieve_memory`, `save_memory`
+- `parallel_branch`
+- `call_api`
+- `run_tools`
+- `route_condition`, `retry`, `validate_output`
+- `request_approval`, `wait_user`, `handoff`
+- `notify`
+- `archive`, `exit_summary` as terminal ReAct handoff nodes
+
+This means API nodes, tool nodes, memory checkpoints, approval/wait gates, validation gates, routing, and parallel branches have backend runtime semantics. They are no longer only text in the system prompt.
+
+## What Still Uses ReAct
+
+ReAct is still used intentionally for open-ended work:
+
+- Planning nodes.
+- Manual nodes.
+- Ambiguous branch choices.
+- Tool nodes without both `tool_name` and concrete JSON `tool_args` or upstream `input_variable`.
+- Terminal summary/archive nodes.
+- Any unknown or unsupported node action.
+
+Those handoffs are recorded in `TaskState.workflow_data.react_traces` with the node id, prompt, response, and reason.
+
+## Node Data Flow
+
+`TaskState.workflow_data` stores:
+
+- `node_outputs`: last structured output for each executed node.
+- `variables`: named outputs available to later nodes.
+- `react_traces`: ReAct/tool-loop handoff audit trail.
+- `execution_counts`: retry and loop guard support.
+
+If a node defines `output_variable`, its result is saved into `variables`. Later nodes can read it with `input_variable`.
+
+Archived Markdown now includes `Workflow Node Outputs` and `ReAct Handoffs`, so runtime behavior is visible after task completion.
+
+## Isolation Boundary
+
+Executable nodes obey the same isolation intent as the LLM tool loop:
+
+- Direct `run_tools` nodes require the bound tool to be allowed by the AgentSpec tool profile.
+- Direct `call_api` nodes require `agent_lab_call_custom_api` to be allowed by the AgentSpec tool profile.
+- Parallel API workers also require `agent_lab_call_custom_api`.
+- Plugin-sourced tools are filtered by session plugin isolation and global plugin activation.
+- `no_external` blocks external tool and Custom API execution.
+
+This prevents the canvas executor from bypassing plugin/tool isolation.
+
+## Inspection Contract
+
+`agent_lab_update_workflow check` now reports:
+
+- `runtime_types`
+- `executor_nodes`
+- `react_handoff_nodes`
+- `node_runtime`
+
+Use those fields to check which nodes are real executors and which nodes will be handed to ReAct.
+
+## Honest Boundary
+
+This is now an AstrBot-native task runtime layer with executable workflow nodes, state persistence, ReAct handoff traces, memory isolation, plugin/tool filtering, and heartbeat support.
+
+It is not yet a complete mature external framework runner. Missing future work includes richer tool argument schemas, expression evaluation for variables, a stronger watchdog/lease heartbeat model, and optional adapters for external runtimes such as LangGraph or OpenAI Agents SDK.

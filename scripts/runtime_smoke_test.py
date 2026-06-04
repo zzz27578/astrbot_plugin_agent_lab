@@ -46,8 +46,29 @@ class FakeConversationManager:
         return None
 
 
+class FakeCallableTool:
+    def __init__(
+        self,
+        *,
+        name: str,
+        description: str,
+        handler_module_path: str,
+        calls: list[dict],
+    ) -> None:
+        self.name = name
+        self.active = True
+        self.description = description
+        self.handler_module_path = handler_module_path
+        self.calls = calls
+
+    async def call(self, context, **kwargs):
+        self.calls.append({"tool": self.name, "args": dict(kwargs)})
+        return {"ok": True, "tool": self.name, "args": kwargs}
+
+
 class FakeToolManager:
     def __init__(self) -> None:
+        self.calls: list[dict] = []
         self.func_list = [
             SimpleNamespace(
                 name="memory_noise_search",
@@ -55,11 +76,11 @@ class FakeToolManager:
                 description="memory plugin tool",
                 handler_module_path="memory_noise.main",
             ),
-            SimpleNamespace(
+            FakeCallableTool(
                 name="safe_registered_tool",
-                active=True,
                 description="safe registered tool",
                 handler_module_path="safe_plugin.main",
+                calls=self.calls,
             ),
         ]
 
@@ -391,6 +412,12 @@ async def main() -> None:
         assert task.workflow_path[-1] == "plan"
         assert "entry_gate" in task.workflow_path
         assert any(item.get("kind") == "workflow_runtime" for item in task.progress_log)
+        assert task.workflow_data["react_traces"]
+        assert task.workflow_data["react_traces"][-1]["node_id"] == "plan"
+        assert "runtime react reached plan node" in task.workflow_data["react_traces"][-1]["response"]
+        report_with_runtime = plugin._workflow_report(plugin_main.AgentSpec.from_dict(task.profile_snapshot["agent"]))
+        assert "api_call" in report_with_runtime["executor_nodes"]
+        assert report_with_runtime["node_runtime"]["plan"]["react_handoff"] is True
         plugin.storage.save_memory_entry(
             {
                 "text": "private active runtime memory",
@@ -516,6 +543,119 @@ async def main() -> None:
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         assert any(item.get("kind") == "custom_api" for item in task.progress_log)
+        executor_spec = plugin_main.AgentSpec(
+            workflow_nodes=[
+                {
+                    "id": "api_exec",
+                    "stage": "execute",
+                    "kind": "api",
+                    "action": "call_api",
+                    "api_id": api_spec["api_id"],
+                    "output_variable": "api_result",
+                    "api_payload": {"query": {"executor": "yes"}},
+                    "instruction": "direct API executor",
+                },
+                {
+                    "id": "tool_exec",
+                    "stage": "execute",
+                    "kind": "tool",
+                    "action": "run_tools",
+                    "tool_name": "safe_registered_tool",
+                    "tool_args": {"value": "from_node"},
+                    "output_variable": "tool_result",
+                    "instruction": "direct tool executor",
+                },
+                {
+                    "id": "memory_exec",
+                    "stage": "checkpoint",
+                    "kind": "memory",
+                    "action": "save_memory",
+                    "instruction": "save private memory",
+                },
+                {
+                    "id": "validate_exec",
+                    "stage": "checkpoint",
+                    "kind": "validation",
+                    "action": "validate_output",
+                    "instruction": "validate result",
+                },
+                {
+                    "id": "checkpoint_exec",
+                    "stage": "checkpoint",
+                    "kind": "state",
+                    "action": "save_state",
+                    "instruction": "checkpoint",
+                },
+            ],
+            workflow_edges=[
+                {"from": "api_exec", "to": "tool_exec"},
+                {"from": "tool_exec", "to": "memory_exec"},
+                {"from": "memory_exec", "to": "validate_exec"},
+                {"from": "validate_exec", "to": "checkpoint_exec"},
+            ],
+        )
+        executor_spec.enabled_tools = ["safe_registered_tool", "agent_lab_call_custom_api"]
+        executor_spec.plugin_overrides["safe_plugin"] = True
+        plugin._normalize_agent_workflow(executor_spec)
+        task.profile_snapshot["agent"] = executor_spec.to_dict()
+        task.workflow_current_node_id = "api_exec"
+        task.workflow_path = ["api_exec"]
+        task.workflow_data = {}
+        plugin.storage.save_task(task)
+        runtime_exec = await plugin._run_workflow_runtime(
+            event=event,
+            task=task,
+            spec=executor_spec,
+            reason="runtime_smoke_node_executors",
+        )
+        debug("node executors checked")
+        assert runtime_exec.changed
+        assert "api_exec" in task.workflow_data["node_outputs"]
+        assert task.workflow_data["node_outputs"]["api_exec"]["data"]["ok"] is True
+        assert task.workflow_data["variables"]["api_result"]["api_id"] == api_spec["api_id"]
+        assert task.workflow_data["node_outputs"]["tool_exec"]["data"]["tool_name"] == "safe_registered_tool"
+        assert task.workflow_data["variables"]["tool_result"]["result"]
+        assert plugin.context.tool_manager.calls[-1]["args"]["value"] == "from_node"
+        assert task.workflow_data["node_outputs"]["memory_exec"]["data"]["kind"] == "workflow_private_memory"
+        assert any(item.get("kind") == "task_memory" for item in task.progress_log)
+        rendered = plugin.storage.render_markdown(task)
+        assert "Workflow Node Outputs" in rendered
+        assert "api_exec" in rendered
+
+        blocked_spec = plugin_main.AgentSpec(
+            workflow_nodes=[
+                {
+                    "id": "blocked_tool",
+                    "stage": "execute",
+                    "kind": "tool",
+                    "action": "run_tools",
+                    "tool_name": "safe_registered_tool",
+                    "tool_args": {"value": "blocked"},
+                    "instruction": "should be blocked by no_external",
+                }
+            ],
+            workflow_edges=[],
+        )
+        blocked_spec.isolation_policy.tool_mode = "no_external"
+        blocked_spec.enabled_tools = [plugin_main.NO_EXTERNAL_TOOLS_SENTINEL]
+        blocked_spec.plugin_overrides["safe_plugin"] = True
+        plugin._normalize_agent_workflow(blocked_spec)
+        call_count = len(plugin.context.tool_manager.calls)
+        task.profile_snapshot["agent"] = blocked_spec.to_dict()
+        task.workflow_current_node_id = "blocked_tool"
+        task.workflow_path = ["blocked_tool"]
+        task.workflow_data = {}
+        blocked_run = await plugin._run_workflow_runtime(
+            event=event,
+            task=task,
+            spec=blocked_spec,
+            reason="runtime_smoke_no_external_tool",
+        )
+        assert blocked_run.blocked
+        assert len(plugin.context.tool_manager.calls) == call_count
+        assert task.workflow_data["node_outputs"]["blocked_tool"]["note"] == "node_executor_tool_not_allowed"
+        task.status = "running"
+        task.blockers = []
 
         parallel_api_calls = []
 
@@ -541,6 +681,90 @@ async def main() -> None:
             }
 
         tool_loop_calls = []
+
+        api_blocked_spec = plugin_main.AgentSpec(
+            workflow_nodes=[
+                {
+                    "id": "blocked_api",
+                    "stage": "execute",
+                    "kind": "api",
+                    "action": "call_api",
+                    "api_id": api_spec["api_id"],
+                    "api_payload": {"query": {"blocked": "yes"}},
+                    "instruction": "should be blocked when custom api tool is not enabled",
+                }
+            ],
+            workflow_edges=[],
+        )
+        api_blocked_spec.enabled_tools = ["safe_registered_tool"]
+        plugin._normalize_agent_workflow(api_blocked_spec)
+        task.profile_snapshot["agent"] = api_blocked_spec.to_dict()
+        task.workflow_current_node_id = "blocked_api"
+        task.workflow_path = ["blocked_api"]
+        task.workflow_data = {}
+        api_blocked_run = await plugin._run_workflow_runtime(
+            event=event,
+            task=task,
+            spec=api_blocked_spec,
+            reason="runtime_smoke_api_not_allowed",
+        )
+        assert api_blocked_run.blocked
+        assert not parallel_api_calls
+        assert task.workflow_data["node_outputs"]["blocked_api"]["note"] == "node_executor_api_not_allowed"
+        task.status = "running"
+        task.blockers = []
+
+        parallel_api_blocked_spec = plugin_main.AgentSpec(
+            workflow_nodes=[
+                {
+                    "id": "parallel_branch",
+                    "stage": "plan",
+                    "kind": "branch",
+                    "action": "parallel_branch",
+                    "instruction": "blocked api worker branch",
+                },
+                {
+                    "id": "api_worker",
+                    "stage": "execute",
+                    "kind": "api",
+                    "action": "call_api",
+                    "api_id": api_spec["api_id"],
+                    "parallel_group": "blocked_api",
+                    "instruction": "should be blocked by missing custom api tool",
+                },
+                {
+                    "id": "parallel_merge",
+                    "stage": "checkpoint",
+                    "kind": "transform",
+                    "action": "transform_context",
+                    "instruction": "merge",
+                },
+            ],
+            workflow_edges=[
+                {"from": "parallel_branch", "to": "api_worker"},
+                {"from": "api_worker", "to": "parallel_merge"},
+            ],
+        )
+        parallel_api_blocked_spec.enabled_tools = ["safe_registered_tool"]
+        plugin._normalize_agent_workflow(parallel_api_blocked_spec)
+        task.profile_snapshot["agent"] = parallel_api_blocked_spec.to_dict()
+        task.workflow_current_node_id = "parallel_branch"
+        task.workflow_path = ["parallel_branch"]
+        task.workflow_data = {}
+        parallel_api_blocked = await plugin._run_parallel_workflow(
+            event=event,
+            task=task,
+            spec=parallel_api_blocked_spec,
+            branch_node_id="parallel_branch",
+            parallel_group="blocked_api",
+            api_payloads={"api_worker": {"query": {"blocked": "parallel"}}},
+            max_concurrency=1,
+        )
+        assert parallel_api_blocked["ok"] is False
+        assert not parallel_api_calls
+        assert parallel_api_blocked["workers"][0]["error"] == "Custom API worker is outside the Agent tool profile."
+        task.status = "running"
+        task.blockers = []
 
         async def fake_parallel_worker(**kwargs):
             tools = kwargs.get("tools")

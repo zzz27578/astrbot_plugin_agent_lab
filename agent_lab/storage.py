@@ -268,6 +268,31 @@ class AgentLabStorage:
                 )
         else:
             lines.append("- none")
+        workflow_data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
+        node_outputs = workflow_data.get("node_outputs") if isinstance(workflow_data, dict) else {}
+        react_traces = workflow_data.get("react_traces") if isinstance(workflow_data, dict) else []
+        lines.extend(["", "### Workflow Node Outputs"])
+        if isinstance(node_outputs, dict) and node_outputs:
+            for node_id, item in list(node_outputs.items())[-20:]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"- {node_id} [{item.get('runtime_type') or '-'}] "
+                    f"{item.get('status') or '-'}: {item.get('outcome') or item.get('note') or '-'}"
+                )
+        else:
+            lines.append("- none")
+        lines.extend(["", "### ReAct Handoffs"])
+        if isinstance(react_traces, list) and react_traces:
+            for item in react_traces[-20:]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"- {item.get('time')} node={item.get('node_id') or '-'} "
+                    f"reason={item.get('reason') or '-'}: {item.get('response') or '-'}"
+                )
+        else:
+            lines.append("- none")
         lines.extend(["", "### Parallel Workflow Runs"])
         if task.parallel_runs:
             for item in task.parallel_runs[-20:]:

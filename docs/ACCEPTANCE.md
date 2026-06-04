@@ -15,6 +15,7 @@ Expected:
 - Python compile succeeds.
 - Smoke test prints `Agent Lab smoke test passed.`
 - Runtime smoke test prints `Agent Lab runtime smoke test passed.` when AstrBot SDK/source is importable.
+- Runtime executor behavior is documented in `docs/RUNTIME_EXECUTOR.md`, and workflow checks expose `runtime_types`, `executor_nodes`, `react_handoff_nodes`, and `node_runtime`.
 
 ## Install Checks
 
