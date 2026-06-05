@@ -556,6 +556,27 @@ async def main() -> None:
                 "auth_header": "X-Test-Key",
             }
         )
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        runtime_spec = plugin_main.AgentSpec.from_dict(
+            task.profile_snapshot.get("agent") or plugin.storage.get_agent().to_dict()
+        )
+        runtime_spec.enabled_tools = list(
+            dict.fromkeys([*runtime_spec.enabled_tools, "agent_lab_call_custom_api"])
+        )
+        task.profile_snapshot["agent"] = runtime_spec.to_dict()
+        plugin._sync_agent_runtime(task, runtime_spec, reason="runtime_smoke_custom_api_capability")
+        api_capability_rows = task.workflow_data.get("agent_runtime", {}).get("capabilities", [])
+        api_capability = next(
+            item
+            for item in api_capability_rows
+            if item.get("name") == f"api:{api_spec['api_id']}"
+        )
+        assert api_capability["capability"] == "api.call"
+        assert api_capability["metadata"]["url_host"] == "https://example.com"
+        assert api_capability["metadata"]["credential_configured"] is True
+        assert "runtime-secret" not in json.dumps(api_capability, ensure_ascii=False)
+        plugin.storage.save_task(task)
         workflow_update = await plugin.agent_lab_update_workflow(
             event,
             operation="add_node",

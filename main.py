@@ -2018,7 +2018,72 @@ class AgentLabPlugin(Star):
                     "output_schema": {"type": "object", "description": description},
                 }
             )
+        if self._tool_allowed_by_runtime_profile(spec, CUSTOM_API_TOOL_NAME):
+            for api in self.storage.list_custom_apis():
+                api_id = str(api.get("api_id") or "").strip()
+                if not api_id:
+                    continue
+                method = str(api.get("method") or "GET").upper()
+                auth_type = str(api.get("auth_type") or "none").strip().lower()
+                risk = self._effective_tool_risk(spec, CUSTOM_API_TOOL_NAME, "work")
+                rows.append(
+                    {
+                        "name": f"api:{api_id}",
+                        "capability": "api.call",
+                        "risk": risk,
+                        "source": "custom_api_registry",
+                        "description": str(api.get("description") or api.get("name") or api_id).strip(),
+                        "target": api_id,
+                        "available": bool(api.get("url")),
+                        "side_effect": method not in {"GET", "HEAD", "OPTIONS"},
+                        "requires_approval": AgentRuntime.requires_approval_for_tool(CUSTOM_API_TOOL_NAME, risk, spec),
+                        "retryable": method in {"GET", "HEAD", "OPTIONS"},
+                        "result_parser": "http_json_or_text",
+                        "input_schema": {
+                            "type": "object",
+                            "properties": {
+                                "api_id": {"type": "string", "const": api_id},
+                                "query": {"type": "object"},
+                                "body": {},
+                                "headers": {"type": "object"},
+                            },
+                            "required": ["api_id"],
+                            "additionalProperties": False,
+                        },
+                        "output_schema": {
+                            "type": "object",
+                            "properties": {
+                                "ok": {"type": "boolean"},
+                                "status": {"type": "integer"},
+                                "content_type": {"type": "string"},
+                                "body": {},
+                                "truncated": {"type": "boolean"},
+                            },
+                        },
+                        "metadata": {
+                            "api_id": api_id,
+                            "name": str(api.get("name") or api_id),
+                            "method": method,
+                            "url_host": self._safe_url_host(str(api.get("url") or "")),
+                            "auth_type": auth_type if auth_type in {"none", "off", "disabled"} else "configured",
+                            "credential_configured": bool(api.get("credential_id")),
+                            "timeout_seconds": int(api.get("timeout_seconds") or 30),
+                        },
+                    }
+                )
         return rows
+
+    @staticmethod
+    def _safe_url_host(url: str) -> str:
+        try:
+            from urllib import parse as urlparse
+
+            parsed = urlparse.urlsplit(str(url or ""))
+            if not parsed.scheme or not parsed.netloc:
+                return ""
+            return f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            return ""
 
     def _tool_allowed_by_runtime_profile(self, spec: AgentSpec, tool_name: str) -> bool:
         name = str(tool_name or "").strip()

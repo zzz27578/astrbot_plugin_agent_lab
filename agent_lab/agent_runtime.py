@@ -27,6 +27,8 @@ class AgentCapability:
     capability: str = "tool.call"
     risk: str = "work"
     source: str = ""
+    description: str = ""
+    target: str = ""
     available: bool = True
     side_effect: bool = True
     requires_approval: bool = False
@@ -34,6 +36,7 @@ class AgentCapability:
     result_parser: str = "json_or_text"
     input_schema: dict[str, Any] = field(default_factory=dict)
     output_schema: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -525,6 +528,8 @@ class AgentRuntime:
                     capability=str(raw.get("capability") or "tool.call").strip() or "tool.call",
                     risk=risk,
                     source=str(raw.get("source") or raw.get("plugin_name") or "").strip(),
+                    description=str(raw.get("description") or "").strip(),
+                    target=str(raw.get("target") or raw.get("api_id") or raw.get("tool_name") or "").strip(),
                     available=bool(raw.get("available", raw.get("effective_active", True))),
                     side_effect=bool(raw.get("side_effect", risk != "safe")),
                     requires_approval=bool(raw.get("requires_approval", risk == "high")),
@@ -532,6 +537,7 @@ class AgentRuntime:
                     result_parser=str(raw.get("result_parser") or "json_or_text").strip() or "json_or_text",
                     input_schema=raw.get("input_schema") if isinstance(raw.get("input_schema"), dict) else {},
                     output_schema=raw.get("output_schema") if isinstance(raw.get("output_schema"), dict) else {},
+                    metadata=raw.get("metadata") if isinstance(raw.get("metadata"), dict) else {},
                 ).to_dict()
             )
         rows.sort(key=lambda item: (item.get("risk") == "high", item.get("risk") == "work", item.get("name", "")))
