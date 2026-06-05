@@ -44,6 +44,10 @@ This means API nodes, tool nodes, memory checkpoints, approval/wait gates, valid
 
 `agent_lab/agent_runtime.py` adds the task-level agent contract around that executor. It persists an `agent_instance`, a capability catalog, a workflow-derived `TaskPlan`, decision records, observation records, verifier-style verdicts, and a resume anchor under `TaskState.workflow_data.agent_runtime`.
 
+`agent_lab/verifier.py` now owns the deterministic verifier checks used by finish, validation nodes, node execution, and parallel workers. It returns structured `passed/status/reason/missing/next_action` results, so finish requests can be denied when approvals are unresolved or runtime evidence is missing.
+
+`agent_lab/workers.py` defines role-style worker specs for parallel branches (`ResearchWorker`, `CodeReaderWorker`, `PatchWorker`, `TestWorker`, `ReviewerWorker`, `SummarizerWorker`, plus API/tool/generic workers). Worker outputs are normalized with evidence, risks, and next recommendations before the main Agent merges them.
+
 ## What Still Uses ReAct
 
 ReAct is still used intentionally for open-ended work:
@@ -98,6 +102,6 @@ Use `/agentlab runtime` or `agent_lab_read_runtime` to inspect the live task run
 
 ## Honest Boundary
 
-This is now an AstrBot-native task runtime layer with executable workflow nodes, state persistence, ReAct handoff traces, capability catalogs, structured task plans, verifier verdicts, memory isolation, plugin/tool filtering, and heartbeat support.
+This is now an AstrBot-native task runtime layer with executable workflow nodes, state persistence, ReAct handoff traces, capability catalogs, structured task plans, verifier verdicts with denial paths, typed parallel worker specs, memory isolation, plugin/tool filtering, and heartbeat support.
 
 It is not yet a complete mature external framework runner. Missing future work includes richer tool argument schemas, expression evaluation for variables, a stronger watchdog/lease heartbeat model, and optional adapters for external runtimes such as LangGraph or OpenAI Agents SDK.

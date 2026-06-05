@@ -1034,6 +1034,10 @@ async def main() -> None:
             "prompt_worker",
             "tool_worker",
         }
+        assert all(item["worker_spec"]["worker_type"] for item in parallel_result["workers"])
+        assert all("output_schema" in item["worker_spec"] for item in parallel_result["workers"])
+        assert all(item["evidence"] for item in parallel_result["workers"])
+        assert all(item["next_recommendation"] for item in parallel_result["workers"])
         assert parallel_api_calls
         assert parallel_api_calls[0]["headers"]["X-Test-Key"] == "runtime-secret"
         assert parallel_api_calls[0]["query"]["q"] == "parallel"
@@ -1109,6 +1113,21 @@ async def main() -> None:
             source="runtime_smoke",
             risk_level="work",
         )
+        blocked_finish = await plugin._finish_task(
+            event,
+            status="completed",
+            final_summary="premature finish",
+            memory_candidates="",
+        )
+        assert "暂不能完成任务" in blocked_finish
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert task.status == "paused"
+        assert task.workflow_data["agent_runtime"]["last_verdict"]["status"] == "finish_blocked"
+        task.status = "running"
+        task.watchdog.needs_user = False
+        task.watchdog.paused_reason = ""
+        plugin.storage.save_task(task)
 
         async def finish_inside_tick(**kwargs):
             await plugin.agent_lab_finish(

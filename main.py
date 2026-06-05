@@ -47,7 +47,9 @@ from .agent_lab.node_runtime import (
 from .agent_lab.runtime import WorkflowDecision, WorkflowRuntime, WorkflowRuntimeRun
 from .agent_lab.session_guard import SessionPluginGuard
 from .agent_lab.summarizer import AgentSummarizer
+from .agent_lab.verifier import AgentVerifier
 from .agent_lab.webui_server import StandaloneWebUIServer
+from .agent_lab.workers import normalize_worker_output, worker_spec_for_node
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
@@ -236,6 +238,7 @@ class AgentLabPlugin(Star):
             max_auto_steps=int(_cfg(self.config, "workflow_auto_steps_per_tick", 6))
         )
         self.agent_runtime = AgentRuntime()
+        self.verifier = AgentVerifier()
         self.node_executors = NodeExecutorRegistry()
         self._register_node_executors()
         self.summarizer = AgentSummarizer(
@@ -1432,22 +1435,22 @@ class AgentLabPlugin(Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
-        verifier_reason = self._verify_finish_request(task, status, final_summary)
-        if verifier_reason:
+        finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
+        if not finish_verdict.passed:
             task.status = "paused"
             task.watchdog.needs_user = True
-            task.watchdog.paused_reason = verifier_reason
+            task.watchdog.paused_reason = finish_verdict.reason
             self.agent_runtime.record_verdict(
                 task,
                 node_id=task.workflow_current_node_id,
                 passed=False,
-                status="finish_blocked",
-                reason=verifier_reason,
-                missing=[verifier_reason],
-                next_action="collect_finish_evidence",
+                status=finish_verdict.status,
+                reason=finish_verdict.reason,
+                missing=finish_verdict.missing,
+                next_action=finish_verdict.next_action,
             )
             self.storage.save_task(task)
-            return f"暂不能完成任务：{verifier_reason}"
+            return f"暂不能完成任务：{finish_verdict.reason}"
         self._refresh_summarizer_rules()
         exit_summary = await self.summarizer.summarize_exit(event, task, final_summary)
         task.status = status
@@ -1521,27 +1524,6 @@ class AgentLabPlugin(Star):
         task.heartbeat.enabled = False
         task.heartbeat.job_id = ""
         task.add_log("heartbeat_off", "heartbeat disabled")
-
-    def _verify_finish_request(self, task: TaskState, status: str, final_summary: str) -> str:
-        if status == "cancelled":
-            return ""
-        if task.pending_approvals():
-            return "存在待审批操作，需先 approve/reject 后才能完成。"
-        if not str(final_summary or "").strip():
-            return "完成任务需要 final_summary。"
-        data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
-        node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
-        observations = data.get("observations") if isinstance(data.get("observations"), list) else []
-        has_evidence = bool(
-            task.last_confirmed_progress
-            or task.last_observation
-            or node_outputs
-            or observations
-            or task.parallel_runs
-        )
-        if not has_evidence:
-            return "缺少 observation/progress 证据，需先推进一轮或写回状态。"
-        return ""
 
     async def _heartbeat_tick(self, **payload) -> None:
         umo = str(payload.get("umo") or "")
@@ -2417,14 +2399,15 @@ class AgentLabPlugin(Star):
         if hasattr(self, "agent_runtime"):
             if result.ok and not result.blocked and result.status == "completed":
                 self.agent_runtime.mark_current(task, completed_node_id=node_id)
+            verification = self.verifier.verify_node_result(node=node, result=result)
             self.agent_runtime.record_verdict(
                 task,
                 node_id=node_id,
-                passed=bool(result.ok and not result.blocked),
-                status=result.status,
-                reason=result.outcome or result.note,
-                missing=[] if result.ok and not result.blocked else [result.note or "node execution blocked"],
-                next_action=result.next_node_id or ("react" if result.needs_react else ""),
+                passed=verification.passed,
+                status=verification.status,
+                reason=verification.reason,
+                missing=verification.missing,
+                next_action=verification.next_action,
             )
         self._prepare_resume_anchor(task, reason=f"node:{node_id}")
 
@@ -3053,41 +3036,32 @@ class AgentLabPlugin(Star):
         )
 
     async def _execute_validation_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
-        text = "\n".join(
-            [
-                ctx.task.current_summary or "",
-                ctx.task.last_confirmed_progress or "",
-                ctx.task.last_observation or "",
-            ]
-        ).lower()
-        fail_words = ("fail", "failed", "error", "blocked", "失败", "错误", "阻塞", "未通过")
-        pass_words = ("pass", "passed", "ok", "success", "完成", "通过", "成功")
-        failed = any(word in text for word in fail_words)
-        passed = any(word in text for word in pass_words) and not failed
+        verdict = self.verifier.verify_validation_checkpoint(ctx.task)
+        passed = verdict.passed
         if not passed and len(ctx.outgoing) > 1:
             retry_target = self._candidate_by_action(ctx.next_candidates, {"retry"}) or self._candidate_by_stage(
                 ctx.next_candidates, {"checkpoint", "execute"}
             )
-            if failed and retry_target:
+            if verdict.status == "failed" and retry_target:
                 return NodeExecutionResult(
                     ok=False,
                     status="blocked",
                     outcome=f"Validation did not pass; routed to {retry_target}.",
                     next_node_id=retry_target,
-                    data={"passed": False},
+                    data=verdict.to_dict(),
                     note="node_executor_validation_retry",
                 )
             return NodeExecutionResult(
-                outcome="Validation requires ReAct because pass/fail is unclear.",
+                outcome=verdict.reason,
                 needs_react=True,
                 advance=False,
-                data={"passed": False, "ambiguous": True},
+                data=verdict.to_dict(),
                 note="node_executor_validation_react",
             )
         return NodeExecutionResult(
             outcome="Validation passed." if passed else "Validation checkpoint recorded.",
             next_node_id=self._single_next(ctx.outgoing),
-            data={"passed": passed, "ambiguous": not passed},
+            data=verdict.to_dict(),
             needs_react=len(ctx.outgoing) > 1 and not passed,
             advance=len(ctx.outgoing) <= 1 or passed,
             note="node_executor_validation",
@@ -3550,7 +3524,10 @@ class AgentLabPlugin(Star):
                     api_payload=api_payloads.get(node_id) or {},
                 )
 
-        workers = await asyncio.gather(*(run_worker(node_id) for node_id in worker_ids))
+        workers = [
+            normalize_worker_output(item)
+            for item in await asyncio.gather(*(run_worker(node_id) for node_id in worker_ids))
+        ]
         merge_id = self._resolve_parallel_merge_id(
             spec,
             worker_ids,
@@ -3605,6 +3582,7 @@ class AgentLabPlugin(Star):
             if hasattr(self, "agent_runtime"):
                 node_id = str(worker.get("node_id") or "")
                 summary_text = str(worker.get("summary") or worker.get("error") or "worker finished")
+                worker_verdict = self.verifier.verify_worker(worker)
                 self.agent_runtime.record_observation(
                     task,
                     source="parallel_worker",
@@ -3615,11 +3593,11 @@ class AgentLabPlugin(Star):
                 self.agent_runtime.record_verdict(
                     task,
                     node_id=node_id,
-                    passed=bool(worker.get("ok")),
-                    status=str(worker.get("status") or ("completed" if worker.get("ok") else "blocked")),
-                    reason=summary_text,
-                    missing=[] if worker.get("ok") else [str(worker.get("error") or summary_text)],
-                    next_action="merge_parallel_results",
+                    passed=worker_verdict.passed,
+                    status=worker_verdict.status,
+                    reason=worker_verdict.reason,
+                    missing=worker_verdict.missing,
+                    next_action=worker_verdict.next_action,
                 )
         self._advance_task_workflow(
             task,
@@ -3691,6 +3669,7 @@ class AgentLabPlugin(Star):
             "kind": kind,
             "action": action,
             "parallel_group": node.get("parallel_group") or "",
+            "worker_spec": worker_spec_for_node(node, allowed_tools=spec.enabled_tools).to_dict(),
             "ok": False,
             "status": "blocked",
             "summary": "",
@@ -3777,9 +3756,11 @@ class AgentLabPlugin(Star):
             base["summary"] = base["error"]
             return base
         provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+        worker_spec = worker_spec_for_node(node, allowed_tools=spec.enabled_tools)
         system_prompt = (
             f"{spec.system_prompt}\n\n"
             "[Agent Lab Parallel Worker]\n"
+            f"worker_type={worker_spec.worker_type}\n"
             "你是当前 AstrBot 身份下的并行工作包执行者，不是新的 bot 人设。"
             "只完成本节点分配的工作；不要调用 agent_lab_finish，不要直接决定任务完成。"
             "如需使用工具，只能使用本节点允许的工具或插件来源工具，并遵守审批/白名单。"
@@ -3814,9 +3795,12 @@ class AgentLabPlugin(Star):
         node: dict[str, Any],
         shared_instruction: str = "",
     ) -> str:
+        worker_spec = worker_spec_for_node(node)
         return "\n".join(
             [
                 "执行一个并行工作流节点，输出结构化结果。",
+                f"- worker_type: {worker_spec.worker_type}",
+                f"- output_schema: {json.dumps(worker_spec.output_schema, ensure_ascii=False)}",
                 f"- task_id: {task.task_id}",
                 f"- root_goal: {task.root_goal}",
                 f"- current_summary: {task.current_summary or '-'}",

@@ -43,6 +43,8 @@ flowchart TD
 
 LLM 可以通过 `agent_lab_read_runtime` 读取这层结构；用户可以通过 `/agentlab runtime` 查看摘要。归档 Markdown 也会保留 Agent Runtime 摘要，方便后续接续或审计。
 
+`AgentVerifier` 是 runtime 的第一道硬校验：完成请求、验证节点、节点执行结果和并行 worker 都会产出结构化 verdict。`workers.py` 则把并行分支约束成角色化 worker，而不是新建一堆人格化 Agent；worker 输出必须包含 summary、evidence、risks 和 next_recommendation，由主 Agent 合并。
+
 ## 为什么不用全局关闭插件
 
 AstrBot 的全局插件开关会 terminate 插件，并写入全局 shared preferences。Agent Mode 是会话状态，不应影响其他会话。
