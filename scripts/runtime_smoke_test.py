@@ -422,6 +422,39 @@ async def main() -> None:
             ],
         )
         assert route_target == "route_ok"
+        condition_task.workflow_data = {
+            "variables": {
+                "api_result": {
+                    "ok": True,
+                    "body": "runtime smoke completed successfully",
+                    "items": ["alpha", "beta"],
+                },
+                "tool_result": {"result": "safe_registered_tool returned ok"},
+            }
+        }
+        complex_route_target = plugin._route_target_from_node(
+            condition_task,
+            {"id": "complex_route", "action": "route_condition"},
+            ["route_complex", "route_fallback"],
+            [
+                {
+                    "id": "route_complex",
+                    "condition": "exists(api_result.body) and contains(api_result.body, 'completed') and not missing(tool_result.result)",
+                },
+                {"id": "route_fallback", "condition": "else"},
+            ],
+        )
+        assert complex_route_target == "route_complex"
+        or_route_target = plugin._route_target_from_node(
+            condition_task,
+            {"id": "or_route", "action": "route_condition"},
+            ["route_or", "route_fallback"],
+            [
+                {"id": "route_or", "condition": "api_result.items contains 'beta' or api_result.ok == false"},
+                {"id": "route_fallback", "condition": "else"},
+            ],
+        )
+        assert or_route_target == "route_or"
         task_prompt = plugin_main.build_task_system_prompt(
             plugin_main.AgentSpec.from_dict(task.profile_snapshot["agent"]),
             task,

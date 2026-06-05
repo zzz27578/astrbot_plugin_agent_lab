@@ -36,6 +36,7 @@ def evaluate_condition(expression: str, context: dict[str, Any]) -> bool | None:
     text = str(expression or "").strip()
     if not text:
         return None
+    text = _strip_wrapping_parens(text)
     lowered = text.lower()
     if lowered in {"default", "else", "otherwise"}:
         return None
@@ -43,6 +44,32 @@ def evaluate_condition(expression: str, context: dict[str, Any]) -> bool | None:
         return True
     if lowered in {"false", "no", "fail", "failed"}:
         return False
+
+    for separators, reducer in (
+        ((" or ", " || "), any),
+        ((" and ", " && "), all),
+    ):
+        parts = _split_top_level(text, separators)
+        if len(parts) > 1:
+            values = [evaluate_condition(part, context) for part in parts]
+            if any(value is None for value in values):
+                return None
+            return bool(reducer(bool(value) for value in values))
+
+    if lowered.startswith("not "):
+        value = evaluate_condition(text[4:].strip(), context)
+        return None if value is None else not value
+    if lowered.startswith("!") and not lowered.startswith("!="):
+        value = evaluate_condition(text[1:].strip(), context)
+        return None if value is None else not value
+
+    function_result = _evaluate_function_condition(text, context)
+    if function_result is not None:
+        return function_result
+
+    operator_result = _evaluate_text_operator(text, context)
+    if operator_result is not None:
+        return operator_result
 
     op = next((candidate for candidate in _OPS if candidate in text), "")
     if not op:
@@ -157,6 +184,142 @@ def referenced_paths(expression: str) -> list[str]:
         if token not in paths:
             paths.append(token)
     return paths
+
+
+def _strip_wrapping_parens(text: str) -> str:
+    value = str(text or "").strip()
+    while value.startswith("(") and value.endswith(")"):
+        inner = value[1:-1].strip()
+        if not inner or _find_matching_paren(value, 0) != len(value) - 1:
+            break
+        value = inner
+    return value
+
+
+def _split_top_level(text: str, separators: tuple[str, ...]) -> list[str]:
+    items: list[str] = []
+    start = 0
+    depth = 0
+    quote = ""
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == quote and (index == 0 or text[index - 1] != "\\"):
+                quote = ""
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            index += 1
+            continue
+        if char == "(":
+            depth += 1
+            index += 1
+            continue
+        if char == ")" and depth:
+            depth -= 1
+            index += 1
+            continue
+        if depth == 0:
+            for separator in separators:
+                if text[index : index + len(separator)].lower() == separator:
+                    items.append(text[start:index].strip())
+                    index += len(separator)
+                    start = index
+                    break
+            else:
+                index += 1
+            continue
+        index += 1
+    if not items:
+        return [text.strip()]
+    items.append(text[start:].strip())
+    return [item for item in items if item]
+
+
+def _find_matching_paren(text: str, start: int) -> int:
+    depth = 0
+    quote = ""
+    for index in range(start, len(text)):
+        char = text[index]
+        if quote:
+            if char == quote and text[index - 1] != "\\":
+                quote = ""
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+    return -1
+
+
+def _evaluate_function_condition(text: str, context: dict[str, Any]) -> bool | None:
+    match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\((.*)\)", text.strip())
+    if not match:
+        return None
+    name = match.group(1).lower()
+    args = _split_args(match.group(2))
+    if name in {"exists", "present"} and len(args) == 1:
+        return resolve_path(context, args[0].strip(), None) is not None
+    if name in {"missing", "empty"} and len(args) == 1:
+        value = resolve_path(context, args[0].strip(), None)
+        if name == "missing":
+            return value is None
+        return value in (None, "", [], {})
+    if name in {"contains", "includes"} and len(args) == 2:
+        left = resolve_path(context, args[0].strip(), None)
+        right = _parse_literal(args[1].strip(), context)
+        return _contains(left, right)
+    if name in {"startswith", "starts_with"} and len(args) == 2:
+        left = resolve_path(context, args[0].strip(), "")
+        right = _parse_literal(args[1].strip(), context)
+        return str(left).startswith(str(right))
+    if name in {"endswith", "ends_with"} and len(args) == 2:
+        left = resolve_path(context, args[0].strip(), "")
+        right = _parse_literal(args[1].strip(), context)
+        return str(left).endswith(str(right))
+    return None
+
+
+def _evaluate_text_operator(text: str, context: dict[str, Any]) -> bool | None:
+    for operator, callback in (
+        (" not contains ", lambda left, right: not _contains(left, right)),
+        (" contains ", _contains),
+        (" includes ", _contains),
+        (" startswith ", lambda left, right: str(left).startswith(str(right))),
+        (" endswith ", lambda left, right: str(left).endswith(str(right))),
+    ):
+        index = text.lower().find(operator)
+        if index < 0:
+            continue
+        left_raw = text[:index].strip()
+        right_raw = text[index + len(operator) :].strip()
+        left = resolve_path(context, left_raw, None)
+        if left is None:
+            return None
+        right = _parse_literal(right_raw, context)
+        return bool(callback(left, right))
+    return None
+
+
+def _split_args(raw: str) -> list[str]:
+    return _split_top_level(str(raw or ""), (",",))
+
+
+def _contains(container: Any, needle: Any) -> bool:
+    if container is None:
+        return False
+    if isinstance(container, dict):
+        return str(needle) in container or needle in container.values()
+    if isinstance(container, (list, tuple, set)):
+        return needle in container or str(needle) in {str(item) for item in container}
+    return str(needle) in str(container)
 
 
 def _parse_literal(raw: str, context: dict[str, Any]) -> Any:
