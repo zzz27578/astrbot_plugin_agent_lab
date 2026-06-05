@@ -225,6 +225,8 @@ data/plugin_data/astrbot_plugin_agent_lab/
 
 `agent_runtime` 存在于 `TaskState.workflow_data.agent_runtime`，旧任务文件仍然保持兼容。它包含 `agent_instance`、能力目录、运行时 `TaskPlan`、决策/观察/verdict 轨迹和恢复入口。`agent_lab/verifier.py` 负责完成、节点、验证节点和并行 worker 的结构化校验；`agent_lab/workers.py` 为并行分支提供 Research/CodeReader/Patch/Test/Reviewer/Summarizer 等角色化 worker schema；`agent_lab/policy.py` 和 `agent_lab/tool_executor.py` 承接工具策略与直接工具节点调用；`agent_lab/memory_manager.py` 管理 candidate/accepted/rejected 记忆和 evidence 绑定。第一版不改前端，运行结果会写进任务 Markdown 和 runtime 摘要。
 
+tick 入口已经经过 `AgentLabService.run_tick()`，主循环在 `agent_lab/runtime_runner.py` 中执行；`main.py` 保留 AstrBot 命令、LLM tool、cron 和 WebUI API 适配职责。
+
 归档时的 `memory_candidates` 默认只是候选记忆，不会暴露给普通模式。用户或 WebUI 可通过 `/agentlab memory accept <memory_id>` 接受，或 `/agentlab memory reject <memory_id>` 拒绝；接受后才进入 `accepted_memory` 并可被普通模式读取。
 
 默认 Agent 会尝试启用 AstrBot 常用 Computer Use 工具：

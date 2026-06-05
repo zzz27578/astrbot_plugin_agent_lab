@@ -5,6 +5,7 @@ from .storage import AgentLabStorage
 from .agent_runtime import AgentRuntime
 from .memory_manager import MemoryManager
 from .policy import PermissionPolicy
+from .runtime_runner import AgentRuntimeRunner
 from .service import AgentLabService, TickResult
 from .tool_executor import AstrBotToolExecutor
 from .verifier import AgentVerifier, VerificationResult
@@ -15,6 +16,7 @@ __all__ = [
     "AgentRuntime",
     "AgentLabService",
     "AgentVerifier",
+    "AgentRuntimeRunner",
     "ApprovalRequest",
     "AstrBotToolExecutor",
     "HeartbeatPolicy",
