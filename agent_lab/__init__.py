@@ -3,6 +3,7 @@
 from .models import AgentSpec, ApprovalRequest, HeartbeatPolicy, TaskState
 from .storage import AgentLabStorage
 from .agent_runtime import AgentRuntime
+from .memory_manager import MemoryManager
 from .policy import PermissionPolicy
 from .tool_executor import AstrBotToolExecutor
 from .verifier import AgentVerifier, VerificationResult
@@ -15,6 +16,7 @@ __all__ = [
     "ApprovalRequest",
     "AstrBotToolExecutor",
     "HeartbeatPolicy",
+    "MemoryManager",
     "PermissionPolicy",
     "TaskState",
     "VerificationResult",

@@ -18,6 +18,7 @@ Expected:
 - Runtime executor behavior is documented in `docs/RUNTIME_EXECUTOR.md`, and workflow checks expose `runtime_types`, `executor_nodes`, `react_handoff_nodes`, and `node_runtime`.
 - Runtime smoke verifies `agent_runtime` contains an AgentInstance, capability catalog, TaskPlan, observations, verifier verdicts, resume anchor, and archived Markdown section.
 - Runtime smoke verifies premature finish is denied without runtime evidence, and parallel workers expose worker specs, evidence, risks, and next recommendations.
+- Runtime smoke verifies archived memory candidates stay private until accepted, then become accepted evidence-linked memory visible to normal reads.
 
 ## Install Checks
 

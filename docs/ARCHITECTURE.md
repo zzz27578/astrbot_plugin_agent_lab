@@ -45,6 +45,8 @@ LLM 可以通过 `agent_lab_read_runtime` 读取这层结构；用户可以通�
 
 `AgentVerifier` 是 runtime 的第一道硬校验：完成请求、验证节点、节点执行结果和并行 worker 都会产出结构化 verdict。`workers.py` 则把并行分支约束成角色化 worker，而不是新建一堆人格化 Agent；worker 输出必须包含 summary、evidence、risks 和 next_recommendation，由主 Agent 合并。
 
+长期记忆由 `MemoryManager` 管理状态转换：任务归档产生的 `memory_candidates` 先保持私有候选，只有用户或 WebUI 接受后才变成 `accepted_memory` 并暴露给普通模式；拒绝的记忆保留 evidence 历史但不再作为事实读取。
+
 ## 为什么不用全局关闭插件
 
 AstrBot 的全局插件开关会 terminate 插件，并写入全局 shared preferences。Agent Mode 是会话状态，不应影响其他会话。

@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
     jsonify = None
     request = None
 
-from .agent_lab import AgentLabStorage, AgentSpec, AgentRuntime, ApprovalRequest, TaskState
+from .agent_lab import AgentLabStorage, AgentSpec, AgentRuntime, ApprovalRequest, MemoryManager, TaskState
 from .agent_lab.conditions import (
     evaluate_condition,
     resolve_path,
@@ -232,6 +232,7 @@ class AgentLabPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         self.storage = AgentLabStorage(StarTools.get_data_dir(PLUGIN_NAME))
+        self.memory_manager = MemoryManager(self.storage)
         self.modules = ModuleRegistry(self.storage.modules_dir)
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
         self.webui_server: StandaloneWebUIServer | None = None
@@ -972,6 +973,8 @@ class AgentLabPlugin(Star):
             return self._tools_text()
         if cmd in ("skills", "技能"):
             return self._skills_text()
+        if cmd in ("memory", "记忆"):
+            return self._memory_command_text(event, rest)
         if cmd in ("modules", "integrations", "blueprints", "模块", "集成", "蓝图"):
             return self._modules_text()
         if cmd in ("start", "enter", "开启", "开始"):
@@ -4145,6 +4148,23 @@ class AgentLabPlugin(Star):
     async def api_memory(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
+            action = str(payload.get("action") or "").strip().lower()
+            if action in {"accept", "approve"}:
+                memory_id = str(payload.get("memory_id") or "")
+                item = self.memory_manager.accept(
+                    memory_id,
+                    reviewer=str(payload.get("reviewer") or "webui"),
+                    reason=str(payload.get("reason") or "webui accepted memory"),
+                )
+                return jsonify({"ok": bool(item), "memory": item})
+            if action == "reject":
+                memory_id = str(payload.get("memory_id") or "")
+                item = self.memory_manager.reject(
+                    memory_id,
+                    reviewer=str(payload.get("reviewer") or "webui"),
+                    reason=str(payload.get("reason") or "webui rejected memory"),
+                )
+                return jsonify({"ok": bool(item), "memory": item})
             return jsonify({"ok": True, "memory": self.storage.save_memory_entry(payload)})
         if request.method == "DELETE":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -5352,6 +5372,42 @@ class AgentLabPlugin(Star):
             for row in self.modules.list_modules()
         )
 
+    def _memory_command_text(self, event: AstrMessageEvent, rest: str) -> str:
+        action, _, tail = str(rest or "").strip().partition(" ")
+        action = action.lower().strip()
+        tail = tail.strip()
+        if action in {"accept", "接受", "approve"}:
+            memory_id, _, reason = tail.partition(" ")
+            item = self.memory_manager.accept(
+                memory_id,
+                reviewer=event.get_sender_id(),
+                reason=reason or "user accepted memory",
+            )
+            if not item:
+                return f"未找到记忆：{memory_id}"
+            return f"已接受记忆：{item['memory_id']}，普通模式可读取。"
+        if action in {"reject", "拒绝"}:
+            memory_id, _, reason = tail.partition(" ")
+            item = self.memory_manager.reject(
+                memory_id,
+                reviewer=event.get_sender_id(),
+                reason=reason or "user rejected memory",
+            )
+            if not item:
+                return f"未找到记忆：{memory_id}"
+            return f"已拒绝记忆：{item['memory_id']}。"
+        rows = self.storage.list_memory_entries()
+        lines = []
+        for item in reversed(rows[-20:]):
+            tags = ",".join(str(tag) for tag in (item.get("tags") or [])[:5])
+            lines.append(
+                f"- {item.get('memory_id')}: {item.get('status')}/{item.get('layer')} "
+                f"tags=[{tags or '-'}] {self._compact_text(item.get('text') or '', 120)}"
+            )
+        if not lines:
+            return "暂无任务记忆。"
+        return "任务记忆：\n" + "\n".join(lines)
+
     def _help_text(self) -> str:
         return (
             "Agent Lab 命令：\n"
@@ -5363,6 +5419,7 @@ class AgentLabPlugin(Star):
             "/agentlab heartbeat on|off\n"
             "/agentlab approve <approval_id>\n"
             "/agentlab reject <approval_id>\n"
+            "/agentlab memory accept|reject <memory_id> [原因]\n"
             "/agentlab finish <总结>\n"
             "/agentlab cancel <原因>\n"
             "/agentlab webui\n"

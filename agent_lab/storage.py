@@ -185,6 +185,16 @@ class AgentLabStorage:
                     "layer": "candidate_memory",
                     "tags": ["task", "candidate", "private", task.agent_id or "agent"],
                     "expose_to_normal": False,
+                    "evidence": {
+                        "source_task_id": task.task_id,
+                        "source_umo": task.umo,
+                        "archive_path": task.archive_path,
+                        "exit_summary": task.exit_summary[:1200],
+                        "last_verdict_id": (
+                            ((task.workflow_data or {}).get("agent_runtime") or {}).get("last_verdict") or {}
+                        ).get("verdict_id", ""),
+                        "history": [{"action": "candidate", "reason": "task_finish_memory_candidate"}],
+                    },
                 }
             )
         return dst_md

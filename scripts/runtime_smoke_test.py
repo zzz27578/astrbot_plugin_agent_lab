@@ -1094,6 +1094,29 @@ async def main() -> None:
             status="all",
         )
         assert "Agent Lab runtime smoke passed" not in normal_private_memory
+        candidate = next(
+            item
+            for item in plugin.storage.list_memory_entries()
+            if item.get("kind") == "memory_candidate"
+            and "Agent Lab runtime smoke passed" in item.get("text", "")
+        )
+        assert candidate["status"] == "candidate"
+        assert candidate["evidence"]["source_task_id"] == archives[0].task_id
+        accepted_text = plugin._memory_command_text(
+            event,
+            f"accept {candidate['memory_id']} runtime smoke accepted",
+        )
+        assert "已接受记忆" in accepted_text
+        accepted_memory = await plugin.agent_lab_read_task_memory(
+            event,
+            query="Agent Lab runtime smoke passed",
+            status="accepted",
+        )
+        assert "Agent Lab runtime smoke passed" in accepted_memory
+        accepted_entry = plugin.memory_manager.get(candidate["memory_id"])
+        assert accepted_entry is not None
+        assert accepted_entry["layer"] == "accepted_memory"
+        assert accepted_entry["evidence"]["history"][-1]["action"] == "accepted"
 
     with TemporaryDirectory() as tmp:
         debug("second runtime fixture")
