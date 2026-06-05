@@ -1886,7 +1886,7 @@ class AgentLabPlugin(Star):
         input_variable = str(node.get("input_variable") or "").strip()
         if not input_variable:
             return ""
-        value = self._workflow_variable(task, input_variable)
+        value = self._node_payload_from_variable(task, node)
         return self._schema_validation_message(input_schema, value, f"Node input {input_variable}")
 
     def _schema_validation_message(
@@ -2443,6 +2443,32 @@ class AgentLabPlugin(Star):
             blocked=result.blocked,
         )
 
+    def _resolve_workflow_template(self, task: TaskState, value: Any) -> Any:
+        context = self._condition_context(task)
+        if isinstance(value, dict):
+            return {key: self._resolve_workflow_template(task, item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._resolve_workflow_template(task, item) for item in value]
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        whole = re.fullmatch(r"(?:\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\})", text)
+        if whole:
+            path = (whole.group(1) or whole.group(2) or "").strip()
+            resolved = resolve_path(context, path, None)
+            return resolved if resolved is not None else ""
+
+        def replace(match: re.Match[str]) -> str:
+            path = (match.group(1) or match.group(2) or "").strip()
+            resolved = resolve_path(context, path, None)
+            if resolved is None:
+                return ""
+            if isinstance(resolved, str):
+                return resolved
+            return json.dumps(resolved, ensure_ascii=False, default=str)
+
+        return re.sub(r"\{\{\s*([^{}]+?)\s*\}\}|\$\{\s*([^{}]+?)\s*\}", replace, value)
+
     def _node_json_object(self, node: dict[str, Any], *keys: str) -> dict[str, Any]:
         for key in keys:
             raw = node.get(key)
@@ -2459,10 +2485,19 @@ class AgentLabPlugin(Star):
                     return parsed
         return {}
 
+    def _node_templated_json_object(self, task: TaskState, node: dict[str, Any], *keys: str) -> dict[str, Any]:
+        payload = self._node_json_object(node, *keys)
+        resolved = self._resolve_workflow_template(task, payload)
+        return resolved if isinstance(resolved, dict) else {}
+
     def _node_payload_from_variable(self, task: TaskState, node: dict[str, Any]) -> Any:
         input_variable = str(node.get("input_variable") or "").strip()
         if not input_variable:
             return None
+        context = self._condition_context(task)
+        value = resolve_path(context, input_variable, None)
+        if value is not None:
+            return value
         return self._workflow_variable(task, input_variable)
 
     @staticmethod
@@ -2709,7 +2744,9 @@ class AgentLabPlugin(Star):
         }
         payload = self._node_payload_from_variable(ctx.task, ctx.node)
         if payload is None:
-            payload = self._node_json_object(ctx.node, "api_payload", "payload", "params")
+            payload = self._node_templated_json_object(ctx.task, ctx.node, "api_payload", "payload", "params")
+        else:
+            payload = self._resolve_workflow_template(ctx.task, payload)
         worker = await self._run_parallel_api_worker(ctx.node, base, api_payload=payload)
         ok = bool(worker.get("ok"))
         return NodeExecutionResult(
@@ -2728,10 +2765,11 @@ class AgentLabPlugin(Star):
             or (ctx.node.get("ref_id") if ctx.node.get("ref_type") == "tool" else "")
             or ""
         ).strip()
-        call_args = self._node_json_object(ctx.node, "tool_args", "arguments", "params")
+        call_args = self._node_templated_json_object(ctx.task, ctx.node, "tool_args", "arguments", "params")
         variable_payload = self._node_payload_from_variable(ctx.task, ctx.node)
         if isinstance(variable_payload, dict):
-            call_args = {**call_args, **variable_payload}
+            resolved_payload = self._resolve_workflow_template(ctx.task, variable_payload)
+            call_args = {**call_args, **(resolved_payload if isinstance(resolved_payload, dict) else {})}
         if not tool_name:
             return NodeExecutionResult(
                 outcome="Tool node needs ReAct because no concrete tool_name is bound.",

@@ -676,9 +676,26 @@ async def main() -> None:
                     "kind": "tool",
                     "action": "run_tools",
                     "tool_name": "safe_registered_tool",
-                    "tool_args": {"value": "from_node"},
+                    "tool_args": {"value": "from {{variables.api_result.api_id}} / ${task.root_goal}"},
                     "output_variable": "tool_result",
-                    "instruction": "direct tool executor",
+                    "instruction": "direct tool executor with templated args",
+                },
+                {
+                    "id": "api_template_exec",
+                    "stage": "execute",
+                    "kind": "api",
+                    "action": "call_api",
+                    "api_id": api_spec["api_id"],
+                    "output_variable": "api_template_result",
+                    "api_payload": {
+                        "query": {
+                            "from_tool": "{{variables.tool_result.args.value}}",
+                            "goal": "${task.root_goal}",
+                            "node": "{{node_outputs.tool_exec.node_id}}",
+                        },
+                        "body": {"source_api": "{{variables.api_result.api_id}}"},
+                    },
+                    "instruction": "templated API executor",
                 },
                 {
                     "id": "memory_exec",
@@ -704,7 +721,8 @@ async def main() -> None:
             ],
             workflow_edges=[
                 {"from": "api_exec", "to": "tool_exec"},
-                {"from": "tool_exec", "to": "memory_exec"},
+                {"from": "tool_exec", "to": "api_template_exec"},
+                {"from": "api_template_exec", "to": "memory_exec"},
                 {"from": "memory_exec", "to": "validate_exec"},
                 {"from": "validate_exec", "to": "checkpoint_exec"},
             ],
@@ -730,7 +748,14 @@ async def main() -> None:
         assert task.workflow_data["variables"]["api_result"]["api_id"] == api_spec["api_id"]
         assert task.workflow_data["node_outputs"]["tool_exec"]["data"]["tool_name"] == "safe_registered_tool"
         assert task.workflow_data["variables"]["tool_result"]["result"]
-        assert plugin.context.tool_manager.calls[-1]["args"]["value"] == "from_node"
+        expected_template_value = f"from {api_spec['api_id']} / runtime smoke goal"
+        assert plugin.context.tool_manager.calls[-1]["args"]["value"] == expected_template_value
+        assert task.workflow_data["node_outputs"]["api_template_exec"]["data"]["ok"] is True
+        assert task.workflow_data["variables"]["api_template_result"]["api_id"] == api_spec["api_id"]
+        assert api_call["query"]["from_tool"] == expected_template_value
+        assert api_call["query"]["goal"] == "runtime smoke goal"
+        assert api_call["query"]["node"] == "tool_exec"
+        assert api_call["body"]["source_api"] == api_spec["api_id"]
         assert task.workflow_data["node_outputs"]["memory_exec"]["data"]["kind"] == "workflow_private_memory"
         assert any(item.get("kind") == "task_memory" for item in task.progress_log)
         rendered = plugin.storage.render_markdown(task)
