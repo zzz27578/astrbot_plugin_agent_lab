@@ -1,6 +1,7 @@
 """Core runtime modules for AstrBot Agent Lab."""
 
 from .models import AgentSpec, ApprovalRequest, HeartbeatPolicy, TaskState
+from .api_executor import CustomApiExecutor
 from .storage import AgentLabStorage
 from .agent_runtime import AgentRuntime
 from .memory_manager import MemoryManager
@@ -19,6 +20,7 @@ __all__ = [
     "AgentRuntimeRunner",
     "ApprovalRequest",
     "AstrBotToolExecutor",
+    "CustomApiExecutor",
     "HeartbeatPolicy",
     "MemoryManager",
     "PermissionPolicy",

@@ -50,6 +50,8 @@ This means API nodes, tool nodes, memory checkpoints, approval/wait gates, valid
 
 `agent_lab/policy.py` and `agent_lab/tool_executor.py` are the first extraction of tool governance from `main.py`: policy owns profile/capability/risk checks, while the tool executor owns direct AstrBot tool-node calls, schema validation, budget enforcement, isolation checks, and ReAct fallback decisions.
 
+`agent_lab/api_executor.py` owns registered Custom API execution: registry lookup, JSON argument parsing, static header merging, credential injection, HTTP transport, response truncation, and the compatibility test hook used by node and worker runtimes. API execution still goes through the same tool-profile permission checks before this executor is reached.
+
 `agent_lab/memory_manager.py` owns long-term memory transitions. Archive summaries are accepted evidence, but `memory_candidates` stay private candidates until a user or WebUI action accepts them. Accepted memories keep evidence history and become visible to normal mode; rejected memories stay private and non-authoritative.
 
 `agent_lab/service.py` introduces the service boundary for runtime operations. `AgentLabService.run_tick()` is now the command/tool/WebUI entrypoint for task ticks. `agent_lab/runtime_runner.py` owns the main tick loop beneath that service, while `main.py` keeps AstrBot command/tool/cron/WebUI adapter methods.
