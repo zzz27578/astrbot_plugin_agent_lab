@@ -317,3 +317,71 @@ class AgentVerifier:
             reason=str(worker.get("summary") or "worker completed"),
             next_action="merge_parallel_results",
         )
+
+
+    def verify_merge(
+        self,
+        workers: list[dict[str, Any]],
+        *,
+        branch_node_id: str = "",
+        merge_node_id: str = "",
+    ) -> VerificationResult:
+        """Verify that parallel worker results are complete enough to merge.
+
+        Checks:
+          - At least one worker succeeded.
+          - Failed workers have recorded errors.
+          - All workers have a summary and evidence.
+        Returns a structured result with missing items and next action."""
+        if not workers:
+            return VerificationResult(
+                passed=False,
+                status="merge_skipped",
+                reason="No parallel workers to merge.",
+                missing=["parallel_workers"],
+                next_action="skip_merge",
+            )
+        ok_count = sum(1 for w in workers if w.get("ok"))
+        total = len(workers)
+        missing_items: list[str] = []
+        for w in workers:
+            node_id = str(w.get("node_id") or "?")
+            if not w.get("ok"):
+                reason = str(w.get("error") or w.get("summary") or "unknown error")
+                missing_items.append(f"{node_id}: {reason}")
+                continue
+            if not str(w.get("summary") or "").strip():
+                missing_items.append(f"{node_id}: missing summary")
+            if not (w.get("evidence") or w.get("details") or w.get("output_schema")):
+                missing_items.append(f"{node_id}: missing evidence/details")
+
+        if ok_count == 0:
+            return VerificationResult(
+                passed=False,
+                status="merge_blocked",
+                reason=f"All {total} parallel workers failed.",
+                missing=missing_items[:10],
+                next_action="retry_or_replan",
+            )
+        if ok_count < total:
+            return VerificationResult(
+                passed=False,
+                status="merge_partial",
+                reason=f"{ok_count}/{total} workers succeeded, {total - ok_count} failed.",
+                missing=missing_items[:10],
+                next_action="merge_with_warnings",
+            )
+        if missing_items:
+            return VerificationResult(
+                passed=False,
+                status="merge_incomplete",
+                reason=f"{len(missing_items)} worker(s) missing evidence.",
+                missing=missing_items[:10],
+                next_action="merge_with_caveats",
+            )
+        return VerificationResult(
+            passed=True,
+            status="merge_complete",
+            reason=f"All {total} workers completed with evidence.",
+            next_action="advance_to_merge_node",
+        )

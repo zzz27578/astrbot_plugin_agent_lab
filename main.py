@@ -27,6 +27,7 @@ from .agent_lab import (
     AgentSpec,
     AgentRuntime,
     ApprovalRequest,
+    AgentMemoryOrchestrator,
     MemoryManager,
     TaskPatternLibrary,
     TaskState,
@@ -247,6 +248,7 @@ class AgentLabPlugin(Star):
         self.storage = AgentLabStorage(StarTools.get_data_dir(PLUGIN_NAME))
         self.memory_manager = MemoryManager(self.storage)
         self.pattern_library = TaskPatternLibrary(self.storage)
+        self.memory_orchestrator = AgentMemoryOrchestrator(self.memory_manager, self.pattern_library, self.storage)
         self.service = AgentLabService(self)
         self.modules = ModuleRegistry(self.storage.modules_dir)
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
@@ -281,6 +283,19 @@ class AgentLabPlugin(Star):
         self._sync_agent_mode_skill()
         await self._rehydrate_heartbeats()
         await self._start_webui_server()
+        # Prune stale memory candidates so the system starts clean.
+        try:
+            pruned = self.memory_manager.prune_stale_candidates(max_age_days=7)
+            if pruned:
+                logger.info(f"[AgentLab] pruned {pruned} stale memory candidate(s)")
+        except Exception as exc:
+            logger.warning(f"[AgentLab] memory prune skipped: {exc}")
+        # Log pattern library health.
+        try:
+            active_patterns = self.pattern_library.count(status="active")
+            logger.info(f"[AgentLab] pattern library: {active_patterns} active pattern(s)")
+        except Exception:
+            pass
         logger.info("[AgentLab] initialized")
 
     async def terminate(self):
@@ -1252,9 +1267,25 @@ class AgentLabPlugin(Star):
         if bool(task.profile_snapshot.get("restore_session_plugins", True)):
             await self.guard.restore(task.umo, snapshot)
         task.archive_path = str(self.storage.archive_task_markdown_path(task.umo, task.task_id))
-        pattern = self.pattern_library.upsert_from_task(task, spec)
+        memory_result = await self.memory_orchestrator.on_task_finish(
+            task,
+            spec,
+            status=status,
+            exit_summary=exit_summary,
+        )
+        if isinstance(task.workflow_data, dict):
+            task.workflow_data["archive_evidence"] = memory_result.get("archive_evidence") or {}
+            task.workflow_data["memory_orchestrator"] = {
+                "candidate_count": memory_result.get("candidate_count", 0),
+                "accepted_count": memory_result.get("accepted_count", 0),
+                "rejected_count": memory_result.get("rejected_count", 0),
+                "errors": memory_result.get("errors", []),
+            }
+        pattern = memory_result.get("pattern") if isinstance(memory_result, dict) else None
         if pattern:
             task.add_log("task_pattern", f"learned {pattern.get('pattern_id')}")
+        for error in (memory_result.get("errors") or [])[:5]:
+            task.add_log("memory_orchestrator_error", str(error))
         archive_path = self.storage.archive_task(task)
         return (
             f"Agent Mode 已结束并归档。\n"
@@ -2586,10 +2617,27 @@ class AgentLabPlugin(Star):
             outcome = "Entry confirmation is satisfied because the task exists."
         else:
             outcome = "Session isolation snapshot is already applied for this task."
+        data = {"action": action, "task_id": ctx.task.task_id}
+        # Inject pattern recommendations at entry time so the first planning
+        # pass already has relevant past patterns available.
+        if action == "summarize_entry" and hasattr(self, "pattern_library"):
+            try:
+                goal = str(ctx.task.root_goal or "")
+                if goal:
+                    patterns = self.pattern_library.recommend(
+                        goal, limit=3, exclude_task_id=ctx.task.task_id
+                    )
+                    if patterns:
+                        data["pattern_recommendations"] = [
+                            self.pattern_library.compact_for_runtime(p)
+                            for p in patterns
+                        ]
+            except Exception:
+                pass
         return NodeExecutionResult(
             outcome=outcome,
             next_node_id=self._single_next(ctx.outgoing),
-            data={"action": action, "task_id": ctx.task.task_id},
+            data=data,
             needs_react=len(ctx.outgoing) > 1,
             advance=len(ctx.outgoing) <= 1,
             note="node_executor_entry",
@@ -2665,11 +2713,32 @@ class AgentLabPlugin(Star):
             scored_rows.append((score, self._memory_entry_row(item, text_limit=900)))
         scored_rows.sort(key=lambda row: row[0], reverse=True)
         rows = [row for _, row in scored_rows[:limit]]
-        outcome = f"Retrieved {len(rows)} task memory item(s)."
+
+        pattern_rows = []
+        try:
+            if query and hasattr(self, "pattern_library"):
+                raw = self.pattern_library.recommend(
+                    query, limit=3, exclude_task_id=ctx.task.task_id
+                )
+                pattern_rows = [
+                    self.pattern_library.compact_for_runtime(p) for p in raw
+                ]
+        except Exception:
+            pattern_rows = []
+
+        outcome = f"Retrieved {len(rows)} task memory item(s)"
+        if pattern_rows:
+            outcome += f" and {len(pattern_rows)} pattern(s)"
+        outcome += "."
+
+        data = {"query": query.lower(), "rows": rows}
+        if pattern_rows:
+            data["pattern_recommendations"] = pattern_rows
+
         return NodeExecutionResult(
             outcome=outcome,
             next_node_id=self._single_next(ctx.outgoing),
-            data={"query": query.lower(), "rows": rows},
+            data=data,
             needs_react=len(ctx.outgoing) > 1,
             advance=len(ctx.outgoing) <= 1,
             note="node_executor_memory_retrieve",
@@ -3460,6 +3529,25 @@ class AgentLabPlugin(Star):
                     missing=worker_verdict.missing,
                     next_action=worker_verdict.next_action,
                 )
+
+        # Merge verification: check that worker results are sufficient.
+        merge_verdict = self.verifier.verify_merge(
+            workers,
+            branch_node_id=branch_id,
+            merge_node_id=merge_id,
+        )
+        run["merge_verdict"] = merge_verdict.to_dict()
+        if hasattr(self, "agent_runtime"):
+            self.agent_runtime.record_verdict(
+                task,
+                node_id=merge_id or branch_id,
+                passed=merge_verdict.passed,
+                status=merge_verdict.status,
+                reason=merge_verdict.reason,
+                missing=merge_verdict.missing,
+                next_action=merge_verdict.next_action,
+            )
+
         self._advance_task_workflow(
             task,
             spec,

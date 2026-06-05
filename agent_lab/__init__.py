@@ -5,6 +5,7 @@ from .api_executor import CustomApiExecutor
 from .storage import AgentLabStorage
 from .agent_runtime import AgentRuntime
 from .memory_manager import MemoryManager
+from .memory_orchestrator import AgentMemoryOrchestrator
 from .pattern_library import TaskPatternLibrary
 from .policy import PermissionPolicy
 from .runtime_runner import AgentRuntimeRunner
@@ -17,6 +18,7 @@ __all__ = [
     "AgentLabStorage",
     "AgentRuntime",
     "AgentLabService",
+    "AgentMemoryOrchestrator",
     "AgentVerifier",
     "AgentRuntimeRunner",
     "ApprovalRequest",
@@ -30,4 +32,3 @@ __all__ = [
     "TickResult",
     "VerificationResult",
 ]
-

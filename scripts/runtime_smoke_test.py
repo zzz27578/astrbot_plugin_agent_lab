@@ -1171,6 +1171,8 @@ async def main() -> None:
         archived_runtime = archives[0].workflow_data["agent_runtime"]
         assert archived_runtime["last_decision"]["action"] == "finish_task"
         assert archived_runtime["last_verdict"]["status"] == "completed"
+        assert archives[0].workflow_data["archive_evidence"]["task_id"] == archives[0].task_id
+        assert archives[0].workflow_data["memory_orchestrator"]["candidate_count"] == 1
         assert "## Agent Runtime" in plugin.storage.render_markdown(archives[0])
         assert plugin.guard.restored
         learned_patterns = plugin.pattern_library.recommend("runtime smoke goal", limit=3)

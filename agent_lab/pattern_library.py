@@ -359,3 +359,20 @@ class TaskPatternLibrary:
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(rows[-500:], ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self.path)
+
+    def count(self, *, status: str = "active") -> int:
+        """Return the number of patterns with the given status."""
+        return len(self.list_patterns(status=status))
+
+    def delete(self, pattern_id: str) -> bool:
+        """Delete a pattern by its ID. Returns True if found and removed."""
+        needle = str(pattern_id or "").strip()
+        if not needle:
+            return False
+        rows = self._read()
+        before = len(rows)
+        rows = [r for r in rows if r.get("pattern_id") != needle]
+        if len(rows) == before:
+            return False
+        self._write(rows)
+        return True

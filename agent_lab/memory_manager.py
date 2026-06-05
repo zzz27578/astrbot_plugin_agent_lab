@@ -121,3 +121,51 @@ class MemoryManager:
         if reason:
             payload["review_reason"] = reason
         return payload
+
+    def count_by_status(self, source_task_id: str = "") -> dict[str, int]:
+        """Return counts grouped by status (candidate, accepted, rejected)."""
+        counts: dict[str, int] = {}
+        for item in self.storage.list_memory_entries():
+            if source_task_id and item.get("source_task_id") != source_task_id:
+                continue
+            status = str(item.get("status") or "candidate")
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+    def list_accepted(self, *, tags: list[str] | None = None, limit: int = 20) -> list[dict[str, Any]]:
+        """Return accepted memory entries, optionally filtered by tags."""
+        rows = []
+        for item in self.storage.list_memory_entries():
+            if str(item.get("status") or "") != "accepted":
+                continue
+            if tags:
+                item_tags = set(str(t) for t in (item.get("tags") or []))
+                if not any(t in item_tags for t in tags):
+                    continue
+            rows.append(dict(item))
+        return sorted(rows, key=lambda r: str(r.get("updated_at") or ""), reverse=True)[:limit]
+
+    def prune_stale_candidates(self, *, max_age_days: int = 7) -> int:
+        """Delete candidate entries older than max_age_days to prevent bloat."""
+        import datetime
+        from .models import now_iso
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        cutoff = now - datetime.timedelta(days=max_age_days)
+        pruned = 0
+        for item in list(self.storage.list_memory_entries()):
+            if str(item.get("status") or "") != "candidate":
+                continue
+            created = item.get("created_at") or item.get("updated_at") or ""
+            if not created:
+                continue
+            try:
+                t = datetime.datetime.fromisoformat(created)
+                if t.tzinfo is None:
+                    t = t.replace(tzinfo=datetime.timezone.utc)
+                if t < cutoff:
+                    self.storage.delete_memory_entry(item.get("memory_id", ""))
+                    pruned += 1
+            except Exception:
+                continue
+        return pruned
