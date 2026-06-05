@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
     jsonify = None
     request = None
 
-from .agent_lab import AgentLabStorage, AgentSpec, AgentRuntime, ApprovalRequest, MemoryManager, TaskState
+from .agent_lab import AgentLabService, AgentLabStorage, AgentSpec, AgentRuntime, ApprovalRequest, MemoryManager, TaskState
 from .agent_lab.conditions import (
     evaluate_condition,
     resolve_path,
@@ -233,6 +233,7 @@ class AgentLabPlugin(Star):
         self.config = config or {}
         self.storage = AgentLabStorage(StarTools.get_data_dir(PLUGIN_NAME))
         self.memory_manager = MemoryManager(self.storage)
+        self.service = AgentLabService(self)
         self.modules = ModuleRegistry(self.storage.modules_dir)
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
         self.webui_server: StandaloneWebUIServer | None = None
@@ -1113,6 +1114,9 @@ class AgentLabPlugin(Star):
         )
 
     async def _tick(self, event: AstrMessageEvent, reason: str) -> str:
+        return (await self.service.run_tick(event, reason=reason)).message
+
+    async def _tick_impl(self, event: AstrMessageEvent, reason: str) -> str:
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。可以先 /agentlab start <目标>。"

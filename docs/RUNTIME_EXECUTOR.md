@@ -52,6 +52,8 @@ This means API nodes, tool nodes, memory checkpoints, approval/wait gates, valid
 
 `agent_lab/memory_manager.py` owns long-term memory transitions. Archive summaries are accepted evidence, but `memory_candidates` stay private candidates until a user or WebUI action accepts them. Accepted memories keep evidence history and become visible to normal mode; rejected memories stay private and non-authoritative.
 
+`agent_lab/service.py` introduces the service boundary for runtime operations. `AgentLabService.run_tick()` is now the command/tool/WebUI entrypoint for task ticks; the remaining `_tick_impl` body is still on the AstrBot adapter and can be moved behind this boundary incrementally.
+
 ## What Still Uses ReAct
 
 ReAct is still used intentionally for open-ended work:
