@@ -24,7 +24,7 @@ except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
     jsonify = None
     request = None
 
-from .agent_lab import AgentLabStorage, AgentSpec, ApprovalRequest, TaskState
+from .agent_lab import AgentLabStorage, AgentSpec, AgentRuntime, ApprovalRequest, TaskState
 from .agent_lab.conditions import (
     evaluate_condition,
     resolve_path,
@@ -235,6 +235,7 @@ class AgentLabPlugin(Star):
         self.workflow_runtime = WorkflowRuntime(
             max_auto_steps=int(_cfg(self.config, "workflow_auto_steps_per_tick", 6))
         )
+        self.agent_runtime = AgentRuntime()
         self.node_executors = NodeExecutorRegistry()
         self._register_node_executors()
         self.summarizer = AgentSummarizer(
@@ -330,14 +331,24 @@ class AgentLabPlugin(Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
+        spec = AgentSpec.from_dict(
+            task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
+        )
+        self._normalize_agent_workflow(spec)
+        self._sync_agent_runtime(task, spec, reason="read_state")
+        self.storage.save_task(task)
         if format == "markdown":
             return self.storage.render_markdown(task)
+        runtime_summary = self.agent_runtime.summary(task)
         return (
             f"task_id: {task.task_id}\n"
             f"status: {task.status}\n"
             f"root_goal: {task.root_goal}\n"
             f"completion_conditions: {task.completion_conditions}\n"
             f"workflow: {self._workflow_runtime_text(task)}\n"
+            f"runtime: current={runtime_summary.get('current_node_id') or '-'} "
+            f"capabilities={runtime_summary.get('capability_count', 0)} "
+            f"verdicts={runtime_summary.get('verdicts', 0)}\n"
             f"entry_summary: {self._compact_text(task.entry_summary or task.task_brief, 1600)}\n"
             f"current_summary: {task.current_summary or '-'}\n"
             f"last_confirmed_progress: {task.last_confirmed_progress or '-'}\n"
@@ -346,6 +357,26 @@ class AgentLabPlugin(Star):
             f"pending_approvals: {len(task.pending_approvals())}\n"
             f"state_path: {self.storage.task_markdown_path(task.umo, task.task_id)}"
         )
+
+    @filter.llm_tool(name="agent_lab_read_runtime")
+    async def agent_lab_read_runtime(self, event: AstrMessageEvent, format: str = "summary") -> str:
+        """读取当前 Agent Runtime，包括能力目录、结构化计划、验证结论和恢复入口。
+
+        Args:
+            format(string): summary 或 json。summary 给模型快速复盘，json 返回结构化摘要。
+        """
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            return "当前没有 active task。"
+        spec = AgentSpec.from_dict(
+            task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
+        )
+        self._normalize_agent_workflow(spec)
+        self._sync_agent_runtime(task, spec, reason="read_runtime")
+        self.storage.save_task(task)
+        if format == "json":
+            return json.dumps(self.agent_runtime.summary(task), ensure_ascii=False, indent=2)
+        return self.agent_runtime.summary_text(task)
 
     @filter.llm_tool(name="agent_lab_advance_workflow")
     async def agent_lab_advance_workflow(
@@ -436,6 +467,34 @@ class AgentLabPlugin(Star):
                 "need_heartbeat": need_heartbeat,
             },
         )
+        spec = AgentSpec.from_dict(
+            task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
+        )
+        self._normalize_agent_workflow(spec)
+        self._sync_agent_runtime(task, spec, reason="update_state")
+        self.agent_runtime.record_observation(
+            task,
+            source="update_state",
+            node_id=task.workflow_current_node_id,
+            payload={
+                "current_summary": task.current_summary,
+                "progress": progress.strip(),
+                "next_step": task.next_step,
+                "last_observation": task.last_observation,
+                "status": task.status,
+                "blocker": blocker.strip(),
+            },
+            summary=last_observation or progress or current_summary,
+        )
+        self.agent_runtime.record_verdict(
+            task,
+            node_id=task.workflow_current_node_id,
+            passed=task.status == "running" and not blocker.strip(),
+            status=task.status,
+            reason=blocker.strip() or last_observation or progress or "state updated",
+            missing=[blocker.strip()] if blocker.strip() else [],
+            next_action=task.next_step,
+        )
         self.storage.save_task(task)
         return (
             f"task_state 已更新：status={task.status}, next_step={task.next_step or '-'}, "
@@ -475,6 +534,11 @@ class AgentLabPlugin(Star):
         )
         task.approvals.append(approval.to_dict())
         task.add_log("approval_requested", f"{approval.approval_id}: {operation}")
+        self.agent_runtime.record_pause(
+            task,
+            reason=f"approval requested: {operation}",
+            missing=[operation],
+        )
         self.storage.save_task(task)
         return (
             f"已创建审批请求 {approval.approval_id}。请向用户说明：\n"
@@ -885,6 +949,8 @@ class AgentLabPlugin(Star):
 
         if cmd in ("status", "状态"):
             return self._status_text(event.unified_msg_origin)
+        if cmd in ("runtime", "运行时"):
+            return self._runtime_text(event.unified_msg_origin)
         if cmd in ("webui", "控制台"):
             return self._webui_text()
         if cmd in ("agents", "agent"):
@@ -996,6 +1062,27 @@ class AgentLabPlugin(Star):
             heartbeat=spec.heartbeat_policy,
         )
         self._initialize_task_workflow(task, spec, source=source)
+        self._sync_agent_runtime(task, spec, reason="created")
+        self.agent_runtime.record_decision(
+            task,
+            phase="entry",
+            action="create_task",
+            node_id=task.workflow_current_node_id,
+            reason=f"source={source}; risk={risk_level}; goal={goal}",
+            capability="task.create",
+            confidence="high",
+        )
+        self.agent_runtime.record_observation(
+            task,
+            source="entry_summary",
+            node_id=task.workflow_current_node_id,
+            payload={
+                "entry_summary": entry_summary,
+                "completion_conditions": task.completion_conditions,
+            },
+            summary=entry_summary,
+        )
+        self._sync_agent_runtime(task, spec, reason="created")
         task.add_log("created", f"goal={goal}; source={source}; risk={risk_level}")
         task.add_snapshot("created", {"source": source, "risk_level": risk_level})
         self.storage.save_task(task)
@@ -1025,6 +1112,11 @@ class AgentLabPlugin(Star):
             )
             task.watchdog.needs_user = True
             task.watchdog.last_decision = "waiting_approval"
+            self.agent_runtime.record_pause(
+                task,
+                reason="waiting for approval before continuing tick",
+                missing=[item.operation for item in task.pending_approvals()],
+            )
             self.storage.save_task(task)
             return f"存在待审批操作，先处理审批再继续：\n{pending}"
 
@@ -1049,6 +1141,16 @@ class AgentLabPlugin(Star):
                 task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
             )
             self._normalize_agent_workflow(spec)
+            self._sync_agent_runtime(task, spec, reason=f"tick:{reason}")
+            self.agent_runtime.record_decision(
+                task,
+                phase="tick",
+                action="start_tick",
+                node_id=task.workflow_current_node_id,
+                reason=reason,
+                capability="control.tick",
+                confidence="high",
+            )
             runtime_run = await self._run_workflow_runtime(
                 event=event,
                 task=task,
@@ -1064,10 +1166,27 @@ class AgentLabPlugin(Star):
             task = latest_task
             if task.status in {"blocked", "paused"} or runtime_run.blocked:
                 self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
+                self.agent_runtime.record_verdict(
+                    task,
+                    node_id=runtime_run.react_node_id or task.workflow_current_node_id,
+                    passed=False,
+                    status=task.status,
+                    reason=runtime_run.summary() or task.watchdog.paused_reason or "workflow runtime blocked",
+                    missing=[task.watchdog.paused_reason or "workflow_runtime_blocked"],
+                    next_action=task.next_step or "resume_after_user_input",
+                )
                 self.storage.save_task(task)
                 return f"tick 已暂停：工作流运行时阻塞或等待。\n\n{self._compact_text(runtime_run.summary(), 1800)}"
             if runtime_run.changed and not runtime_run.needs_react:
                 self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
+                self.agent_runtime.record_verdict(
+                    task,
+                    node_id=task.workflow_current_node_id,
+                    passed=True,
+                    status=task.status,
+                    reason=runtime_run.summary() or "workflow runtime advanced",
+                    next_action=task.next_step,
+                )
                 self.storage.save_task(task)
                 return f"tick 完成：工作流运行时已推进。\n\n{self._compact_text(runtime_run.summary(), 1800)}"
 
@@ -1150,6 +1269,16 @@ class AgentLabPlugin(Star):
             if budget_message:
                 self._pause_task_for_budget(task, budget_message)
             self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
+            self.agent_runtime.record_verdict(
+                task,
+                node_id=runtime_run.react_node_id or task.workflow_current_node_id,
+                passed=task.status == "running",
+                status=task.status,
+                reason=task.last_observation or text or "tick finished",
+                missing=[] if task.status == "running" else [task.watchdog.paused_reason or task.status],
+                next_action=task.next_step,
+            )
+            self.agent_runtime.update_resume(task, reason=f"tick:{reason}")
             self.storage.save_task(task)
             if task.status == "paused" and task.watchdog.paused_reason:
                 return f"tick 已暂停：{task.watchdog.paused_reason}\n\n{self._compact_text(text, 1800)}"
@@ -1166,6 +1295,11 @@ class AgentLabPlugin(Star):
             if count >= task.heartbeat.max_repeated_failures or task.status == "paused":
                 task.status = "paused"
                 await self._disable_heartbeat(task)
+            self.agent_runtime.record_pause(
+                task,
+                reason=f"{type(exc).__name__}: {exc}",
+                missing=[str(exc)],
+            )
             self.storage.save_task(task)
             return (
                 f"tick 失败：{exc}\n"
@@ -1176,6 +1310,7 @@ class AgentLabPlugin(Star):
             latest = self.storage.load_active_task(event.unified_msg_origin)
             if latest and latest.task_id == task.task_id:
                 self._release_task_lease(latest, lease_token)
+                self.agent_runtime.update_resume(latest, reason=f"lease_released:{reason}")
                 self.storage.save_task(latest)
             self._running_ticks.discard(tick_key)
 
@@ -1297,6 +1432,22 @@ class AgentLabPlugin(Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
+        verifier_reason = self._verify_finish_request(task, status, final_summary)
+        if verifier_reason:
+            task.status = "paused"
+            task.watchdog.needs_user = True
+            task.watchdog.paused_reason = verifier_reason
+            self.agent_runtime.record_verdict(
+                task,
+                node_id=task.workflow_current_node_id,
+                passed=False,
+                status="finish_blocked",
+                reason=verifier_reason,
+                missing=[verifier_reason],
+                next_action="collect_finish_evidence",
+            )
+            self.storage.save_task(task)
+            return f"暂不能完成任务：{verifier_reason}"
         self._refresh_summarizer_rules()
         exit_summary = await self.summarizer.summarize_exit(event, task, final_summary)
         task.status = status
@@ -1309,6 +1460,17 @@ class AgentLabPlugin(Star):
         task.finished_at = now_iso()
         task.add_log("finished", f"status={status}")
         task.add_snapshot("finished", {"status": status, "final_summary": final_summary})
+        spec = AgentSpec.from_dict(
+            task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
+        )
+        self._normalize_agent_workflow(spec)
+        self._sync_agent_runtime(task, spec, reason="finish")
+        self.agent_runtime.record_finish(
+            task,
+            status=status,
+            summary=exit_summary or final_summary,
+            memory_candidates=task.memory_candidates,
+        )
         await self._disable_heartbeat(task)
         snapshot = task.profile_snapshot.get("session_plugin_snapshot")
         if bool(task.profile_snapshot.get("restore_session_plugins", True)):
@@ -1359,6 +1521,27 @@ class AgentLabPlugin(Star):
         task.heartbeat.enabled = False
         task.heartbeat.job_id = ""
         task.add_log("heartbeat_off", "heartbeat disabled")
+
+    def _verify_finish_request(self, task: TaskState, status: str, final_summary: str) -> str:
+        if status == "cancelled":
+            return ""
+        if task.pending_approvals():
+            return "存在待审批操作，需先 approve/reject 后才能完成。"
+        if not str(final_summary or "").strip():
+            return "完成任务需要 final_summary。"
+        data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
+        node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
+        observations = data.get("observations") if isinstance(data.get("observations"), list) else []
+        has_evidence = bool(
+            task.last_confirmed_progress
+            or task.last_observation
+            or node_outputs
+            or observations
+            or task.parallel_runs
+        )
+        if not has_evidence:
+            return "缺少 observation/progress 证据，需先推进一轮或写回状态。"
+        return ""
 
     async def _heartbeat_tick(self, **payload) -> None:
         umo = str(payload.get("umo") or "")
@@ -1432,6 +1615,29 @@ class AgentLabPlugin(Star):
         if not found:
             return f"未找到审批请求：{approval_id}"
         task.add_log("approval_resolved", f"{approval_id}: {'approved' if approved else 'rejected'}")
+        spec = AgentSpec.from_dict(
+            task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
+        )
+        self._normalize_agent_workflow(spec)
+        self.agent_runtime.record_decision(
+            task,
+            phase="human",
+            action="approval_resolved",
+            node_id=task.workflow_current_node_id,
+            reason=f"{approval_id}: {'approved' if approved else 'rejected'}",
+            capability="human.approval",
+            confidence="high",
+        )
+        self.agent_runtime.record_verdict(
+            task,
+            node_id=task.workflow_current_node_id,
+            passed=approved,
+            status="approved" if approved else "rejected",
+            reason=f"User {'approved' if approved else 'rejected'} approval {approval_id}.",
+            missing=[] if approved else [approval_id],
+            next_action="resume_tick" if approved else "revise_plan",
+        )
+        self._sync_agent_runtime(task, spec, reason="approval_resolved")
         self.storage.save_task(task)
         return f"审批已{'通过' if approved else '拒绝'}：{approval_id}"
 
@@ -1440,6 +1646,7 @@ class AgentLabPlugin(Star):
         internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
         essential = {
             "agent_lab_read_state",
+            "agent_lab_read_runtime",
             "agent_lab_read_task_memory",
             "agent_lab_update_state",
             "agent_lab_advance_workflow",
@@ -1748,6 +1955,13 @@ class AgentLabPlugin(Star):
         task.add_blocker("budget_exhausted", reason)
         task.add_log("paused", reason)
         task.add_snapshot("budget_pause", {"reason": reason})
+        if hasattr(self, "agent_runtime"):
+            self.agent_runtime.record_pause(
+                task,
+                reason=reason,
+                node_id=task.workflow_current_node_id,
+                missing=[reason],
+            )
 
     def _watchdog_before_tick(self, task: TaskState, reason: str) -> str:
         task.watchdog.last_tick_at = now_iso()
@@ -1818,6 +2032,8 @@ class AgentLabPlugin(Star):
             "node_output_ids": list((node_outputs or {}).keys())[-40:],
             "variable_names": list((data.get("variables") or {}).keys())[-40:],
         }
+        if hasattr(self, "agent_runtime"):
+            self.agent_runtime.update_resume(task, reason=reason)
 
     def _progress_hash(self, task: TaskState) -> str:
         data = self._ensure_workflow_data(task)
@@ -2070,7 +2286,85 @@ class AgentLabPlugin(Star):
         data.setdefault("loop_guard", {})
         data.setdefault("resume", {})
         task.workflow_data = data
+        if hasattr(self, "agent_runtime"):
+            self.agent_runtime.ensure(task)
         return data
+
+    def _runtime_capability_rows(self, spec: AgentSpec) -> list[dict[str, Any]]:
+        selected = set(spec.enabled_tools or [])
+        rows = []
+        for row in self._tool_rows():
+            name = str(row.get("name") or "")
+            if not name or name == NO_EXTERNAL_TOOLS_SENTINEL:
+                continue
+            if not self._tool_allowed_by_runtime_profile(spec, name):
+                continue
+            risk = self._effective_tool_risk(spec, name, str(row.get("risk") or "work"))
+            rows.append(
+                {
+                    "name": name,
+                    "capability": row.get("capability") or AgentRuntime.capability_for_tool_name(name),
+                    "risk": risk,
+                    "source": row.get("source") or row.get("plugin_name") or "registered",
+                    "available": bool(row.get("effective_active", row.get("active", True))),
+                    "side_effect": risk != "safe",
+                    "requires_approval": AgentRuntime.requires_approval_for_tool(name, risk, spec),
+                    "retryable": risk != "high",
+                    "result_parser": "json_or_text",
+                    "input_schema": row.get("input_schema") if isinstance(row.get("input_schema"), dict) else {},
+                    "output_schema": row.get("output_schema") if isinstance(row.get("output_schema"), dict) else {},
+                }
+            )
+        for builtin_name, capability, risk, description in (
+            ("agent_lab_read_state", "task.read", "safe", "Read task state."),
+            ("agent_lab_read_runtime", "runtime.read", "safe", "Read Agent Runtime state."),
+            ("agent_lab_update_state", "task.write", "work", "Update task state."),
+            ("agent_lab_advance_workflow", "workflow.control", "safe", "Advance workflow cursor."),
+            ("agent_lab_request_approval", "human.approval", "safe", "Request user approval."),
+            ("agent_lab_read_task_memory", "memory.read", "safe", "Read task memory."),
+            ("agent_lab_call_custom_api", "api.call", "work", "Call registered custom API."),
+            ("agent_lab_run_parallel_workflow", "worker.parallel", "work", "Run parallel workflow workers."),
+            ("agent_lab_set_heartbeat", "task.heartbeat", "work", "Toggle heartbeat."),
+            ("agent_lab_finish", "task.finish", "work", "Archive task."),
+        ):
+            effective_risk = self._effective_tool_risk(spec, builtin_name, risk)
+            rows.append(
+                {
+                    "name": builtin_name,
+                    "capability": capability,
+                    "risk": effective_risk,
+                    "source": "agent_lab",
+                    "available": builtin_name in selected or builtin_name.startswith("agent_lab_"),
+                    "side_effect": effective_risk != "safe",
+                    "requires_approval": AgentRuntime.requires_approval_for_tool(builtin_name, effective_risk, spec),
+                    "retryable": effective_risk != "high",
+                    "result_parser": "json_or_text",
+                    "input_schema": {"type": "object", "properties": {}, "additionalProperties": True},
+                    "output_schema": {"type": "object", "description": description},
+                }
+            )
+        return rows
+
+    def _tool_allowed_by_runtime_profile(self, spec: AgentSpec, tool_name: str) -> bool:
+        name = str(tool_name or "").strip()
+        if not name or name in {"agent_lab_enter_mode", "agent_lab_tick"}:
+            return False
+        selected = set(spec.enabled_tools or [])
+        tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
+        if name.startswith("agent_lab_"):
+            return True
+        if tool_mode == "no_external" or NO_EXTERNAL_TOOLS_SENTINEL in selected:
+            return False
+        return tool_mode == "full" or not selected or name in selected
+
+    def _sync_agent_runtime(self, task: TaskState, spec: AgentSpec, *, reason: str = "sync") -> None:
+        self._ensure_workflow_data(task)
+        self.agent_runtime.sync(
+            task,
+            spec,
+            capabilities=self._runtime_capability_rows(spec),
+            reason=reason,
+        )
 
     def _workflow_variable(self, task: TaskState, name: str, default: Any = None) -> Any:
         data = self._ensure_workflow_data(task)
@@ -2120,6 +2414,18 @@ class AgentLabPlugin(Star):
             node_id=node_id,
             payload=payload,
         )
+        if hasattr(self, "agent_runtime"):
+            if result.ok and not result.blocked and result.status == "completed":
+                self.agent_runtime.mark_current(task, completed_node_id=node_id)
+            self.agent_runtime.record_verdict(
+                task,
+                node_id=node_id,
+                passed=bool(result.ok and not result.blocked),
+                status=result.status,
+                reason=result.outcome or result.note,
+                missing=[] if result.ok and not result.blocked else [result.note or "node execution blocked"],
+                next_action=result.next_node_id or ("react" if result.needs_react else ""),
+            )
         self._prepare_resume_anchor(task, reason=f"node:{node_id}")
 
     def _record_explicit_observation(
@@ -2143,6 +2449,14 @@ class AgentLabPlugin(Star):
             }
         )
         data["observations"] = observations[-160:]
+        if hasattr(self, "agent_runtime"):
+            self.agent_runtime.record_observation(
+                task,
+                source=source,
+                node_id=node_id or task.workflow_current_node_id,
+                payload=payload,
+                summary=payload,
+            )
 
     def _record_react_trace(
         self,
@@ -2173,6 +2487,24 @@ class AgentLabPlugin(Star):
             }
         )
         data["react_traces"] = traces[-80:]
+        if hasattr(self, "agent_runtime"):
+            decision = self.agent_runtime.record_decision(
+                task,
+                phase="react",
+                action="react_handoff",
+                node_id=current_node,
+                reason=reason,
+                capability="llm.reason",
+            )
+            self.agent_runtime.record_observation(
+                task,
+                source="react",
+                node_id=current_node,
+                decision_id=decision.get("decision_id", ""),
+                payload=data_snapshot,
+                summary=response,
+            )
+            self.agent_runtime.update_resume(task, reason=f"react:{reason}")
 
     def _memory_entry_visible(
         self,
@@ -3145,6 +3477,19 @@ class AgentLabPlugin(Star):
                 "note": note,
             },
         )
+        if hasattr(self, "agent_runtime"):
+            self.agent_runtime.record_decision(
+                task,
+                phase="workflow",
+                action="advance",
+                node_id=current_id,
+                reason=outcome or note,
+                capability="workflow.control",
+                next_node_id=target,
+                confidence="high" if target else "medium",
+            )
+            self.agent_runtime.mark_current(task, completed_node_id=current_id)
+            self.agent_runtime.update_resume(task, reason="advance_workflow")
         next_candidates = outgoing.get(task.workflow_current_node_id, [])
         next_text = ", ".join(next_candidates) or "-"
         return (
@@ -3257,6 +3602,25 @@ class AgentLabPlugin(Star):
                 note=str(worker.get("details") or "")[:1000],
                 next_node_id=merge_id,
             )
+            if hasattr(self, "agent_runtime"):
+                node_id = str(worker.get("node_id") or "")
+                summary_text = str(worker.get("summary") or worker.get("error") or "worker finished")
+                self.agent_runtime.record_observation(
+                    task,
+                    source="parallel_worker",
+                    node_id=node_id,
+                    payload=worker,
+                    summary=summary_text,
+                )
+                self.agent_runtime.record_verdict(
+                    task,
+                    node_id=node_id,
+                    passed=bool(worker.get("ok")),
+                    status=str(worker.get("status") or ("completed" if worker.get("ok") else "blocked")),
+                    reason=summary_text,
+                    missing=[] if worker.get("ok") else [str(worker.get("error") or summary_text)],
+                    next_action="merge_parallel_results",
+                )
         self._advance_task_workflow(
             task,
             spec,
@@ -4253,6 +4617,7 @@ class AgentLabPlugin(Star):
     def _task_payload(self, task: TaskState) -> dict[str, Any]:
         payload = task.to_dict()
         payload["heartbeat_health"] = self._heartbeat_health(task)
+        payload["agent_runtime_summary"] = self.agent_runtime.summary(task)
         return payload
 
     def _heartbeat_health(self, task: TaskState) -> dict[str, Any]:
@@ -5049,17 +5414,30 @@ class AgentLabPlugin(Star):
         webui = f"\n- webui: {self.webui_server.url}" if self.webui_server else ""
         if not task:
             return "Agent Lab：当前没有 active task。" + webui
+        runtime = self.agent_runtime.summary(task)
         return (
             f"Agent Lab active task:\n"
             f"- id: {task.task_id}\n"
             f"- status: {task.status}\n"
             f"- goal: {task.root_goal}\n"
             f"- next: {task.next_step or '-'}\n"
+            f"- runtime: node={runtime.get('current_node_id') or '-'} "
+            f"capabilities={runtime.get('capability_count', 0)} verdicts={runtime.get('verdicts', 0)}\n"
             f"- heartbeat: {'on' if task.heartbeat.enabled else 'off'}\n"
             f"- pending approvals: {len(task.pending_approvals())}\n"
             f"- state: {self.storage.task_markdown_path(umo, task.task_id)}"
             f"{webui}"
         )
+
+    def _runtime_text(self, umo: str) -> str:
+        task = self.storage.load_active_task(umo)
+        if not task:
+            return "当前没有 active task。"
+        spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
+        self._normalize_agent_workflow(spec)
+        self._sync_agent_runtime(task, spec, reason="runtime_command")
+        self.storage.save_task(task)
+        return self.agent_runtime.summary_text(task)
 
     def _agents_text(self) -> str:
         default_id = self.storage.default_agent_id()
@@ -5105,6 +5483,7 @@ class AgentLabPlugin(Star):
         return (
             "Agent Lab 命令：\n"
             "/agentlab status\n"
+            "/agentlab runtime\n"
             "/agentlab use <agent_id>\n"
             "/agentlab start <目标>\n"
             "/agentlab tick\n"

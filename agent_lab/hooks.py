@@ -5,6 +5,7 @@ from typing import Any
 
 from astrbot.core.agent.hooks import BaseAgentRunHooks
 
+from .agent_runtime import AgentRuntime
 from .models import now_iso
 from .storage import AgentLabStorage
 
@@ -29,6 +30,7 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         self.umo = umo
         self.task_id = task_id
         self.budget_max_tools = max(0, int(budget_max_tools or 0))
+        self.agent_runtime = AgentRuntime()
 
     def _load(self):
         task = self.storage.load_active_task(self.umo)
@@ -40,6 +42,14 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         task = self._load()
         if not task:
             return
+        self.agent_runtime.record_decision(
+            task,
+            phase="react",
+            action="tool_loop_begin",
+            node_id=task.workflow_current_node_id,
+            reason="AstrBot tool_loop_agent started",
+            capability="llm.reason",
+        )
         task.add_log("agent_begin", "tool_loop_agent started")
         self.storage.save_task(task)
 
@@ -63,6 +73,15 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         task.add_log(
             "tool_start",
             f"{getattr(tool, 'name', 'unknown')} args={_short(tool_args, 800)}",
+        )
+        self.agent_runtime.record_decision(
+            task,
+            phase="tool",
+            action="call_tool",
+            node_id=task.workflow_current_node_id or "",
+            reason=f"tool_loop requested {getattr(tool, 'name', 'unknown')}",
+            capability="tool.call",
+            tool_name=str(getattr(tool, "name", "unknown") or "unknown"),
         )
         self.storage.save_task(task)
 
@@ -96,6 +115,25 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         if isinstance(observations, list):
             observations.append(observation)
             data["observations"] = observations[-120:]
+        self.agent_runtime.record_observation(
+            task,
+            source="tool_loop",
+            node_id=task.workflow_current_node_id or "",
+            payload=observation,
+            summary=observation.get("result") or "tool result",
+        )
+        self.agent_runtime.record_verdict(
+            task,
+            node_id=task.workflow_current_node_id or "",
+            passed=tool_result is not None,
+            status="completed" if tool_result is not None else "blocked",
+            reason=(
+                f"Tool {tool_name} returned a result."
+                if tool_result is not None
+                else f"Tool {tool_name} returned no result."
+            ),
+            next_action="agent_update_state",
+        )
         task.last_observation = _short(
             json.dumps(observation, ensure_ascii=False, indent=2),
             4000,
@@ -125,5 +163,13 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         task.add_snapshot(
             "agent_done",
             {"token_usage": task.token_usage},
+        )
+        self.agent_runtime.record_verdict(
+            task,
+            node_id=task.workflow_current_node_id or "",
+            passed=True,
+            status="completed",
+            reason="tool_loop_agent completed one bounded ReAct pass.",
+            next_action=task.next_step,
         )
         self.storage.save_task(task)

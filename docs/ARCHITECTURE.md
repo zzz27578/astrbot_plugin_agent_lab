@@ -8,21 +8,40 @@ flowchart TD
     Trigger --> Spec["AgentSpec 快照"]
     Trigger --> Entry["Entry Summary"]
     Entry --> State["TaskState in plugin_data"]
+    State --> Runtime["Agent Runtime\nAgentInstance / Capabilities / TaskPlan / Verdicts"]
     Spec --> Guard["Session Plugin Guard"]
     Spec --> Tools["Tools / Skills Profile"]
+    Tools --> Runtime
+    Spec --> Runtime
     State --> Runner["tool_loop_agent Tick"]
-    Runner --> StateTools["agent_lab_read_state / update_state"]
+    Runner --> StateTools["agent_lab_read_state / read_runtime / update_state"]
     StateTools --> State
+    StateTools --> Runtime
     Runner --> FlowStep["agent_lab_advance_workflow"]
     FlowStep --> State
+    FlowStep --> Runtime
     Runner --> Approval{"危险操作?"}
     Approval -->|需要审批| Pending["Pending Approval"]
     Approval -->|已授权| Observe["Observe Result"]
     Observe --> State
+    Observe --> Runtime
     State --> Heartbeat["Cron Basic Heartbeat"]
     Heartbeat --> Runner
     State --> Finish["Exit Summary + Archive"]
+    Runtime --> Finish
 ```
+
+## Agent Runtime 层
+
+`agent_lab/agent_runtime.py` 是任务模式的结构化运行时层。它不替代 AstrBot 的 provider、Agent Runner 或 tool loop，而是在它们下方持久化一个运行态契约：
+
+- `agent_instance`：把 `AgentSpec` 快照和当前 `TaskState` 组合成可恢复的任务实例。
+- `capabilities`：从 Agent Lab 内置工具、AstrBot 注册工具、工具白名单、插件隔离和风险覆盖生成能力目录。
+- `plan`：把工作流节点实例化为 `TaskPlan`，包含当前节点、节点状态、能力和成功条件。
+- `decisions`、`observations`、`verdicts`：分别记录计划/执行决策、工具/节点/并行 worker 观察，以及 verifier 风格的通过/缺失/下一步判断。
+- `resume`：记录等待审批、暂停、重启或心跳唤醒后的恢复命令和恢复节点。
+
+LLM 可以通过 `agent_lab_read_runtime` 读取这层结构；用户可以通过 `/agentlab runtime` 查看摘要。归档 Markdown 也会保留 Agent Runtime 摘要，方便后续接续或审计。
 
 ## 为什么不用全局关闭插件
 
@@ -76,14 +95,15 @@ AstrBot SubAgentOrchestrator 负责把 subagent 变成 handoff tool。它适合�
 
 ## 显式读写状态
 
-Agent Lab 不只在 tick 结束后自动保存最终回复，还暴露两个内部工具：
+Agent Lab 不只在 tick 结束后自动保存最终回复，还暴露三个内部工具：
 
 ```text
 agent_lab_read_state
+agent_lab_read_runtime
 agent_lab_update_state
 ```
 
-长任务和心跳醒来时，Agent 应先读状态，再执行，然后用 `agent_lab_update_state` 写回进度、观察、下一步和阻塞点。
+长任务和心跳醒来时，Agent 应先读状态和 runtime，再执行，然后用 `agent_lab_update_state` 写回进度、观察、下一步和阻塞点。
 
 同时 `AgentLabRunHooks` 会记录工具开始、工具结束和 agent done 事件，作为审计日志写进 `progress_log`。
 

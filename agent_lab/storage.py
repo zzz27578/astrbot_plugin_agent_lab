@@ -273,6 +273,66 @@ class AgentLabStorage:
         workflow_data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
         node_outputs = workflow_data.get("node_outputs") if isinstance(workflow_data, dict) else {}
         react_traces = workflow_data.get("react_traces") if isinstance(workflow_data, dict) else []
+        agent_runtime = workflow_data.get("agent_runtime") if isinstance(workflow_data, dict) else {}
+        if not isinstance(agent_runtime, dict):
+            agent_runtime = {}
+        runtime_plan = agent_runtime.get("plan") if isinstance(agent_runtime.get("plan"), dict) else {}
+        runtime_steps = runtime_plan.get("steps") if isinstance(runtime_plan.get("steps"), list) else []
+        runtime_capabilities = (
+            agent_runtime.get("capabilities")
+            if isinstance(agent_runtime.get("capabilities"), list)
+            else []
+        )
+        runtime_resume = agent_runtime.get("resume") if isinstance(agent_runtime.get("resume"), dict) else {}
+        runtime_last_verdict = (
+            agent_runtime.get("last_verdict")
+            if isinstance(agent_runtime.get("last_verdict"), dict)
+            else {}
+        )
+        lines.extend(
+            [
+                "",
+                "## Agent Runtime",
+                f"- instance: {(agent_runtime.get('agent_instance') or {}).get('instance_id') or '-'}",
+                f"- plan: {runtime_plan.get('plan_id') or '-'}",
+                f"- current_node: {runtime_plan.get('current_node_id') or task.workflow_current_node_id or '-'}",
+                f"- capabilities: {len(runtime_capabilities)}",
+                f"- decisions: {len(agent_runtime.get('decisions') or [])}",
+                f"- observations: {len(agent_runtime.get('observations') or [])}",
+                f"- verdicts: {len(agent_runtime.get('verdicts') or [])}",
+                f"- resume_command: {runtime_resume.get('resume_command') or '/agentlab tick'}",
+                f"- waiting: {runtime_resume.get('waiting') or '-'}",
+                f"- last_verdict: {runtime_last_verdict.get('status') or '-'} "
+                f"passed={runtime_last_verdict.get('passed')} "
+                f"{runtime_last_verdict.get('reason') or ''}",
+                "",
+                "### Runtime Plan",
+            ]
+        )
+        if runtime_steps:
+            for step in runtime_steps[:40]:
+                if not isinstance(step, dict):
+                    continue
+                lines.append(
+                    f"- {step.get('node_id') or '-'} [{step.get('status') or '-'}] "
+                    f"{step.get('title') or step.get('action') or '-'}; "
+                    f"capability={step.get('capability') or '-'}"
+                )
+        else:
+            lines.append("- none")
+        lines.extend(["", "### Runtime Capabilities"])
+        if runtime_capabilities:
+            for item in runtime_capabilities[:40]:
+                if not isinstance(item, dict):
+                    continue
+                lines.append(
+                    f"- {item.get('name') or '-'}: {item.get('capability') or '-'} "
+                    f"risk={item.get('risk') or '-'} "
+                    f"approval={'yes' if item.get('requires_approval') else 'no'} "
+                    f"available={'yes' if item.get('available', True) else 'no'}"
+                )
+        else:
+            lines.append("- none")
         lines.extend(["", "### Workflow Node Outputs"])
         if isinstance(node_outputs, dict) and node_outputs:
             for node_id, item in list(node_outputs.items())[-20:]:

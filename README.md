@@ -15,7 +15,8 @@ Agent Lab 主要解决四件事：
 1. **防串记忆**：进入任务时压缩当前聊天计划，任务期间用独立 `task_state` 续跑，避免普通记忆插件把旧事注入进工程任务。
 2. **可控工具箱**：每个 AgentSpec 都可以配置插件开关、工具白名单、任务专用 skills 和外部集成蓝图。
 3. **任务连续性**：任务进度写进 `plugin_data`，手动 tick 或心跳醒来时先读状态、再执行、再保存。
-4. **软审批**：删除、重置、部署、读密钥等危险动作前，bot 应先说明影响并请求确认。
+4. **结构化 Agent Runtime**：每个任务都会持久化 AgentInstance、能力目录、TaskPlan、观察日志、verifier 结论和恢复入口，让 bot 不只是靠一次性回复推进。
+5. **软审批**：删除、重置、部署、读密钥等危险动作前，bot 应先说明影响并请求确认。
 
 最快验收方式：
 
@@ -85,6 +86,7 @@ data/plugins/astrbot_plugin_agent_lab/
 /agentlab tick
 /agentlab heartbeat on
 /agentlab heartbeat off
+/agentlab runtime
 /agentlab approve <approval_id>
 /agentlab reject <approval_id>
 /agentlab finish <总结>
@@ -112,6 +114,7 @@ data/plugins/astrbot_plugin_agent_lab/
 
 - `agent_lab_enter_mode`
 - `agent_lab_read_state`
+- `agent_lab_read_runtime`
 - `agent_lab_update_state`
 - `agent_lab_tick`
 - `agent_lab_request_approval`

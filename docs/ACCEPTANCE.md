@@ -16,6 +16,7 @@ Expected:
 - Smoke test prints `Agent Lab smoke test passed.`
 - Runtime smoke test prints `Agent Lab runtime smoke test passed.` when AstrBot SDK/source is importable.
 - Runtime executor behavior is documented in `docs/RUNTIME_EXECUTOR.md`, and workflow checks expose `runtime_types`, `executor_nodes`, `react_handoff_nodes`, and `node_runtime`.
+- Runtime smoke verifies `agent_runtime` contains an AgentInstance, capability catalog, TaskPlan, observations, verifier verdicts, resume anchor, and archived Markdown section.
 
 ## Install Checks
 
@@ -79,6 +80,7 @@ Expected:
 
 - `start` creates an active task.
 - `status` shows task id, goal, next step, state file path.
+- `/agentlab runtime` shows capability count, active TaskPlan steps, last verdict, waiting reason, and resume command.
 - `tick` calls the model/tool loop and updates task markdown.
 - `finish` archives task and restores session plugin config.
 - Finished task is removed from Tasks and appears in Archives.

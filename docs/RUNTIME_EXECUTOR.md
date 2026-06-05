@@ -42,6 +42,8 @@ Registered executors now cover:
 
 This means API nodes, tool nodes, memory checkpoints, approval/wait gates, validation gates, routing, and parallel branches have backend runtime semantics. They are no longer only text in the system prompt.
 
+`agent_lab/agent_runtime.py` adds the task-level agent contract around that executor. It persists an `agent_instance`, a capability catalog, a workflow-derived `TaskPlan`, decision records, observation records, verifier-style verdicts, and a resume anchor under `TaskState.workflow_data.agent_runtime`.
+
 ## What Still Uses ReAct
 
 ReAct is still used intentionally for open-ended work:
@@ -59,6 +61,7 @@ Those handoffs are recorded in `TaskState.workflow_data.react_traces` with the n
 
 `TaskState.workflow_data` stores:
 
+- `agent_runtime`: structured AgentInstance / capabilities / TaskPlan / decisions / observations / verdicts / resume.
 - `node_outputs`: last structured output for each executed node.
 - `variables`: named outputs available to later nodes.
 - `react_traces`: ReAct/tool-loop handoff audit trail.
@@ -66,7 +69,7 @@ Those handoffs are recorded in `TaskState.workflow_data.react_traces` with the n
 
 If a node defines `output_variable`, its result is saved into `variables`. Later nodes can read it with `input_variable`.
 
-Archived Markdown now includes `Workflow Node Outputs` and `ReAct Handoffs`, so runtime behavior is visible after task completion.
+Archived Markdown now includes `Agent Runtime`, `Workflow Node Outputs`, and `ReAct Handoffs`, so runtime behavior is visible after task completion.
 
 ## Isolation Boundary
 
@@ -91,8 +94,10 @@ This prevents the canvas executor from bypassing plugin/tool isolation.
 
 Use those fields to check which nodes are real executors and which nodes will be handed to ReAct.
 
+Use `/agentlab runtime` or `agent_lab_read_runtime` to inspect the live task runtime: current plan node, granted capabilities, last verifier verdict, pending steps, and resume command.
+
 ## Honest Boundary
 
-This is now an AstrBot-native task runtime layer with executable workflow nodes, state persistence, ReAct handoff traces, memory isolation, plugin/tool filtering, and heartbeat support.
+This is now an AstrBot-native task runtime layer with executable workflow nodes, state persistence, ReAct handoff traces, capability catalogs, structured task plans, verifier verdicts, memory isolation, plugin/tool filtering, and heartbeat support.
 
 It is not yet a complete mature external framework runner. Missing future work includes richer tool argument schemas, expression evaluation for variables, a stronger watchdog/lease heartbeat model, and optional adapters for external runtimes such as LangGraph or OpenAI Agents SDK.

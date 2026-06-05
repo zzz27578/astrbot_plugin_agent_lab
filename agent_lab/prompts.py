@@ -108,6 +108,46 @@ def _workflow_runtime_text(spec: AgentSpec, task: TaskState) -> str:
     )
 
 
+def _agent_runtime_text(task: TaskState) -> str:
+    data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
+    runtime = data.get("agent_runtime") if isinstance(data.get("agent_runtime"), dict) else {}
+    if not runtime:
+        return "- agent_runtime 尚未初始化；先调用 agent_lab_read_runtime。"
+    plan = runtime.get("plan") if isinstance(runtime.get("plan"), dict) else {}
+    steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
+    capabilities = runtime.get("capabilities") if isinstance(runtime.get("capabilities"), list) else []
+    resume = runtime.get("resume") if isinstance(runtime.get("resume"), dict) else {}
+    last_verdict = runtime.get("last_verdict") if isinstance(runtime.get("last_verdict"), dict) else {}
+    active_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict) and step.get("status") in {"running", "pending", "blocked"}
+    ][:8]
+    step_lines = [
+        f"- {step.get('node_id') or '-'} [{step.get('status') or '-'}] "
+        f"capability={step.get('capability') or '-'}; success={step.get('success_condition') or '-'}"
+        for step in active_steps
+    ]
+    capability_lines = [
+        f"- {item.get('name') or '-'}: {item.get('capability') or '-'} "
+        f"risk={item.get('risk') or '-'} approval={'yes' if item.get('requires_approval') else 'no'}"
+        for item in capabilities[:12]
+        if isinstance(item, dict)
+    ]
+    return "\n".join(
+        [
+            f"- instance：{(runtime.get('agent_instance') or {}).get('instance_id') or '-'}",
+            f"- plan：{plan.get('plan_id') or '-'} current={plan.get('current_node_id') or task.workflow_current_node_id or '-'}",
+            f"- resume：{resume.get('resume_command') or '/agentlab tick'} waiting={resume.get('waiting') or '-'}",
+            f"- last_verdict：{last_verdict.get('status') or '-'} passed={last_verdict.get('passed')} {last_verdict.get('reason') or ''}",
+            "- active_plan_steps：",
+            "\n".join(step_lines) if step_lines else "- none",
+            "- capabilities：",
+            "\n".join(capability_lines) if capability_lines else "- none",
+        ]
+    )
+
+
 def _entry_policy_text(spec: AgentSpec) -> str:
     entry = spec.entry_policy
     return "\n".join(
@@ -196,6 +236,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 可用工具：
 - agent_lab_enter_mode：进入 Agent Mode，创建任务状态。
 - agent_lab_read_state：读取当前任务状态。
+- agent_lab_read_runtime：读取当前 Agent Runtime，包括能力目录、结构化计划、verifier 结论和恢复入口。
 - agent_lab_update_state：写回当前进度、观察、下一步和阻塞点。
 - agent_lab_advance_workflow：记录当前工作流节点结果并推进到下一节点；多分支、并行分支、审批/校验节点必须用它留下节点轨迹。
 - agent_lab_read_task_memory：读取已归档任务记忆，普通模式也可以按标签/关键词查询。
@@ -209,7 +250,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 核心原则：
 1. Agent Mode 不是失忆。进入时要把刚才商量的计划压缩成 task_brief。
 2. 任务连续性以 task_state 为唯一真实来源，不凭旧上下文脑补进度。
-3. 每轮执行必须先用 agent_lab_read_state 复盘现状，再做有限步骤，再用 agent_lab_update_state 写回状态。
+3. 每轮执行必须先用 agent_lab_read_state 和 agent_lab_read_runtime 复盘现状、能力目录、计划游标和最新验证结论，再做有限步骤，再用 agent_lab_update_state 写回状态。
 4. 删除、重置、部署、改全局配置、读取密钥等危险动作前，先主动说明影响并请求用户同意。
 5. 用户取消时立即停止，不得自行恢复。
 6. 心跳只是唤醒机制，不是记忆本身；只有长任务、等待型任务或用户要求时才建议启用。
@@ -279,8 +320,14 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 [Workflow Runtime Cursor]
 {_workflow_runtime_text(spec, task)}
 
+[Structured Agent Runtime]
+{_agent_runtime_text(task)}
+
 [Heartbeat Contract]
-如果这是心跳唤醒，第一步必须读取并相信 task_state；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。
+如果这是心跳唤醒，第一步必须读取并相信 task_state 和 agent_runtime；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。
+
+[Agent Runtime Contract]
+agent_runtime 是任务的硬控制层：capabilities 决定当前 Agent 被授予什么能力，TaskPlan 决定当前目标实例的结构化步骤，observations 是证据层，verdicts 是验证层，resume 是重启/等待用户后继续的入口。不要绕过能力目录调用未授权工具；不要在 verifier 未通过或完成条件缺证据时调用 agent_lab_finish。每轮若看不到最新 runtime，请先调用 agent_lab_read_runtime。
 
 [Approval Contract]
 普通读取、创建任务记录、小范围明确文件写入、运行测试无需审批。删除、批量覆盖、git reset/clean、部署/重启服务、密钥读取、数据库破坏性变更、全局插件/系统配置修改必须先请求审批。若某项在 preapproved_scopes 中，仍需先确认它确实属于用户已授权范围；若超出范围，必须调用 agent_lab_request_approval。
@@ -305,11 +352,12 @@ def build_tick_prompt(task: TaskState, reason: str = "") -> str:
 
 必须按顺序执行：
 1. 复盘当前 task_state。
-2. 判断是否存在未审批的危险操作；若有，先等待审批。
-3. 只推进一个有限工作单元。
-4. 调用 agent_lab_update_state 写回本轮完成了什么、关键改动点、观察到什么、下一步是什么、是否需要心跳。
-5. 调用 agent_lab_advance_workflow 记录本轮完成或选择的工作流节点；遇到多分支时明确 next_node_id。
-6. 若任务完成，调用 agent_lab_finish，并在 final_summary/memory_candidates 中沉淀任务成果、改动摘要、遗留风险和下次续写提示；若需要审批，调用 agent_lab_request_approval。
+2. 读取 agent_runtime，确认能力目录、TaskPlan、last_verdict 和 resume 入口。
+3. 判断是否存在未审批的危险操作；若有，先等待审批。
+4. 只推进一个有限工作单元。
+5. 调用 agent_lab_update_state 写回本轮完成了什么、关键改动点、观察到什么、下一步是什么、是否需要心跳。
+6. 调用 agent_lab_advance_workflow 记录本轮完成或选择的工作流节点；遇到多分支时明确 next_node_id。
+7. 若任务完成，调用 agent_lab_finish，并在 final_summary/memory_candidates 中沉淀任务成果、改动摘要、遗留风险和下次续写提示；若需要审批，调用 agent_lab_request_approval。
 
 当前任务 ID：{task.task_id}
 根目标：{task.root_goal}

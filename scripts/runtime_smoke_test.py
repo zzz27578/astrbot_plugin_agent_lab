@@ -374,6 +374,13 @@ async def main() -> None:
         assert task.workflow_current_node_id == "entry"
         assert task.workflow_path == ["entry"]
         assert task.workflow_events and task.workflow_events[0]["status"] == "entered"
+        agent_runtime = task.workflow_data["agent_runtime"]
+        assert agent_runtime["agent_instance"]["task_id"] == task.task_id
+        assert agent_runtime["agent_instance"]["lifecycle"]["plan"] is True
+        assert agent_runtime["plan"]["goal"] == "runtime smoke goal"
+        assert agent_runtime["plan"]["steps"][0]["node_id"] == "entry"
+        assert any(item["name"] == "agent_lab_read_runtime" for item in agent_runtime["capabilities"])
+        assert agent_runtime["resume"]["resume_command"] == "/agentlab tick"
         lease_ok, lease_token = plugin._acquire_task_lease(
             task,
             reason="runtime_smoke_lease",
@@ -421,10 +428,19 @@ async def main() -> None:
         )
         assert "[Workflow]" in task_prompt
         assert "[Workflow Runtime Cursor]" in task_prompt
+        assert "[Structured Agent Runtime]" in task_prompt
+        assert "agent_lab_read_runtime" in task_prompt
         assert "agent_lab_advance_workflow" in task_prompt
         assert "run_tools" in task_prompt
         read_state = await plugin.agent_lab_read_state(event)
         assert "workflow: current=entry" in read_state
+        assert "runtime: current=entry" in read_state
+        runtime_text = await plugin.agent_lab_read_runtime(event)
+        assert "Agent Runtime:" in runtime_text
+        assert "agent_lab_read_runtime" in runtime_text
+        runtime_json = json.loads(await plugin.agent_lab_read_runtime(event, format="json"))
+        assert runtime_json["agent_instance"]["task_id"] == task.task_id
+        assert runtime_json["capability_count"] >= 1
         advanced = await plugin.agent_lab_advance_workflow(
             event,
             node_id="entry",
@@ -438,7 +454,10 @@ async def main() -> None:
         assert task.workflow_current_node_id == "entry_gate"
         assert task.workflow_path[-1] == "entry_gate"
         assert "## Workflow Cursor" in plugin.storage.render_markdown(task)
-        assert plugin._task_payload(task)["heartbeat_health"]["state"] == "off"
+        assert "## Agent Runtime" in plugin.storage.render_markdown(task)
+        task_payload = plugin._task_payload(task)
+        assert task_payload["heartbeat_health"]["state"] == "off"
+        assert task_payload["agent_runtime_summary"]["capability_count"] >= 1
 
         runtime_react_calls = []
 
@@ -478,6 +497,11 @@ async def main() -> None:
         assert task.workflow_data["observations"][-1]["source"] == "tool_loop"
         assert task.workflow_data["resume"]["last_observation"] == task.last_observation
         assert task.workflow_data["resume"]["workflow_current_node_id"] == "plan"
+        assert task.workflow_data["agent_runtime"]["last_verdict"]
+        assert any(
+            item.get("source") == "tool_loop"
+            for item in task.workflow_data["agent_runtime"]["observations"]
+        )
         assert task.token_usage["total"] == 5
         report_with_runtime = plugin._workflow_report(plugin_main.AgentSpec.from_dict(task.profile_snapshot["agent"]))
         assert "api_call" in report_with_runtime["executor_nodes"]
@@ -684,6 +708,7 @@ async def main() -> None:
         assert any(item.get("kind") == "task_memory" for item in task.progress_log)
         rendered = plugin.storage.render_markdown(task)
         assert "Workflow Node Outputs" in rendered
+        assert "Agent Runtime" in rendered
         assert "api_exec" in rendered
 
         schema_block_spec = plugin_main.AgentSpec(
@@ -1025,6 +1050,12 @@ async def main() -> None:
         assert task.workflow_path[-1] == "parallel_merge"
         assert any(item.get("node_id") == "api_worker" for item in task.workflow_events)
         assert "Parallel Workflow Runs" in plugin.storage.render_markdown(task)
+        assert "## Agent Runtime" in plugin.storage.render_markdown(task)
+        assert task.workflow_data["agent_runtime"]["last_verdict"]
+        assert any(
+            item.get("source") == "parallel_worker"
+            for item in task.workflow_data["agent_runtime"]["observations"]
+        )
         assert "runtime-secret" not in parallel_result_text
 
         heartbeat = await plugin._enable_heartbeat(event, task, "runtime_smoke")
@@ -1048,6 +1079,10 @@ async def main() -> None:
         archives = plugin.storage.list_archives(event.unified_msg_origin)
         assert len(archives) == 1
         assert archives[0].status == "completed"
+        archived_runtime = archives[0].workflow_data["agent_runtime"]
+        assert archived_runtime["last_decision"]["action"] == "finish_task"
+        assert archived_runtime["last_verdict"]["status"] == "completed"
+        assert "## Agent Runtime" in plugin.storage.render_markdown(archives[0])
         assert plugin.guard.restored
         normal_private_memory = await plugin.agent_lab_read_task_memory(
             event,
