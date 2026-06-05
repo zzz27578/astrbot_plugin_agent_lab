@@ -68,6 +68,12 @@ class AgentLabRunHooks(BaseAgentRunHooks):
                     f"本轮工具预算已用尽：{tick['tool_calls_used']}/{self.budget_max_tools}"
                 )
                 task.watchdog.needs_user = True
+                task.set_wait(
+                    wait_reason="budget_exhausted",
+                    message=task.watchdog.paused_reason,
+                    source="tool_loop_budget",
+                    required_input=[task.watchdog.paused_reason],
+                )
                 task.add_log("paused", task.watchdog.paused_reason)
         task.workflow_data = data
         task.add_log(

@@ -405,17 +405,19 @@ class AgentRuntime:
                         "status": step.get("status"),
                     }
                 )
-        wait_reason = self.waiting_reason(task)
+        wait_state = self.wait_state(task)
+        wait_reason = str(wait_state.get("wait_reason") or "")
         resume = {
             "task_id": task.task_id,
             "updated_at": now_iso(),
             "reason": reason,
             "status": task.status,
             "current_node_id": task.workflow_current_node_id,
-            "resume_node": task.workflow_current_node_id,
+            "resume_node": wait_state.get("resume_node") or task.workflow_current_node_id,
             "next_step": task.next_step,
-            "resume_command": self.resume_command(task, wait_reason),
+            "resume_command": wait_state.get("resume_command") or self.resume_command(task, wait_reason),
             "waiting": wait_reason,
+            "wait_state": wait_state,
             "last_decision_id": (runtime.get("last_decision") or {}).get("decision_id"),
             "last_observation_id": (runtime.get("last_observation") or {}).get("observation_id"),
             "last_verdict_id": (runtime.get("last_verdict") or {}).get("verdict_id"),
@@ -597,6 +599,9 @@ class AgentRuntime:
 
     @staticmethod
     def waiting_reason(task: TaskState) -> str:
+        wait = getattr(task, "wait", None)
+        if wait and getattr(wait, "active", False):
+            return str(getattr(wait, "wait_reason", "") or "need_user_decision")
         if task.pending_approvals():
             return "need_approval"
         if task.watchdog.needs_user:
@@ -606,6 +611,36 @@ class AgentRuntime:
         if task.status == "blocked":
             return task.watchdog.paused_reason or "blocked_by_error"
         return ""
+
+    @classmethod
+    def wait_state(cls, task: TaskState) -> dict[str, Any]:
+        wait = getattr(task, "wait", None)
+        if wait and getattr(wait, "active", False):
+            return {
+                "active": True,
+                "wait_reason": str(getattr(wait, "wait_reason", "") or "need_user_decision"),
+                "message": str(getattr(wait, "message", "") or ""),
+                "source": str(getattr(wait, "source", "") or ""),
+                "resume_command": str(getattr(wait, "resume_command", "") or cls.resume_command(task, getattr(wait, "wait_reason", ""))),
+                "resume_node": str(getattr(wait, "resume_node", "") or task.workflow_current_node_id),
+                "required_input": list(getattr(wait, "required_input", []) or []),
+                "created_at": str(getattr(wait, "created_at", "") or ""),
+                "updated_at": str(getattr(wait, "updated_at", "") or ""),
+            }
+        wait_reason = cls.waiting_reason(task)
+        if not wait_reason:
+            return {"active": False}
+        return {
+            "active": True,
+            "wait_reason": wait_reason,
+            "message": task.watchdog.paused_reason or wait_reason,
+            "source": "watchdog",
+            "resume_command": cls.resume_command(task, wait_reason),
+            "resume_node": task.workflow_current_node_id,
+            "required_input": [task.watchdog.paused_reason] if task.watchdog.paused_reason else [],
+            "created_at": "",
+            "updated_at": "",
+        }
 
     @staticmethod
     def resume_command(task: TaskState, wait_reason: str) -> str:

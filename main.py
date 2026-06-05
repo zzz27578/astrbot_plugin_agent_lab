@@ -545,6 +545,13 @@ class AgentLabPlugin(Star):
             rollback=rollback,
         )
         task.approvals.append(approval.to_dict())
+        task.set_wait(
+            wait_reason="need_approval",
+            message=f"approval requested: {operation}",
+            source="agent_lab_request_approval",
+            resume_command=f"/agentlab approve {approval.approval_id}",
+            required_input=[operation],
+        )
         task.add_log("approval_requested", f"{approval.approval_id}: {operation}")
         self.agent_runtime.record_pause(
             task,
@@ -1133,8 +1140,12 @@ class AgentLabPlugin(Star):
         finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
         if not finish_verdict.passed:
             task.status = "paused"
-            task.watchdog.needs_user = True
-            task.watchdog.paused_reason = finish_verdict.reason
+            task.set_wait(
+                wait_reason=finish_verdict.status or "need_user_decision",
+                message=finish_verdict.reason,
+                source="verifier_finish",
+                required_input=finish_verdict.missing,
+            )
             self.agent_runtime.record_verdict(
                 task,
                 node_id=task.workflow_current_node_id,
@@ -1614,9 +1625,13 @@ class AgentLabPlugin(Star):
 
     def _pause_task_for_budget(self, task: TaskState, reason: str) -> None:
         task.status = "paused"
-        task.watchdog.paused_reason = reason
         task.watchdog.last_decision = "paused_budget"
-        task.watchdog.needs_user = True
+        task.set_wait(
+            wait_reason="budget_exhausted",
+            message=reason,
+            source="budget",
+            required_input=[reason],
+        )
         task.add_blocker("budget_exhausted", reason)
         task.add_log("paused", reason)
         task.add_snapshot("budget_pause", {"reason": reason})
@@ -1634,8 +1649,15 @@ class AgentLabPlugin(Star):
         if task.watchdog.paused_reason and task.status == "paused":
             return f"任务已暂停：{task.watchdog.paused_reason}"
         if task.pending_approvals():
-            task.watchdog.needs_user = True
             task.watchdog.last_decision = "waiting_approval"
+            approval = task.pending_approvals()[0]
+            task.set_wait(
+                wait_reason="need_approval",
+                message=f"waiting for approval: {approval.operation}",
+                source="watchdog",
+                resume_command=f"/agentlab approve {approval.approval_id}",
+                required_input=[approval.operation],
+            )
             return "任务正在等待审批，不能由心跳继续推进。"
         budget_reason = self._budget_before_tick(task, reason)
         if budget_reason:
@@ -1662,8 +1684,12 @@ class AgentLabPlugin(Star):
             task.watchdog.last_decision = "error"
             if task.watchdog.consecutive_failures >= int(task.heartbeat.max_repeated_failures or 3):
                 task.status = "paused"
-                task.watchdog.paused_reason = f"连续失败 {task.watchdog.consecutive_failures} 次：{error}"
-                task.watchdog.needs_user = True
+                task.set_wait(
+                    wait_reason="blocked_by_error",
+                    message=f"连续失败 {task.watchdog.consecutive_failures} 次：{error}",
+                    source="watchdog_error",
+                    required_input=[error],
+                )
             self._prepare_resume_anchor(task, reason=reason)
             return
         if progressed:
@@ -1678,8 +1704,12 @@ class AgentLabPlugin(Star):
             task.watchdog.last_decision = "no_progress"
             if task.watchdog.consecutive_failures >= int(task.heartbeat.max_repeated_failures or 3):
                 task.status = "paused"
-                task.watchdog.paused_reason = "连续 tick 没有产生新 observation 或 workflow 进展。"
-                task.watchdog.needs_user = True
+                task.set_wait(
+                    wait_reason="blocked_by_error",
+                    message="连续 tick 没有产生新 observation 或 workflow 进展。",
+                    source="watchdog_no_progress",
+                    required_input=["new_observation_or_workflow_progress"],
+                )
         self._prepare_resume_anchor(task, reason=reason)
 
     def _prepare_resume_anchor(self, task: TaskState, *, reason: str = "") -> None:
@@ -1808,8 +1838,12 @@ class AgentLabPlugin(Star):
             reason = f"Loop guard stopped repeated node {node_id}: {current}/{max_repeats}"
             guard["last_stop"] = {"time": now_iso(), "node_id": node_id, "reason": reason}
             task.status = "paused"
-            task.watchdog.paused_reason = reason
-            task.watchdog.needs_user = True
+            task.set_wait(
+                wait_reason="blocked_by_error",
+                message=reason,
+                source="loop_guard",
+                required_input=[reason],
+            )
             task.add_blocker("loop_guard", reason)
             return reason
         return ""
@@ -1841,8 +1875,12 @@ class AgentLabPlugin(Star):
             reason = f"Loop guard stopped repeated result at {node.get('id')}: {result.note or result.outcome}"
             guard["last_stop"] = {"time": now_iso(), "node_id": node.get("id") or "", "reason": reason}
             task.status = "paused"
-            task.watchdog.paused_reason = reason
-            task.watchdog.needs_user = True
+            task.set_wait(
+                wait_reason="blocked_by_error",
+                message=reason,
+                source="loop_guard",
+                required_input=[reason],
+            )
             task.add_blocker("loop_guard", reason)
             return reason
         return ""
@@ -2648,6 +2686,14 @@ class AgentLabPlugin(Star):
     async def _execute_approval_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         if ctx.task.pending_approvals():
             ctx.task.status = "paused"
+            pending = ctx.task.pending_approvals()[0]
+            ctx.task.set_wait(
+                wait_reason="need_approval",
+                message=f"Waiting for existing approval request: {pending.operation}",
+                source="workflow_approval_node",
+                resume_command=f"/agentlab approve {pending.approval_id}",
+                required_input=[pending.operation],
+            )
             return NodeExecutionResult(
                 ok=False,
                 status="running",
@@ -2662,6 +2708,13 @@ class AgentLabPlugin(Star):
         approval = ApprovalRequest(operation=operation, reason=reason, impact=impact)
         ctx.task.approvals.append(approval.to_dict())
         ctx.task.status = "paused"
+        ctx.task.set_wait(
+            wait_reason="need_approval",
+            message=f"Approval requested: {operation}",
+            source="workflow_approval_node",
+            resume_command=f"/agentlab approve {approval.approval_id}",
+            required_input=[operation],
+        )
         ctx.task.add_log("approval_requested", f"{approval.approval_id}: {operation}")
         return NodeExecutionResult(
             ok=False,
@@ -2674,12 +2727,34 @@ class AgentLabPlugin(Star):
 
     async def _execute_wait_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         ctx.task.status = "paused"
+        action = str(ctx.node.get("action") or "").strip()
+        instruction = str(ctx.node.get("instruction") or "Waiting for user input.").strip()
+        lowered = " ".join(
+            str(ctx.node.get(key) or "")
+            for key in ("wait_reason", "reason", "title", "instruction", "prompt")
+        ).lower()
+        wait_reason = str(ctx.node.get("wait_reason") or "").strip()
+        if not wait_reason:
+            if "credential" in lowered or "secret" in lowered or "api key" in lowered:
+                wait_reason = "need_credential"
+            elif "login" in lowered or "captcha" in lowered or "otp" in lowered:
+                wait_reason = "need_login"
+            elif "external" in lowered or "webhook" in lowered or "callback" in lowered:
+                wait_reason = "waiting_external_result"
+            else:
+                wait_reason = "need_user_decision" if action == "handoff" else "waiting_user"
+        ctx.task.set_wait(
+            wait_reason=wait_reason,
+            message=instruction,
+            source=f"workflow_{action or 'wait'}_node",
+            required_input=[instruction],
+        )
         return NodeExecutionResult(
             ok=False,
             status="running",
-            outcome=str(ctx.node.get("instruction") or "Waiting for user input."),
+            outcome=instruction,
             advance=False,
-            data={"wait": True},
+            data={"wait": True, "wait_reason": wait_reason},
             note="node_executor_wait",
         )
 
@@ -2738,8 +2813,12 @@ class AgentLabPlugin(Star):
             schema_reason = self._validate_node_input_schema(task, decision.node)
             if schema_reason:
                 task.status = "paused"
-                task.watchdog.paused_reason = schema_reason
-                task.watchdog.needs_user = True
+                task.set_wait(
+                    wait_reason="need_user_decision",
+                    message=schema_reason,
+                    source="schema_validation",
+                    required_input=["valid_node_input"],
+                )
                 task.add_blocker("schema_mismatch", schema_reason)
                 runtime_run.steps.append(
                     WorkflowDecision(

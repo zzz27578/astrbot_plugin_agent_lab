@@ -294,6 +294,7 @@ class AgentLabStorage:
             else []
         )
         runtime_resume = agent_runtime.get("resume") if isinstance(agent_runtime.get("resume"), dict) else {}
+        wait_state = getattr(task, "wait", None)
         runtime_last_verdict = (
             agent_runtime.get("last_verdict")
             if isinstance(agent_runtime.get("last_verdict"), dict)
@@ -312,6 +313,8 @@ class AgentLabStorage:
                 f"- verdicts: {len(agent_runtime.get('verdicts') or [])}",
                 f"- resume_command: {runtime_resume.get('resume_command') or '/agentlab tick'}",
                 f"- waiting: {runtime_resume.get('waiting') or '-'}",
+                f"- wait_reason: {getattr(wait_state, 'wait_reason', '') if getattr(wait_state, 'active', False) else '-'}",
+                f"- wait_resume: {getattr(wait_state, 'resume_command', '') if getattr(wait_state, 'active', False) else '-'}",
                 f"- last_verdict: {runtime_last_verdict.get('status') or '-'} "
                 f"passed={runtime_last_verdict.get('passed')} "
                 f"{runtime_last_verdict.get('reason') or ''}",

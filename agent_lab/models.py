@@ -84,6 +84,35 @@ class WatchdogState:
 
 
 @dataclass
+class WaitState:
+    active: bool = False
+    wait_reason: str = ""
+    message: str = ""
+    source: str = ""
+    resume_command: str = "/agentlab tick"
+    resume_node: str = ""
+    required_input: list[str] = field(default_factory=list)
+    created_at: str = ""
+    updated_at: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "WaitState":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        base.active = bool(base.active)
+        if isinstance(base.required_input, str):
+            base.required_input = [base.required_input] if base.required_input else []
+        elif not isinstance(base.required_input, list):
+            base.required_input = []
+        base.required_input = [str(item).strip() for item in base.required_input if str(item).strip()]
+        return base
+
+
+@dataclass
 class TaskBudget:
     max_nodes_per_tick: int = 6
     max_tools_per_tick: int = 12
@@ -638,6 +667,7 @@ class TaskState:
     heartbeat: HeartbeatPolicy = field(default_factory=HeartbeatPolicy)
     lease: TaskLease = field(default_factory=TaskLease)
     watchdog: WatchdogState = field(default_factory=WatchdogState)
+    wait: WaitState = field(default_factory=WaitState)
     budget: TaskBudget = field(default_factory=TaskBudget)
     entry_summary: str = ""
     exit_summary: str = ""
@@ -753,11 +783,45 @@ class TaskState:
             if isinstance(item, dict) and item.get("status") == "pending"
         ]
 
+    def set_wait(
+        self,
+        *,
+        wait_reason: str,
+        message: str = "",
+        source: str = "",
+        resume_command: str = "/agentlab tick",
+        resume_node: str = "",
+        required_input: list[str] | None = None,
+    ) -> None:
+        now = now_iso()
+        self.wait = WaitState(
+            active=True,
+            wait_reason=str(wait_reason or "need_user_decision").strip(),
+            message=str(message or wait_reason or "").strip(),
+            source=str(source or "").strip(),
+            resume_command=str(resume_command or "/agentlab tick").strip(),
+            resume_node=str(resume_node or self.workflow_current_node_id or "").strip(),
+            required_input=[str(item).strip() for item in (required_input or []) if str(item).strip()],
+            created_at=self.wait.created_at or now,
+            updated_at=now,
+        )
+        self.watchdog.needs_user = True
+        self.watchdog.paused_reason = self.wait.message or self.wait.wait_reason
+        self.updated_at = now
+
+    def clear_wait(self) -> None:
+        if self.wait.active or self.watchdog.needs_user or self.watchdog.paused_reason:
+            self.wait = WaitState(updated_at=now_iso())
+            self.watchdog.needs_user = False
+            self.watchdog.paused_reason = ""
+            self.updated_at = now_iso()
+
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["heartbeat"] = asdict(self.heartbeat)
         payload["lease"] = asdict(self.lease)
         payload["watchdog"] = asdict(self.watchdog)
+        payload["wait"] = asdict(self.wait)
         payload["budget"] = asdict(self.budget)
         return payload
 
@@ -769,6 +833,7 @@ class TaskState:
         payload["heartbeat"] = HeartbeatPolicy.from_dict(payload.get("heartbeat"))
         payload["lease"] = TaskLease.from_dict(payload.get("lease"))
         payload["watchdog"] = WatchdogState.from_dict(payload.get("watchdog"))
+        payload["wait"] = WaitState.from_dict(payload.get("wait"))
         payload["budget"] = TaskBudget.from_dict(payload.get("budget"))
         base = cls()
         for key in asdict(base):
