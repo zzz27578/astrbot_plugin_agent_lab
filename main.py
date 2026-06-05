@@ -39,6 +39,7 @@ from .agent_lab.prompts import (
     build_task_system_prompt,
     build_tick_prompt,
 )
+from .agent_lab.policy import PermissionPolicy
 from .agent_lab.node_runtime import (
     NodeExecutionContext,
     NodeExecutionResult,
@@ -47,6 +48,7 @@ from .agent_lab.node_runtime import (
 from .agent_lab.runtime import WorkflowDecision, WorkflowRuntime, WorkflowRuntimeRun
 from .agent_lab.session_guard import SessionPluginGuard
 from .agent_lab.summarizer import AgentSummarizer
+from .agent_lab.tool_executor import AstrBotToolExecutor
 from .agent_lab.verifier import AgentVerifier
 from .agent_lab.webui_server import StandaloneWebUIServer
 from .agent_lab.workers import normalize_worker_output, worker_spec_for_node
@@ -239,6 +241,7 @@ class AgentLabPlugin(Star):
         )
         self.agent_runtime = AgentRuntime()
         self.verifier = AgentVerifier()
+        self.tool_executor = AstrBotToolExecutor(self)
         self.node_executors = NodeExecutorRegistry()
         self._register_node_executors()
         self.summarizer = AgentSummarizer(
@@ -265,6 +268,9 @@ class AgentLabPlugin(Star):
     async def terminate(self):
         await self._stop_webui_server()
         logger.info("[AgentLab] terminated")
+
+    def _cfg_value(self, key: str, default: Any = None) -> Any:
+        return _cfg(self.config, key, default)
 
     @filter.command("agentlab")
     async def agentlab_command(self, event: AstrMessageEvent):
@@ -1696,23 +1702,11 @@ class AgentLabPlugin(Star):
         return toolset
 
     def _tool_allowed_by_agent_profile(self, spec: AgentSpec, tool_name: str) -> bool:
-        name = str(tool_name or "").strip()
-        if not name:
-            return False
-        if name in {
+        return PermissionPolicy.tool_allowed_by_agent_profile(
+            spec,
+            tool_name,
             NO_EXTERNAL_TOOLS_SENTINEL,
-            "agent_lab_enter_mode",
-            "agent_lab_tick",
-            "agent_lab_finish",
-            "agent_lab_update_workflow",
-            "agent_lab_run_parallel_workflow",
-        }:
-            return False
-        tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
-        selected_tools = set(spec.enabled_tools or [])
-        if tool_mode == "no_external" or NO_EXTERNAL_TOOLS_SENTINEL in selected_tools:
-            return False
-        return tool_mode == "full" or not selected_tools or name in selected_tools
+        )
 
     def _workflow_runtime_view(self, task: TaskState) -> dict[str, Any]:
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
@@ -2224,39 +2218,11 @@ class AgentLabPlugin(Star):
         capability: str,
         risk: str,
     ) -> bool:
-        profile = str(node.get("permission_profile") or node.get("profile") or "work").strip()
-        if profile == "danger":
-            return True
-        if risk == "high":
-            return False
-        if profile == "ordinary":
-            return risk == "safe" and capability not in {"shell", "code", "database"}
-        if profile == "work":
-            return risk in {"safe", "work"} and capability not in {"database"}
-        if profile == "code":
-            return capability in {"file", "code", "search", "memory", "api", "unknown"} and risk in {"safe", "work"}
-        if profile == "web":
-            return capability in {"web", "search", "api", "memory", "unknown"} and risk in {"safe", "work"}
-        return risk == "safe"
+        return PermissionPolicy.permission_allows_tool(node, capability=capability, risk=risk)
 
     @staticmethod
     def _permission_profiles_for(capability: str, risk: str) -> list[str]:
-        if risk == "high":
-            return ["danger"]
-        profiles = ["work", "danger"]
-        if risk == "safe" and capability not in {"code", "database"}:
-            profiles.insert(0, "ordinary")
-        if capability in {"file", "code", "search", "memory", "api", "unknown"}:
-            profiles.append("code")
-        if capability in {"web", "search", "api", "memory", "unknown"}:
-            profiles.append("web")
-        seen: set[str] = set()
-        result = []
-        for item in profiles:
-            if item not in seen:
-                seen.add(item)
-                result.append(item)
-        return result
+        return PermissionPolicy.permission_profiles_for(capability, risk)
 
     def _ensure_workflow_data(self, task: TaskState) -> dict[str, Any]:
         data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
@@ -2882,116 +2848,39 @@ class AgentLabPlugin(Star):
                 advance=False,
                 note="node_executor_tool_react_fallback",
             )
-        if not self._tool_allowed_by_agent_profile(ctx.spec, tool_name):
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=f"Tool is outside the Agent tool profile: {tool_name}",
-                blocked=True,
-                advance=False,
-                note="node_executor_tool_not_allowed",
-            )
-        tmgr = self.context.get_llm_tool_manager()
-        try:
-            tool = tmgr.get_func(tool_name)
-        except Exception:
-            tool = None
-        if not tool or not self._tool_available_for_agent(tool, self._disabled_plugin_names(ctx.spec)):
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=f"Tool is unavailable or isolated: {tool_name}",
-                blocked=True,
-                advance=False,
-                note="node_executor_tool_unavailable",
-            )
-        capability = self._infer_capability(
-            tool_name,
-            getattr(tool, "description", ""),
-            getattr(tool, "handler_module_path", ""),
+        executed = await self.tool_executor.call(
+            event=ctx.event,
+            task=ctx.task,
+            spec=ctx.spec,
+            node=ctx.node,
+            tool_name=tool_name,
+            call_args=call_args,
         )
-        risk = self._effective_tool_risk(
-            ctx.spec,
-            tool_name,
-            self._infer_tool_risk(tool_name, getattr(tool, "description", "")),
-        )
-        parameter_schema = self._normalize_tool_input_schema(
-            self._tool_schema(
-                tool,
-                name=tool_name,
-                description=getattr(tool, "description", ""),
-            )
-        )
-        schema_reason = self._schema_validation_message(
-            parameter_schema,
-            call_args,
-            f"Tool arguments for {tool_name}",
-        )
-        if schema_reason:
+        if executed.needs_react:
             return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=schema_reason,
-                blocked=True,
-                advance=False,
-                data={
-                    "tool_name": tool_name,
-                    "args": call_args,
-                    "parameters_schema": parameter_schema,
-                },
-                note="node_executor_tool_schema_mismatch",
-            )
-        if not self._permission_allows_tool(ctx.node, capability=capability, risk=risk):
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=f"Tool permission profile blocks {tool_name}: capability={capability}, risk={risk}",
-                blocked=True,
-                advance=False,
-                note="node_executor_tool_permission_blocked",
-            )
-        budget_reason = self._consume_tool_budget(ctx.task, tool_name)
-        if budget_reason:
-            self._pause_task_for_budget(ctx.task, budget_reason)
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=budget_reason,
-                blocked=True,
-                advance=False,
-                note="node_executor_tool_budget",
-            )
-        try:
-            from astrbot.core.agent.run_context import ContextWrapper
-
-            result = await tool.call(
-                ContextWrapper(context=ctx.event, tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120))),
-                **call_args,
-            )
-        except NotImplementedError:
-            return NodeExecutionResult(
-                outcome=f"Tool {tool_name} has no direct callable executor; ReAct/tool-loop is required.",
+                outcome=executed.outcome,
                 needs_react=True,
                 advance=False,
-                note="node_executor_tool_react_fallback",
+                data=executed.data,
+                note=executed.note,
             )
-        except Exception as exc:
+        if executed.blocked or not executed.ok:
             return NodeExecutionResult(
                 ok=False,
-                status="blocked",
-                outcome=f"{type(exc).__name__}: {exc}",
+                status=executed.status,
+                outcome=executed.outcome,
                 blocked=True,
                 advance=False,
-                note="node_executor_tool_error",
+                data=executed.data,
+                note=executed.note,
             )
-        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
         return NodeExecutionResult(
-            outcome=self._compact_text(text, 1000) or f"Tool {tool_name} completed.",
+            outcome=executed.outcome,
             next_node_id=self._single_next(ctx.outgoing),
-            data={"tool_name": tool_name, "args": call_args, "result": self._compact_text(text, 2400)},
+            data=executed.data,
             needs_react=len(ctx.outgoing) > 1,
             advance=len(ctx.outgoing) <= 1,
-            note="node_executor_tool",
+            note=executed.note,
         )
 
     async def _execute_route_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:

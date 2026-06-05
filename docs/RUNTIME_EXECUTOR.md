@@ -48,6 +48,8 @@ This means API nodes, tool nodes, memory checkpoints, approval/wait gates, valid
 
 `agent_lab/workers.py` defines role-style worker specs for parallel branches (`ResearchWorker`, `CodeReaderWorker`, `PatchWorker`, `TestWorker`, `ReviewerWorker`, `SummarizerWorker`, plus API/tool/generic workers). Worker outputs are normalized with evidence, risks, and next recommendations before the main Agent merges them.
 
+`agent_lab/policy.py` and `agent_lab/tool_executor.py` are the first extraction of tool governance from `main.py`: policy owns profile/capability/risk checks, while the tool executor owns direct AstrBot tool-node calls, schema validation, budget enforcement, isolation checks, and ReAct fallback decisions.
+
 ## What Still Uses ReAct
 
 ReAct is still used intentionally for open-ended work:
@@ -102,6 +104,6 @@ Use `/agentlab runtime` or `agent_lab_read_runtime` to inspect the live task run
 
 ## Honest Boundary
 
-This is now an AstrBot-native task runtime layer with executable workflow nodes, state persistence, ReAct handoff traces, capability catalogs, structured task plans, verifier verdicts with denial paths, typed parallel worker specs, memory isolation, plugin/tool filtering, and heartbeat support.
+This is now an AstrBot-native task runtime layer with executable workflow nodes, state persistence, ReAct handoff traces, capability catalogs, structured task plans, verifier verdicts with denial paths, typed parallel worker specs, policy-backed tool execution, memory isolation, plugin/tool filtering, and heartbeat support.
 
 It is not yet a complete mature external framework runner. Missing future work includes richer tool argument schemas, expression evaluation for variables, a stronger watchdog/lease heartbeat model, and optional adapters for external runtimes such as LangGraph or OpenAI Agents SDK.

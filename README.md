@@ -223,7 +223,7 @@ data/plugin_data/astrbot_plugin_agent_lab/
 -> 判断完成/审批/心跳/阻塞
 ```
 
-`agent_runtime` 存在于 `TaskState.workflow_data.agent_runtime`，旧任务文件仍然保持兼容。它包含 `agent_instance`、能力目录、运行时 `TaskPlan`、决策/观察/verdict 轨迹和恢复入口。`agent_lab/verifier.py` 负责完成、节点、验证节点和并行 worker 的结构化校验；`agent_lab/workers.py` 为并行分支提供 Research/CodeReader/Patch/Test/Reviewer/Summarizer 等角色化 worker schema。第一版不改前端，运行结果会写进任务 Markdown 和 runtime 摘要。
+`agent_runtime` 存在于 `TaskState.workflow_data.agent_runtime`，旧任务文件仍然保持兼容。它包含 `agent_instance`、能力目录、运行时 `TaskPlan`、决策/观察/verdict 轨迹和恢复入口。`agent_lab/verifier.py` 负责完成、节点、验证节点和并行 worker 的结构化校验；`agent_lab/workers.py` 为并行分支提供 Research/CodeReader/Patch/Test/Reviewer/Summarizer 等角色化 worker schema；`agent_lab/policy.py` 和 `agent_lab/tool_executor.py` 承接工具策略与直接工具节点调用。第一版不改前端，运行结果会写进任务 Markdown 和 runtime 摘要。
 
 默认 Agent 会尝试启用 AstrBot 常用 Computer Use 工具：
 
