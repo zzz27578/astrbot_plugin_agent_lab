@@ -1221,7 +1221,9 @@ class AgentLabPlugin(Star):
                 next_action=finish_verdict.next_action,
             )
             self.storage.save_task(task)
-            return f"暂不能完成任务：{finish_verdict.reason}"
+            missing_text = "、".join(finish_verdict.missing or [])
+            suffix = f"；缺少：{missing_text}" if missing_text else ""
+            return f"暂不能完成任务：{finish_verdict.reason}{suffix}"
         self._refresh_summarizer_rules()
         exit_summary = await self.summarizer.summarize_exit(event, task, final_summary)
         task.status = status

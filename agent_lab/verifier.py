@@ -154,12 +154,139 @@ class AgentVerifier:
                 missing=["runtime_observation"],
                 next_action="collect_finish_evidence",
             )
+        missing_conditions = self.missing_completion_conditions(task, final_summary=final_summary)
+        if missing_conditions:
+            return VerificationResult(
+                passed=False,
+                status="finish_blocked",
+                reason="Finish request lacks evidence for completion conditions.",
+                missing=missing_conditions,
+                next_action="collect_completion_evidence",
+            )
         return VerificationResult(
             passed=True,
             status="completed",
             reason="Finish request has summary and runtime evidence.",
             next_action="archive",
         )
+
+    def missing_completion_conditions(self, task: Any, *, final_summary: str = "") -> list[str]:
+        evidence_text = self._finish_evidence_text(task, final_summary=final_summary)
+        missing: list[str] = []
+        for condition in getattr(task, "completion_conditions", []) or []:
+            condition_text = str(condition or "").strip()
+            if not condition_text or self._condition_is_finish_boundary(condition_text):
+                continue
+            if not self._condition_has_evidence(condition_text, evidence_text):
+                missing.append(condition_text)
+        return missing
+
+    def _finish_evidence_text(self, task: Any, *, final_summary: str = "") -> str:
+        data = getattr(task, "workflow_data", {}) if isinstance(getattr(task, "workflow_data", {}), dict) else {}
+        parts = [
+            final_summary,
+            getattr(task, "root_goal", ""),
+            getattr(task, "current_summary", ""),
+            getattr(task, "last_confirmed_progress", ""),
+            getattr(task, "next_step", ""),
+            getattr(task, "last_observation", ""),
+            getattr(task, "exit_summary", ""),
+            data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {},
+            data.get("observations") if isinstance(data.get("observations"), list) else [],
+            getattr(task, "parallel_runs", []),
+            getattr(task, "progress_log", []),
+            getattr(task, "state_snapshots", []),
+        ]
+        return "\n".join(_text(part) for part in parts if part)
+
+    @staticmethod
+    def _condition_is_finish_boundary(condition: str) -> bool:
+        text = str(condition or "").strip().lower()
+        if not text:
+            return True
+        boundary_words = (
+            "archive",
+            "archived",
+            "user acceptance",
+            "user accepted",
+            "user confirm",
+            "user approval",
+            "归档",
+            "存档",
+            "用户验收",
+            "用户确认",
+            "用户同意",
+            "明确完成",
+        )
+        return any(word in text for word in boundary_words)
+
+    def _condition_has_evidence(self, condition: str, evidence_text: str) -> bool:
+        condition_norm = self._normalize(condition)
+        evidence_norm = self._normalize(evidence_text)
+        if not condition_norm:
+            return True
+        if condition_norm in evidence_norm:
+            return True
+        tokens = self._condition_tokens(condition_norm)
+        if not tokens:
+            return True
+        matched = [token for token in tokens if token in evidence_norm]
+        if len(tokens) <= 4:
+            return len(matched) == len(tokens)
+        required = max(4, int(len(tokens) * 0.7))
+        return len(matched) >= required
+
+    @staticmethod
+    def _normalize(text: Any) -> str:
+        return " ".join(str(text or "").lower().split())
+
+    @staticmethod
+    def _condition_tokens(text: str) -> list[str]:
+        import re
+
+        stop_words = {
+            "the",
+            "and",
+            "or",
+            "a",
+            "an",
+            "is",
+            "are",
+            "be",
+            "to",
+            "of",
+            "for",
+            "with",
+            "must",
+            "should",
+            "done",
+            "complete",
+            "completed",
+            "finish",
+            "finished",
+            "pass",
+            "passed",
+            "success",
+            "successful",
+            "通过",
+            "完成",
+            "必须",
+            "应该",
+            "需要",
+        }
+        tokens: list[str] = []
+        for token in re.findall(r"[a-z0-9_./-]{3,}|[\u4e00-\u9fff]{2,}", text):
+            cleaned = token.strip("._-/")
+            if cleaned and cleaned not in stop_words:
+                tokens.append(cleaned[:80])
+        seen: set[str] = set()
+        result: list[str] = []
+        for token in tokens:
+            if token in seen:
+                continue
+            seen.add(token)
+            result.append(token)
+        return result[:20]
 
     def verify_worker(self, worker: dict[str, Any]) -> VerificationResult:
         if not worker.get("ok"):

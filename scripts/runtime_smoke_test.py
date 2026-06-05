@@ -1271,6 +1271,61 @@ async def main() -> None:
         assert archives[0].status == "completed"
 
     with TemporaryDirectory() as tmp:
+        debug("finish condition verifier fixture")
+        plugin_main.StarTools.get_data_dir = staticmethod(
+            lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
+        )
+        plugin = plugin_main.AgentLabPlugin(FakeContext(), config={"private_only": True})
+        plugin.guard = FakeGuard()
+        event = FakeEvent()
+        await plugin._start_task(
+            event,
+            goal="condition verifier smoke",
+            completion_conditions="special artifact generated",
+            brief="",
+            request_heartbeat=False,
+            source="runtime_smoke",
+            risk_level="work",
+        )
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        task.last_observation = "generic observation exists"
+        task.last_confirmed_progress = "generic progress exists"
+        plugin.storage.save_task(task)
+
+        blocked_finish = await plugin._finish_task(
+            event,
+            status="completed",
+            final_summary="generic summary",
+            memory_candidates="",
+        )
+        assert plugin.storage.load_active_task(event.unified_msg_origin) is not None
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert task.status == "paused"
+        finish_verdict = task.workflow_data["agent_runtime"]["last_verdict"]
+        assert finish_verdict["status"] == "finish_blocked"
+        assert "special artifact generated" in finish_verdict["missing"]
+        assert "special artifact generated" in blocked_finish
+
+        task.status = "running"
+        task.clear_wait()
+        task.last_observation = "special artifact generated and verified"
+        task.last_confirmed_progress = "special artifact generated"
+        plugin.storage.save_task(task)
+        completed_finish = await plugin._finish_task(
+            event,
+            status="completed",
+            final_summary="special artifact generated",
+            memory_candidates="",
+        )
+        assert "Agent Mode" in completed_finish
+        assert plugin.storage.load_active_task(event.unified_msg_origin) is None
+        archives = plugin.storage.list_archives(event.unified_msg_origin)
+        assert len(archives) == 1
+        assert archives[0].status == "completed"
+
+    with TemporaryDirectory() as tmp:
         debug("third runtime fixture")
         plugin_main.StarTools.get_data_dir = staticmethod(
             lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
