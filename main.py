@@ -1302,6 +1302,20 @@ class AgentLabPlugin(Star):
                 break
         if not found:
             return f"未找到审批请求：{approval_id}"
+        if approved:
+            task.clear_wait()
+            if task.status == "paused":
+                task.status = "running"
+            task.watchdog.last_decision = "approval_approved"
+        else:
+            task.status = "paused"
+            task.watchdog.last_decision = "approval_rejected"
+            task.set_wait(
+                wait_reason="need_user_decision",
+                message=f"Approval rejected: {approval_id}. Revise the plan before continuing.",
+                source="approval_resolved",
+                required_input=[approval_id],
+            )
         task.add_log("approval_resolved", f"{approval_id}: {'approved' if approved else 'rejected'}")
         spec = AgentSpec.from_dict(
             task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()

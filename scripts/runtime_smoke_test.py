@@ -543,6 +543,12 @@ async def main() -> None:
         )
         assert "审批已通过" in resolved
 
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert task.status == "running"
+        assert not task.wait.active
+        assert not task.watchdog.needs_user
+
         api_credential = plugin.storage.save_credential(
             {"label": "Runtime API Key", "provider": "test", "value": "runtime-secret"}
         )
