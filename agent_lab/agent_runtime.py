@@ -114,6 +114,7 @@ class AgentRuntime:
         runtime.setdefault("decisions", [])
         runtime.setdefault("observations", [])
         runtime.setdefault("verdicts", [])
+        runtime.setdefault("pattern_recommendations", [])
         runtime.setdefault("resume", {})
         runtime.setdefault("metrics", {})
         task.workflow_data = data
@@ -449,6 +450,7 @@ class AgentRuntime:
             "last_decision": runtime.get("last_decision") or {},
             "last_observation": runtime.get("last_observation") or {},
             "last_verdict": runtime.get("last_verdict") or {},
+            "pattern_recommendations": runtime.get("pattern_recommendations") or [],
             "resume": runtime.get("resume") or {},
         }
 
@@ -470,6 +472,14 @@ class AgentRuntime:
                 f"- {item.get('node_id')}: {item.get('title') or item.get('action')} "
                 f"[{item.get('status')}] capability={item.get('capability') or '-'}"
             )
+        pattern_lines = []
+        for item in (summary.get("pattern_recommendations") or [])[:5]:
+            if not isinstance(item, dict):
+                continue
+            pattern_lines.append(
+                f"- {item.get('pattern_id')}: score={item.get('score', 0)} "
+                f"success={item.get('success_count', 0)} title={item.get('title') or '-'}"
+            )
         return "\n".join(
             [
                 "Agent Runtime:",
@@ -482,6 +492,8 @@ class AgentRuntime:
                 "\n".join(cap_lines) if cap_lines else "- none",
                 "TaskPlan:",
                 "\n".join(step_lines) if step_lines else "- none",
+                "Task Pattern Recommendations:",
+                "\n".join(pattern_lines) if pattern_lines else "- none",
                 "Last Verdict:",
                 f"- status={verdict.get('status') or '-'} passed={verdict.get('passed')} reason={verdict.get('reason') or '-'}",
                 "Resume:",

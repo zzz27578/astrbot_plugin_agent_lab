@@ -87,6 +87,7 @@ data/plugins/astrbot_plugin_agent_lab/
 /agentlab heartbeat on
 /agentlab heartbeat off
 /agentlab runtime
+/agentlab patterns [query]
 /agentlab approve <approval_id>
 /agentlab reject <approval_id>
 /agentlab finish <总结>
@@ -120,6 +121,7 @@ data/plugins/astrbot_plugin_agent_lab/
 - `agent_lab_request_approval`
 - `agent_lab_set_heartbeat`
 - `agent_lab_finish`
+- `agent_lab_recommend_task_patterns`
 - `agent_lab_call_custom_api`
 
 触发策略由 AgentSpec 控制：
@@ -206,7 +208,9 @@ data/plugin_data/astrbot_plugin_agent_lab/
 │       ├── active_task.json
 │       ├── task_<id>.json
 │       └── task_<id>.md
-└── archives/
+├── archives/
+└── registry/
+    └── task_patterns.json
 ```
 
 每轮执行遵守：
@@ -228,6 +232,8 @@ data/plugin_data/astrbot_plugin_agent_lab/
 tick 入口已经经过 `AgentLabService.run_tick()`，主循环在 `agent_lab/runtime_runner.py` 中执行；`main.py` 保留 AstrBot 命令、LLM tool、cron 和 WebUI API 适配职责。
 
 归档时的 `memory_candidates` 默认只是候选记忆，不会暴露给普通模式。用户或 WebUI 可通过 `/agentlab memory accept <memory_id>` 接受，或 `/agentlab memory reject <memory_id>` 拒绝；接受后才进入 `accepted_memory` 并可被普通模式读取。
+
+完成任务还会沉淀一条 evidence-linked task pattern 到 `registry/task_patterns.json`。它保存源任务、归档路径、运行时 TaskPlan 步骤、所需能力和可复用 workflow 模板摘要。后续任务会在 `agent_runtime.pattern_recommendations` 和运行时提示中看到匹配到的历史计划建议；也可以用 `/agentlab patterns <query>` 或 `agent_lab_recommend_task_patterns` 查询。Pattern 只是计划提示，不会把候选记忆当作事实。
 
 默认 Agent 会尝试启用 AstrBot 常用 Computer Use 工具：
 
@@ -353,6 +359,7 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 - 默认 Agent 展示名从 AstrBot 运行时身份读取，WebUI 会显示来源是 Persona、配置名称还是兜底占位。
 - 自定义 API、加密凭证和 `agent_lab_call_custom_api` 工具已打通。
 - `agent-mode` Skill 支持 WebUI 自定义规则同步。
+- 已完成任务会沉淀为可追溯的 task pattern，后续任务可自动获得历史 plan 模板推荐。
 - 工作流画布已从设置页拆出为独立全屏背景工作台，支持节点素材、运行时模块、节点拖拽、空白处平移、滚轮缩放、圆点拉线、彩色连线、右键复制/删除、节点编辑弹窗、自动布局、静态检查和预跑诊断，不再只能手改 workflow JSON。
 - 任务记忆有独立查看与回档入口，可把记忆或归档任务带入新任务 brief，方便后续续写。
 - 工具支持风险分组、风险覆盖和可编辑审批策略。

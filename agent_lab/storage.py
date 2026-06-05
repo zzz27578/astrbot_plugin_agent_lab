@@ -125,6 +125,17 @@ class AgentLabStorage:
     def task_markdown_path(self, umo: str, task_id: str) -> Path:
         return self.session_dir(umo) / f"{task_id}.md"
 
+    def archive_session_dir(self, umo: str) -> Path:
+        path = self.archives_dir / _safe_hash(umo)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def archive_task_json_path(self, umo: str, task_id: str) -> Path:
+        return self.archive_session_dir(umo) / f"{task_id}.json"
+
+    def archive_task_markdown_path(self, umo: str, task_id: str) -> Path:
+        return self.archive_session_dir(umo) / f"{task_id}.md"
+
     def has_active_task(self, umo: str) -> bool:
         return self.active_task_path(umo).exists()
 
@@ -145,12 +156,11 @@ class AgentLabStorage:
     def archive_task(self, task: TaskState) -> Path:
         task.finished_at = task.finished_at or now_iso()
         task.updated_at = now_iso()
-        session_archive_dir = self.archives_dir / _safe_hash(task.umo)
-        session_archive_dir.mkdir(parents=True, exist_ok=True)
+        session_archive_dir = self.archive_session_dir(task.umo)
         src_json = self.task_path(task.umo, task.task_id)
         src_md = self.task_markdown_path(task.umo, task.task_id)
-        dst_json = session_archive_dir / src_json.name
-        dst_md = session_archive_dir / src_md.name
+        dst_json = self.archive_task_json_path(task.umo, task.task_id)
+        dst_md = self.archive_task_markdown_path(task.umo, task.task_id)
         self._write_json(src_json, task.to_dict())
         self._write_text(src_md, self.render_markdown(task))
         shutil.copy2(src_json, dst_json)

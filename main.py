@@ -21,7 +21,16 @@ except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
     jsonify = None
     request = None
 
-from .agent_lab import AgentLabService, AgentLabStorage, AgentSpec, AgentRuntime, ApprovalRequest, MemoryManager, TaskState
+from .agent_lab import (
+    AgentLabService,
+    AgentLabStorage,
+    AgentSpec,
+    AgentRuntime,
+    ApprovalRequest,
+    MemoryManager,
+    TaskPatternLibrary,
+    TaskState,
+)
 from .agent_lab.api_executor import CustomApiExecutor
 from .agent_lab.conditions import (
     evaluate_condition,
@@ -177,6 +186,11 @@ BUILTIN_TOOL_CATALOG = [
         "risk": "safe",
     },
     {
+        "name": "agent_lab_recommend_task_patterns",
+        "description": "Recommend reusable plan templates from completed Agent Lab tasks.",
+        "risk": "safe",
+    },
+    {
         "name": "agent_lab_update_workflow",
         "description": "Check or edit Agent Lab workflow nodes and edges.",
         "risk": "work",
@@ -232,6 +246,7 @@ class AgentLabPlugin(Star):
         self.config = config or {}
         self.storage = AgentLabStorage(StarTools.get_data_dir(PLUGIN_NAME))
         self.memory_manager = MemoryManager(self.storage)
+        self.pattern_library = TaskPatternLibrary(self.storage)
         self.service = AgentLabService(self)
         self.modules = ModuleRegistry(self.storage.modules_dir)
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
@@ -657,6 +672,36 @@ class AgentLabPlugin(Star):
             return "没有匹配的任务记忆。"
         return json.dumps(rows, ensure_ascii=False, indent=2)
 
+    @filter.llm_tool(name="agent_lab_recommend_task_patterns")
+    async def agent_lab_recommend_task_patterns(
+        self,
+        event: AstrMessageEvent,
+        query: str = "",
+        limit: str = "5",
+    ) -> str:
+        """Recommend reusable plan templates mined from completed Agent Lab tasks.
+
+        Args:
+            query(string): Current task goal, keywords, or desired outcome.
+            limit(string): Maximum number of patterns, default 5.
+        """
+        query = str(query or "").strip()
+        if not query:
+            active_task = self.storage.load_active_task(event.unified_msg_origin)
+            query = str(getattr(active_task, "root_goal", "") or "").strip()
+        try:
+            limit_int = max(1, min(int(limit or 5), 20))
+        except Exception:
+            limit_int = 5
+        rows = self.pattern_library.recommend(query, limit=limit_int)
+        if not rows:
+            return "No matching Agent Lab task patterns."
+        return json.dumps(
+            [self.pattern_library.compact_for_runtime(row) for row in rows],
+            ensure_ascii=False,
+            indent=2,
+        )
+
     @filter.llm_tool(name="agent_lab_call_custom_api")
     async def agent_lab_call_custom_api(
         self,
@@ -943,7 +988,7 @@ class AgentLabPlugin(Star):
             modules_prompt = "\n\n".join(
                 part
                 for part in (
-                    self._build_task_extensions_prompt(spec),
+                    self._build_task_extensions_prompt(spec, task=task),
                     self._build_exposed_task_memory_prompt(),
                 )
                 if part.strip()
@@ -955,7 +1000,10 @@ class AgentLabPlugin(Star):
             if not spec.enabled:
                 return
             memory_prompt = self._build_exposed_task_memory_prompt()
+            pattern_prompt = self._build_task_pattern_prompt(event.message_str)
             req.system_prompt += "\n\n" + build_agent_mode_policy(spec)
+            if pattern_prompt:
+                req.system_prompt += "\n\n" + pattern_prompt
             if memory_prompt:
                 req.system_prompt += "\n\n" + memory_prompt
 
@@ -984,6 +1032,8 @@ class AgentLabPlugin(Star):
             return self._skills_text()
         if cmd in ("memory", "记忆"):
             return self._memory_command_text(event, rest)
+        if cmd in ("patterns", "pattern", "plans", "模板", "模式"):
+            return self._patterns_text(rest)
         if cmd in ("modules", "integrations", "blueprints", "模块", "集成", "蓝图"):
             return self._modules_text()
         if cmd in ("start", "enter", "开启", "开始"):
@@ -1104,6 +1154,21 @@ class AgentLabPlugin(Star):
             summary=entry_summary,
         )
         self._sync_agent_runtime(task, spec, reason="created")
+        runtime = task.workflow_data.get("agent_runtime") if isinstance(task.workflow_data, dict) else {}
+        recommended_patterns = runtime.get("pattern_recommendations") if isinstance(runtime, dict) else []
+        if isinstance(recommended_patterns, list) and recommended_patterns:
+            self.agent_runtime.record_decision(
+                task,
+                phase="plan",
+                action="recommend_task_patterns",
+                node_id=task.workflow_current_node_id,
+                reason=(
+                    "matched="
+                    + ",".join(str(item.get("pattern_id") or "") for item in recommended_patterns[:3] if isinstance(item, dict))
+                ),
+                capability="memory.pattern",
+                confidence="medium",
+            )
         task.add_log("created", f"goal={goal}; source={source}; risk={risk_level}")
         task.add_snapshot("created", {"source": source, "risk_level": risk_level})
         self.storage.save_task(task)
@@ -1184,6 +1249,10 @@ class AgentLabPlugin(Star):
         snapshot = task.profile_snapshot.get("session_plugin_snapshot")
         if bool(task.profile_snapshot.get("restore_session_plugins", True)):
             await self.guard.restore(task.umo, snapshot)
+        task.archive_path = str(self.storage.archive_task_markdown_path(task.umo, task.task_id))
+        pattern = self.pattern_library.upsert_from_task(task, spec)
+        if pattern:
+            task.add_log("task_pattern", f"learned {pattern.get('pattern_id')}")
         archive_path = self.storage.archive_task(task)
         return (
             f"Agent Mode 已结束并归档。\n"
@@ -1350,6 +1419,7 @@ class AgentLabPlugin(Star):
             "agent_lab_read_state",
             "agent_lab_read_runtime",
             "agent_lab_read_task_memory",
+            "agent_lab_recommend_task_patterns",
             "agent_lab_update_state",
             "agent_lab_advance_workflow",
             "agent_lab_request_approval",
@@ -2011,6 +2081,7 @@ class AgentLabPlugin(Star):
             ("agent_lab_advance_workflow", "workflow.control", "safe", "Advance workflow cursor."),
             ("agent_lab_request_approval", "human.approval", "safe", "Request user approval."),
             ("agent_lab_read_task_memory", "memory.read", "safe", "Read task memory."),
+            ("agent_lab_recommend_task_patterns", "memory.pattern", "safe", "Recommend learned task plan patterns."),
             ("agent_lab_call_custom_api", "api.call", "work", "Call registered custom API."),
             ("agent_lab_run_parallel_workflow", "worker.parallel", "work", "Run parallel workflow workers."),
             ("agent_lab_set_heartbeat", "task.heartbeat", "work", "Toggle heartbeat."),
@@ -2119,6 +2190,20 @@ class AgentLabPlugin(Star):
             capabilities=self._runtime_capability_rows(spec),
             reason=reason,
         )
+        self._sync_task_pattern_recommendations(task)
+
+    def _sync_task_pattern_recommendations(self, task: TaskState) -> None:
+        runtime = self.agent_runtime.ensure(task)
+        rows = self.pattern_library.recommend(
+            task.root_goal or task.current_summary or task.next_step,
+            limit=3,
+            exclude_task_id=task.task_id,
+        )
+        runtime["pattern_recommendations"] = [
+            self.pattern_library.compact_for_runtime(row)
+            for row in rows
+        ]
+        runtime["pattern_recommendations_updated_at"] = now_iso()
 
     def _workflow_variable(self, task: TaskState, name: str, default: Any = None) -> Any:
         data = self._ensure_workflow_data(task)
@@ -3621,8 +3706,14 @@ class AgentLabPlugin(Star):
             headers if isinstance(headers, str) else json.dumps(headers, ensure_ascii=False),
         )
 
-    def _build_task_extensions_prompt(self, spec: AgentSpec) -> str:
+    def _build_task_extensions_prompt(self, spec: AgentSpec, task: TaskState | None = None) -> str:
         sections = []
+        pattern_prompt = self._build_task_pattern_prompt(
+            task.root_goal if task else "",
+            exclude_task_id=task.task_id if task else "",
+        )
+        if pattern_prompt.strip():
+            sections.append(pattern_prompt)
         modules_prompt = self.modules.build_prompt(spec.module_ids, spec.module_settings)
         if modules_prompt.strip():
             sections.append(modules_prompt)
@@ -3639,6 +3730,10 @@ class AgentLabPlugin(Star):
         if custom_api_prompt.strip():
             sections.append(custom_api_prompt)
         return "\n\n".join(sections)
+
+    def _build_task_pattern_prompt(self, query: str = "", *, exclude_task_id: str = "") -> str:
+        query = str(query or "").strip()
+        return self.pattern_library.prompt_for(query, limit=3, exclude_task_id=exclude_task_id)
 
     def _build_exposed_task_memory_prompt(self) -> str:
         rows = []
@@ -5252,6 +5347,35 @@ class AgentLabPlugin(Star):
             return "暂无任务记忆。"
         return "任务记忆：\n" + "\n".join(lines)
 
+    def _patterns_text(self, rest: str) -> str:
+        action, _, tail = str(rest or "").strip().partition(" ")
+        action = action.lower().strip()
+        tail = tail.strip()
+        if action in {"use", "mark", "used"}:
+            pattern_id, _, _reason = tail.partition(" ")
+            item = self.pattern_library.mark_used(pattern_id)
+            if not item:
+                return f"未找到任务模式：{pattern_id}"
+            return f"已标记使用任务模式：{item['pattern_id']} usage={item.get('usage_count', 0)}"
+        query = tail if action in {"list", "all"} else str(rest or "").strip()
+        rows = self.pattern_library.recommend(query, limit=8)
+        if not rows:
+            return "暂无匹配的任务模式。"
+        lines = []
+        for item in rows:
+            steps = (item.get("plan_template") or {}).get("steps") or []
+            step_ids = " -> ".join(
+                str(step.get("node_id") or "")
+                for step in steps[:8]
+                if isinstance(step, dict)
+            )
+            lines.append(
+                f"- {item.get('pattern_id')}: score={item.get('score', 0)} "
+                f"success={item.get('success_count', 0)} title={item.get('title') or '-'} "
+                f"steps={step_ids or '-'}"
+            )
+        return "任务模式推荐：\n" + "\n".join(lines)
+
     def _help_text(self) -> str:
         return (
             "Agent Lab 命令：\n"
@@ -5264,6 +5388,7 @@ class AgentLabPlugin(Star):
             "/agentlab approve <approval_id>\n"
             "/agentlab reject <approval_id>\n"
             "/agentlab memory accept|reject <memory_id> [原因]\n"
+            "/agentlab patterns [query]\n"
             "/agentlab finish <总结>\n"
             "/agentlab cancel <原因>\n"
             "/agentlab webui\n"

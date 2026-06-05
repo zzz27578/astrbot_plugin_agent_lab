@@ -240,6 +240,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 - agent_lab_update_state：写回当前进度、观察、下一步和阻塞点。
 - agent_lab_advance_workflow：记录当前工作流节点结果并推进到下一节点；多分支、并行分支、审批/校验节点必须用它留下节点轨迹。
 - agent_lab_read_task_memory：读取已归档任务记忆，普通模式也可以按标签/关键词查询。
+- agent_lab_recommend_task_patterns：查询已完成任务沉淀的 task pattern / 历史 plan 模板；只能作为计划提示，不能当作事实证据。
 - agent_lab_update_workflow：检查、增删改工作流节点和连线；当用户要求调整入口、审批、API、插件/工具/skill 模块、并行分支、节点提示词或记忆环节时使用。
 - agent_lab_run_parallel_workflow：运行画布中的 parallel_branch 后续工作包；API 节点走已注册 API，提示词/插件/工具节点走受限子工作包，结果写回 task_state。
 - agent_lab_tick：推进当前任务一轮。
@@ -327,13 +328,13 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 如果这是心跳唤醒，第一步必须读取并相信 task_state 和 agent_runtime；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。
 
 [Agent Runtime Contract]
-agent_runtime 是任务的硬控制层：capabilities 决定当前 Agent 被授予什么能力，TaskPlan 决定当前目标实例的结构化步骤，observations 是证据层，verdicts 是验证层，resume 是重启/等待用户后继续的入口。不要绕过能力目录调用未授权工具；不要在 verifier 未通过或完成条件缺证据时调用 agent_lab_finish。每轮若看不到最新 runtime，请先调用 agent_lab_read_runtime。
+agent_runtime 是任务的硬控制层：capabilities 决定当前 Agent 被授予什么能力，TaskPlan 决定当前目标实例的结构化步骤，observations 是证据层，verdicts 是验证层，resume 是重启/等待用户后继续的入口，pattern_recommendations 是从已完成任务中抽取的计划模板提示。不要绕过能力目录调用未授权工具；不要在 verifier 未通过或完成条件缺证据时调用 agent_lab_finish。每轮若看不到最新 runtime，请先调用 agent_lab_read_runtime。
 
 [Approval Contract]
 普通读取、创建任务记录、小范围明确文件写入、运行测试无需审批。删除、批量覆盖、git reset/clean、部署/重启服务、密钥读取、数据库破坏性变更、全局插件/系统配置修改必须先请求审批。若某项在 preapproved_scopes 中，仍需先确认它确实属于用户已授权范围；若超出范围，必须调用 agent_lab_request_approval。
 
 [Task Memory Contract]
-任务过程中的时间线以 task_state.progress_log 和 state_snapshots 为准。每轮写回时必须说明：几点/哪一轮做了什么、关键改动点、验证结果、下一步。退出时必须用 agent_lab_finish 生成出口摘要和 memory_candidates；候选记忆只保存稳定事实、项目约定、后续续写提示，不保存密钥、一次性 token 或临时噪声。
+任务过程中的时间线以 task_state.progress_log 和 state_snapshots 为准。每轮写回时必须说明：几点/哪一轮做了什么、关键改动点、验证结果、下一步。退出时必须用 agent_lab_finish 生成出口摘要和 memory_candidates；候选记忆只保存稳定事实、项目约定、后续续写提示，不保存密钥、一次性 token 或临时噪声。完成任务还会沉淀 task pattern，后续任务可以参考其 TaskPlan 和能力需求，但 pattern 只是 planning hint，不能替代当前任务证据或 verifier。
 
 [Workflow Cursor Contract]
 每轮至少在完成一个工作流节点或选择分支时调用 agent_lab_advance_workflow，记录 node_id、outcome、next_node_id 和选择原因。多分支节点不能靠猜测自动前进；必须说明选择哪条连线。工作流游标是审计轨迹，不替代 task_state。

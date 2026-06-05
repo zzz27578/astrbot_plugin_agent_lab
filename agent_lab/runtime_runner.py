@@ -120,7 +120,7 @@ class AgentRuntimeRunner:
 
             task_updated_at_before_tick = task.updated_at
             task_log_count_before_tick = len(task.progress_log)
-            modules_prompt = self._build_task_extensions_prompt(spec)
+            modules_prompt = self._build_task_extensions_prompt(spec, task=task)
             system_prompt = build_task_system_prompt(spec, task, modules_prompt)
             prompt = self._workflow_react_prompt(task=task, spec=spec, reason=reason)
             provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(

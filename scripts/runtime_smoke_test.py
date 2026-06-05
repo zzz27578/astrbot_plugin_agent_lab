@@ -1115,6 +1115,22 @@ async def main() -> None:
         assert archived_runtime["last_verdict"]["status"] == "completed"
         assert "## Agent Runtime" in plugin.storage.render_markdown(archives[0])
         assert plugin.guard.restored
+        learned_patterns = plugin.pattern_library.recommend("runtime smoke goal", limit=3)
+        assert learned_patterns
+        learned_pattern = learned_patterns[0]
+        assert learned_pattern["source_task_id"] == archives[0].task_id
+        assert learned_pattern["evidence"]["archive_path"]
+        assert Path(learned_pattern["evidence"]["archive_path"]).exists()
+        assert learned_pattern["plan_template"]["steps"]
+        pattern_tool_text = await plugin.agent_lab_recommend_task_patterns(
+            event,
+            query="runtime smoke goal",
+            limit="2",
+        )
+        assert learned_pattern["pattern_id"] in pattern_tool_text
+        assert "archive_path" in pattern_tool_text
+        assert learned_pattern["pattern_id"] in plugin._patterns_text("runtime smoke goal")
+        assert "Agent Lab Task Pattern Recommendations" in plugin._build_task_pattern_prompt("runtime smoke goal")
         normal_private_memory = await plugin.agent_lab_read_task_memory(
             event,
             query="Agent Lab runtime smoke passed",
