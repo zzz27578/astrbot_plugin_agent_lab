@@ -194,6 +194,10 @@ class MemoryPolicy:
     keep_identity: bool = True
     allow_long_memory: bool = True
     exit_memory_candidates: bool = True
+    compression_enabled: bool = True
+    compression_strategy: str = "smart_extract"  # recent_turns | smart_extract | full_preserve
+    compression_max_tokens: int = 6000
+    preserve_keywords: list[str] = field(default_factory=list)
     notes: str = "任务模式不是失忆，而是把普通上下文压缩成可执行 task_brief。"
 
     @classmethod
@@ -204,6 +208,17 @@ class MemoryPolicy:
         for key in asdict(base):
             if key in payload:
                 setattr(base, key, payload[key])
+        if base.compression_strategy not in {"recent_turns", "smart_extract", "full_preserve"}:
+            base.compression_strategy = "smart_extract"
+        try:
+            base.compression_max_tokens = max(500, min(int(base.compression_max_tokens or 6000), 64000))
+        except Exception:
+            base.compression_max_tokens = 6000
+        if isinstance(base.preserve_keywords, str):
+            base.preserve_keywords = [base.preserve_keywords] if base.preserve_keywords else []
+        elif not isinstance(base.preserve_keywords, list):
+            base.preserve_keywords = []
+        base.preserve_keywords = [str(item).strip() for item in base.preserve_keywords if str(item).strip()]
         return base
 
 
@@ -554,7 +569,7 @@ class AgentSpec:
             },
         ]
     )
-    workflow_edges: list[dict[str, str]] = field(
+    workflow_edges: list[dict[str, Any]] = field(
         default_factory=lambda: [
             {"from": "entry", "to": "entry_gate"},
             {"from": "entry_gate", "to": "context_bridge"},

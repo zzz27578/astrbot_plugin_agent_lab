@@ -275,7 +275,7 @@ async def main() -> None:
         assert workflow_spec.workflow_nodes[0]["kind"] == "state"
         assert workflow_spec.workflow_nodes[0]["stage"] == "entry"
         assert workflow_spec.workflow_nodes[0]["x"] == 12
-        assert workflow_spec.workflow_edges == [{"from": "entry_start", "to": "callapi"}]
+        assert workflow_spec.workflow_edges == [{"from": "entry_start", "to": "callapi", "edge_type": "success"}]
         plugin._refresh_summarizer_rules()
         assert plugin.summarizer.config["entry_summary_system_prompt"] == "入口摘要测试规则"
         assert plugin.summarizer.config["exit_summary_system_prompt"] == "出口归档测试规则"
@@ -660,10 +660,10 @@ async def main() -> None:
         )
         invalid_report = plugin._workflow_report(invalid_api_spec)
         assert any(issue["code"] == "missing_api" for issue in invalid_report["issues"])
-        api_call = {}
+        api_calls = []
 
         def fake_custom_api_call(method, url, query, body, headers, timeout_seconds):
-            api_call.update(
+            api_calls.append(
                 {
                     "method": method,
                     "url": url,
@@ -685,12 +685,13 @@ async def main() -> None:
         debug("custom api tool checked")
         assert '"pong"' in api_result
         assert "runtime-secret" not in api_result
-        assert api_call["headers"]["X-Test-Key"] == "runtime-secret"
-        assert api_call["query"]["q"] == "smoke"
-        assert api_call["body"]["hello"] == "world"
+        assert api_calls[-1]["headers"]["X-Test-Key"] == "runtime-secret"
+        assert api_calls[-1]["query"]["q"] == "smoke"
+        assert api_calls[-1]["body"]["hello"] == "world"
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         assert any(item.get("kind") == "custom_api" for item in task.progress_log)
+        plugin.workflow_runtime.max_auto_steps = 18
         executor_spec = plugin_main.AgentSpec(
             workflow_nodes=[
                 {
@@ -702,6 +703,85 @@ async def main() -> None:
                     "output_variable": "api_result",
                     "api_payload": {"query": {"executor": "yes"}},
                     "instruction": "direct API executor",
+                },
+                {
+                    "id": "set_payload",
+                    "stage": "execute",
+                    "kind": "state",
+                    "action": "variable_set",
+                    "variable_name": "payload.answer",
+                    "value": {"number": 42, "text": "ok", "items": ["alpha", "beta"]},
+                    "instruction": "set nested workflow variable",
+                },
+                {
+                    "id": "get_payload_number",
+                    "stage": "execute",
+                    "kind": "state",
+                    "action": "variable_get",
+                    "variable_name": "variables.payload.answer.number",
+                    "output_variable": "payload_number",
+                    "instruction": "read nested workflow variable",
+                },
+                {
+                    "id": "template_exec",
+                    "stage": "execute",
+                    "kind": "state",
+                    "action": "text_template",
+                    "template": "number={{variables.payload.answer.number}} text={{variables.payload.answer.text}} api={{variables.api_result.api_id}} goal=${task.root_goal}",
+                    "output_variable": "rendered_text",
+                    "output_schema": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                    "instruction": "render deterministic template",
+                },
+                {
+                    "id": "json_transform_exec",
+                    "stage": "execute",
+                    "kind": "state",
+                    "action": "json_transform",
+                    "input_variable": "variables.payload.answer",
+                    "expression": ".number",
+                    "output_variable": "json_value",
+                    "instruction": "extract number from JSON payload",
+                },
+                {
+                    "id": "merge_exec",
+                    "stage": "execute",
+                    "kind": "state",
+                    "action": "merge",
+                    "inputs": [
+                        "variables.payload.answer",
+                        "variables.rendered_text.text",
+                        "variables.json_value.value",
+                    ],
+                    "output_variable": "merged_result",
+                    "instruction": "merge deterministic outputs",
+                },
+                {
+                    "id": "iterator_exec",
+                    "stage": "execute",
+                    "kind": "state",
+                    "action": "iterator",
+                    "input_variable": "variables.payload.answer.items",
+                    "output_variable": "iterator_result",
+                    "instruction": "prepare loop items",
+                },
+                {
+                    "id": "http_exec",
+                    "stage": "execute",
+                    "kind": "api",
+                    "action": "http_request",
+                    "method": "POST",
+                    "url": "https://example.com/runtime-http",
+                    "payload": {
+                        "query": {"number": "{{variables.json_value.value}}"},
+                        "headers": {"X-Smoke": "runtime"},
+                        "body": {"text": "{{variables.payload.answer.text}}"},
+                    },
+                    "output_variable": "http_result",
+                    "instruction": "direct HTTP executor",
                 },
                 {
                     "id": "tool_exec",
@@ -745,6 +825,23 @@ async def main() -> None:
                     "instruction": "validate result",
                 },
                 {
+                    "id": "validation_signal_exec",
+                    "stage": "checkpoint",
+                    "kind": "state",
+                    "action": "variable_set",
+                    "variable_name": "validation_signal",
+                    "value": "ok success completed",
+                    "instruction": "write explicit verifier evidence",
+                },
+                {
+                    "id": "debate_validate_exec",
+                    "stage": "checkpoint",
+                    "kind": "validation",
+                    "action": "debate_validation",
+                    "perspectives": ["correctness", "completion"],
+                    "instruction": "deterministic multi-perspective validation",
+                },
+                {
                     "id": "checkpoint_exec",
                     "stage": "checkpoint",
                     "kind": "state",
@@ -753,11 +850,20 @@ async def main() -> None:
                 },
             ],
             workflow_edges=[
-                {"from": "api_exec", "to": "tool_exec"},
+                {"from": "api_exec", "to": "set_payload"},
+                {"from": "set_payload", "to": "get_payload_number"},
+                {"from": "get_payload_number", "to": "template_exec"},
+                {"from": "template_exec", "to": "json_transform_exec"},
+                {"from": "json_transform_exec", "to": "merge_exec"},
+                {"from": "merge_exec", "to": "iterator_exec"},
+                {"from": "iterator_exec", "to": "http_exec"},
+                {"from": "http_exec", "to": "tool_exec"},
                 {"from": "tool_exec", "to": "api_template_exec"},
                 {"from": "api_template_exec", "to": "memory_exec"},
                 {"from": "memory_exec", "to": "validate_exec"},
-                {"from": "validate_exec", "to": "checkpoint_exec"},
+                {"from": "validate_exec", "to": "validation_signal_exec"},
+                {"from": "validation_signal_exec", "to": "debate_validate_exec"},
+                {"from": "debate_validate_exec", "to": "checkpoint_exec"},
             ],
         )
         executor_spec.enabled_tools = ["safe_registered_tool", "agent_lab_call_custom_api"]
@@ -766,6 +872,7 @@ async def main() -> None:
         task.profile_snapshot["agent"] = executor_spec.to_dict()
         task.workflow_current_node_id = "api_exec"
         task.workflow_path = ["api_exec"]
+        task.budget.max_nodes_per_tick = 18
         task.workflow_data = {}
         plugin.storage.save_task(task)
         runtime_exec = await plugin._run_workflow_runtime(
@@ -779,22 +886,87 @@ async def main() -> None:
         assert "api_exec" in task.workflow_data["node_outputs"]
         assert task.workflow_data["node_outputs"]["api_exec"]["data"]["ok"] is True
         assert task.workflow_data["variables"]["api_result"]["api_id"] == api_spec["api_id"]
+        assert task.workflow_data["variables"]["payload"]["answer"]["number"] == 42
+        assert task.workflow_data["variables"]["payload.answer"]["text"] == "ok"
+        assert task.workflow_data["variables"]["payload_number"]["value"] == 42
+        assert "number=42 text=ok" in task.workflow_data["variables"]["rendered_text"]["text"]
+        assert task.workflow_data["variables"]["json_value"]["value"] == 42
+        assert task.workflow_data["variables"]["merged_result"]["merged"]["variables.json_value.value"] == 42
+        assert task.workflow_data["variables"]["iterator_result"]["count"] == 2
+        assert task.workflow_data["node_outputs"]["http_exec"]["data"]["ok"] is True
+        assert task.workflow_data["variables"]["http_result"]["url_host"] == "https://example.com"
         assert task.workflow_data["node_outputs"]["tool_exec"]["data"]["tool_name"] == "safe_registered_tool"
         assert task.workflow_data["variables"]["tool_result"]["result"]
         expected_template_value = f"from {api_spec['api_id']} / runtime smoke goal"
         assert plugin.context.tool_manager.calls[-1]["args"]["value"] == expected_template_value
         assert task.workflow_data["node_outputs"]["api_template_exec"]["data"]["ok"] is True
         assert task.workflow_data["variables"]["api_template_result"]["api_id"] == api_spec["api_id"]
-        assert api_call["query"]["from_tool"] == expected_template_value
-        assert api_call["query"]["goal"] == "runtime smoke goal"
-        assert api_call["query"]["node"] == "tool_exec"
-        assert api_call["body"]["source_api"] == api_spec["api_id"]
+        assert task.workflow_data["variables"]["validation_signal"] == "ok success completed"
+        templated_api_call = next(item for item in api_calls if item["query"].get("from_tool") == expected_template_value)
+        assert templated_api_call["query"]["goal"] == "runtime smoke goal"
+        assert templated_api_call["query"]["node"] == "tool_exec"
+        assert templated_api_call["body"]["source_api"] == api_spec["api_id"]
+        http_call = next(item for item in api_calls if item["url"] == "https://example.com/runtime-http")
+        assert http_call["query"]["number"] == 42
+        assert http_call["headers"]["X-Smoke"] == "runtime"
+        assert http_call["body"]["text"] == "ok"
         assert task.workflow_data["node_outputs"]["memory_exec"]["data"]["kind"] == "workflow_private_memory"
+        assert task.workflow_data["node_outputs"]["debate_validate_exec"]["data"]["passed"] is True
         assert any(item.get("kind") == "task_memory" for item in task.progress_log)
         rendered = plugin.storage.render_markdown(task)
         assert "Workflow Node Outputs" in rendered
         assert "Agent Runtime" in rendered
         assert "api_exec" in rendered
+
+        error_edge_spec = plugin_main.AgentSpec(
+            workflow_nodes=[
+                {
+                    "id": "bad_file",
+                    "stage": "execute",
+                    "kind": "tool",
+                    "action": "file_operation",
+                    "operation": "read",
+                    "path": "missing-runtime-smoke.txt",
+                    "instruction": "trigger file error output",
+                },
+                {
+                    "id": "error_handler",
+                    "stage": "checkpoint",
+                    "kind": "state",
+                    "action": "variable_set",
+                    "variable_name": "error.handled",
+                    "value": "yes",
+                    "instruction": "record handled file error",
+                },
+            ],
+            workflow_edges=[
+                {"from": "bad_file", "to": "error_handler", "edge_type": "error"},
+            ],
+        )
+        error_edge_spec.enabled_tools = ["astrbot_file_read_tool"]
+        plugin._normalize_agent_workflow(error_edge_spec)
+        task.status = "running"
+        task.blockers = []
+        task.clear_wait()
+        task.profile_snapshot["agent"] = error_edge_spec.to_dict()
+        task.workflow_current_node_id = "bad_file"
+        task.workflow_path = ["bad_file"]
+        task.workflow_data = {}
+        error_edge_run = await plugin._run_workflow_runtime(
+            event=event,
+            task=task,
+            spec=error_edge_spec,
+            reason="runtime_smoke_error_edge",
+        )
+        assert error_edge_run.changed
+        assert not error_edge_run.blocked
+        assert task.workflow_data["node_outputs"]["bad_file"]["note"] == "node_executor_file_missing"
+        assert task.workflow_data["node_outputs"]["error_handler"]["note"] == "node_executor_state"
+        assert task.workflow_data["variables"]["error"]["handled"] == "yes"
+        assert task.workflow_path[-1] == "error_handler"
+        task.status = "running"
+        task.blockers = []
+        task.clear_wait()
 
         schema_block_spec = plugin_main.AgentSpec(
             workflow_nodes=[

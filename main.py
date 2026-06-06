@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import json
-import shutil
 import asyncio
 import hashlib
+import json
 import re
+import shutil
+import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -93,17 +94,29 @@ WORKFLOW_ACTIONS = {
     "confirm_entry",
     "summarize_entry",
     "restore_isolation",
+    "variable_set",
+    "variable_get",
+    "text_template",
+    "json_transform",
+    "merge",
+    "iterator",
+    "subflow_call",
     "plan",
     "route_condition",
+    "conditional_router",
     "parallel_branch",
     "run_tools",
     "call_api",
+    "http_request",
+    "file_operation",
+    "code_exec",
     "transform_context",
     "retrieve_memory",
     "request_approval",
     "wait_user",
     "handoff",
     "validate_output",
+    "debate_validation",
     "retry",
     "save_state",
     "save_memory",
@@ -170,6 +183,16 @@ BUILTIN_TOOL_CATALOG = [
         "name": "astrbot_execute_ipython",
         "description": "Execute Python in sandbox/IPython runtime.",
         "risk": "work",
+    },
+    {
+        "name": "astrbot_sandboxed_shell",
+        "description": "Execute shell commands in an Agent Lab sandbox workspace when Docker/Podman is available.",
+        "risk": "high",
+    },
+    {
+        "name": "astrbot_sandboxed_python",
+        "description": "Execute Python in an Agent Lab sandbox workspace when Docker/Podman is available.",
+        "risk": "high",
     },
     {
         "name": "future_task",
@@ -1574,16 +1597,32 @@ class AgentLabPlugin(Star):
     def _register_node_executors(self) -> None:
         for action in ("summarize_entry", "confirm_entry", "restore_isolation"):
             self.node_executors.register(action, self._execute_entry_node)
-        for action in ("save_state", "heartbeat", "transform_context"):
+        for action in (
+            "save_state",
+            "heartbeat",
+            "transform_context",
+            "variable_set",
+            "variable_get",
+            "text_template",
+            "json_transform",
+            "merge",
+            "iterator",
+            "subflow_call",
+        ):
             self.node_executors.register(action, self._execute_state_node)
         self.node_executors.register("retrieve_memory", self._execute_retrieve_memory_node)
         self.node_executors.register("save_memory", self._execute_save_memory_node)
         self.node_executors.register("parallel_branch", self._execute_parallel_branch_node)
         self.node_executors.register("call_api", self._execute_api_node)
+        self.node_executors.register("http_request", self._execute_http_request_node)
         self.node_executors.register("run_tools", self._execute_tool_node)
+        self.node_executors.register("file_operation", self._execute_file_operation_node)
+        self.node_executors.register("code_exec", self._execute_code_exec_node)
         self.node_executors.register("route_condition", self._execute_route_node)
+        self.node_executors.register("conditional_router", self._execute_route_node)
         self.node_executors.register("retry", self._execute_retry_node)
         self.node_executors.register("validate_output", self._execute_validation_node)
+        self.node_executors.register("debate_validation", self._execute_debate_validation_node)
         self.node_executors.register("request_approval", self._execute_approval_node)
         self.node_executors.register("wait_user", self._execute_wait_node)
         self.node_executors.register("handoff", self._execute_wait_node)
@@ -1913,6 +1952,16 @@ class AgentLabPlugin(Star):
         return {}
 
     def _validate_node_input_schema(self, task: TaskState, node: dict[str, Any]) -> str:
+        required_inputs = node.get("required_inputs") if isinstance(node.get("required_inputs"), list) else []
+        if required_inputs:
+            context = self._condition_context(task)
+            missing = [
+                str(path)
+                for path in required_inputs
+                if str(path).strip() and resolve_path(context, str(path).strip(), None) is None
+            ]
+            if missing:
+                return f"Node required input missing: {', '.join(missing[:8])}"
         input_schema = self._node_schema(node, "input_schema")
         if not input_schema:
             return ""
@@ -1921,6 +1970,12 @@ class AgentLabPlugin(Star):
             return ""
         value = self._node_payload_from_variable(task, node)
         return self._schema_validation_message(input_schema, value, f"Node input {input_variable}")
+
+    def _validate_node_output_schema(self, node: dict[str, Any], result: NodeExecutionResult) -> str:
+        output_schema = self._node_schema(node, "output_schema")
+        if not output_schema:
+            return ""
+        return self._schema_validation_message(output_schema, result.data, f"Node output {node.get('id') or '-'}")
 
     def _schema_validation_message(
         self,
@@ -1935,6 +1990,164 @@ class AgentLabPlugin(Star):
         if len(errors) > 6:
             details += f"; ... {len(errors) - 6} more"
         return f"{subject} schema mismatch: {details}"
+
+    def _workflow_edges_from(self, spec: AgentSpec, node_id: str) -> list[dict[str, Any]]:
+        start = str(node_id or "").strip()
+        return [
+            edge
+            for edge in (spec.workflow_edges or [])
+            if isinstance(edge, dict) and str(edge.get("from") or "").strip() == start
+        ]
+
+    def _workflow_success_edges(self, spec: AgentSpec, node_id: str) -> list[dict[str, Any]]:
+        return [
+            edge
+            for edge in self._workflow_edges_from(spec, node_id)
+            if str(edge.get("edge_type") or "success").strip().lower() in {"success", "always"}
+        ]
+
+    def _workflow_edges_for_result(
+        self,
+        task: TaskState,
+        spec: AgentSpec,
+        node_id: str,
+        result: NodeExecutionResult | None,
+    ) -> list[dict[str, Any]]:
+        failed = bool(result and (not result.ok or result.blocked or result.status == "blocked"))
+        desired = {"error", "always"} if failed else {"success", "always"}
+        edges: list[dict[str, Any]] = []
+        context = self._condition_context(task)
+        for edge in self._workflow_edges_from(spec, node_id):
+            edge_type = str(edge.get("edge_type") or "success").strip().lower()
+            if edge_type not in desired:
+                continue
+            condition = str(edge.get("condition") or "").strip()
+            if condition:
+                verdict = evaluate_condition(condition, context)
+                if verdict is not True:
+                    continue
+            edges.append(edge)
+        return edges
+
+    def _candidate_nodes_from_edges(
+        self,
+        nodes: dict[str, dict[str, Any]],
+        edges: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for edge in edges:
+            node_id = str(edge.get("to") or "").strip()
+            node = nodes.get(node_id)
+            if not node:
+                continue
+            item = dict(node)
+            if edge.get("condition") and not item.get("condition"):
+                item["condition"] = edge.get("condition")
+            if edge.get("condition_visual") is not None:
+                item["condition_visual"] = edge.get("condition_visual")
+            item["edge_type"] = str(edge.get("edge_type") or "success")
+            candidates.append(item)
+        return candidates
+
+    def _select_next_node_after_result(
+        self,
+        task: TaskState,
+        spec: AgentSpec,
+        node_id: str,
+        result: NodeExecutionResult,
+    ) -> str:
+        nodes = self.workflow_runtime.node_map(spec)
+        requested = str(result.next_node_id or "").strip()
+        allowed = {str(edge.get("to") or "").strip() for edge in self._workflow_edges_from(spec, node_id)}
+        if requested and requested in nodes and (not allowed or requested in allowed):
+            return requested
+        edges = self._workflow_edges_for_result(task, spec, node_id, result)
+        if not edges:
+            return ""
+        candidates = self._candidate_nodes_from_edges(nodes, edges)
+        if len(candidates) == 1:
+            return str(candidates[0].get("id") or "")
+        return self._route_target_from_node(
+            task,
+            {"id": node_id, "action": "route_condition"},
+            [str(edge.get("to") or "") for edge in edges],
+            candidates,
+        )
+
+    async def _execute_node_with_policy(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        retry_policy = ctx.node.get("retry_policy") if isinstance(ctx.node.get("retry_policy"), dict) else {}
+        try:
+            max_attempts = max(1, min(int(retry_policy.get("max_attempts") or 1), 8))
+        except Exception:
+            max_attempts = 1
+        backoff = str(retry_policy.get("backoff") or "none").strip().lower()
+        if backoff not in {"none", "linear", "exponential"}:
+            backoff = "none"
+        try:
+            timeout_seconds = int(ctx.node.get("timeout_seconds") or 0)
+        except Exception:
+            timeout_seconds = 0
+        timeout_seconds = max(0, min(timeout_seconds, 600))
+        last_result: NodeExecutionResult | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                coro = self.node_executors.execute(ctx)
+                result = await asyncio.wait_for(coro, timeout=timeout_seconds) if timeout_seconds else await coro
+            except asyncio.TimeoutError:
+                result = NodeExecutionResult(
+                    node_id=str(ctx.node.get("id") or ""),
+                    ok=False,
+                    status="blocked",
+                    outcome=f"Node timed out after {timeout_seconds}s.",
+                    blocked=True,
+                    advance=False,
+                    note="node_executor_timeout",
+                )
+            except Exception as exc:
+                result = NodeExecutionResult(
+                    node_id=str(ctx.node.get("id") or ""),
+                    ok=False,
+                    status="blocked",
+                    outcome=f"{type(exc).__name__}: {exc}",
+                    blocked=True,
+                    advance=False,
+                    note="node_executor_error",
+                )
+            result.attempts = attempt
+            last_result = result
+            if result.ok and not result.blocked:
+                break
+            if attempt >= max_attempts:
+                break
+            data = self._ensure_workflow_data(ctx.task)
+            retries = data.setdefault("node_retries", [])
+            if isinstance(retries, list):
+                retries.append(
+                    {
+                        "time": now_iso(),
+                        "node_id": str(ctx.node.get("id") or ""),
+                        "attempt": attempt,
+                        "max_attempts": max_attempts,
+                        "reason": result.outcome or result.note,
+                    }
+                )
+                data["node_retries"] = retries[-80:]
+            delay = 0.0
+            if backoff == "linear":
+                delay = min(2.0, 0.2 * attempt)
+            elif backoff == "exponential":
+                delay = min(3.0, 0.2 * (2 ** (attempt - 1)))
+            if delay:
+                await asyncio.sleep(delay)
+        return last_result or NodeExecutionResult(
+            node_id=str(ctx.node.get("id") or ""),
+            ok=False,
+            status="blocked",
+            outcome="Node executor did not produce a result.",
+            blocked=True,
+            advance=False,
+            note="node_executor_missing_result",
+        )
 
     def _loop_guard_before_node(self, task: TaskState, node: dict[str, Any]) -> str:
         data = self._ensure_workflow_data(task)
@@ -2240,7 +2453,33 @@ class AgentLabPlugin(Star):
 
     def _workflow_variable(self, task: TaskState, name: str, default: Any = None) -> Any:
         data = self._ensure_workflow_data(task)
-        return (data.get("variables") or {}).get(str(name or "").strip(), default)
+        variables = data.get("variables") if isinstance(data.get("variables"), dict) else {}
+        key = str(name or "").strip()
+        if key in variables:
+            return variables.get(key, default)
+        resolved = resolve_path(variables, key, None)
+        return default if resolved is None else resolved
+
+    def _set_workflow_variable(self, task: TaskState, name: str, value: Any) -> None:
+        key = str(name or "").strip()
+        if not key:
+            return
+        data = self._ensure_workflow_data(task)
+        variables = data.setdefault("variables", {})
+        if not isinstance(variables, dict):
+            variables = {}
+            data["variables"] = variables
+        variables[key] = value
+        parts = [part.strip() for part in key.split(".") if part.strip()]
+        if len(parts) > 1:
+            current = variables
+            for part in parts[:-1]:
+                child = current.get(part)
+                if not isinstance(child, dict):
+                    child = {}
+                    current[part] = child
+                current = child
+            current[parts[-1]] = value
 
     def _record_node_execution(
         self,
@@ -2260,14 +2499,24 @@ class AgentLabPlugin(Star):
             "title": node.get("title") or node_id,
             "runtime_type": node.get("runtime_type") or NodeExecutorRegistry.runtime_type(node),
             "action": node.get("action") or "",
+            "execution_mode": node.get("execution_mode") or NodeExecutorRegistry.execution_mode(node),
             "status": result.status,
             "ok": result.ok,
             "outcome": result.outcome,
             "note": result.note,
             "next_node_id": result.next_node_id,
+            "attempts": result.attempts,
             "data": result.data,
         }
         data.setdefault("node_outputs", {})[node_id] = payload
+        tool_outputs = data.setdefault("tool_outputs", {})
+        if isinstance(tool_outputs, dict) and (payload.get("runtime_type") in {"tool", "api"} or payload.get("action") in {"run_tools", "call_api", "http_request", "file_operation", "code_exec"}):
+            tool_outputs[node_id] = {
+                "tool": (result.data or {}).get("tool_name") or (result.data or {}).get("api_id") or payload.get("action"),
+                "input": node.get("tool_args") or node.get("api_payload") or node.get("input_variable") or "",
+                "output": result.outcome,
+                "parsed": result.data,
+            }
         output_variable = str(
             node.get("output_variable")
             or node.get("variable")
@@ -2275,11 +2524,18 @@ class AgentLabPlugin(Star):
             or ""
         ).strip()
         if output_variable:
-            data.setdefault("variables", {})[output_variable] = result.data or result.outcome
+            self._set_workflow_variable(task, output_variable, result.data or result.outcome)
+        output_variables = node.get("output_variables") if isinstance(node.get("output_variables"), list) else []
+        for name in output_variables:
+            self._set_workflow_variable(task, str(name), result.data or result.outcome)
         task.last_observation = self._compact_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
             4000,
         )
+        try:
+            self.storage.upsert_task_memory_artifact(task, node_id, payload)
+        except Exception:
+            pass
         self._record_explicit_observation(
             task,
             source="node_executor",
@@ -2533,6 +2789,74 @@ class AgentLabPlugin(Star):
             return value
         return self._workflow_variable(task, input_variable)
 
+    def _node_json_value(self, task: TaskState, node: dict[str, Any], *keys: str) -> Any:
+        for key in keys:
+            if key not in node:
+                continue
+            raw = node.get(key)
+            if raw in (None, ""):
+                continue
+            if isinstance(raw, str):
+                text = raw.strip()
+                try:
+                    raw = json.loads(text)
+                except Exception:
+                    raw = text
+            return self._resolve_workflow_template(task, raw)
+        return None
+
+    def _node_string_list(self, task: TaskState, node: dict[str, Any], *keys: str) -> list[str]:
+        value = self._node_json_value(task, node, *keys)
+        if isinstance(value, str):
+            value = value.replace("；", ",").replace(";", ",").split(",")
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()]
+
+    def _json_transform_value(self, source: Any, expression: str) -> Any:
+        path = str(expression or "").strip()
+        if not path or path in {".", "$"}:
+            return source
+        if path.startswith("$."):
+            path = path[2:]
+        elif path.startswith("."):
+            path = path[1:]
+        if not path:
+            return source
+        return resolve_path(source, path, None)
+
+    def _sandbox_node_path(self, task: TaskState, raw_path: Any) -> tuple[Path | None, str]:
+        value = self._resolve_workflow_template(task, raw_path)
+        text = str(value or "").strip()
+        if not text:
+            return None, "File node requires path/input_path/output_path."
+        candidate = Path(text)
+        if candidate.is_absolute():
+            resolved = candidate.resolve()
+        else:
+            resolved = (self.storage.sandbox_workspace_dir / candidate).resolve()
+        root = self.storage.sandbox_workspace_dir.resolve()
+        try:
+            resolved.relative_to(root)
+        except Exception:
+            return None, f"File path must stay inside sandbox_workspace: {text}"
+        return resolved, ""
+
+    def _node_builtin_tool_allowed(
+        self,
+        spec: AgentSpec,
+        node: dict[str, Any],
+        tool_name: str,
+        *,
+        capability: str,
+        risk: str,
+    ) -> str:
+        if not self._tool_allowed_by_agent_profile(spec, tool_name):
+            return f"Tool is outside the Agent tool profile: {tool_name}"
+        if not self._permission_allows_tool(node, capability=capability, risk=risk):
+            return f"Tool permission profile blocks {tool_name}: capability={capability}, risk={risk}"
+        return ""
+
     @staticmethod
     def _candidate_by_action(candidates: list[dict[str, Any]], actions: set[str]) -> str:
         for item in candidates:
@@ -2649,6 +2973,114 @@ class AgentLabPlugin(Star):
             ctx.task.heartbeat.last_pulse_at = now_iso()
             outcome = "Heartbeat checkpoint recorded."
             data = {"heartbeat_enabled": ctx.task.heartbeat.enabled}
+        elif action == "variable_set":
+            variable_name = str(
+                ctx.node.get("variable_name")
+                or ctx.node.get("name")
+                or ctx.node.get("output_variable")
+                or ctx.node.get("variable")
+                or ""
+            ).strip()
+            if not variable_name:
+                return NodeExecutionResult(
+                    ok=False,
+                    status="blocked",
+                    outcome="variable_set requires variable_name.",
+                    blocked=True,
+                    advance=False,
+                    note="node_executor_variable_set_missing_name",
+                )
+            value = self._node_payload_from_variable(ctx.task, ctx.node)
+            if value is None:
+                value = self._node_json_value(ctx.task, ctx.node, "value", "payload", "data")
+            self._set_workflow_variable(ctx.task, variable_name, value)
+            outcome = f"Variable {variable_name} set."
+            data = {"variable": variable_name, "value": value}
+        elif action == "variable_get":
+            variable_name = str(
+                ctx.node.get("variable_name")
+                or ctx.node.get("name")
+                or ctx.node.get("input_variable")
+                or ctx.node.get("variable")
+                or ""
+            ).strip()
+            if not variable_name:
+                return NodeExecutionResult(
+                    ok=False,
+                    status="blocked",
+                    outcome="variable_get requires variable_name.",
+                    blocked=True,
+                    advance=False,
+                    note="node_executor_variable_get_missing_name",
+                )
+            value = resolve_path(self._condition_context(ctx.task), variable_name, None)
+            if value is None:
+                value = self._workflow_variable(ctx.task, variable_name)
+            outcome = f"Variable {variable_name} read."
+            data = {"variable": variable_name, "value": value}
+        elif action == "text_template":
+            template = str(
+                ctx.node.get("template")
+                or ctx.node.get("text")
+                or ctx.node.get("prompt")
+                or ctx.node.get("instruction")
+                or ""
+            )
+            rendered = self._resolve_workflow_template(ctx.task, template)
+            rendered_text = str(rendered if rendered is not None else "")
+            outcome = "Text template rendered."
+            data = {"text": rendered_text}
+        elif action == "json_transform":
+            source = self._node_payload_from_variable(ctx.task, ctx.node)
+            if source is None:
+                source = self._node_json_value(ctx.task, ctx.node, "source", "payload", "data")
+            expression = str(
+                ctx.node.get("expression")
+                or ctx.node.get("path")
+                or ctx.node.get("json_path")
+                or ctx.node.get("jq")
+                or "."
+            ).strip()
+            transformed = self._json_transform_value(source, expression)
+            outcome = f"JSON transform applied: {expression or '.'}."
+            data = {"value": transformed, "expression": expression or "."}
+        elif action == "merge":
+            names = self._node_string_list(ctx.task, ctx.node, "inputs", "input_variables", "sources")
+            merged: dict[str, Any] = {}
+            if names:
+                context = self._condition_context(ctx.task)
+                for name in names:
+                    value = resolve_path(context, name, None)
+                    if value is None:
+                        value = self._workflow_variable(ctx.task, name)
+                    merged[name] = value
+            else:
+                node_outputs = (self._ensure_workflow_data(ctx.task).get("node_outputs") or {})
+                for candidate in ctx.next_candidates:
+                    node_id = str(candidate.get("id") or "")
+                    if node_id in node_outputs:
+                        merged[node_id] = node_outputs[node_id]
+                if not merged:
+                    merged = dict(node_outputs)
+            outcome = f"Merged {len(merged)} input(s)."
+            data = {"merged": merged}
+        elif action == "iterator":
+            source = self._node_payload_from_variable(ctx.task, ctx.node)
+            if source is None:
+                source = self._node_json_value(ctx.task, ctx.node, "items", "source", "payload")
+            if isinstance(source, dict):
+                items = [{"key": key, "value": value} for key, value in source.items()]
+            elif isinstance(source, list):
+                items = list(source)
+            else:
+                items = []
+            outcome = f"Iterator prepared {len(items)} item(s)."
+            data = {"items": items, "count": len(items)}
+        elif action == "subflow_call":
+            template_id = str(ctx.node.get("template_id") or ctx.node.get("ref_id") or "").strip()
+            params = self._node_templated_json_object(ctx.task, ctx.node, "params", "arguments", "payload")
+            outcome = "Subflow call prepared; nested runner is not enabled yet."
+            data = {"template_id": template_id, "params": params, "runner": "pending"}
         elif action == "transform_context":
             source = self._node_payload_from_variable(ctx.task, ctx.node)
             if source is None:
@@ -2675,6 +3107,248 @@ class AgentLabPlugin(Star):
             needs_react=len(ctx.outgoing) > 1,
             advance=len(ctx.outgoing) <= 1,
             note="node_executor_state",
+        )
+
+    async def _execute_http_request_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        gate = self._node_builtin_tool_allowed(
+            ctx.spec,
+            ctx.node,
+            CUSTOM_API_TOOL_NAME,
+            capability="api",
+            risk="work",
+        )
+        if gate:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=gate,
+                blocked=True,
+                advance=False,
+                note="node_executor_http_not_allowed",
+            )
+        budget_reason = self._consume_tool_budget(ctx.task, CUSTOM_API_TOOL_NAME)
+        if budget_reason:
+            self._pause_task_for_budget(ctx.task, budget_reason)
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=budget_reason,
+                blocked=True,
+                advance=False,
+                note="node_executor_http_budget",
+            )
+        url = str(self._resolve_workflow_template(ctx.task, ctx.node.get("url") or "") or "").strip()
+        if not url:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="http_request requires url.",
+                blocked=True,
+                advance=False,
+                note="node_executor_http_missing_url",
+            )
+        method = str(ctx.node.get("method") or "GET").strip().upper()
+        if method not in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}:
+            method = "GET"
+        payload = self._node_templated_json_object(ctx.task, ctx.node, "payload", "request", "api_payload")
+        query = payload.get("query") if isinstance(payload.get("query"), dict) else {}
+        headers = payload.get("headers") if isinstance(payload.get("headers"), dict) else {}
+        body = payload.get("body") if "body" in payload else None
+        try:
+            timeout_seconds = max(1, min(int(ctx.node.get("timeout_seconds") or 30), 120))
+        except Exception:
+            timeout_seconds = 30
+        result = await asyncio.to_thread(
+            self._perform_custom_api_http_call,
+            method,
+            url,
+            query,
+            body,
+            {str(key): str(value) for key, value in headers.items()},
+            timeout_seconds,
+        )
+        ok = bool(result.get("ok"))
+        data = {"ok": ok, "method": method, "url_host": self._safe_url_host(url), **result}
+        return NodeExecutionResult(
+            ok=ok,
+            status="completed" if ok else "blocked",
+            outcome=f"HTTP {method} {self._safe_url_host(url) or url} status={result.get('status')}",
+            next_node_id=self._single_next(ctx.outgoing) if ok else "",
+            data=data,
+            blocked=not ok,
+            note="node_executor_http",
+        )
+
+    async def _execute_file_operation_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        operation = str(ctx.node.get("operation") or ctx.node.get("edit_mode") or "read").strip().lower()
+        tool_name = "astrbot_file_read_tool" if operation == "read" else "astrbot_file_edit_tool"
+        risk = "safe" if operation == "read" else "work"
+        gate = self._node_builtin_tool_allowed(
+            ctx.spec,
+            ctx.node,
+            tool_name,
+            capability="file",
+            risk=risk,
+        )
+        if gate:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=gate,
+                blocked=True,
+                advance=False,
+                note="node_executor_file_not_allowed",
+            )
+        budget_reason = self._consume_tool_budget(ctx.task, tool_name)
+        if budget_reason:
+            self._pause_task_for_budget(ctx.task, budget_reason)
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=budget_reason,
+                blocked=True,
+                advance=False,
+                note="node_executor_file_budget",
+            )
+        path, reason = self._sandbox_node_path(
+            ctx.task,
+            ctx.node.get("path") or ctx.node.get("input_path") or ctx.node.get("output_path") or "",
+        )
+        if reason or path is None:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=reason,
+                blocked=True,
+                advance=False,
+                note="node_executor_file_path_blocked",
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if operation == "read":
+            if not path.exists():
+                return NodeExecutionResult(
+                    ok=False,
+                    status="blocked",
+                    outcome=f"File does not exist: {path.name}",
+                    blocked=True,
+                    advance=False,
+                    note="node_executor_file_missing",
+                )
+            text = path.read_text(encoding="utf-8", errors="replace")
+            data = {"path": str(path), "content": self._compact_text(text, 12000), "bytes": path.stat().st_size}
+            outcome = f"File read: {path.name}"
+        elif operation in {"write", "replace"}:
+            content = self._node_json_value(ctx.task, ctx.node, "content", "text", "value")
+            path.write_text(str(content or ""), encoding="utf-8")
+            data = {"path": str(path), "operation": operation, "bytes": path.stat().st_size}
+            outcome = f"File written: {path.name}"
+        elif operation == "append":
+            content = self._node_json_value(ctx.task, ctx.node, "content", "text", "value")
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(str(content or ""))
+            data = {"path": str(path), "operation": operation, "bytes": path.stat().st_size}
+            outcome = f"File appended: {path.name}"
+        else:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"Unsupported file operation: {operation}",
+                blocked=True,
+                advance=False,
+                note="node_executor_file_operation_blocked",
+            )
+        return NodeExecutionResult(
+            outcome=outcome,
+            next_node_id=self._single_next(ctx.outgoing),
+            data=data,
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_file",
+        )
+
+    async def _execute_code_exec_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        language = str(ctx.node.get("language") or "python").strip().lower()
+        tool_name = "astrbot_sandboxed_python" if language in {"py", "python"} else "astrbot_sandboxed_shell"
+        gate = self._node_builtin_tool_allowed(
+            ctx.spec,
+            ctx.node,
+            tool_name,
+            capability="code",
+            risk="high",
+        )
+        if gate:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=gate,
+                blocked=True,
+                advance=False,
+                note="node_executor_code_not_allowed",
+            )
+        budget_reason = self._consume_tool_budget(ctx.task, tool_name)
+        if budget_reason:
+            self._pause_task_for_budget(ctx.task, budget_reason)
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=budget_reason,
+                blocked=True,
+                advance=False,
+                note="node_executor_code_budget",
+            )
+        code = str(self._node_json_value(ctx.task, ctx.node, "code", "script", "command") or "")
+        if not code.strip():
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="code_exec requires code/script/command.",
+                blocked=True,
+                advance=False,
+                note="node_executor_code_missing",
+            )
+        try:
+            timeout_seconds = max(1, min(int(ctx.node.get("timeout_seconds") or 10), 60))
+        except Exception:
+            timeout_seconds = 10
+        workspace = self.storage.sandbox_workspace_dir
+        workspace.mkdir(parents=True, exist_ok=True)
+        if language in {"py", "python"}:
+            cmd = ["python", "-c", code]
+        elif language in {"shell", "powershell", "pwsh"}:
+            cmd = ["powershell", "-NoProfile", "-Command", code]
+        else:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"Unsupported code language: {language}",
+                blocked=True,
+                advance=False,
+                note="node_executor_code_language_blocked",
+            )
+        completed = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            cwd=str(workspace),
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+        ok = completed.returncode == 0
+        data = {
+            "language": language,
+            "exit_code": completed.returncode,
+            "stdout": self._compact_text(completed.stdout or "", 4000),
+            "stderr": self._compact_text(completed.stderr or "", 4000),
+            "workspace": str(workspace),
+        }
+        return NodeExecutionResult(
+            ok=ok,
+            status="completed" if ok else "blocked",
+            outcome=f"Code execution exit_code={completed.returncode}.",
+            next_node_id=self._single_next(ctx.outgoing) if ok else "",
+            data=data,
+            blocked=not ok,
+            note="node_executor_code",
         )
 
     async def _execute_retrieve_memory_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
@@ -2956,6 +3630,72 @@ class AgentLabPlugin(Star):
             note="node_executor_validation",
         )
 
+    async def _execute_debate_validation_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        perspectives = self._node_string_list(ctx.task, ctx.node, "perspectives", "checks")
+        if not perspectives:
+            perspectives = ["correctness", "safety", "completion"]
+        require_consensus_raw = ctx.node.get("require_consensus", True)
+        if isinstance(require_consensus_raw, str):
+            require_consensus = require_consensus_raw.strip().lower() not in {"false", "0", "no", "off"}
+        else:
+            require_consensus = bool(require_consensus_raw)
+
+        base_verdict = self.verifier.verify_validation_checkpoint(ctx.task)
+        evidence_text = "\n".join(
+            [
+                str(ctx.task.current_summary or ""),
+                str(ctx.task.last_confirmed_progress or ""),
+                str(ctx.task.last_observation or ""),
+                json.dumps((ctx.task.workflow_data or {}).get("node_outputs") or {}, ensure_ascii=False, default=str),
+            ]
+        ).lower()
+        failure_markers = ("fail", "failed", "error", "blocked", "unsafe", "risk", "失败", "错误", "阻塞")
+        reviews: list[dict[str, Any]] = []
+        for perspective in perspectives[:8]:
+            name = str(perspective or "review").strip()
+            lowered = name.lower()
+            passed = bool(base_verdict.passed)
+            reason = base_verdict.reason
+            missing = list(base_verdict.missing or [])
+            if lowered in {"safety", "security", "risk", "安全性", "风险"} and any(marker in evidence_text for marker in failure_markers):
+                passed = False
+                if "risk_evidence" not in missing:
+                    missing.append("risk_evidence")
+                reason = "Safety/risk perspective found blocking evidence."
+            reviews.append(
+                {
+                    "perspective": name,
+                    "passed": passed,
+                    "status": "passed" if passed else "needs_review",
+                    "reason": reason,
+                    "missing": missing,
+                }
+            )
+
+        passed_count = sum(1 for item in reviews if item.get("passed"))
+        passed = passed_count == len(reviews) if require_consensus else passed_count > 0
+        data = {
+            "passed": passed,
+            "require_consensus": require_consensus,
+            "passed_count": passed_count,
+            "total": len(reviews),
+            "reviews": reviews,
+            "base_verdict": base_verdict.to_dict(),
+        }
+        return NodeExecutionResult(
+            ok=passed,
+            status="completed" if passed else "blocked",
+            outcome=(
+                f"Debate validation passed {passed_count}/{len(reviews)} perspective(s)."
+                if passed
+                else f"Debate validation needs review: {passed_count}/{len(reviews)} perspective(s) passed."
+            ),
+            next_node_id=self._single_next(ctx.outgoing) if passed else "",
+            data=data,
+            blocked=not passed,
+            note="node_executor_debate_validation",
+        )
+
     async def _execute_approval_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         if ctx.task.pending_approvals():
             ctx.task.status = "paused"
@@ -3136,21 +3876,32 @@ class AgentLabPlugin(Star):
 
             if self.node_executors.can_execute(decision.node):
                 nodes = self.workflow_runtime.node_map(spec)
-                outgoing = [
-                    node_id
-                    for node_id in self.workflow_runtime.outgoing(spec).get(decision.node_id, [])
-                    if node_id in nodes
-                ]
+                success_edges = self._workflow_success_edges(spec, decision.node_id)
+                outgoing = [str(edge.get("to") or "") for edge in success_edges if str(edge.get("to") or "") in nodes]
                 ctx = NodeExecutionContext(
                     event=event,
                     task=task,
                     spec=spec,
                     node=decision.node,
                     outgoing=outgoing,
-                    next_candidates=[nodes[node_id] for node_id in outgoing],
+                    next_candidates=self._candidate_nodes_from_edges(nodes, success_edges),
                     reason=reason,
                 )
-                result = await self.node_executors.execute(ctx)
+                result = await self._execute_node_with_policy(ctx)
+                if result.ok and not result.blocked:
+                    output_reason = self._validate_node_output_schema(decision.node, result)
+                    if output_reason:
+                        result.ok = False
+                        result.blocked = True
+                        result.status = "blocked"
+                        result.outcome = output_reason
+                        result.note = "node_output_schema_mismatch"
+                        result.advance = False
+                if not result.next_node_id and not result.needs_react and not result.terminal:
+                    target = self._select_next_node_after_result(task, spec, decision.node_id, result)
+                    if target:
+                        result.next_node_id = target
+                        result.advance = True
                 self._record_node_execution(task, decision.node, result)
                 loop_after_reason = self._loop_guard_after_node(task, decision.node, result)
                 executed = self._node_result_to_decision(decision.node, result)
@@ -3176,6 +3927,17 @@ class AgentLabPlugin(Star):
                     break
 
                 if result.blocked:
+                    if result.next_node_id:
+                        self._advance_task_workflow(
+                            task,
+                            spec,
+                            node_id=executed.node_id,
+                            outcome=result.outcome,
+                            next_node_id=result.next_node_id,
+                            note=result.note,
+                            status=result.status,
+                        )
+                        continue
                     runtime_run.blocked = True
                     if result.status == "blocked":
                         task.status = "blocked"
@@ -4881,6 +5643,39 @@ class AgentLabPlugin(Star):
                 }
             )
             NodeExecutorRegistry.normalize_node_runtime_type(normalized)
+            NodeExecutorRegistry.normalize_execution_mode(normalized)
+            for schema_key in ("input_schema", "output_schema"):
+                schema = cls._workflow_json_object(normalized.get(schema_key))
+                if schema:
+                    normalized[schema_key] = schema
+                elif schema_key in normalized:
+                    normalized.pop(schema_key, None)
+            required_inputs = cls._clean_string_list(
+                normalized.get("required_inputs") or normalized.get("required_input")
+            )
+            if required_inputs:
+                normalized["required_inputs"] = required_inputs
+            output_variables = cls._clean_string_list(
+                normalized.get("output_variables") or normalized.get("outputs")
+            )
+            if output_variables:
+                normalized["output_variables"] = output_variables
+            retry_policy = cls._normalize_retry_policy(normalized.get("retry_policy"))
+            if retry_policy:
+                normalized["retry_policy"] = retry_policy
+            elif "retry_policy" in normalized:
+                normalized.pop("retry_policy", None)
+            try:
+                timeout_seconds = int(normalized.get("timeout_seconds") or 0)
+            except Exception:
+                timeout_seconds = 0
+            if timeout_seconds > 0:
+                normalized["timeout_seconds"] = max(1, min(timeout_seconds, 600))
+            elif "timeout_seconds" in normalized:
+                normalized.pop("timeout_seconds", None)
+            for bool_key in ("interrupt_before", "interrupt_after"):
+                if bool_key in normalized:
+                    normalized[bool_key] = bool(normalized.get(bool_key))
             for key, limit in (
                 ("ref_type", 32),
                 ("ref_id", 160),
@@ -4889,6 +5684,15 @@ class AgentLabPlugin(Star):
                 ("tool_name", 160),
                 ("skill_name", 160),
                 ("condition", 1000),
+                ("route_variable", 160),
+                ("variable_name", 160),
+                ("template_id", 160),
+                ("path", 500),
+                ("url", 500),
+                ("method", 16),
+                ("operation", 80),
+                ("edit_mode", 32),
+                ("permission_profile", 32),
                 ("parallel_group", 80),
                 ("prompt", 4000),
             ):
@@ -4896,8 +5700,8 @@ class AgentLabPlugin(Star):
                     normalized[key] = str(normalized.get(key) or "").strip()[:limit]
             nodes.append(normalized)
 
-        edges: list[dict[str, str]] = []
-        seen_edges: set[tuple[str, str]] = set()
+        edges: list[dict[str, Any]] = []
+        seen_edges: set[tuple[str, str, str, str]] = set()
         for raw_edge in spec.workflow_edges if isinstance(spec.workflow_edges, list) else []:
             if not isinstance(raw_edge, dict):
                 continue
@@ -4905,14 +5709,27 @@ class AgentLabPlugin(Star):
             end = id_map.get(str(raw_edge.get("to") or "").strip(), str(raw_edge.get("to") or "").strip())
             if start not in used_ids or end not in used_ids or start == end:
                 continue
-            key = (start, end)
+            edge_type = cls._normalize_workflow_edge_type(raw_edge.get("edge_type") or raw_edge.get("type"))
+            condition = str(raw_edge.get("condition") or raw_edge.get("when") or "").strip()[:1000]
+            key = (start, end, edge_type, condition)
             if key in seen_edges:
                 continue
             seen_edges.add(key)
-            edges.append({"from": start, "to": end})
+            edge = {"from": start, "to": end, "edge_type": edge_type}
+            if condition:
+                edge["condition"] = condition
+            condition_visual = raw_edge.get("condition_visual")
+            if isinstance(condition_visual, dict):
+                edge["condition_visual"] = condition_visual
+            elif isinstance(condition_visual, str) and condition_visual.strip():
+                edge["condition_visual"] = condition_visual.strip()[:1000]
+            label = str(raw_edge.get("label") or "").strip()
+            if label:
+                edge["label"] = label[:120]
+            edges.append(edge)
         if not edges and len(nodes) > 1:
             edges = [
-                {"from": nodes[index]["id"], "to": nodes[index + 1]["id"]}
+                {"from": nodes[index]["id"], "to": nodes[index + 1]["id"], "edge_type": "success"}
                 for index in range(len(nodes) - 1)
             ]
 
@@ -4924,6 +5741,46 @@ class AgentLabPlugin(Star):
         value = re.sub(r"\s+", "_", str(value or "").strip())
         value = re.sub(r"[^A-Za-z0-9_-]", "", value)
         return value[:64] or "node"
+
+    @staticmethod
+    def _workflow_json_object(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return {}
+
+    @staticmethod
+    def _normalize_workflow_edge_type(raw: Any) -> str:
+        edge_type = str(raw or "success").strip().lower()
+        return edge_type if edge_type in {"success", "error", "always"} else "success"
+
+    @staticmethod
+    def _normalize_retry_policy(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, str) and raw.strip():
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                raw = {}
+        if not isinstance(raw, dict):
+            return {}
+        try:
+            max_attempts = max(1, min(int(raw.get("max_attempts") or raw.get("attempts") or 1), 8))
+        except Exception:
+            max_attempts = 1
+        backoff = str(raw.get("backoff") or "none").strip().lower()
+        if backoff not in {"none", "linear", "exponential"}:
+            backoff = "none"
+        retry_on = raw.get("retry_on") if isinstance(raw.get("retry_on"), list) else ["error", "timeout"]
+        return {
+            "max_attempts": max_attempts,
+            "backoff": backoff,
+            "retry_on": [str(item).strip() for item in retry_on if str(item).strip()],
+        }
 
     @classmethod
     def _unique_workflow_id(cls, value: str, used_ids: set[str]) -> str:

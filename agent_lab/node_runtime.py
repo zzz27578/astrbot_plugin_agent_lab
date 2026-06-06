@@ -23,24 +23,72 @@ ACTION_RUNTIME_TYPES = {
     "summarize_entry": "entry",
     "confirm_entry": "entry",
     "restore_isolation": "entry",
+    "variable_set": "state",
+    "variable_get": "state",
+    "text_template": "state",
+    "json_transform": "state",
+    "merge": "state",
+    "iterator": "state",
+    "subflow_call": "state",
     "retrieve_memory": "memory",
     "save_memory": "memory",
     "save_state": "state",
     "heartbeat": "state",
     "transform_context": "state",
     "route_condition": "decision",
+    "conditional_router": "decision",
     "parallel_branch": "parallel",
     "run_tools": "tool",
     "call_api": "api",
+    "http_request": "api",
+    "file_operation": "tool",
+    "code_exec": "tool",
     "request_approval": "guard",
     "wait_user": "guard",
     "handoff": "guard",
     "validate_output": "validation",
+    "debate_validation": "validation",
     "retry": "decision",
     "notify": "notification",
     "archive": "terminal",
     "exit_summary": "terminal",
     "manual": "react",
+}
+
+ACTION_EXECUTION_MODES = {
+    "summarize_entry": "deterministic",
+    "confirm_entry": "deterministic",
+    "restore_isolation": "deterministic",
+    "variable_set": "deterministic",
+    "variable_get": "deterministic",
+    "text_template": "deterministic",
+    "json_transform": "deterministic",
+    "merge": "deterministic",
+    "iterator": "deterministic",
+    "subflow_call": "deterministic",
+    "retrieve_memory": "deterministic",
+    "save_memory": "deterministic",
+    "save_state": "deterministic",
+    "heartbeat": "deterministic",
+    "transform_context": "deterministic",
+    "route_condition": "deterministic",
+    "conditional_router": "deterministic",
+    "parallel_branch": "hybrid",
+    "run_tools": "hybrid",
+    "call_api": "deterministic",
+    "http_request": "deterministic",
+    "file_operation": "deterministic",
+    "code_exec": "hybrid",
+    "request_approval": "deterministic",
+    "wait_user": "deterministic",
+    "handoff": "deterministic",
+    "validate_output": "deterministic",
+    "debate_validation": "hybrid",
+    "retry": "deterministic",
+    "notify": "deterministic",
+    "archive": "llm_guided",
+    "exit_summary": "llm_guided",
+    "manual": "llm_guided",
 }
 
 KIND_RUNTIME_TYPES = {
@@ -73,6 +121,7 @@ class NodeExecutionResult:
     blocked: bool = False
     terminal: bool = False
     advance: bool = True
+    attempts: int = 1
 
 
 @dataclass
@@ -146,3 +195,16 @@ class NodeExecutorRegistry:
         node["runtime_type"] = runtime_type
         return runtime_type
 
+    @staticmethod
+    def execution_mode(node: dict[str, Any]) -> str:
+        raw = str((node or {}).get("execution_mode") or "").strip()
+        if raw in {"deterministic", "llm_guided", "hybrid"}:
+            return raw
+        action = str((node or {}).get("action") or "").strip()
+        return ACTION_EXECUTION_MODES.get(action, "llm_guided")
+
+    @staticmethod
+    def normalize_execution_mode(node: dict[str, Any]) -> str:
+        mode = NodeExecutorRegistry.execution_mode(node)
+        node["execution_mode"] = mode
+        return mode

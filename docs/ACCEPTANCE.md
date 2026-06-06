@@ -17,6 +17,8 @@ Expected:
 - Runtime smoke test prints `Agent Lab runtime smoke test passed.` when AstrBot SDK/source is importable.
 - Runtime executor behavior is documented in `docs/RUNTIME_EXECUTOR.md`, and workflow checks expose `runtime_types`, `executor_nodes`, `react_handoff_nodes`, and `node_runtime`.
 - Runtime smoke verifies `agent_runtime` contains an AgentInstance, capability catalog, TaskPlan, observations, verifier verdicts, resume anchor, and archived Markdown section.
+- Runtime smoke verifies deterministic canvas nodes execute without ReAct handoff: variable set/get, text template, JSON transform, merge, iterator, HTTP request, direct tool/API calls, memory save, validation, and debate validation.
+- Runtime smoke verifies failed node results can advance through `edge_type=error` instead of immediately blocking the whole workflow.
 - Runtime smoke verifies premature finish is denied without runtime evidence, and parallel workers expose worker specs, evidence, risks, and next recommendations.
 - Runtime smoke verifies archived memory candidates stay private until accepted, then become accepted evidence-linked memory visible to normal reads.
 

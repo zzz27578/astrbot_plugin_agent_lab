@@ -24,6 +24,9 @@ class AgentLabStorage:
         self.archives_dir = self.root / "archives"
         self.registry_dir = self.root / "registry"
         self.memories_dir = self.root / "memories"
+        self.workflow_templates_dir = self.root / "workflow_templates"
+        self.node_templates_dir = self.root / "node_templates"
+        self.sandbox_workspace_dir = self.root / "sandbox_workspace"
         self.default_agent_path = self.root / "default_agent_id.txt"
         self.custom_apis_path = self.registry_dir / "custom_apis.json"
         self.credentials_path = self.registry_dir / "credentials.json"
@@ -37,6 +40,9 @@ class AgentLabStorage:
         self.archives_dir.mkdir(parents=True, exist_ok=True)
         self.registry_dir.mkdir(parents=True, exist_ok=True)
         self.memories_dir.mkdir(parents=True, exist_ok=True)
+        self.workflow_templates_dir.mkdir(parents=True, exist_ok=True)
+        self.node_templates_dir.mkdir(parents=True, exist_ok=True)
+        self.sandbox_workspace_dir.mkdir(parents=True, exist_ok=True)
 
     def ensure_defaults(self) -> AgentSpec:
         agents = self.list_agents()
@@ -125,6 +131,23 @@ class AgentLabStorage:
     def task_markdown_path(self, umo: str, task_id: str) -> Path:
         return self.session_dir(umo) / f"{task_id}.md"
 
+    def task_memory_dir(self, umo: str, task_id: str) -> Path:
+        path = self.session_dir(umo) / f"task_{task_id}" / "task_memory"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def task_memory_observations_path(self, umo: str, task_id: str) -> Path:
+        return self.task_memory_dir(umo, task_id) / "observations.jsonl"
+
+    def task_memory_decisions_path(self, umo: str, task_id: str) -> Path:
+        return self.task_memory_dir(umo, task_id) / "decisions.jsonl"
+
+    def task_memory_artifacts_path(self, umo: str, task_id: str) -> Path:
+        return self.task_memory_dir(umo, task_id) / "artifacts.json"
+
+    def task_memory_summary_path(self, umo: str, task_id: str) -> Path:
+        return self.task_memory_dir(umo, task_id) / "summary.md"
+
     def archive_session_dir(self, umo: str) -> Path:
         path = self.archives_dir / _safe_hash(umo)
         path.mkdir(parents=True, exist_ok=True)
@@ -153,6 +176,30 @@ class AgentLabStorage:
         if active:
             self._write_json(self.active_task_path(task.umo), payload)
 
+    def append_task_memory_observation(self, task: TaskState, payload: dict[str, Any]) -> None:
+        self._append_jsonl(
+            self.task_memory_observations_path(task.umo, task.task_id),
+            payload,
+        )
+
+    def append_task_memory_decision(self, task: TaskState, payload: dict[str, Any]) -> None:
+        self._append_jsonl(
+            self.task_memory_decisions_path(task.umo, task.task_id),
+            payload,
+        )
+
+    def upsert_task_memory_artifact(self, task: TaskState, key: str, payload: Any) -> None:
+        path = self.task_memory_artifacts_path(task.umo, task.task_id)
+        data = self._read_json(path) if path.exists() else {}
+        artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), dict) else {}
+        artifacts[str(key or new_id("artifact"))] = payload
+        data["artifacts"] = artifacts
+        data["updated_at"] = now_iso()
+        self._write_json(path, data)
+
+    def write_task_memory_summary(self, task: TaskState, text: str) -> None:
+        self._write_text(self.task_memory_summary_path(task.umo, task.task_id), text)
+
     def archive_task(self, task: TaskState) -> Path:
         task.finished_at = task.finished_at or now_iso()
         task.updated_at = now_iso()
@@ -161,6 +208,8 @@ class AgentLabStorage:
         src_md = self.task_markdown_path(task.umo, task.task_id)
         dst_json = self.archive_task_json_path(task.umo, task.task_id)
         dst_md = self.archive_task_markdown_path(task.umo, task.task_id)
+        if task.exit_summary.strip() and not self.task_memory_summary_path(task.umo, task.task_id).exists():
+            self.write_task_memory_summary(task, task.exit_summary)
         self._write_json(src_json, task.to_dict())
         self._write_text(src_md, self.render_markdown(task))
         shutil.copy2(src_json, dst_json)
@@ -180,6 +229,8 @@ class AgentLabStorage:
                     "status": "accepted",
                     "kind": "task_archive_summary",
                     "layer": "archive_summary",
+                    "brief": task.exit_summary[:240],
+                    "detail_path": str(self.task_memory_summary_path(task.umo, task.task_id)),
                     "tags": ["task", "archive", "summary", task.agent_id or "agent"],
                     "expose_to_normal": True,
                 }
@@ -193,12 +244,15 @@ class AgentLabStorage:
                     "status": "candidate",
                     "kind": "memory_candidate",
                     "layer": "candidate_memory",
+                    "brief": item[:240],
+                    "detail_path": str(self.task_memory_summary_path(task.umo, task.task_id)),
                     "tags": ["task", "candidate", "private", task.agent_id or "agent"],
                     "expose_to_normal": False,
                     "evidence": {
                         "source_task_id": task.task_id,
                         "source_umo": task.umo,
                         "archive_path": task.archive_path,
+                        "detail_path": str(self.task_memory_summary_path(task.umo, task.task_id)),
                         "exit_summary": task.exit_summary[:1200],
                         "last_verdict_id": (
                             ((task.workflow_data or {}).get("agent_runtime") or {}).get("last_verdict") or {}
@@ -565,6 +619,8 @@ class AgentLabStorage:
         item = dict(payload or {})
         item["memory_id"] = str(item.get("memory_id") or "").strip() or new_id("mem")
         item["text"] = str(item.get("text") or "").strip()
+        item["brief"] = str(item.get("brief") or item["text"][:240]).strip()[:500]
+        item["detail_path"] = str(item.get("detail_path") or "").strip()
         item["status"] = str(item.get("status") or "candidate").strip().lower()
         item["kind"] = str(item.get("kind") or "task_memory").strip()
         item["source_task_id"] = str(item.get("source_task_id") or "").strip()
@@ -671,6 +727,11 @@ class AgentLabStorage:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_text(text, encoding="utf-8")
         tmp.replace(path)
+
+    def _append_jsonl(self, path: Path, payload: dict[str, Any]) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
 
     def _fernet(self) -> Fernet:
         if not self.secrets_key_path.exists():

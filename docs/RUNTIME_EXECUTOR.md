@@ -31,16 +31,21 @@ Registered executors now cover:
 
 - `summarize_entry`, `confirm_entry`, `restore_isolation`
 - `save_state`, `heartbeat`, `transform_context`
+- `variable_set`, `variable_get`, `text_template`, `json_transform`
+- `merge`, `iterator`, `subflow_call`
 - `retrieve_memory`, `save_memory`
 - `parallel_branch`
-- `call_api`
-- `run_tools`
-- `route_condition`, `retry`, `validate_output`
+- `call_api`, `http_request`
+- `run_tools`, `file_operation`, `code_exec`
+- `route_condition`, `conditional_router`, `retry`
+- `validate_output`, `debate_validation`
 - `request_approval`, `wait_user`, `handoff`
 - `notify`
 - `archive`, `exit_summary` as terminal ReAct handoff nodes
 
-This means API nodes, tool nodes, memory checkpoints, approval/wait gates, validation gates, routing, and parallel branches have backend runtime semantics. They are no longer only text in the system prompt.
+This means state mutation, variable reads, template rendering, simple JSON path extraction, merges, iterator preparation, API/HTTP calls, tool calls, sandbox-scoped file operations, guarded code execution, memory checkpoints, approval/wait gates, validation gates, routing, and parallel branches have backend runtime semantics. They are no longer only text in the system prompt.
+
+`subflow_call` is currently a deterministic preparation node: it resolves the template id and parameters and records them for the parent workflow. A nested subflow runner is still future work.
 
 `agent_lab/agent_runtime.py` adds the task-level agent contract around that executor. It persists an `agent_instance`, a capability catalog, a workflow-derived `TaskPlan`, decision records, observation records, verifier-style verdicts, and a resume anchor under `TaskState.workflow_data.agent_runtime`.
 
@@ -78,10 +83,25 @@ Those handoffs are recorded in `TaskState.workflow_data.react_traces` with the n
 - `variables`: named outputs available to later nodes.
 - `react_traces`: ReAct/tool-loop handoff audit trail.
 - `execution_counts`: retry and loop guard support.
+- `tool_outputs`: normalized audit rows for tool-like nodes, including `run_tools`, `call_api`, `http_request`, `file_operation`, and `code_exec`.
 
 If a node defines `output_variable`, its result is saved into `variables`. Later nodes can read it with `input_variable`.
 
+Nodes may also define `required_inputs`, `input_schema`, and `output_schema`. Required inputs are resolved against the workflow condition context before execution; input/output schemas use the local schema validator and block the node before downstream execution if the contract is not satisfied.
+
+Nodes may define `timeout_seconds` and `retry_policy`. Runtime execution wraps registered executors with bounded timeout/retry handling and records the final `attempts` count in `node_outputs`.
+
 Archived Markdown now includes `Agent Runtime`, `Workflow Node Outputs`, and `ReAct Handoffs`, so runtime behavior is visible after task completion.
+
+## Edge Routing
+
+Workflow edges are normalized with an `edge_type`:
+
+- `success`: follows completed node results.
+- `error`: follows blocked or failed node results.
+- `always`: eligible for either result.
+
+Edge `condition` expressions are evaluated against the same workflow context used by variables. `condition_visual` is preserved for WebUI round-tripping. When a registered executor returns `ok=False` or `blocked=True`, the runtime first looks for matching `error`/`always` edges before globally blocking the task.
 
 ## Isolation Boundary
 
@@ -89,6 +109,9 @@ Executable nodes obey the same isolation intent as the LLM tool loop:
 
 - Direct `run_tools` nodes require the bound tool to be allowed by the AgentSpec tool profile.
 - Direct `call_api` nodes require `agent_lab_call_custom_api` to be allowed by the AgentSpec tool profile.
+- Direct `http_request` nodes also require `agent_lab_call_custom_api` and the node permission profile must allow API work.
+- `file_operation` nodes require `astrbot_file_read_tool` or `astrbot_file_edit_tool`, and paths must stay under `plugin_data/.../sandbox_workspace`.
+- `code_exec` nodes require the corresponding sandbox tool name and a `danger` permission profile because they are high-risk. The current implementation runs a bounded local subprocess in the sandbox workspace; it is gated and timed out, but it is not a container runtime.
 - Parallel API workers also require `agent_lab_call_custom_api`.
 - Plugin-sourced tools are filtered by session plugin isolation and global plugin activation.
 - `no_external` blocks external tool and Custom API execution.
