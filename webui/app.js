@@ -825,7 +825,12 @@ function workflowNodeParamsJson(item = {}) {
 }
 
 function token() {
-  return sessionStorage.getItem("agent_lab_token") || $("token").value.trim();
+  return (
+    sessionStorage.getItem("agent_lab_token")
+    || $("token")?.value.trim()
+    || $("auth-token-input")?.value.trim()
+    || ""
+  );
 }
 
 function setFeedback(message, tone = "normal") {
@@ -2062,19 +2067,22 @@ async function load() {
 }
 
 function renderNav() {
-  $("nav").innerHTML = sections
-    .map(
-      ([id, title, meta]) => `
-        <button class="${route === id ? "active" : ""}" data-route="${id}" type="button">
-          <strong>${title}</strong><br />
-          <span>${meta}</span>
-        </button>
-      `,
-    )
-    .join("");
+  const nav = $("nav");
+  if (nav) {
+    nav.innerHTML = sections
+      .map(
+        ([id, title, meta]) => `
+          <button class="${route === id ? "active" : ""}" data-route="${id}" type="button">
+            <strong>${title}</strong><br />
+            <span>${meta}</span>
+          </button>
+        `,
+      )
+      .join("");
+  }
   const found = sections.find(([id]) => id === route) || sections[0];
-  $("section-title").textContent = found[1];
-  $("section-kicker").textContent = found[2];
+  if ($("section-title")) $("section-title").textContent = found[1];
+  if ($("section-kicker")) $("section-kicker").textContent = found[2];
 }
 
 function render() {
@@ -5668,6 +5676,94 @@ document.addEventListener("input", (event) => {
   }
 });
 
+function showAuthScreen() {
+  const authScreen = $("auth-screen");
+  const mainApp = $("main-app");
+  if (authScreen) authScreen.style.display = "";
+  if (mainApp) mainApp.style.display = "none";
+}
+
+function showMainApp() {
+  const authScreen = $("auth-screen");
+  const mainApp = $("main-app");
+  if (authScreen) authScreen.style.display = "none";
+  if (mainApp) mainApp.style.display = "";
+}
+
+function isAuthError(error) {
+  const message = String(error?.message || "");
+  return message.includes("401") || message.includes("403");
+}
+
+async function bootWithCurrentToken() {
+  showMainApp();
+  renderNav();
+  try {
+    await load();
+  } catch (error) {
+    if (isAuthError(error)) showAuthScreen();
+    throw error;
+  }
+}
+
+function initAuth() {
+  const authTokenInput = $("auth-token-input") || $("token");
+  const authSubmitBtn = $("auth-submit-btn") || $("save-token");
+  const initialToken = new URLSearchParams(location.search).get("token")
+    || sessionStorage.getItem("agent_lab_token")
+    || "";
+  if (authTokenInput) authTokenInput.value = initialToken;
+  if (initialToken) sessionStorage.setItem("agent_lab_token", initialToken);
+
+  authSubmitBtn?.addEventListener("click", async () => {
+    const inputToken = authTokenInput?.value.trim() || "";
+    if (!inputToken) {
+      if (authTokenInput) authTokenInput.style.borderColor = "var(--red)";
+      return;
+    }
+    try {
+      authSubmitBtn.textContent = "验证中...";
+      authSubmitBtn.disabled = true;
+      sessionStorage.setItem("agent_lab_token", inputToken);
+      await bootWithCurrentToken();
+    } catch (error) {
+      sessionStorage.removeItem("agent_lab_token");
+      if (authTokenInput) {
+        authTokenInput.value = "";
+        authTokenInput.style.borderColor = "var(--red)";
+      }
+      authSubmitBtn.textContent = "进入控制台";
+      authSubmitBtn.disabled = false;
+      showAuthScreen();
+      setFeedback(isAuthError(error) ? "Token 验证失败，请检查配置。" : `连接失败：${error.message}`, "error");
+    }
+  });
+
+  authTokenInput?.addEventListener("keypress", (event) => {
+    if (event.key === "Enter") authSubmitBtn?.click();
+  });
+
+  bootWithCurrentToken().catch(() => {});
+}
+
+document.addEventListener("DOMContentLoaded", () => {
+  $("refresh")?.addEventListener("click", load);
+  $("agent-switcher")?.addEventListener("click", () => {
+    route = "canvas";
+    render();
+  });
+  $("status-view-btn")?.addEventListener("click", () => {
+    route = "tasks";
+    render();
+  });
+  initAuth();
+});
+
+setInterval(() => {
+  if (state && globalState.currentAgent) updateStatusBar();
+}, 1000);
+
+/*
 $("refresh").addEventListener("click", load);
 $("save-token").addEventListener("click", () => {
   sessionStorage.setItem("agent_lab_token", $("token").value.trim());
@@ -5786,3 +5882,4 @@ setInterval(() => {
     updateStatusBar();
   }
 }, 1000);
+*/
