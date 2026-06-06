@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 from astrbot.core.agent.hooks import BaseAgentRunHooks
+from astrbot.core.message.message_event_result import MessageChain
 
 from .agent_runtime import AgentRuntime
 from .models import now_iso
@@ -25,11 +27,19 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         task_id: str,
         *,
         budget_max_tools: int = 0,
+        progress_mode: str = "agent_lab",
+        progress_every_tools: int = 3,
+        progress_min_interval_seconds: int = 45,
     ):
         self.storage = storage
         self.umo = umo
         self.task_id = task_id
         self.budget_max_tools = max(0, int(budget_max_tools or 0))
+        self.progress_mode = self._normalize_progress_mode(progress_mode)
+        self.progress_every_tools = max(1, int(progress_every_tools or 1))
+        self.progress_min_interval_seconds = max(0, int(progress_min_interval_seconds or 0))
+        self._tool_events = 0
+        self._last_notice_at = 0.0
         self.agent_runtime = AgentRuntime()
 
     def _load(self):
@@ -37,6 +47,56 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         if task and task.task_id == self.task_id:
             return task
         return None
+
+    @staticmethod
+    def _normalize_progress_mode(value: str) -> str:
+        mode = str(value or "").strip().lower()
+        aliases = {
+            "none": "silent",
+            "off": "silent",
+            "disable": "silent",
+            "disabled": "silent",
+            "plugin": "agent_lab",
+            "progress": "agent_lab",
+            "native": "astrbot",
+        }
+        mode = aliases.get(mode, mode)
+        if mode not in {"astrbot", "agent_lab", "silent"}:
+            return "agent_lab"
+        return mode
+
+    async def _send_progress_notice(self, run_context: Any, task: Any, tool_name: str) -> None:
+        if self.progress_mode == "silent":
+            return
+        self._tool_events += 1
+        event = getattr(getattr(run_context, "context", None), "event", None)
+        send = getattr(event, "send", None)
+        if not callable(send):
+            return
+        if self.progress_mode == "astrbot":
+            message = f"调用工具: {tool_name}"
+            chain_type = "tool_call"
+        else:
+            now = time.monotonic()
+            enough_tools = self._tool_events == 1 or self._tool_events % self.progress_every_tools == 0
+            enough_time = (
+                not self._last_notice_at
+                or self.progress_min_interval_seconds <= 0
+                or now - self._last_notice_at >= self.progress_min_interval_seconds
+            )
+            if not (enough_tools and enough_time):
+                return
+            self._last_notice_at = now
+            message = (
+                f"Agent Mode progress: tool #{self._tool_events} `{tool_name}` is running. "
+                f"Status={task.status}, node={task.workflow_current_node_id or '-'}, "
+                f"progress={_short(task.last_confirmed_progress or task.current_summary or '-', 180)}"
+            )
+            chain_type = "agent_lab_progress"
+        try:
+            await send(MessageChain(type=chain_type).message(message))
+        except Exception:
+            task.add_log("progress_notice_skipped", "failed to send progress notice")
 
     async def on_agent_begin(self, run_context) -> None:
         task = self._load()
@@ -79,6 +139,11 @@ class AgentLabRunHooks(BaseAgentRunHooks):
         task.add_log(
             "tool_start",
             f"{getattr(tool, 'name', 'unknown')} args={_short(tool_args, 800)}",
+        )
+        await self._send_progress_notice(
+            run_context,
+            task,
+            str(getattr(tool, "name", "unknown") or "unknown"),
         )
         self.agent_runtime.record_decision(
             task,

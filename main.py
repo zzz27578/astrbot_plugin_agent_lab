@@ -4487,6 +4487,21 @@ class AgentLabPlugin(Star):
             tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120)),
             llm_compress_keep_recent=int(_cfg(self.config, "llm_compress_keep_recent", 4)),
             truncate_turns=int(_cfg(self.config, "truncate_turns", 2)),
+            agent_hooks=AgentLabRunHooks(
+                self.storage,
+                task.umo,
+                task.task_id,
+                budget_max_tools=max(1, min(int(_cfg(self.config, "parallel_worker_max_steps", 6) or 6), 12)),
+                progress_mode=str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")),
+                progress_every_tools=int(_cfg(self.config, "agent_mode_progress_every_tools", 3)),
+                progress_min_interval_seconds=int(
+                    _cfg(self.config, "agent_mode_progress_min_interval_seconds", 45)
+                ),
+            ),
+            show_tool_use=(
+                str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")).strip().lower()
+                in {"astrbot", "native"}
+            ),
         )
         text = (getattr(resp, "completion_text", "") or "").strip()
         task.add_token_usage(getattr(resp, "usage", None))

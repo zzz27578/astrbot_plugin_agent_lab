@@ -146,6 +146,15 @@ class AgentRuntimeRunner:
                     task.umo,
                     task.task_id,
                     budget_max_tools=remaining_tool_steps,
+                    progress_mode=str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")),
+                    progress_every_tools=int(_cfg(self.config, "agent_mode_progress_every_tools", 3)),
+                    progress_min_interval_seconds=int(
+                        _cfg(self.config, "agent_mode_progress_min_interval_seconds", 45)
+                    ),
+                ),
+                show_tool_use=(
+                    str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")).strip().lower()
+                    in {"astrbot", "native"}
                 ),
             )
             text = (getattr(resp, "completion_text", "") or "").strip()
@@ -241,5 +250,4 @@ class AgentRuntimeRunner:
                 self.agent_runtime.update_resume(latest, reason=f"lease_released:{reason}")
                 self.storage.save_task(latest)
             self._running_ticks.discard(tick_key)
-
 

@@ -65,6 +65,25 @@
     "default": 120,
     "hint": "单个工具调用的最大等待时间。"
   },
+  "agent_mode_progress_notice_mode": {
+    "type": "string",
+    "description": "Agent Mode 运行提示模式",
+    "default": "agent_lab",
+    "options": ["agent_lab", "astrbot", "silent"],
+    "hint": "agent_lab=插件按节流策略发送任务进度；astrbot=按 AstrBot 原生工具调用样式逐次提示；silent=只记录任务状态，不主动发送进度/工具提示。"
+  },
+  "agent_mode_progress_every_tools": {
+    "type": "int",
+    "description": "插件进度提示工具间隔",
+    "default": 3,
+    "hint": "仅 agent_lab 模式生效；每累计多少次工具调用允许发送一次插件进度提示，首个工具调用总会提示。"
+  },
+  "agent_mode_progress_min_interval_seconds": {
+    "type": "int",
+    "description": "插件进度提示最小秒间隔",
+    "default": 45,
+    "hint": "仅 agent_lab 模式生效；距离上次进度提示不足该秒数时跳过，填 0 表示只按工具次数节流。"
+  },
   "llm_compress_keep_recent": {
     "type": "int",
     "description": "Agent loop 压缩保留最近消息数",
