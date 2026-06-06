@@ -568,7 +568,7 @@ const sections = [
   ["workflow", "工作流画布", "拼流程"],
   ["memory", "任务记忆", "查记忆"],
   ["tasks", "任务控制台", "看进度"],
-  ["plugins", "插件与集成", "管工具"],
+  ["integrations", "插件与集成", "管工具"],
 ];
 
 // 全局状态对象
@@ -584,7 +584,7 @@ const globalState = {
 
 // 更新全局状态栏
 function updateStatusBar() {
-  const agentName = globalState.currentAgent?.name || '未选择';
+  const agentName = globalState.currentAgent ? agentDisplayName(globalState.currentAgent) : "未选择";
   const statusDot = $('status-dot');
   const statusText = $('status-text');
   const statusTask = $('status-task');
@@ -593,9 +593,11 @@ function updateStatusBar() {
   const pauseBtn = $('status-pause-btn');
   const viewBtn = $('status-view-btn');
 
-  $('current-agent-name').textContent = agentName;
+  const currentAgentName = $('current-agent-name');
+  if (currentAgentName) currentAgentName.textContent = agentName;
 
   // 更新状态指示
+  if (!statusDot || !statusText || !tokenCurrent || !tokenFill) return;
   statusDot.className = `status-dot ${globalState.status}`;
   const statusLabels = { idle: '空闲', running: '执行中', waiting: '等待审批', error: '出错' };
   statusText.textContent = statusLabels[globalState.status] || '未知';
@@ -603,7 +605,7 @@ function updateStatusBar() {
   // 更新任务信息
   if (globalState.activeTask) {
     statusTask.style.display = '';
-    $('current-task-id').textContent = globalState.activeTask.task_id || '-';
+    $('current-task-id').textContent = shortId(globalState.activeTask.task_id || '-');
     $('task-runtime').textContent = formatRuntime(globalState.taskRuntime);
     pauseBtn.style.display = '';
     viewBtn.style.display = '';
@@ -616,7 +618,8 @@ function updateStatusBar() {
   // 更新 Token 进度
   const tokenPercent = Math.min(100, (globalState.tokenCurrent / globalState.tokenLimit) * 100);
   tokenCurrent.textContent = formatTokens(globalState.tokenCurrent);
-  $('token-limit').textContent = formatTokens(globalState.tokenLimit);
+  const tokenLimit = $('token-limit');
+  if (tokenLimit) tokenLimit.textContent = formatTokens(globalState.tokenLimit);
   tokenFill.style.width = `${tokenPercent}%`;
   tokenFill.className = 'token-progress-fill';
   if (tokenPercent > 80) tokenFill.classList.add('danger');
@@ -624,16 +627,55 @@ function updateStatusBar() {
 }
 
 function formatRuntime(seconds) {
+  seconds = Math.max(0, Math.floor(Number(seconds || 0)));
   if (seconds < 60) return `${seconds}s`;
-  const m = Math.floor(seconds / 60);
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
   const s = seconds % 60;
+  if (h) return `${h}h ${m}m`;
   return `${m}m ${s}s`;
 }
 
 function formatTokens(num) {
+  num = Number(num || 0);
   if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
   if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
   return String(num);
+}
+
+function shortId(value, length = 10) {
+  const text = String(value || "-");
+  if (text.length <= length + 3) return text;
+  return `${text.slice(0, length)}...`;
+}
+
+function parseTime(value) {
+  const stamp = Date.parse(value || "");
+  return Number.isFinite(stamp) ? stamp : 0;
+}
+
+function activeTaskRuntimeSeconds(task) {
+  if (!task) return 0;
+  const started = parseTime(task.created_at) || parseTime(task.updated_at);
+  const finished = parseTime(task.finished_at);
+  if (!started) return 0;
+  return Math.max(0, Math.floor(((finished || Date.now()) - started) / 1000));
+}
+
+function taskTokenTotal(task) {
+  const usage = task?.token_usage;
+  if (typeof usage === "number") return usage;
+  if (!usage || typeof usage !== "object") return 0;
+  return Number(usage.total || 0)
+    || Number(usage.input_other || 0) + Number(usage.input_cached || 0) + Number(usage.output || 0);
+}
+
+function totalTokenUsage(tasks = []) {
+  return tasks.reduce((sum, task) => sum + taskTokenTotal(task), 0);
+}
+
+function pendingApprovalCount(task) {
+  return (task?.approvals || []).filter((item) => item.status === "pending").length;
 }
 
 // 启动运行时计时器
@@ -2027,7 +2069,7 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function load() {
+async function load(options = {}) {
   try {
     state = await api("/api/state");
     const agents = state.agents || [];
@@ -2044,20 +2086,16 @@ async function load() {
 
     // 更新全局状态
     globalState.currentAgent = currentAgent;
-    const activeTasks = (state.tasks || []).filter(t => !t.finished_at);
+    const activeTasks = (state.tasks || []).filter((task) => !task.finished_at && !["completed", "cancelled"].includes(task.status));
     globalState.activeTask = activeTasks[0] || null;
-    globalState.status = globalState.activeTask ? 'running' : 'idle';
-
-    // 计算 Token 消耗
-    let totalTokens = 0;
-    (state.tasks || []).forEach(task => {
-      if (task.token_usage) totalTokens += task.token_usage;
-    });
-    globalState.tokenCurrent = totalTokens;
+    globalState.taskRuntime = activeTaskRuntimeSeconds(globalState.activeTask);
+    if (activeTasks.some((task) => pendingApprovalCount(task))) globalState.status = "waiting";
+    else globalState.status = globalState.activeTask ? "running" : "idle";
+    globalState.tokenCurrent = Number(state.metrics?.token_usage || 0) || totalTokenUsage([...(state.tasks || []), ...(state.archives || [])]);
 
     updateStatusBar();
 
-    setFeedback("已连接独立控制台。");
+    if (!options.silent) setFeedback("已连接独立控制台。");
     render();
   } catch (error) {
     setFeedback(`连接失败：${error.message}`, "error");
@@ -2099,6 +2137,7 @@ function render() {
   if (route === "tasks") renderTasks();
   if (route === "monitor") renderMonitor();
   if (route === "integrations") renderIntegrations();
+  if (route === "settings") renderSettingsPage();
   restoreWorkflowViewport(viewport);
   if (route === "workflow") refreshWorkflowCanvasDom();
 }
@@ -2108,9 +2147,11 @@ function syncLiveRefresh() {
     clearInterval(liveTimer);
     liveTimer = null;
   }
-  if (route === "monitor") {
+  if (["dashboard", "tasks", "monitor"].includes(route)) {
     liveTimer = setInterval(() => {
-      if (route === "monitor") load();
+      const editing = document.activeElement?.matches?.("input, textarea, select");
+      if (route === "tasks" && editing) return;
+      if (["dashboard", "tasks", "monitor"].includes(route)) load({ silent: true });
     }, 5000);
   }
 }
@@ -2133,39 +2174,357 @@ function badge(text, tone = "") {
   return `<span class="badge ${tone}">${esc(text)}</span>`;
 }
 
+function statusTone(status) {
+  if (status === "running") return "ok";
+  if (status === "blocked" || status === "cancelled") return "bad";
+  if (status === "paused" || status === "waiting") return "warn";
+  if (status === "completed") return "ok";
+  return "";
+}
+
+function healthTone(health = {}) {
+  const stateValue = health.state || "";
+  if (stateValue === "online") return "ok";
+  if (["stale", "blocked"].includes(stateValue)) return "bad";
+  if (["idle", "off"].includes(stateValue)) return "warn";
+  return "";
+}
+
+function selectedAgentTasks() {
+  const id = currentAgent?.agent_id || selectedAgentId;
+  return (state.tasks || []).filter((task) => !id || task.agent_id === id);
+}
+
+function activeTasks() {
+  return (state.tasks || []).filter((task) => !task.finished_at && !["completed", "cancelled"].includes(task.status));
+}
+
+function taskActivityScore(task) {
+  return (task.progress_log?.length || 0) + (task.workflow_events?.length || 0) + (task.state_snapshots?.length || 0);
+}
+
+function runtimeDistribution() {
+  const tasks = [...(state.tasks || []), ...(state.archives || [])];
+  const buckets = [
+    ["<5m", 0],
+    ["5-30m", 0],
+    ["30m-2h", 0],
+    [">2h", 0],
+  ];
+  tasks.forEach((task) => {
+    const seconds = activeTaskRuntimeSeconds(task);
+    if (seconds < 300) buckets[0][1] += 1;
+    else if (seconds < 1800) buckets[1][1] += 1;
+    else if (seconds < 7200) buckets[2][1] += 1;
+    else buckets[3][1] += 1;
+  });
+  return buckets;
+}
+
+function activityBars(task = null, count = 18) {
+  const rows = task
+    ? [...(task.progress_log || []), ...(task.state_snapshots || []), ...(task.workflow_events || [])]
+    : [...(state.tasks || []), ...(state.archives || [])].flatMap((item) => [
+        ...(item.progress_log || []),
+        ...(item.state_snapshots || []),
+        ...(item.workflow_events || []),
+      ]);
+  const recent = rows.slice(-count);
+  if (!recent.length) {
+    return Array.from({ length: count }, (_, index) => `<span style="height:${10 + (index % 4) * 5}px"></span>`).join("");
+  }
+  return Array.from({ length: count }, (_, index) => {
+    const item = recent[index - (count - recent.length)];
+    const base = item ? 18 + ((index * 13) % 42) : 8;
+    const bad = item && ["blocked", "error"].includes(String(item.status || item.kind || "").toLowerCase());
+    return `<span class="${bad ? "bad" : ""}" style="height:${base}px" title="${esc(item?.time || "")}"></span>`;
+  }).join("");
+}
+
+function runOverview() {
+  const tasks = activeTasks();
+  const task = globalState.activeTask || tasks[0] || null;
+  const health = task?.heartbeat_health || {};
+  const approvals = tasks.reduce((sum, item) => sum + pendingApprovalCount(item), 0);
+  const mode = currentAgent?.trigger_mode || "confirm";
+  const liveClass = task ? "live" : "";
+  return `
+    <section class="run-overview panel ${liveClass}">
+      <div class="run-overview-main">
+        <div class="live-ring ${task ? "running" : ""}"><span></span></div>
+        <div>
+          <p class="card-kicker">当前状态</p>
+          <h2>${task ? esc(task.root_goal || task.task_id) : "当前没有运行中的任务"}</h2>
+          <div class="module-meta">
+            ${badge(agentDisplayName(currentAgent), "ok")}
+            ${badge(triggerLabel(mode))}
+            ${badge(task ? taskStatusLabel(task.status) : "空闲", task ? statusTone(task.status) : "")}
+            ${badge(healthLabel(health), healthTone(health))}
+          </div>
+          <div class="row-meta">
+            ${task ? `${esc(shortId(task.task_id, 14))} · 已运行 ${formatRuntime(activeTaskRuntimeSeconds(task))} · 下一步：${esc(task.next_step || "等待下一轮推进")}` : "普通会话保持原状；进入任务后这里会显示运行、心跳、审批和消耗。"}
+          </div>
+        </div>
+      </div>
+      <div class="run-overview-side">
+        <div class="activity-bars">${activityBars(task)}</div>
+        <div class="mini-stats">
+          <span>活跃 ${tasks.length}</span>
+          <span>审批 ${approvals}</span>
+          <span>Token ${formatTokens(totalTokenUsage([...(state.tasks || []), ...(state.archives || [])]))}</span>
+          <span>日志 ${task?.progress_log?.length || 0}</span>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function systemStatusPanel() {
+  const m = state.metrics || {};
+  const webui = state.webui || {};
+  const pluginCount = state.plugins?.length || 0;
+  const toolCount = state.tools?.length || 0;
+  const apiCount = state.custom_apis?.length || 0;
+  return `
+    <section class="panel system-status-panel">
+      <div class="panel-head"><div><p class="card-kicker">系统状态</p><h2>心跳、存储、插件</h2></div></div>
+      <div class="status-grid">
+        ${statusTile("心跳正常", m.heartbeat_online || 0, "ok", `${m.heartbeat_stale || 0} 异常 / ${m.heartbeat_offline || 0} 未开启`)}
+        ${statusTile("记忆条目", state.memories?.length || 0, "", `${formatBytes(memoryEstimatedBytes())} 估算`)}
+        ${statusTile("插件/工具", `${pluginCount}/${toolCount}`, "ok", `${apiCount} 个自定义 API`)}
+        ${statusTile("WebUI", webui.standalone ? "在线" : "未启动", webui.standalone ? "ok" : "warn", webui.auth ? "Token 已启用" : "未启用 Token")}
+      </div>
+    </section>
+  `;
+}
+
+function statusTile(label, value, tone = "", note = "") {
+  return `
+    <div class="status-tile ${tone}">
+      <span>${esc(label)}</span>
+      <strong>${esc(value)}</strong>
+      <small>${esc(note)}</small>
+    </div>
+  `;
+}
+
+function memoryEstimatedBytes() {
+  return (state.memories || []).reduce((sum, item) => sum + new Blob([JSON.stringify(item)]).size, 0);
+}
+
+function formatBytes(bytes) {
+  bytes = Number(bytes || 0);
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+function tagCloud(limit = 24) {
+  const counts = new Map();
+  (state.memories || []).forEach((item) => {
+    (item.tags || []).forEach((tag) => {
+      const key = String(tag || "").trim();
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    });
+  });
+  const tags = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, limit);
+  if (!tags.length) return `<div class="empty">暂无标签。</div>`;
+  return tags.map(([tag, count]) => `<span class="memory-tag-chip">${esc(tag)} <b>${count}</b></span>`).join("");
+}
+
+function memoryStats() {
+  const rows = state.memories || [];
+  const countBy = (status) => rows.filter((item) => item.status === status).length;
+  return `
+    <div class="memory-stats">
+      ${memoryStatCard("全部记忆", rows.length, formatBytes(memoryEstimatedBytes()))}
+      ${memoryStatCard("候选", countBy("candidate"), "等待确认")}
+      ${memoryStatCard("已接受", countBy("accepted"), "可复用上下文")}
+      ${memoryStatCard("已拒绝", countBy("rejected"), "不会主动带入")}
+    </div>
+  `;
+}
+
+function memoryStatCard(label, value, note) {
+  return `
+    <div class="memory-stat-card">
+      <div class="stat-number">${esc(value)}</div>
+      <div class="stat-label">${esc(label)}</div>
+      <div class="stat-size">${esc(note)}</div>
+    </div>
+  `;
+}
+
+function taskProgressPercent(task) {
+  if (!task) return 0;
+  const signals = [
+    task.current_summary,
+    task.last_confirmed_progress,
+    task.next_step,
+    task.last_observation,
+    ...(task.workflow_path || []),
+    ...(task.state_snapshots || []),
+  ].filter(Boolean).length;
+  if (task.status === "completed") return 100;
+  if (task.status === "cancelled") return 100;
+  return clamp(Math.round(Math.min(95, signals * 8 + (task.progress_log?.length || 0) * 2)), 4, 95);
+}
+
+function taskConsoleRows(tasks, archive = false) {
+  if (!tasks.length) return `<div class="empty">${archive ? "暂无归档任务。" : "暂无活跃任务。"}</div>`;
+  return tasks.map((task) => {
+    const progress = taskProgressPercent(task);
+    const selected = task.task_id === selectedTaskId;
+    return `
+      <button class="task-card ${selected ? "active" : ""}" data-action="select-task" data-id="${esc(task.task_id)}" type="button">
+        <div class="row-title">
+          <span>${esc(task.root_goal || task.task_id)}</span>
+          ${badge(taskStatusLabel(task.status || (archive ? "completed" : "running")), statusTone(task.status))}
+        </div>
+        <div class="row-meta">${esc(task.agent_name || task.agent_id || "-")} · ${esc(shortId(task.task_id, 12))}</div>
+        <div class="task-progress"><div class="task-progress-fill" style="width:${progress}%"></div></div>
+      </button>
+    `;
+  }).join("");
+}
+
+function liveConsolePanel(task, canControl = Boolean(task)) {
+  const health = task?.heartbeat_health || {};
+  const heartbeatPoints = task?.state_snapshots?.slice(-22) || [];
+  return `
+    <section class="panel live-console-panel">
+      <div class="panel-head">
+        <div><p class="card-kicker">实时感知</p><h2>${task ? "Agent 正在留下痕迹" : "等待任务启动"}</h2></div>
+        <div class="inline-actions">
+          <button class="button secondary" data-action="restart-heartbeat" ${canControl ? "" : "disabled"} type="button">重启心跳</button>
+          <button class="button secondary" data-action="tick-task" ${canControl ? "" : "disabled"} type="button">Tick</button>
+        </div>
+      </div>
+      <div class="live-strip">
+        <div class="live-ring ${task ? "running" : ""}"><span></span></div>
+        <div>
+          <strong>${esc(task?.next_step || task?.last_confirmed_progress || "暂无下一步")}</strong>
+          <p>${esc(task ? `${healthLabel(health)} · ${ageText(health.seconds_since_pulse)} · ${taskActivityScore(task)} 个活动信号` : "启动任务后这里会滚动显示日志、心跳和节点事件。")}</p>
+        </div>
+      </div>
+      <div class="heartbeat-chart">${heartbeatPoints.map((point, index) => {
+        const bad = point.status === "blocked" || ["stale", "blocked"].includes(health.state);
+        return `<span title="${esc(point.time || "")}" class="${bad ? "bad" : ""}" style="height:${18 + (index % 7) * 7}px"></span>`;
+      }).join("") || "<em>暂无心跳曲线</em>"}</div>
+      <div class="console-log-panel">
+        <div class="log-header"><strong>Live Log</strong><span>5s refresh</span></div>
+        <div class="log-content">${logRows(task)}</div>
+      </div>
+    </section>
+  `;
+}
+
+function settingsExportPayload() {
+  return {
+    agent: currentAgent || {},
+    workflow: workflowData(),
+    memory_count: state.memories?.length || 0,
+    integrations: {
+      custom_apis: state.custom_apis?.length || 0,
+      credentials: state.credentials?.length || 0,
+      modules: (state.integrations || state.modules || []).length,
+    },
+  };
+}
+
+function agentPolicyOverview() {
+  const agent = ensureAgent(currentAgent || {});
+  const cards = [
+    ["触发配置", triggerLabel(agent.trigger_mode || "confirm"), `入口：${entryChannelLabel(agent.entry_channel)} / 确认：${agent.entry_policy.require_confirmation === false ? "关闭" : "开启"}`],
+    ["隔离策略", isolationModeLabel(agent.isolation_policy.mode || "strict"), `工具：${toolModeLabel(agent.isolation_policy.tool_mode || "whitelist")} / 退出恢复：${agent.isolation_policy.restore_on_exit === false ? "否" : "是"}`],
+    ["记忆策略", memoryModeLabel(agent.memory_policy.mode || "task_filtered"), `摘要 ${agent.memory_policy.entry_summary_turns || 24} 轮 / 长期记忆：${agent.memory_policy.allow_long_memory === false ? "关" : "开"}`],
+    ["审批策略", approvalModeLabel(agent.approval_policy.mode || "work"), `必审 ${agent.approval_policy.require_approval?.length || 0} 项 / 预授权 ${agent.approval_policy.preapproved_scopes?.length || 0} 条`],
+    ["心跳策略", heartbeatModeLabel(agent.heartbeat_policy.mode || "manual"), `${agent.heartbeat_policy.allowed === false ? "禁止" : "允许"} / ${agent.heartbeat_policy.cron_expression || "*/5 * * * *"}`],
+    ["提示词", agent.system_prompt ? "已配置" : "默认协议", `任务协议 ${String(agent.task_prompt || "").length} 字符`],
+  ];
+  return `
+    <section class="policy-overview">
+      ${cards.map(([title, value, note]) => `
+        <div class="policy-card">
+          <span>${esc(title)}</span>
+          <strong>${esc(value)}</strong>
+          <small>${esc(note)}</small>
+        </div>
+      `).join("")}
+    </section>
+  `;
+}
+
+function renderSettingsPage() {
+  currentAgent = ensureAgent(currentAgent || {});
+  const webui = state.webui || {};
+  $("view").innerHTML = `
+    <section class="settings-page">
+      <div class="panel-head">
+        <div><p class="card-kicker">设置</p><h2>插件配置、模块状态、导入导出</h2></div>
+        <button class="button" data-action="save-agent" type="button">保存当前 Agent</button>
+      </div>
+      <section class="grid three">
+        <div class="panel">
+          <div class="panel-head"><div><p class="card-kicker">插件配置</p><h3>WebUI</h3></div></div>
+          <div class="state-fields single">
+            ${stateField("控制台地址", webui.url || "-")}
+            ${stateField("访问 Token", webui.auth ? "已启用" : "未启用")}
+            ${stateField("运行状态", webui.standalone ? "独立控制台在线" : "独立控制台未启动")}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><p class="card-kicker">模块配置</p><h3>运行能力</h3></div></div>
+          <div class="state-fields single">
+            ${stateField("工具目录", `${state.tools?.length || 0} 个工具`)}
+            ${stateField("多视角/验证", `${(state.integrations || state.modules || []).length} 个蓝图模块`)}
+            ${stateField("沙箱/外部 API", `${state.custom_apis?.length || 0} API / ${state.credentials?.length || 0} 凭证`)}
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><div><p class="card-kicker">导入/导出</p><h3>当前草稿</h3></div></div>
+          <textarea rows="10" readonly>${esc(JSON.stringify(settingsExportPayload(), null, 2))}</textarea>
+        </div>
+      </section>
+    </section>
+  `;
+}
+
 function renderDashboard() {
   const agents = state.agents || [];
   const tasks = state.tasks || [];
   const archives = state.archives || [];
   const m = state.metrics || {};
+  const selectedStats = currentAgent ? agentStats(currentAgent) : null;
+  const runtimeBuckets = runtimeDistribution();
 
   $("view").innerHTML = `
     <section class="dashboard-page">
-      <!-- 顶部统计卡片 -->
+      ${runOverview()}
       <div class="stats-cards">
         <div class="stat-card">
-          <div class="stat-icon">🤖</div>
+          <div class="stat-icon">${iconImg("book", "Agent")}</div>
           <div class="stat-content">
             <div class="stat-value animate">${agents.length}</div>
             <div class="stat-label">Agent 配置</div>
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon">⏳</div>
+          <div class="stat-icon">${iconImg("gridAdd", "任务")}</div>
           <div class="stat-content">
             <div class="stat-value animate">${tasks.length}</div>
             <div class="stat-label">活跃任务</div>
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon">✅</div>
+          <div class="stat-icon">${iconImg("select", "归档")}</div>
           <div class="stat-content">
             <div class="stat-value animate">${archives.length}</div>
             <div class="stat-label">已完成任务</div>
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon">💰</div>
+          <div class="stat-icon">${iconImg("memory", "Token")}</div>
           <div class="stat-content">
             <div class="stat-value animate">${formatTokens(m.token_usage || 0)}</div>
             <div class="stat-label">累计 Token</div>
@@ -2173,63 +2532,69 @@ function renderDashboard() {
         </div>
       </div>
 
-      <!-- Agent 健康卡片 -->
-      <div class="panel">
-        <div class="panel-head">
-          <div><h2>Agent 配置</h2></div>
+      <section class="dashboard-main-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">Agent 配置</p><h2>健康度、触发、消耗</h2></div>
+            <button class="button secondary" data-route="canvas" type="button">配置 Agent</button>
+          </div>
+          <div class="agent-health-grid">
+            ${agents.map(agent => {
+              const selected = agent.agent_id === selectedAgentId;
+              const isDefault = agent.agent_id === state.default_agent_id;
+              const stats = agentStats(agent);
+              return `
+                <button class="agent-health-card ${selected ? 'selected' : ''}" data-action="select-agent" data-id="${esc(agent.agent_id)}" type="button">
+                  <div class="agent-health-header">
+                    <strong>${esc(agentDisplayName(agent))}</strong>
+                    <span class="row-badges">
+                      ${isDefault ? badge("默认", "ok") : ""}
+                      ${badge(stats.health_label, stats.health_tone)}
+                    </span>
+                  </div>
+                  <div class="agent-health-stats">
+                    <div class="health-stat"><span class="health-stat-value">${stats.triggers}</span><span class="health-stat-label">触发</span></div>
+                    <div class="health-stat"><span class="health-stat-value">${formatTokens(stats.tokens)}</span><span class="health-stat-label">Token</span></div>
+                    <div class="health-stat"><span class="health-stat-value">${stats.approvals}</span><span class="health-stat-label">审批</span></div>
+                  </div>
+                </button>
+              `;
+            }).join('') || `<div class="empty">还没有 Agent 配置。</div>`}
+          </div>
         </div>
-        <div class="agent-health-grid">
-          ${agents.map(agent => {
-            const selected = agent.agent_id === selectedAgentId;
-            const isDefault = agent.agent_id === state.default_agent_id;
-            const stats = agentStats(agent);
-            return `
-              <div class="agent-health-card ${selected ? 'selected' : ''}" style="cursor:pointer;" data-action="select-agent" data-id="${esc(agent.agent_id)}">
-                <div class="agent-health-header">
-                  <strong>${esc(agentDisplayName(agent))}</strong>
-                  ${isDefault ? '<span class="badge">默认</span>' : ''}
-                  <span class="badge ${stats.health_tone}">${stats.health_label}</span>
-                </div>
-                <div class="agent-health-stats">
-                  <div class="health-stat">
-                    <span class="health-stat-value">${stats.triggers}</span>
-                    <span class="health-stat-label">触发次数</span>
-                  </div>
-                  <div class="health-stat">
-                    <span class="health-stat-value">${formatTokens(stats.tokens)}</span>
-                    <span class="health-stat-label">Token 用量</span>
-                  </div>
-                  <div class="health-stat">
-                    <span class="health-stat-value">${stats.approvals}</span>
-                    <span class="health-stat-label">待审批</span>
-                  </div>
-                </div>
+
+        <div class="panel">
+          <div class="panel-head"><div><p class="card-kicker">运行时间分布</p><h2>${selectedStats ? esc(agentDisplayName(currentAgent)) : "全局"}</h2></div></div>
+          <div class="runtime-buckets">
+            ${runtimeBuckets.map(([label, count]) => `
+              <div class="runtime-bucket">
+                <span>${esc(label)}</span>
+                <strong>${count}</strong>
+                <div><i style="width:${Math.min(100, Math.max(8, count * 18))}%"></i></div>
               </div>
-            `;
-          }).join('')}
+            `).join("")}
+          </div>
+          <div class="activity-bars dashboard-activity">${activityBars(null, 24)}</div>
         </div>
-      </div>
 
-      <!-- 最近任务 -->
-      <div class="panel">
-        <div class="panel-head">
-          <div><h2>最近任务</h2></div>
-          <button class="button secondary" data-route="tasks">查看全部</button>
+        <div class="panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">活跃任务</p><h2>正在运行</h2></div>
+            <button class="button secondary" data-route="tasks" type="button">查看全部</button>
+          </div>
+          <div class="list">${tasks.length === 0 ? '<div class="empty">暂无活跃任务</div>' : taskRows(tasks.slice(0, 6))}</div>
         </div>
-        <div class="list">
-          ${tasks.length === 0 ? '<div class="empty">暂无活跃任务</div>' : taskRows(tasks.slice(0, 5))}
-        </div>
-      </div>
 
-      <!-- 最近归档 -->
-      <div class="panel">
+        ${systemStatusPanel()}
+      </section>
+
+      <section class="panel">
         <div class="panel-head">
-          <div><h2>最近归档</h2></div>
+          <div><p class="card-kicker">最近归档</p><h2>已结束任务</h2></div>
+          <button class="button secondary" data-route="memory" type="button">任务记忆</button>
         </div>
-        <div class="list">
-          ${archives.length === 0 ? '<div class="empty">暂无归档任务</div>' : taskRows(archives.slice(0, 8), true)}
-        </div>
-      </div>
+        <div class="list">${archives.length === 0 ? '<div class="empty">暂无归档任务</div>' : taskRows(archives.slice(0, 8), true)}</div>
+      </section>
     </section>
   `;
 }
@@ -2352,6 +2717,7 @@ function renderCanvas() {
           <button class="button" data-action="save-agent" type="button">保存配置</button>
         </div>
       </div>
+      ${agentPolicyOverview()}
       <div class="choice-grid two-choice">
         ${["entry", "global"].map((scope) => `
           <button class="choice-card ${currentAgent.application_scope === scope ? "active" : ""}" data-action="set-agent-scope" data-id="${scope}" type="button">
@@ -2554,17 +2920,21 @@ function renderMemoryPage() {
   $("view").innerHTML = `
     <section class="memory-page">
       <div class="panel-head memory-page-head">
-        <div><p class="card-kicker">完成记录</p><h2>看哪些任务做过、哪些记录要保留</h2></div>
+        <div><p class="card-kicker">任务记忆</p><h2>看哪些任务做过、哪些记录要保留</h2></div>
         <div class="inline-actions">
           <button class="button secondary" data-route="tasks" type="button">任务列表</button>
           <button class="button secondary" data-route="workflow" type="button">工作流画布</button>
         </div>
       </div>
-      <div class="tabs compact-tabs">
-        ${["all", "candidate", "accepted", "rejected"].map((item) => `
-          <button class="${memoryFilter === item ? "active" : ""}" data-action="memory-filter" data-id="${item}" type="button">${memoryFilterLabel(item)}</button>
-        `).join("")}
-      </div>
+      ${memoryStats()}
+      <section class="panel memory-toolbar">
+        <div class="memory-filters">
+          ${["all", "candidate", "accepted", "rejected"].map((item) => `
+            <button class="filter-btn ${memoryFilter === item ? "active" : ""}" data-action="memory-filter" data-id="${item}" type="button">${memoryFilterLabel(item)}</button>
+          `).join("")}
+        </div>
+        <div class="tag-cloud">${tagCloud()}</div>
+      </section>
       <section class="memory-layout">
         <div class="panel">
           <div class="panel-head"><div><p class="card-kicker">记录</p><h3>已保存的任务信息</h3></div></div>
@@ -3583,58 +3953,71 @@ function renderTasks() {
   currentAgent = ensureAgent(currentAgent || {});
   const task = selectedTask();
   const runnableTask = activeTask();
+  const liveTask = runnableTask || (state.tasks || [])[0] || null;
+  const activeRows = state.tasks || [];
+  const archivedRows = state.archives || [];
   $("view").innerHTML = `
-    <section class="grid two">
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">入口</p><h2>进入任务模式</h2></div></div>
-        <div class="form-grid">
-          <label>会话 UMO<input id="umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
-          <label>风险级别<select id="task-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
-          <label class="span-2">任务目标<textarea id="goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
-          <label class="span-2">完成条件<input id="completion" value="${esc((currentAgent.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
-          <label class="span-2">入口补充<textarea id="brief" rows="3"></textarea></label>
-          <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
+    <section class="console-page">
+      <aside class="console-sidebar">
+        <div class="console-tabs">
+          <button class="tab active" type="button">活跃 ${activeRows.length}</button>
+          <button class="tab" type="button">归档 ${archivedRows.length}</button>
         </div>
-        <div class="button-row"><button class="button" data-action="start-task" type="button">进入任务模式</button></div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">当前</p><h2>当前任务</h2></div></div>
-        <div class="list">${taskRows(state.tasks || [])}</div>
-      </div>
-    </section>
-    <section class="grid two">
-      <div class="panel">
-        <div class="panel-head">
-          <div><p class="card-kicker">状态</p><h2>任务记录</h2></div>
-          <div class="inline-actions">
-            <button class="button secondary" data-action="tick-task" ${runnableTask ? "" : "disabled"} type="button">推进一轮</button>
-            <button class="button secondary" data-action="toggle-heartbeat" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开启心跳"}</button>
-            <button class="button secondary" data-action="finish-task" ${runnableTask ? "" : "disabled"} type="button">完成归档</button>
-            <button class="button danger" data-action="cancel-task" ${runnableTask ? "" : "disabled"} type="button">取消归档</button>
+        <div class="task-list">
+          <p class="card-kicker">活跃任务</p>
+          ${taskConsoleRows(activeRows)}
+          <p class="card-kicker console-archive-title">归档任务</p>
+          ${taskConsoleRows(archivedRows.slice(0, 18), true)}
+        </div>
+      </aside>
+
+      <main class="console-main">
+        <section class="panel task-entry-panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">入口</p><h2>进入任务模式</h2></div>
+            <div class="inline-actions">
+              <button class="button secondary" data-route="workflow" type="button">画布</button>
+              <button class="button secondary" data-route="memory" type="button">记忆</button>
+            </div>
           </div>
-        </div>
-        ${task ? taskDetail(task) : `<div class="empty">请选择或创建任务。</div>`}
-      </div>
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">记忆候选</p><h2>出口回流</h2></div></div>
-        <label>新增/修剪长期记忆<textarea id="memory-text" rows="4" placeholder="只保存稳定事实、项目约定或后续任务需要复用的要点。"></textarea></label>
-        <div class="form-grid compact">
-          <label>记忆标签<input id="memory-tags" placeholder="任务, 插件, 续写" /></label>
-          <label>初始状态<select id="memory-status">${labeledOptions(["candidate", "accepted"], "candidate", memoryFilterLabel)}</select></label>
-          <label class="span-2">普通模式可读<select id="memory-expose">${labeledOptions(["true", "false"], "true", (value) => value === "true" ? "允许普通模式读取" : "仅任务模式读取")}</select></label>
-        </div>
-        <div class="button-row"><button class="button secondary" data-action="save-memory" type="button">保存记忆条目</button></div>
-        <div class="tabs compact-tabs">
-          ${["all", "candidate", "accepted", "rejected"].map((item) => `
-            <button class="${memoryFilter === item ? "active" : ""}" data-action="memory-filter" data-id="${item}" type="button">${memoryFilterLabel(item)}</button>
-          `).join("")}
-        </div>
-        <div class="list">${memoryRows()}</div>
-      </div>
-    </section>
-    <section class="panel">
-      <div class="panel-head"><div><p class="card-kicker">归档</p><h2>历史异步任务</h2></div></div>
-      <div class="list">${taskRows(state.archives || [], true)}</div>
+          <div class="form-grid task-entry-grid">
+            <label>会话 UMO<input id="umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
+            <label>风险级别<select id="task-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
+            <label class="span-2">任务目标<textarea id="goal" rows="2">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
+            <label class="span-2">完成条件<input id="completion" value="${esc((currentAgent.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
+            <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
+            <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
+          </div>
+          <div class="button-row"><button class="button" data-action="start-task" type="button">进入任务模式</button></div>
+        </section>
+
+        ${liveConsolePanel(liveTask, Boolean(runnableTask))}
+
+        <section class="panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">任务详情</p><h2>${task ? esc(task.root_goal || task.task_id) : "请选择或创建任务"}</h2></div>
+            <div class="inline-actions">
+              <button class="button secondary" data-action="tick-task" ${runnableTask ? "" : "disabled"} type="button">Tick</button>
+              <button class="button secondary" data-action="toggle-heartbeat" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开启心跳"}</button>
+              <button class="button secondary" data-action="finish-task" ${runnableTask ? "" : "disabled"} type="button">完成</button>
+              <button class="button danger" data-action="cancel-task" ${runnableTask ? "" : "disabled"} type="button">取消</button>
+            </div>
+          </div>
+          ${task ? taskDetail(task) : `<div class="empty">请选择或创建任务。</div>`}
+        </section>
+
+        <section class="panel">
+          <div class="panel-head"><div><p class="card-kicker">出口回流</p><h2>任务记忆候选</h2></div></div>
+          <label>新增/修剪长期记忆<textarea id="memory-text" rows="4" placeholder="只保存稳定事实、项目约定或后续任务需要复用的要点。"></textarea></label>
+          <div class="form-grid compact">
+            <label>记忆标签<input id="memory-tags" placeholder="任务, 插件, 续写" /></label>
+            <label>初始状态<select id="memory-status">${labeledOptions(["candidate", "accepted"], "candidate", memoryFilterLabel)}</select></label>
+            <label class="span-2">普通模式可读<select id="memory-expose">${labeledOptions(["true", "false"], "true", (value) => value === "true" ? "允许普通模式读取" : "仅任务模式读取")}</select></label>
+          </div>
+          <div class="button-row"><button class="button secondary" data-action="save-memory" type="button">保存记忆条目</button></div>
+          <div class="list">${memoryRows()}</div>
+        </section>
+      </main>
     </section>
   `;
 }
@@ -5756,130 +6139,17 @@ document.addEventListener("DOMContentLoaded", () => {
     route = "tasks";
     render();
   });
+  $("status-pause-btn")?.addEventListener("click", () => {
+    route = "tasks";
+    render();
+  });
+  $("settings-btn")?.addEventListener("click", () => {
+    route = "settings";
+    render();
+  });
   initAuth();
 });
 
 setInterval(() => {
   if (state && globalState.currentAgent) updateStatusBar();
 }, 1000);
-
-/*
-$("refresh").addEventListener("click", load);
-$("save-token").addEventListener("click", () => {
-  sessionStorage.setItem("agent_lab_token", $("token").value.trim());
-  load();
-});
-
-const initialToken = new URLSearchParams(location.search).get("token") || sessionStorage.getItem("agent_lab_token") || "";
-$("token").value = initialToken;
-if (initialToken) sessionStorage.setItem("agent_lab_token", initialToken);
-
-renderNav();
-load();
-// 在 app.js 文件末尾添加以下代码
-
-      setFeedback("外部方案蓝图已保存。");
-      await load();
-    }
-  } catch (error) {
-    setFeedback(error.message, "error");
-  }
-});
-
-// Token 验证初始化
-function initAuth() {
-  const authScreen = $('auth-screen');
-  const mainApp = $('main-app');
-  const authTokenInput = $('auth-token-input');
-  const authSubmitBtn = $('auth-submit-btn');
-
-  const savedToken = sessionStorage.getItem('agent_lab_token');
-
-  if (savedToken) {
-    // 已有 Token，直接进入主应用
-    authScreen.style.display = 'none';
-    mainApp.style.display = '';
-    load();
-  } else {
-    // 显示验证页面
-    authScreen.style.display = '';
-    mainApp.style.display = 'none';
-  }
-
-  // 验证 Token
-  authSubmitBtn.addEventListener('click', async () => {
-    const inputToken = authTokenInput.value.trim();
-    if (!inputToken) {
-      authTokenInput.style.borderColor = 'var(--red)';
-      return;
-    }
-
-    try {
-      authSubmitBtn.textContent = '验证中...';
-      authSubmitBtn.disabled = true;
-
-      // 保存 Token 到 sessionStorage
-      sessionStorage.setItem('agent_lab_token', inputToken);
-
-      // 尝试加载数据
-      await load();
-
-      // 验证成功，切换到主应用
-      authScreen.style.display = 'none';
-      mainApp.style.display = '';
-    } catch (error) {
-      // 验证失败
-      sessionStorage.removeItem('agent_lab_token');
-      authTokenInput.value = '';
-      authTokenInput.style.borderColor = 'var(--red)';
-      authSubmitBtn.textContent = '进入控制台';
-      authSubmitBtn.disabled = false;
-
-      const errorMsg = error.message.includes('401') || error.message.includes('403')
-        ? 'Token 验证失败，请检查配置'
-        : `连接失败：${error.message}`;
-
-      alert(errorMsg);
-    }
-  });
-
-  // 回车提交
-  authTokenInput.addEventListener('keypress', (e) => {
-    if (e.key === 'Enter') {
-      authSubmitBtn.click();
-    }
-  });
-}
-
-// 页面加载后初始化
-document.addEventListener('DOMContentLoaded', () => {
-  initAuth();
-
-  // 状态栏按钮绑定
-  const agentSwitcher = $('agent-switcher');
-  const statusPauseBtn = $('status-pause-btn');
-  const statusViewBtn = $('status-view-btn');
-
-  if (agentSwitcher) {
-    agentSwitcher.addEventListener('click', () => {
-      // TODO: 显示 Agent 切换下拉菜单
-      route = 'canvas';
-      render();
-    });
-  }
-
-  if (statusViewBtn) {
-    statusViewBtn.addEventListener('click', () => {
-      route = 'tasks';
-      render();
-    });
-  }
-});
-
-// 启动状态栏更新
-setInterval(() => {
-  if (state && globalState.currentAgent) {
-    updateStatusBar();
-  }
-}, 1000);
-*/

@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent Lab 控制台</title>
-    <link rel="stylesheet" href="./style.css?v=20260605-workflow-canvas-polish" />
+    <link rel="stylesheet" href="./style.css?v=20260607-agent-console-refresh" />
   </head>
   <body>
     <!-- Token 验证页面（未验证时显示） -->
@@ -50,10 +50,11 @@
             </div>
           </span>
           <span class="status-actions">
-            <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="暂停任务">暂停</button>
+            <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="打开任务控制台">控制台</button>
             <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
           </span>
           <button id="refresh" type="button" class="status-refresh-btn" title="刷新数据">🔄</button>
+          <button id="settings-btn" type="button" class="status-refresh-btn settings-gear" title="设置">⚙</button>
         </div>
       </div>
 
@@ -76,6 +77,6 @@
       </main>
     </div>
 
-    <script type="module" src="./app.js?v=20260605-workflow-canvas-polish"></script>
+    <script type="module" src="./app.js?v=20260607-agent-console-refresh"></script>
   </body>
 </html>

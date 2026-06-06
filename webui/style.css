@@ -3379,3 +3379,480 @@ pre {
   display: flex;
   gap: 8px;
 }
+
+/* =========================
+   Agent Lab 2026 console polish
+   ========================= */
+
+.settings-gear {
+  width: 34px;
+  padding: 6px 0;
+  font-size: 15px;
+}
+
+.game-icon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  filter: sepia(0.2) saturate(1.4) hue-rotate(158deg) brightness(0.74);
+}
+
+.stat-icon .game-icon,
+.workflow-template-title .game-icon,
+.toolbox-chip .game-icon {
+  display: block;
+}
+
+.run-overview {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(280px, 0.7fr);
+  gap: 18px;
+  align-items: center;
+  overflow: hidden;
+}
+
+.run-overview-main,
+.live-strip {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+}
+
+.run-overview h2 {
+  margin: 0 0 8px;
+  overflow: hidden;
+  font-size: 24px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.run-overview-side {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.live-ring {
+  position: relative;
+  flex: 0 0 auto;
+  width: 54px;
+  height: 54px;
+  border: 1px solid rgba(49, 95, 143, 0.28);
+  border-radius: 50%;
+  background: rgba(49, 95, 143, 0.08);
+}
+
+.live-ring span {
+  position: absolute;
+  inset: 17px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.live-ring.running {
+  border-color: rgba(47, 125, 91, 0.45);
+  background: rgba(47, 125, 91, 0.1);
+}
+
+.live-ring.running::before,
+.live-ring.running::after {
+  position: absolute;
+  inset: 8px;
+  border: 1px solid rgba(47, 125, 91, 0.4);
+  border-radius: 50%;
+  content: "";
+  animation: live-pulse 1.8s ease-out infinite;
+}
+
+.live-ring.running::after {
+  animation-delay: 0.65s;
+}
+
+.live-ring.running span {
+  background: var(--green);
+  box-shadow: 0 0 0 7px rgba(47, 125, 91, 0.12);
+}
+
+@keyframes live-pulse {
+  0% {
+    opacity: 0.75;
+    transform: scale(0.72);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.38);
+  }
+}
+
+.activity-bars {
+  display: flex;
+  align-items: end;
+  gap: 5px;
+  min-height: 64px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(238, 243, 242, 0.72));
+}
+
+.activity-bars span {
+  flex: 1;
+  min-width: 4px;
+  max-width: 18px;
+  border-radius: 4px 4px 0 0;
+  background: var(--blue);
+  opacity: 0.78;
+  animation: bar-breathe 2.4s ease-in-out infinite;
+}
+
+.activity-bars span:nth-child(3n) {
+  background: var(--green);
+}
+
+.activity-bars span:nth-child(4n) {
+  background: var(--amber);
+}
+
+.activity-bars span.bad {
+  background: var(--red);
+}
+
+@keyframes bar-breathe {
+  0%, 100% { opacity: 0.58; }
+  50% { opacity: 1; }
+}
+
+.dashboard-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  gap: 16px;
+}
+
+.agent-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.agent-health-card {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-health-card:hover,
+.agent-health-card.selected {
+  border-color: var(--blue);
+  background: rgba(49, 95, 143, 0.05);
+}
+
+.agent-health-header,
+.agent-health-stats {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.agent-health-stats {
+  align-items: stretch;
+}
+
+.health-stat {
+  flex: 1;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel-2);
+  text-align: center;
+}
+
+.health-stat-value {
+  display: block;
+  overflow: hidden;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.health-stat-label {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.runtime-buckets {
+  display: grid;
+  gap: 10px;
+}
+
+.runtime-bucket {
+  display: grid;
+  grid-template-columns: 70px 44px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.runtime-bucket strong {
+  color: var(--ink);
+  font-size: 18px;
+}
+
+.runtime-bucket div {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--panel-2);
+}
+
+.runtime-bucket i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--green), var(--blue));
+}
+
+.dashboard-activity {
+  margin-top: 14px;
+}
+
+.status-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.status-tile {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.status-tile span,
+.status-tile small,
+.policy-card span,
+.policy-card small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-tile strong {
+  display: block;
+  margin: 6px 0 3px;
+  overflow: hidden;
+  font-size: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status-tile.ok {
+  border-color: rgba(47, 125, 91, 0.32);
+}
+
+.status-tile.warn {
+  border-color: rgba(167, 111, 25, 0.34);
+}
+
+.policy-overview {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.policy-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(238, 243, 242, 0.72);
+}
+
+.policy-card strong {
+  display: block;
+  margin: 5px 0;
+  overflow: hidden;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 14px;
+  align-items: center;
+}
+
+.tag-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.memory-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.memory-tag-chip b {
+  color: var(--blue);
+}
+
+.memory-detail label,
+.settings-page label {
+  display: grid;
+  gap: 6px;
+}
+
+.console-page {
+  grid-template-columns: 340px minmax(0, 1fr);
+  height: auto;
+  min-height: calc(100vh - 96px);
+}
+
+.console-sidebar {
+  position: sticky;
+  top: 72px;
+  height: calc(100vh - 88px);
+  border-radius: 8px;
+}
+
+.console-main {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  padding: 0;
+}
+
+.task-entry-grid {
+  grid-template-columns: minmax(180px, 0.7fr) minmax(160px, 0.5fr) minmax(0, 1fr);
+}
+
+.task-entry-grid .span-2 {
+  grid-column: span 3;
+}
+
+.console-archive-title {
+  margin-top: 18px;
+}
+
+.live-console-panel {
+  overflow: hidden;
+}
+
+.live-strip {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(49, 95, 143, 0.18);
+  border-radius: 8px;
+  background: rgba(49, 95, 143, 0.06);
+}
+
+.live-strip strong {
+  display: block;
+  overflow: hidden;
+  margin-bottom: 3px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.live-strip p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.console-log-panel .empty {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: transparent;
+  color: #d0d0d0;
+}
+
+.settings-page {
+  display: grid;
+  gap: 14px;
+}
+
+.state-fields.single {
+  grid-template-columns: 1fr;
+}
+
+@media (max-width: 1180px) {
+  .run-overview,
+  .dashboard-main-grid,
+  .memory-toolbar,
+  .console-page {
+    grid-template-columns: 1fr;
+  }
+
+  .console-sidebar {
+    position: relative;
+    top: 0;
+    height: auto;
+  }
+
+  .policy-overview,
+  .status-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .global-status-bar {
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 14px;
+  }
+
+  .status-left,
+  .status-right {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .policy-overview,
+  .memory-stats,
+  .status-grid,
+  .task-entry-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .task-entry-grid .span-2 {
+    grid-column: auto;
+  }
+
+  .run-overview h2 {
+    white-space: normal;
+  }
+
+  .tag-cloud {
+    justify-content: flex-start;
+  }
+}
