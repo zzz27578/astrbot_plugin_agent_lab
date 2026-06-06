@@ -8,6 +8,42 @@
   </head>
   <body>
     <div class="shell">
+      <!-- 全局状态栏 -->
+      <div id="global-status-bar" class="global-status-bar">
+        <div class="status-left">
+          <span class="status-agent">
+            <strong id="current-agent-name">加载中...</strong>
+            <button id="agent-switcher" class="agent-switcher-btn" title="切换 Agent">▼</button>
+          </span>
+          <span class="status-indicator">
+            <span id="status-dot" class="status-dot idle"></span>
+            <span id="status-text">空闲</span>
+          </span>
+          <span class="status-task" id="status-task" style="display:none;">
+            任务: <code id="current-task-id">-</code> |
+            已运行: <span id="task-runtime">0s</span>
+          </span>
+        </div>
+        <div class="status-right">
+          <span class="status-token">
+            <span class="status-token-label">Token:</span>
+            <span id="token-current">0</span> / <span id="token-limit">240K</span>
+            <div class="token-progress-bar">
+              <div id="token-progress-fill" class="token-progress-fill" style="width: 0%"></div>
+            </div>
+          </span>
+          <span class="status-actions">
+            <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="暂停任务">暂停</button>
+            <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
+          </span>
+          <div class="status-settings">
+            <input id="token" class="token-input" autocomplete="off" placeholder="访问 Token" />
+            <button id="save-token" type="button" class="button secondary small">保存</button>
+            <button id="refresh" type="button" class="button small" title="刷新">🔄</button>
+          </div>
+        </div>
+      </div>
+
       <aside class="rail">
         <div class="brand">
           <strong>Agent Lab</strong>
@@ -22,18 +58,6 @@
       </aside>
 
       <main class="main">
-        <header class="topbar">
-          <div>
-            <p id="section-kicker" class="kicker">总览</p>
-            <h1 id="section-title">仪表盘</h1>
-          </div>
-          <div class="top-actions">
-            <input id="token" class="token-input" autocomplete="off" placeholder="访问 Token" />
-            <button id="save-token" type="button" class="button secondary">保存 Token</button>
-            <button id="refresh" type="button" class="button">刷新</button>
-          </div>
-        </header>
-
         <div id="feedback" class="feedback">正在连接 Agent Lab...</div>
         <section id="view" class="view"></section>
       </main>

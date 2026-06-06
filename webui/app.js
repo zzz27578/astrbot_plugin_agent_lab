@@ -563,16 +563,98 @@ const WORKFLOW_NODE_TEMPLATES = [
 ];
 
 const sections = [
-  ["dashboard", "仪表盘与列表", "看大盘"],
-  ["canvas", "可视化编排画布", "捏任务模式"],
-  ["tasks", "任务运行台", "推进/暂停"],
-  ["monitor", "实例与心跳监控", "搞运维"],
-  ["integrations", "插件与集成", "装工具"],
+  ["dashboard", "仪表盘", "总览"],
+  ["canvas", "任务模式设置", "定规则"],
+  ["workflow", "工作流画布", "拼流程"],
+  ["memory", "任务记忆", "查记忆"],
+  ["tasks", "任务控制台", "看进度"],
+  ["plugins", "插件与集成", "管工具"],
 ];
 
-sections[1] = ["canvas", "任务模式设置", "定规则"];
-sections.splice(2, 0, ["workflow", "工作流画布", "拼流程"]);
-sections.splice(3, 0, ["memory", "任务记录库", "查完成"]);
+// 全局状态对象
+const globalState = {
+  currentAgent: null,
+  activeTask: null,
+  taskRuntime: 0,
+  tokenCurrent: 0,
+  tokenLimit: 240000,
+  status: 'idle', // idle | running | waiting | error
+  runtimeTimer: null,
+};
+
+// 更新全局状态栏
+function updateStatusBar() {
+  const agentName = globalState.currentAgent?.name || '未选择';
+  const statusDot = $('status-dot');
+  const statusText = $('status-text');
+  const statusTask = $('status-task');
+  const tokenCurrent = $('token-current');
+  const tokenFill = $('token-progress-fill');
+  const pauseBtn = $('status-pause-btn');
+  const viewBtn = $('status-view-btn');
+
+  $('current-agent-name').textContent = agentName;
+
+  // 更新状态指示
+  statusDot.className = `status-dot ${globalState.status}`;
+  const statusLabels = { idle: '空闲', running: '执行中', waiting: '等待审批', error: '出错' };
+  statusText.textContent = statusLabels[globalState.status] || '未知';
+
+  // 更新任务信息
+  if (globalState.activeTask) {
+    statusTask.style.display = '';
+    $('current-task-id').textContent = globalState.activeTask.task_id || '-';
+    $('task-runtime').textContent = formatRuntime(globalState.taskRuntime);
+    pauseBtn.style.display = '';
+    viewBtn.style.display = '';
+  } else {
+    statusTask.style.display = 'none';
+    pauseBtn.style.display = 'none';
+    viewBtn.style.display = 'none';
+  }
+
+  // 更新 Token 进度
+  const tokenPercent = Math.min(100, (globalState.tokenCurrent / globalState.tokenLimit) * 100);
+  tokenCurrent.textContent = formatTokens(globalState.tokenCurrent);
+  $('token-limit').textContent = formatTokens(globalState.tokenLimit);
+  tokenFill.style.width = `${tokenPercent}%`;
+  tokenFill.className = 'token-progress-fill';
+  if (tokenPercent > 80) tokenFill.classList.add('danger');
+  else if (tokenPercent > 60) tokenFill.classList.add('warning');
+}
+
+function formatRuntime(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}m ${s}s`;
+}
+
+function formatTokens(num) {
+  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
+  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  return String(num);
+}
+
+// 启动运行时计时器
+function startRuntimeTimer() {
+  if (globalState.runtimeTimer) return;
+  globalState.runtimeTimer = setInterval(() => {
+    if (globalState.activeTask && globalState.status === 'running') {
+      globalState.taskRuntime++;
+      updateStatusBar();
+    }
+  }, 1000);
+}
+
+// 停止运行时计时器
+function stopRuntimeTimer() {
+  if (globalState.runtimeTimer) {
+    clearInterval(globalState.runtimeTimer);
+    globalState.runtimeTimer = null;
+  }
+  globalState.taskRuntime = 0;
+}
 
 let state = null;
 let route = "dashboard";
