@@ -2036,11 +2036,28 @@ async function load() {
     }
     $("bot-label").textContent = state.runtime?.bot_label || "等待读取";
     $("bot-source").textContent = identitySourceLabel(state.runtime?.bot_label_source);
+
+    // 更新全局状态
+    globalState.currentAgent = currentAgent;
+    const activeTasks = (state.tasks || []).filter(t => !t.finished_at);
+    globalState.activeTask = activeTasks[0] || null;
+    globalState.status = globalState.activeTask ? 'running' : 'idle';
+
+    // 计算 Token 消耗
+    let totalTokens = 0;
+    (state.tasks || []).forEach(task => {
+      if (task.token_usage) totalTokens += task.token_usage;
+    });
+    globalState.tokenCurrent = totalTokens;
+
+    updateStatusBar();
+
     setFeedback("已连接独立控制台。");
     render();
   } catch (error) {
     setFeedback(`连接失败：${error.message}`, "error");
     renderLocked();
+    throw error;
   }
 }
 
@@ -2109,29 +2126,102 @@ function badge(text, tone = "") {
 }
 
 function renderDashboard() {
+  const agents = state.agents || [];
+  const tasks = state.tasks || [];
+  const archives = state.archives || [];
   const m = state.metrics || {};
+
   $("view").innerHTML = `
-    <section class="grid metrics">
-      ${metric("Agent 数量", m.agents ?? 0)}
-      ${metric("当前任务", m.active_tasks ?? 0)}
-      ${metric("任务触发", m.task_triggers ?? 0)}
-      ${metric("心跳在线", m.heartbeat_online ?? 0)}
-      ${metric("心跳异常", m.heartbeat_stale ?? 0)}
-      ${metric("Token 消耗", m.token_usage ?? 0, "仅统计模型供应商上报的 usage")}
-    </section>
-    <section class="grid two">
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">资产</p><h2>Agent 列表</h2></div></div>
-        <div class="list">${agentRows()}</div>
+    <section class="dashboard-page">
+      <!-- 顶部统计卡片 -->
+      <div class="stats-cards">
+        <div class="stat-card">
+          <div class="stat-icon">🤖</div>
+          <div class="stat-content">
+            <div class="stat-value animate">${agents.length}</div>
+            <div class="stat-label">Agent 配置</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">⏳</div>
+          <div class="stat-content">
+            <div class="stat-value animate">${tasks.length}</div>
+            <div class="stat-label">活跃任务</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">✅</div>
+          <div class="stat-content">
+            <div class="stat-value animate">${archives.length}</div>
+            <div class="stat-label">已完成任务</div>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-icon">💰</div>
+          <div class="stat-content">
+            <div class="stat-value animate">${formatTokens(m.token_usage || 0)}</div>
+            <div class="stat-label">累计 Token</div>
+          </div>
+        </div>
       </div>
+
+      <!-- Agent 健康卡片 -->
       <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">运行</p><h2>当前任务</h2></div></div>
-        <div class="list">${taskRows(state.tasks || [])}</div>
+        <div class="panel-head">
+          <div><h2>Agent 配置</h2></div>
+        </div>
+        <div class="agent-health-grid">
+          ${agents.map(agent => {
+            const selected = agent.agent_id === selectedAgentId;
+            const isDefault = agent.agent_id === state.default_agent_id;
+            const stats = agentStats(agent);
+            return `
+              <div class="agent-health-card ${selected ? 'selected' : ''}" style="cursor:pointer;" data-action="select-agent" data-id="${esc(agent.agent_id)}">
+                <div class="agent-health-header">
+                  <strong>${esc(agentDisplayName(agent))}</strong>
+                  ${isDefault ? '<span class="badge">默认</span>' : ''}
+                  <span class="badge ${stats.health_tone}">${stats.health_label}</span>
+                </div>
+                <div class="agent-health-stats">
+                  <div class="health-stat">
+                    <span class="health-stat-value">${stats.triggers}</span>
+                    <span class="health-stat-label">触发次数</span>
+                  </div>
+                  <div class="health-stat">
+                    <span class="health-stat-value">${formatTokens(stats.tokens)}</span>
+                    <span class="health-stat-label">Token 用量</span>
+                  </div>
+                  <div class="health-stat">
+                    <span class="health-stat-value">${stats.approvals}</span>
+                    <span class="health-stat-label">待审批</span>
+                  </div>
+                </div>
+              </div>
+            `;
+          }).join('')}
+        </div>
       </div>
-    </section>
-    <section class="panel">
-      <div class="panel-head"><div><p class="card-kicker">历史</p><h2>最近归档</h2></div></div>
-      <div class="list">${taskRows((state.archives || []).slice(0, 8), true)}</div>
+
+      <!-- 最近任务 -->
+      <div class="panel">
+        <div class="panel-head">
+          <div><h2>最近任务</h2></div>
+          <button class="button secondary" data-route="tasks">查看全部</button>
+        </div>
+        <div class="list">
+          ${tasks.length === 0 ? '<div class="empty">暂无活跃任务</div>' : taskRows(tasks.slice(0, 5))}
+        </div>
+      </div>
+
+      <!-- 最近归档 -->
+      <div class="panel">
+        <div class="panel-head">
+          <div><h2>最近归档</h2></div>
+        </div>
+        <div class="list">
+          ${archives.length === 0 ? '<div class="empty">暂无归档任务</div>' : taskRows(archives.slice(0, 8), true)}
+        </div>
+      </div>
     </section>
   `;
 }
@@ -5590,3 +5680,109 @@ if (initialToken) sessionStorage.setItem("agent_lab_token", initialToken);
 
 renderNav();
 load();
+// 在 app.js 文件末尾添加以下代码
+
+      setFeedback("外部方案蓝图已保存。");
+      await load();
+    }
+  } catch (error) {
+    setFeedback(error.message, "error");
+  }
+});
+
+// Token 验证初始化
+function initAuth() {
+  const authScreen = $('auth-screen');
+  const mainApp = $('main-app');
+  const authTokenInput = $('auth-token-input');
+  const authSubmitBtn = $('auth-submit-btn');
+
+  const savedToken = sessionStorage.getItem('agent_lab_token');
+
+  if (savedToken) {
+    // 已有 Token，直接进入主应用
+    authScreen.style.display = 'none';
+    mainApp.style.display = '';
+    load();
+  } else {
+    // 显示验证页面
+    authScreen.style.display = '';
+    mainApp.style.display = 'none';
+  }
+
+  // 验证 Token
+  authSubmitBtn.addEventListener('click', async () => {
+    const inputToken = authTokenInput.value.trim();
+    if (!inputToken) {
+      authTokenInput.style.borderColor = 'var(--red)';
+      return;
+    }
+
+    try {
+      authSubmitBtn.textContent = '验证中...';
+      authSubmitBtn.disabled = true;
+
+      // 保存 Token 到 sessionStorage
+      sessionStorage.setItem('agent_lab_token', inputToken);
+
+      // 尝试加载数据
+      await load();
+
+      // 验证成功，切换到主应用
+      authScreen.style.display = 'none';
+      mainApp.style.display = '';
+    } catch (error) {
+      // 验证失败
+      sessionStorage.removeItem('agent_lab_token');
+      authTokenInput.value = '';
+      authTokenInput.style.borderColor = 'var(--red)';
+      authSubmitBtn.textContent = '进入控制台';
+      authSubmitBtn.disabled = false;
+
+      const errorMsg = error.message.includes('401') || error.message.includes('403')
+        ? 'Token 验证失败，请检查配置'
+        : `连接失败：${error.message}`;
+
+      alert(errorMsg);
+    }
+  });
+
+  // 回车提交
+  authTokenInput.addEventListener('keypress', (e) => {
+    if (e.key === 'Enter') {
+      authSubmitBtn.click();
+    }
+  });
+}
+
+// 页面加载后初始化
+document.addEventListener('DOMContentLoaded', () => {
+  initAuth();
+
+  // 状态栏按钮绑定
+  const agentSwitcher = $('agent-switcher');
+  const statusPauseBtn = $('status-pause-btn');
+  const statusViewBtn = $('status-view-btn');
+
+  if (agentSwitcher) {
+    agentSwitcher.addEventListener('click', () => {
+      // TODO: 显示 Agent 切换下拉菜单
+      route = 'canvas';
+      render();
+    });
+  }
+
+  if (statusViewBtn) {
+    statusViewBtn.addEventListener('click', () => {
+      route = 'tasks';
+      render();
+    });
+  }
+});
+
+// 启动状态栏更新
+setInterval(() => {
+  if (state && globalState.currentAgent) {
+    updateStatusBar();
+  }
+}, 1000);

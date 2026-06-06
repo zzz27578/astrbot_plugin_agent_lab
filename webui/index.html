@@ -7,7 +7,24 @@
     <link rel="stylesheet" href="./style.css?v=20260605-workflow-canvas-polish" />
   </head>
   <body>
-    <div class="shell">
+    <!-- Token 验证页面（未验证时显示） -->
+    <div id="auth-screen" class="auth-screen" style="display:none;">
+      <div class="auth-card">
+        <div class="auth-icon">🔐</div>
+        <h1>Agent Lab 控制台</h1>
+        <p class="auth-hint">请输入访问 Token</p>
+        <div class="auth-form">
+          <input id="auth-token-input" type="password" class="auth-input" placeholder="Token" autocomplete="off" />
+          <button id="auth-submit-btn" type="button" class="auth-button">进入控制台</button>
+        </div>
+        <p class="auth-note">
+          💡 Token 在插件配置中设置<br/>
+          键: <code>standalone_webui_token</code>
+        </p>
+      </div>
+    </div>
+
+    <div class="shell" id="main-app" style="display:none;">
       <!-- 全局状态栏 -->
       <div id="global-status-bar" class="global-status-bar">
         <div class="status-left">
@@ -36,11 +53,7 @@
             <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="暂停任务">暂停</button>
             <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
           </span>
-          <div class="status-settings">
-            <input id="token" class="token-input" autocomplete="off" placeholder="访问 Token" />
-            <button id="save-token" type="button" class="button secondary small">保存</button>
-            <button id="refresh" type="button" class="button small" title="刷新">🔄</button>
-          </div>
+          <button id="refresh" type="button" class="status-refresh-btn" title="刷新数据">🔄</button>
         </div>
       </div>
 

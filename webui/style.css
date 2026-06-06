@@ -35,6 +35,102 @@ textarea {
   font: inherit;
 }
 
+/* Token 验证页面 */
+.auth-screen {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.auth-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 48px 40px;
+  box-shadow: var(--shadow);
+  text-align: center;
+  max-width: 420px;
+  width: 90%;
+}
+
+.auth-icon {
+  font-size: 64px;
+  margin-bottom: 16px;
+}
+
+.auth-card h1 {
+  font-size: 28px;
+  margin-bottom: 8px;
+  color: var(--ink);
+}
+
+.auth-hint {
+  color: var(--muted);
+  margin-bottom: 32px;
+  font-size: 15px;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.auth-input {
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-size: 15px;
+  transition: border-color 0.2s;
+}
+
+.auth-input:focus {
+  outline: none;
+  border-color: var(--blue);
+}
+
+.auth-button {
+  width: 100%;
+  padding: 14px;
+  background: var(--blue);
+  color: white;
+  border: none;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.auth-button:hover {
+  background: var(--ink);
+  transform: translateY(-1px);
+}
+
+.auth-note {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.auth-note code {
+  background: var(--panel-2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  font-size: 12px;
+  color: var(--blue);
+}
+
 /* 全局状态栏 */
 .global-status-bar {
   position: sticky;
@@ -166,6 +262,22 @@ textarea {
   font-size: 12px;
   border: 1px solid var(--line);
   border-radius: 4px;
+}
+
+.status-refresh-btn {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.status-refresh-btn:hover {
+  background: var(--panel-2);
+  border-color: var(--blue);
 }
 
 .shell {
