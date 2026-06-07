@@ -42,6 +42,7 @@ from .agent_lab.conditions import (
 )
 from .agent_lab.hooks import AgentLabRunHooks
 from .agent_lab.models import new_id, now_iso
+from .agent_lab.models import WorkflowScope, WorkflowTrigger
 from .agent_lab.modules import ModuleRegistry
 from .agent_lab.prompts import (
     build_agent_mode_policy,
@@ -89,8 +90,21 @@ WORKFLOW_KINDS = {
     "subflow",
     "notification",
     "validation",
+    "trigger",
+    "detector",
+    "report",
+    "rate_limit",
+    "error_handler",
 }
 WORKFLOW_ACTIONS = {
+    "listen_message",
+    "match_keyword",
+    "match_regex",
+    "llm_detect",
+    "scope_filter",
+    "schedule_trigger",
+    "plugin_event_trigger",
+    "webhook_trigger",
     "confirm_entry",
     "summarize_entry",
     "restore_isolation",
@@ -118,8 +132,15 @@ WORKFLOW_ACTIONS = {
     "validate_output",
     "debate_validation",
     "retry",
+    "limit_rate",
+    "catch_error",
     "save_state",
     "save_memory",
+    "write_record",
+    "generate_report",
+    "send_message",
+    "send_private_message",
+    "send_email",
     "heartbeat",
     "notify",
     "archive",
@@ -331,7 +352,7 @@ class AgentLabPlugin(Star):
     @filter.command("agentlab")
     async def agentlab_command(self, event: AstrMessageEvent):
         """Agent Lab 控制台命令：status/start/tick/finish/cancel/heartbeat/approve。"""
-        if not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
+        if False and not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
             yield event.plain_result("Agent Lab 第一版仅允许私聊使用，避免群聊误触发和权限风险。")
             return
         result = await self._handle_command(event, _message_tail(event, "agentlab"))
@@ -340,7 +361,7 @@ class AgentLabPlugin(Star):
     @filter.command("al")
     async def al_command(self, event: AstrMessageEvent):
         """Agent Lab 短命令。"""
-        if not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
+        if False and not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
             yield event.plain_result("Agent Lab 第一版仅允许私聊使用。")
             return
         result = await self._handle_command(event, _message_tail(event, "al"))
@@ -1017,7 +1038,7 @@ class AgentLabPlugin(Star):
     async def inject_agent_lab_policy(self, event: AstrMessageEvent, req: ProviderRequest):
         if not _bool_cfg(self.config, "inject_agent_mode_policy", True):
             return
-        if not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
+        if False and not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
             return
         spec = self.storage.get_agent()
         task = self.storage.load_active_task(event.unified_msg_origin)
@@ -1128,6 +1149,9 @@ class AgentLabPlugin(Star):
         if not spec.enabled:
             return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用后再进入 Agent Mode。"
         self._normalize_agent_workflow(spec)
+        allowed, reason = self._workflow_scope_allows_event(spec, event)
+        if not allowed:
+            return f"当前工作流未在此会话范围启用：{reason}"
         runtime_identity = await self._current_bot_identity_for_event(event)
         effective_agent_name = (
             self._agent_name_from_label(runtime_identity["label"])
@@ -5570,6 +5594,12 @@ class AgentLabPlugin(Star):
         spec.entry_channel = channel if channel in {"command", "natural", "webui"} else "command"
         if spec.trigger_mode not in {"manual", "confirm", "smart", "always"}:
             spec.trigger_mode = "confirm"
+        spec.workflow_trigger = WorkflowTrigger.from_dict(
+            AgentLabPlugin._as_plain_dict(getattr(spec, "workflow_trigger", None))
+        )
+        spec.workflow_scope = WorkflowScope.from_dict(
+            AgentLabPlugin._as_plain_dict(getattr(spec, "workflow_scope", None))
+        )
         spec.entry_policy.trigger_phrases = AgentLabPlugin._clean_string_list(
             spec.entry_policy.trigger_phrases
         ) or ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"]
@@ -5596,6 +5626,76 @@ class AgentLabPlugin(Star):
             else "whitelist"
         )
         spec.isolation_policy.notes = str(spec.isolation_policy.notes or "").strip()
+
+    @staticmethod
+    def _as_plain_dict(value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            return value
+        if hasattr(value, "to_dict"):
+            try:
+                return value.to_dict()
+            except Exception:
+                pass
+        if hasattr(value, "__dict__"):
+            return dict(value.__dict__)
+        return None
+
+    def _workflow_scope_allows_event(
+        self, spec: AgentSpec, event: AstrMessageEvent
+    ) -> tuple[bool, str]:
+        scope = WorkflowScope.from_dict(self._as_plain_dict(getattr(spec, "workflow_scope", None)))
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        sender_id = str(event.get_sender_id() or "").strip()
+        platform = self._event_platform_name(event)
+        is_private = bool(event.is_private_chat())
+        chat_type = "private" if is_private else "group"
+
+        if chat_type not in set(scope.chat_types or []):
+            return False, f"chat_type={chat_type} not enabled"
+        if scope.platforms and platform not in set(scope.platforms):
+            return False, f"platform={platform or '-'} not allowed"
+        if scope.umo_allowlist and umo not in set(scope.umo_allowlist):
+            return False, "UMO not in allowlist"
+        if scope.umo_denylist and umo in set(scope.umo_denylist):
+            return False, "UMO is denied"
+        group_id = self._event_group_id(event)
+        if group_id:
+            if scope.group_allowlist and group_id not in set(scope.group_allowlist):
+                return False, "group not in allowlist"
+            if scope.group_denylist and group_id in set(scope.group_denylist):
+                return False, "group is denied"
+        if scope.user_allowlist and sender_id not in set(scope.user_allowlist):
+            return False, "user not in allowlist"
+        if scope.user_denylist and sender_id in set(scope.user_denylist):
+            return False, "user is denied"
+        if scope.admin_only and sender_id not in set(self._workflow_admin_ids()):
+            return False, "admin_only workflow"
+        return True, "matched"
+
+    def _workflow_admin_ids(self) -> list[str]:
+        raw = _cfg(self.config, "workflow_admin_ids", []) or _cfg(self.config, "admin_qq_ids", [])
+        return self._clean_string_list(raw)
+
+    @staticmethod
+    def _event_group_id(event: AstrMessageEvent) -> str:
+        for name in ("get_group_id", "get_groupid"):
+            fn = getattr(event, name, None)
+            if callable(fn):
+                try:
+                    value = str(fn() or "").strip()
+                    if value:
+                        return value
+                except Exception:
+                    pass
+        for name in ("group_id", "groupid"):
+            value = str(getattr(event, name, "") or "").strip()
+            if value:
+                return value
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        parts = [part for part in re.split(r"[:/]", umo) if part]
+        if len(parts) >= 3 and any("group" in part.lower() for part in parts[:2]):
+            return parts[-1]
+        return ""
 
     @staticmethod
     def _clean_string_list(items: Any) -> list[str]:
@@ -5772,7 +5872,18 @@ class AgentLabPlugin(Star):
     @staticmethod
     def _normalize_workflow_edge_type(raw: Any) -> str:
         edge_type = str(raw or "success").strip().lower()
-        return edge_type if edge_type in {"success", "error", "always"} else "success"
+        valid = {
+            "success",
+            "failed",
+            "uncertain",
+            "error",
+            "retry",
+            "timeout",
+            "approved",
+            "rejected",
+            "always",
+        }
+        return edge_type if edge_type in valid else "success"
 
     @staticmethod
     def _normalize_retry_policy(raw: Any) -> dict[str, Any]:
@@ -5877,10 +5988,27 @@ class AgentLabPlugin(Star):
                 }
             )
 
+        trigger_actions = {
+            "listen_message",
+            "schedule_trigger",
+            "plugin_event_trigger",
+            "webhook_trigger",
+        }
+        detector_actions = {"match_keyword", "match_regex", "llm_detect", "scope_filter"}
+        report_actions = {
+            "notify",
+            "send_message",
+            "send_private_message",
+            "send_email",
+            "write_record",
+            "generate_report",
+        }
         entry_ids = [
             str(node.get("id") or "")
             for node in nodes
-            if node.get("stage") == "entry" or node.get("action") in {"summarize_entry", "confirm_entry"}
+            if node.get("stage") == "entry"
+            or node.get("kind") == "trigger"
+            or node.get("action") in {"summarize_entry", "confirm_entry", *trigger_actions}
         ]
         terminal_ids = [
             str(node.get("id") or "")
@@ -5890,6 +6018,8 @@ class AgentLabPlugin(Star):
                 node.get("stage") == "archive"
                 and node.get("action") not in {"notify", "manual"}
             )
+            or node.get("kind") == "report"
+            or node.get("action") in report_actions
         ]
         archive_ids = [
             str(node.get("id") or "")
@@ -5935,8 +6065,12 @@ class AgentLabPlugin(Star):
             add_issue("error", "missing_archive", "工作流缺少真正的出口/归档节点，需要 archive 或 exit_summary 动作。")
         if not guard_ids:
             add_issue("warn", "missing_guard", "工作流没有审批或人工闸门，高风险任务可能无法停下确认。")
-        if "summarize_entry" not in action_ids:
+        if not any(action in action_ids for action in {"summarize_entry", *trigger_actions}):
             add_issue("warn", "missing_entry_summary", "工作流没有入口摘要节点，普通聊天上文可能无法干净压缩成 task_brief。")
+        if any(action in action_ids for action in trigger_actions) and not any(
+            action in action_ids for action in detector_actions
+        ):
+            add_issue("warn", "trigger_without_detector", "监听、定时或事件触发工作流建议接入检测器、范围过滤或条件分支。")
         if spec.entry_policy.require_confirmation and "confirm_entry" not in action_ids:
             add_issue("warn", "missing_entry_confirmation", "当前 AgentSpec 要求开启确认，但工作流没有 confirm_entry 节点。")
         if spec.isolation_policy.mode != "off" and "restore_isolation" not in action_ids:
@@ -5964,12 +6098,28 @@ class AgentLabPlugin(Star):
                 add_issue("warn", "missing_output", "非出口节点没有输出连线。", node_id)
             if node_id in terminal_ids and outgoing.get(node_id):
                 add_issue("warn", "terminal_has_output", "出口/归档节点通常不应再连到其他节点。", node_id)
-            if node.get("kind") == "branch" and len(outgoing.get(node_id, [])) < 2:
+            if node.get("kind") in {"branch", "detector"} and len(outgoing.get(node_id, [])) < 2:
                 add_issue("warn", "branch_single_path", "分支节点最好至少有两条输出连线。", node_id)
             if node.get("action") == "parallel_branch":
                 workers = outgoing.get(node_id, [])
                 if len(workers) < 2:
                     add_issue("warn", "parallel_without_workers", "并行 Agent 分支至少需要两个后续工作包。", node_id)
+            if node.get("kind") == "detector":
+                edge_types = {
+                    str(edge.get("edge_type") or "success")
+                    for edge in edges
+                    if edge.get("from") == node_id
+                }
+                if not edge_types.intersection({"success", "failed", "uncertain", "error"}):
+                    add_issue("warn", "detector_without_result_routes", "检测模块建议显式配置通过/失败/不确定/错误出口。", node_id)
+            if node.get("kind") == "loop" or node.get("action") == "retry":
+                edge_types = {
+                    str(edge.get("edge_type") or "success")
+                    for edge in edges
+                    if edge.get("from") == node_id
+                }
+                if not edge_types.intersection({"retry", "failed", "error"}):
+                    add_issue("warn", "retry_without_retry_routes", "循环/重试模块建议配置 retry、failed 或 error 出口。", node_id)
             if node.get("kind") in {"subflow", "tool", "api"} and node.get("action") in {"manual", ""} and not str(node.get("prompt") or "").strip():
                 add_issue("warn", "module_without_prompt", "模块节点建议写入节点提示词或明确动作，否则运行时只能依赖泛化说明。", node_id)
             node_text = " ".join(

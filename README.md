@@ -2,6 +2,10 @@
 
 Runtime executor audit: [docs/RUNTIME_EXECUTOR.md](docs/RUNTIME_EXECUTOR.md)
 
+Workflow automation positioning: [docs/WORKFLOW_AUTOMATION.md](docs/WORKFLOW_AUTOMATION.md)
+
+Agent Lab is being repositioned as an AstrBot visual automation workflow layer. Long-task Agent Mode, heartbeat, task memory and memory isolation remain important, but they are now optional workflow modules. The same canvas can also build event-driven/static monitoring workflows such as message moderation, plugin/tool orchestration, scheduled reports, detector routes, retry/error handling and per-workflow scope control.
+
 Agent Lab 是一个 AstrBot 插件，用来把普通 bot 会话切换成可持续执行、可审批、可归档、可扩展的 **Agent Mode**。
 
 它不是替代 AstrBot，而是把 AstrBot 已有的 provider、Agent Runner、tools、MCP、Skills、cron、conversation、plugin session config 组织成一个可以手搓个人 Agent 的运行层。你可以把它理解成：当前 bot 仍然保持原本身份、语气和关系，但在写代码、配置项目、排错、部署、整理资料这类长任务里，临时进入一个更稳的任务工作台。

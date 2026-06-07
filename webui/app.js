@@ -41,10 +41,12 @@ const WORKFLOW_NODE_HEIGHT = 168;
 const WORKFLOW_LANE_WIDTH = 560;
 const WORKFLOW_CANVAS_MIN_WIDTH = 7200;
 const WORKFLOW_CANVAS_MIN_HEIGHT = 2800;
-const WORKFLOW_CANVAS_MIN_X = -1400;
-const WORKFLOW_CANVAS_MAX_X = 12000;
-const WORKFLOW_CANVAS_MIN_Y = -1400;
-const WORKFLOW_CANVAS_MAX_Y = 8000;
+const WORKFLOW_CANVAS_MIN_X = -8000;
+const WORKFLOW_CANVAS_MAX_X = 24000;
+const WORKFLOW_CANVAS_MIN_Y = -6000;
+const WORKFLOW_CANVAS_MAX_Y = 16000;
+const WORKFLOW_WORLD_WIDTH = WORKFLOW_CANVAS_MAX_X - WORKFLOW_CANVAS_MIN_X;
+const WORKFLOW_WORLD_HEIGHT = WORKFLOW_CANVAS_MAX_Y - WORKFLOW_CANVAS_MIN_Y;
 const WORKFLOW_MINIMAP_MIN_WIDTH = 104;
 const WORKFLOW_MINIMAP_MIN_HEIGHT = 84;
 const WORKFLOW_MINIMAP_MAX_WIDTH = 360;
@@ -65,8 +67,28 @@ const WORKFLOW_KINDS = [
   "subflow",
   "notification",
   "validation",
+  "trigger",
+  "detector",
+  "report",
+  "rate_limit",
+  "error_handler",
 ];
 const WORKFLOW_ACTIONS = [
+  "listen_message",
+  "match_keyword",
+  "match_regex",
+  "llm_detect",
+  "scope_filter",
+  "schedule_trigger",
+  "plugin_event_trigger",
+  "webhook_trigger",
+  "limit_rate",
+  "catch_error",
+  "write_record",
+  "generate_report",
+  "send_message",
+  "send_private_message",
+  "send_email",
   "confirm_entry",
   "summarize_entry",
   "restore_isolation",
@@ -105,8 +127,26 @@ const WORKFLOW_ACTIONS = [
 const WORKFLOW_PERMISSION_PROFILES = ["ordinary", "work", "code", "web", "danger"];
 const WORKFLOW_REF_TYPES = ["", "tool", "api", "plugin", "skill", "module", "workflow"];
 const WORKFLOW_WORKER_TYPES = ["", "GenericWorker", "ResearchWorker", "CodeReaderWorker", "PatchWorker", "TestWorker", "ApiWorker", "ToolWorker"];
+const WORKFLOW_TRIGGER_TYPES = ["command", "natural", "message_monitor", "keyword", "regex", "schedule", "plugin_event", "webhook", "manual_webui"];
+const WORKFLOW_CHAT_TYPES = ["private", "group"];
+const WORKFLOW_EDGE_TYPES = ["success", "failed", "uncertain", "error", "retry", "timeout", "approved", "rejected", "always"];
 
 const WORKFLOW_ACTION_RUNTIME_TYPES = {
+  listen_message: "trigger",
+  schedule_trigger: "trigger",
+  plugin_event_trigger: "trigger",
+  webhook_trigger: "trigger",
+  match_keyword: "detector",
+  match_regex: "detector",
+  llm_detect: "detector",
+  scope_filter: "detector",
+  limit_rate: "guard",
+  catch_error: "decision",
+  write_record: "report",
+  generate_report: "report",
+  send_message: "notification",
+  send_private_message: "notification",
+  send_email: "notification",
   summarize_entry: "entry",
   confirm_entry: "entry",
   restore_isolation: "entry",
@@ -155,8 +195,28 @@ const WORKFLOW_KIND_RUNTIME_TYPES = {
   subflow: "react",
   notification: "notification",
   validation: "validation",
+  trigger: "trigger",
+  detector: "detector",
+  report: "report",
+  rate_limit: "guard",
+  error_handler: "decision",
 };
 const WORKFLOW_EXECUTABLE_ACTIONS = new Set([
+  "listen_message",
+  "schedule_trigger",
+  "plugin_event_trigger",
+  "webhook_trigger",
+  "match_keyword",
+  "match_regex",
+  "llm_detect",
+  "scope_filter",
+  "limit_rate",
+  "catch_error",
+  "write_record",
+  "generate_report",
+  "send_message",
+  "send_private_message",
+  "send_email",
   "summarize_entry",
   "confirm_entry",
   "restore_isolation",
@@ -203,8 +263,14 @@ const WORKFLOW_RUNTIME_LABELS = {
   notification: "通知",
   terminal: "出口",
   react: "ReAct",
+  trigger: "触发",
+  detector: "检测",
+  report: "报告",
 };
 const WORKFLOW_NODE_GROUPS = [
+  { id: "trigger_monitor", title: "触发与监听", hint: "命令、消息监听、关键词、正则、定时、插件事件和 Webhook。", icon: "book", open: true },
+  { id: "detect_route", title: "检测与路由", hint: "规则检测、LLM 检测、范围过滤、通过/失败/不确定分流。", icon: "select", open: true },
+  { id: "report_control", title: "报告与控制", hint: "限流、错误处理、报告、私信、邮件和记录写入。", icon: "copy", open: false },
   { id: "entry_context", title: "开始与上下文", hint: "入口命令、确认、摘要和任务隔离。", icon: "book", open: true },
   { id: "plan_route", title: "计划与分支", hint: "拆解任务、选择路线、控制重试。", icon: "gridAdd", open: true },
   { id: "tool_exec", title: "执行工具", hint: "绑定 AstrBot 工具并把结果写入状态。", icon: "tool", open: true },
@@ -601,6 +667,127 @@ const WORKFLOW_NODE_TEMPLATES = [
     action: "exit_summary",
     library_group: "出口",
     instruction: "用户取消或任务终止时，归档已做事项、未完成原因、恢复状态和可续写入口。",
+  },
+  {
+    id: "message_listener",
+    title: "消息监听入口",
+    kind: "trigger",
+    stage: "entry",
+    action: "listen_message",
+    library_group: "trigger_monitor",
+    instruction: "监听私聊或群聊消息，只把命中工作流范围和触发条件的事件送入后续检测器。",
+    output_variable: "event.message",
+    output_schema: { type: "object", properties: { text: { type: "string" }, sender_id: { type: "string" }, group_id: { type: "string" } } },
+  },
+  {
+    id: "keyword_detector",
+    title: "关键词检测器",
+    kind: "detector",
+    stage: "plan",
+    action: "match_keyword",
+    library_group: "detect_route",
+    instruction: "按关键词命中/未命中分流，建议连 success 到动作，failed 到忽略或报告。",
+    params: { keywords: ["广告", "垃圾话", "违禁词"] },
+    output_variable: "detector.keyword",
+    output_schema: { type: "object", properties: { passed: { type: "boolean" }, matched: { type: "array" } } },
+  },
+  {
+    id: "regex_detector",
+    title: "正则检测器",
+    kind: "detector",
+    stage: "plan",
+    action: "match_regex",
+    library_group: "detect_route",
+    instruction: "用正则表达式识别更复杂的模式，例如链接刷屏、重复字符、编号或命令格式。",
+    params: { patterns: ["https?://", "(.)\\1{6,}"] },
+    output_variable: "detector.regex",
+  },
+  {
+    id: "llm_detector",
+    title: "LLM 约束检测器",
+    kind: "detector",
+    stage: "plan",
+    action: "llm_detect",
+    library_group: "detect_route",
+    instruction: "让 LLM 按模板判断是否通过，不自由发挥；输出必须含 passed、reason、confidence、route。",
+    prompt: "你是受约束的检测器。只判断输入是否符合规则，不执行动作。输出 JSON：{passed:boolean, reason:string, confidence:number, route:'success'|'failed'|'uncertain'}。",
+    output_schema: { type: "object", required: ["passed", "reason", "confidence", "route"] },
+  },
+  {
+    id: "scope_filter",
+    title: "范围过滤器",
+    kind: "detector",
+    stage: "entry",
+    action: "scope_filter",
+    library_group: "detect_route",
+    instruction: "按私聊/群聊、白名单、黑名单、管理员限制过滤事件；未通过直接走 failed 或 ignored 路线。",
+  },
+  {
+    id: "plugin_event_trigger",
+    title: "插件事件入口",
+    kind: "trigger",
+    stage: "entry",
+    action: "plugin_event_trigger",
+    library_group: "trigger_monitor",
+    instruction: "把其他 AstrBot 插件的事件作为工作流入口，用于跨插件联动而不是互相硬兼容。",
+    ref_type: "plugin",
+  },
+  {
+    id: "schedule_trigger",
+    title: "复杂定时入口",
+    kind: "trigger",
+    stage: "entry",
+    action: "schedule_trigger",
+    library_group: "trigger_monitor",
+    instruction: "按 cron 或外部计划触发工作流，可替代简单定时任务，后续仍能接检测、审批、报告。",
+    params: { cron: "*/15 * * * *" },
+  },
+  {
+    id: "rate_limit_guard",
+    title: "限流/冷却模块",
+    kind: "rate_limit",
+    stage: "guard",
+    action: "limit_rate",
+    library_group: "report_control",
+    instruction: "限制同一群、同一用户或同一关键词在时间窗口内重复触发，避免刷屏或循环调用。",
+    params: { window_seconds: 60, max_hits: 3 },
+  },
+  {
+    id: "catch_error",
+    title: "错误捕获出口",
+    kind: "error_handler",
+    stage: "checkpoint",
+    action: "catch_error",
+    library_group: "report_control",
+    instruction: "把工具/API/插件调用失败统一收束到 error 路线，可继续重试、通知管理员或生成报告。",
+  },
+  {
+    id: "workflow_report",
+    title: "生成运行报告",
+    kind: "report",
+    stage: "archive",
+    action: "generate_report",
+    library_group: "report_control",
+    instruction: "汇总触发原因、检测结果、调用链、失败重试和最终动作，返回给用户或管理员。",
+    output_variable: "report.summary",
+  },
+  {
+    id: "private_message",
+    title: "发送私信",
+    kind: "notification",
+    stage: "archive",
+    action: "send_private_message",
+    library_group: "report_control",
+    instruction: "向触发者、管理员或指定 QQ 发送私信，例如封禁报告、误报说明或人工处理请求。",
+  },
+  {
+    id: "email_notice",
+    title: "发送邮件",
+    kind: "notification",
+    stage: "archive",
+    action: "send_email",
+    library_group: "report_control",
+    instruction: "把工作流报告发送到邮箱，用于值班、审计或跨平台提醒。",
   },
 ];
 
@@ -1166,6 +1353,73 @@ function triggerLabel(mode) {
   }[mode] || mode;
 }
 
+function workflowTriggerTypeLabel(type) {
+  return {
+    command: "命令",
+    natural: "自然语言",
+    message_monitor: "消息监听",
+    keyword: "关键词",
+    regex: "正则",
+    schedule: "定时",
+    plugin_event: "插件事件",
+    webhook: "Webhook",
+    manual_webui: "手动",
+  }[type] || type;
+}
+
+function workflowChatTypeLabel(type) {
+  return { private: "私聊", group: "群聊" }[type] || type;
+}
+
+function workflowEdgeTypeLabel(type) {
+  return {
+    success: "通过/成功",
+    failed: "失败/未通过",
+    uncertain: "不确定",
+    error: "错误",
+    retry: "重试",
+    timeout: "超时",
+    approved: "已批准",
+    rejected: "已拒绝",
+    always: "始终",
+  }[type] || type || "通过/成功";
+}
+
+function checkboxGroupHtml(name, values, selected, labeler) {
+  const selectedSet = new Set(selected || []);
+  return values.map((value) => `
+    <label class="check-line"><input type="checkbox" name="${esc(name)}" value="${esc(value)}" ${selectedSet.has(value) ? "checked" : ""} />${esc(labeler(value))}</label>
+  `).join("");
+}
+
+function checkedValues(name) {
+  return Array.from(document.querySelectorAll(`input[name="${name}"]:checked`)).map((item) => item.value);
+}
+
+function workflowTriggerSummary(agent) {
+  const trigger = ensureAgent(agent || {}).workflow_trigger || {};
+  if (trigger.enabled === false) return "已关闭";
+  const types = (trigger.types || []).map(workflowTriggerTypeLabel).join(" / ") || "命令";
+  const details = [];
+  if ((trigger.keywords || []).length) details.push(`关键词 ${trigger.keywords.length}`);
+  if ((trigger.regex || []).length) details.push(`正则 ${trigger.regex.length}`);
+  if (trigger.cron) details.push(trigger.cron);
+  if ((trigger.plugin_events || []).length) details.push(`插件事件 ${trigger.plugin_events.length}`);
+  return [types, ...details].join(" · ");
+}
+
+function workflowScopeSummary(agent) {
+  const scope = ensureAgent(agent || {}).workflow_scope || {};
+  const chat = (scope.chat_types || []).map(workflowChatTypeLabel).join(" / ") || "私聊";
+  const parts = [chat];
+  if (scope.admin_only) parts.push("仅管理员");
+  if ((scope.umo_allowlist || []).length) parts.push(`UMO 白名单 ${scope.umo_allowlist.length}`);
+  if ((scope.group_allowlist || []).length) parts.push(`群白名单 ${scope.group_allowlist.length}`);
+  if ((scope.user_allowlist || []).length) parts.push(`用户白名单 ${scope.user_allowlist.length}`);
+  if ((scope.umo_denylist || []).length || (scope.group_denylist || []).length || (scope.user_denylist || []).length) parts.push("含黑名单");
+  return parts.join(" · ");
+}
+
 function memoryModeLabel(mode) {
   return {
     inherit: "沿用聊天上下文",
@@ -1326,6 +1580,26 @@ function agentDisplayName(agent) {
 function ensureAgent(agent) {
   agent.application_scope ||= "entry";
   agent.entry_channel ||= "command";
+  agent.workflow_trigger ||= {};
+  agent.workflow_trigger.enabled ??= true;
+  agent.workflow_trigger.types ||= ["command"];
+  agent.workflow_trigger.command_names ||= ["agentlab", "al"];
+  agent.workflow_trigger.keywords ||= [];
+  agent.workflow_trigger.regex ||= [];
+  agent.workflow_trigger.cron ||= "";
+  agent.workflow_trigger.plugin_events ||= [];
+  agent.workflow_trigger.webhook_path ||= "";
+  agent.workflow_trigger.description ||= "";
+  agent.workflow_scope ||= {};
+  agent.workflow_scope.chat_types ||= ["private"];
+  agent.workflow_scope.platforms ||= [];
+  agent.workflow_scope.umo_allowlist ||= [];
+  agent.workflow_scope.umo_denylist ||= [];
+  agent.workflow_scope.group_allowlist ||= [];
+  agent.workflow_scope.group_denylist ||= [];
+  agent.workflow_scope.user_allowlist ||= [];
+  agent.workflow_scope.user_denylist ||= [];
+  agent.workflow_scope.admin_only ??= false;
   agent.entry_policy ||= {};
   agent.entry_policy.trigger_phrases ||= ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"];
   agent.entry_policy.trigger_keywords ||= ["持续推进", "长任务", "排查", "部署", "写插件", "改代码", "整理资料"];
@@ -1378,6 +1652,28 @@ function defaultAgentDraft() {
     application_scope: "entry",
     entry_channel: "command",
     trigger_mode: "confirm",
+    workflow_trigger: {
+      enabled: true,
+      types: ["command", "manual_webui"],
+      command_names: ["agentlab", "al"],
+      keywords: [],
+      regex: [],
+      cron: "",
+      plugin_events: [],
+      webhook_path: "",
+      description: "Workflow trigger policy for this canvas.",
+    },
+    workflow_scope: {
+      chat_types: ["private"],
+      platforms: [],
+      umo_allowlist: [],
+      umo_denylist: [],
+      group_allowlist: [],
+      group_denylist: [],
+      user_allowlist: [],
+      user_denylist: [],
+      admin_only: false,
+    },
     entry_policy: {
       trigger_phrases: ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"],
       trigger_keywords: ["持续推进", "长任务", "排查", "部署", "写插件", "改代码", "整理资料"],
@@ -2767,6 +3063,50 @@ function agentRows() {
     .join("");
 }
 
+function workflowAutomationPanel() {
+  const agent = ensureAgent(currentAgent || {});
+  const trigger = agent.workflow_trigger || {};
+  const scope = agent.workflow_scope || {};
+  const stats = agentStats(agent);
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><p class="card-kicker">工作流自动化</p><h2>启动方式、生效范围和运行概览</h2></div>
+        <button class="button secondary" data-route="workflow" type="button">切到画布编辑</button>
+      </div>
+      <div class="mini-stats workflow-report-stats">
+        <span>${agent.workflow_nodes?.length || 0} 节点</span>
+        <span>${agent.workflow_edges?.length || 0} 连线</span>
+        <span>运行 ${stats.active}</span>
+        <span>历史触发 ${stats.triggers}</span>
+      </div>
+      <div class="form-grid task-mode-form">
+        <label>工作流开关<select id="workflow-trigger-enabled">${labeledOptions(["true", "false"], String(trigger.enabled !== false), (value) => value === "true" ? "启用" : "停用")}</select></label>
+        <label>Webhook 路径<input id="workflow-trigger-webhook" value="${esc(trigger.webhook_path || "")}" placeholder="/agent-lab/moderation" /></label>
+        <label class="span-2">触发类型<div class="choice-grid compact-choice">${checkboxGroupHtml("workflow-trigger-type", WORKFLOW_TRIGGER_TYPES, trigger.types || ["command"], workflowTriggerTypeLabel)}</div></label>
+        <label>命令别名<textarea id="workflow-trigger-commands" rows="2" placeholder="agentlab&#10;al">${esc(listToLines(trigger.command_names || []))}</textarea></label>
+        <label>关键词<textarea id="workflow-trigger-keywords" rows="2" placeholder="广告&#10;垃圾话">${esc(listToLines(trigger.keywords || []))}</textarea></label>
+        <label>正则<textarea id="workflow-trigger-regex" rows="2" placeholder="https?://">${esc(listToLines(trigger.regex || []))}</textarea></label>
+        <label>Cron<textarea id="workflow-trigger-cron" rows="2" placeholder="*/15 * * * *">${esc(trigger.cron || "")}</textarea></label>
+        <label class="span-2">插件事件<textarea id="workflow-trigger-plugin-events" rows="2" placeholder="qq_guard.ban_requested">${esc(listToLines(trigger.plugin_events || []))}</textarea></label>
+        <label class="span-2">触发说明<textarea id="workflow-trigger-description" rows="2" placeholder="说明这个画布应该在什么情况下启动。">${esc(trigger.description || "")}</textarea></label>
+      </div>
+      <div class="form-grid task-mode-form">
+        <label class="span-2">生效会话<div class="choice-grid compact-choice">${checkboxGroupHtml("workflow-chat-type", WORKFLOW_CHAT_TYPES, scope.chat_types || ["private"], workflowChatTypeLabel)}</div></label>
+        <label>仅管理员<select id="workflow-scope-admin-only">${labeledOptions(["false", "true"], String(scope.admin_only === true), (value) => value === "true" ? "仅管理员 QQ" : "按白名单/黑名单")}</select></label>
+        <label>平台白名单<textarea id="workflow-scope-platforms" rows="2" placeholder="aiocqhttp">${esc(listToLines(scope.platforms || []))}</textarea></label>
+        <label>UMO 白名单<textarea id="workflow-scope-umo-allow" rows="2">${esc(listToLines(scope.umo_allowlist || []))}</textarea></label>
+        <label>UMO 黑名单<textarea id="workflow-scope-umo-deny" rows="2">${esc(listToLines(scope.umo_denylist || []))}</textarea></label>
+        <label>群白名单<textarea id="workflow-scope-group-allow" rows="2">${esc(listToLines(scope.group_allowlist || []))}</textarea></label>
+        <label>群黑名单<textarea id="workflow-scope-group-deny" rows="2">${esc(listToLines(scope.group_denylist || []))}</textarea></label>
+        <label>用户白名单<textarea id="workflow-scope-user-allow" rows="2">${esc(listToLines(scope.user_allowlist || []))}</textarea></label>
+        <label>用户黑名单<textarea id="workflow-scope-user-deny" rows="2">${esc(listToLines(scope.user_denylist || []))}</textarea></label>
+      </div>
+      <div class="note-line">当前：${esc(workflowTriggerSummary(agent))} / ${esc(workflowScopeSummary(agent))}</div>
+    </section>
+  `;
+}
+
 function agentStats(agent) {
   const active = (state.tasks || []).filter((task) => task.agent_id === agent.agent_id);
   const archived = (state.archives || []).filter((task) => task.agent_id === agent.agent_id);
@@ -2858,6 +3198,8 @@ function renderCanvas() {
       </div>
       ${agentPolicyOverview()}
     </section>
+
+    ${workflowAutomationPanel()}
 
     <section class="panel task-mode-basic">
       <div class="panel-head">
@@ -2997,6 +3339,7 @@ function workflowRightDock(report) {
       </div>
       <div class="workflow-dock-group">
         <button class="workflow-dock-button text" data-action="workflow-zoom-in" title="放大" aria-label="放大" type="button">+</button>
+        <button class="workflow-dock-button text" data-action="workflow-focus-content" title="聚焦到内容(快捷键 F)" aria-label="聚焦内容" type="button">FOC</button>
         <button class="workflow-dock-button text" data-action="workflow-fit" title="适配画布" aria-label="适配画布" type="button">FIT</button>
         <button class="workflow-dock-button text" data-action="workflow-zoom-reset" title="100%" aria-label="100%" type="button">1:1</button>
         <button class="workflow-dock-button text" data-action="workflow-zoom-out" title="缩小" aria-label="缩小" type="button">-</button>
@@ -4123,6 +4466,7 @@ function workflowEdgesPanel() {
     <div class="detail-box workflow-editor">
       <div class="panel-head"><div><p class="card-kicker">连线</p><h3>流程连接</h3></div></div>
       <div class="form-grid compact">
+        <label>出口类型<select id="workflow-edge-type">${labeledOptions(WORKFLOW_EDGE_TYPES, "success", workflowEdgeTypeLabel)}</select></label>
         <label>起点<select id="workflow-edge-from">${workflowNodeOptions(selectedWorkflowNodeId)}</select></label>
         <label>终点<select id="workflow-edge-to">${workflowNodeOptions(currentAgent.workflow_nodes[1]?.id || selectedWorkflowNodeId)}</select></label>
       </div>
@@ -4130,6 +4474,7 @@ function workflowEdgesPanel() {
       <div class="edge-list">
         ${(currentAgent.workflow_edges || []).map((edge, index) => `
           <div class="edge-row">
+            <small>${esc(workflowEdgeTypeLabel(edge.edge_type || "success"))}</small>
             <span>${esc(edge.from)} -> ${esc(edge.to)}</span>
             <button class="button danger tiny" data-action="delete-workflow-edge" data-index="${index}" type="button">删除</button>
           </div>
@@ -4189,6 +4534,34 @@ function readAgentForm() {
   currentAgent.application_scope = ["entry", "global"].includes(currentAgent.application_scope) ? currentAgent.application_scope : "entry";
   currentAgent.entry_channel = ["command", "natural", "webui"].includes(currentAgent.entry_channel) ? currentAgent.entry_channel : "command";
   currentAgent.trigger_mode = $("trigger-mode").value;
+  if ($("workflow-trigger-enabled")) {
+    currentAgent.workflow_trigger = {
+      enabled: $("workflow-trigger-enabled").value === "true",
+      types: checkedValues("workflow-trigger-type"),
+      command_names: linesToList($("workflow-trigger-commands")?.value || ""),
+      keywords: linesToList($("workflow-trigger-keywords")?.value || ""),
+      regex: linesToList($("workflow-trigger-regex")?.value || ""),
+      cron: $("workflow-trigger-cron")?.value.trim() || "",
+      plugin_events: linesToList($("workflow-trigger-plugin-events")?.value || ""),
+      webhook_path: $("workflow-trigger-webhook")?.value.trim() || "",
+      description: $("workflow-trigger-description")?.value.trim() || "",
+    };
+    if (!currentAgent.workflow_trigger.types.length) currentAgent.workflow_trigger.types = ["command"];
+  }
+  if ($("workflow-scope-admin-only")) {
+    currentAgent.workflow_scope = {
+      chat_types: checkedValues("workflow-chat-type"),
+      platforms: linesToList($("workflow-scope-platforms")?.value || ""),
+      umo_allowlist: linesToList($("workflow-scope-umo-allow")?.value || ""),
+      umo_denylist: linesToList($("workflow-scope-umo-deny")?.value || ""),
+      group_allowlist: linesToList($("workflow-scope-group-allow")?.value || ""),
+      group_denylist: linesToList($("workflow-scope-group-deny")?.value || ""),
+      user_allowlist: linesToList($("workflow-scope-user-allow")?.value || ""),
+      user_denylist: linesToList($("workflow-scope-user-deny")?.value || ""),
+      admin_only: $("workflow-scope-admin-only").value === "true",
+    };
+    if (!currentAgent.workflow_scope.chat_types.length) currentAgent.workflow_scope.chat_types = ["private"];
+  }
   if ($("entry-trigger-phrases")) currentAgent.entry_policy.trigger_phrases = linesToList($("entry-trigger-phrases").value);
   if ($("entry-trigger-keywords")) currentAgent.entry_policy.trigger_keywords = linesToList($("entry-trigger-keywords").value);
   currentAgent.entry_policy.require_confirmation = $("entry-require-confirmation").value === "true";
@@ -5091,13 +5464,13 @@ function workflowCanvasRenderPoint(event) {
   };
 }
 
-function addWorkflowEdge(from, to) {
+function addWorkflowEdge(from, to, edgeType = "success") {
   ensureWorkflow();
   if (!from || !to || from === to) return false;
   const exists = currentAgent.workflow_edges.some((edge) => edge.from === from && edge.to === to);
   if (exists) return false;
   pushWorkflowHistory();
-  currentAgent.workflow_edges.push({ from, to });
+  currentAgent.workflow_edges.push({ from, to, edge_type: edgeType || "success" });
   workflowCheckReport = null;
   return true;
 }
@@ -5423,8 +5796,19 @@ document.addEventListener("pointermove", (event) => {
     const dx = event.clientX - workflowPan.startX;
     const dy = event.clientY - workflowPan.startY;
     workflowPan.moved ||= Math.abs(dx) + Math.abs(dy) > 5;
-    workflowPanX = workflowPan.baseX + dx;
-    workflowPanY = workflowPan.baseY + dy;
+    const desiredPanX = workflowPan.baseX + dx;
+    const desiredPanY = workflowPan.baseY + dy;
+    const wrap = document.querySelector(".workflow-canvas-wrap");
+    const viewportWidth = wrap?.clientWidth || window.innerWidth || 1200;
+    const viewportHeight = wrap?.clientHeight || window.innerHeight || 760;
+    const worldRenderWidth = WORKFLOW_WORLD_WIDTH * workflowZoom;
+    const worldRenderHeight = WORKFLOW_WORLD_HEIGHT * workflowZoom;
+    const maxPanX = viewportWidth / 2;
+    const minPanX = viewportWidth / 2 - worldRenderWidth;
+    const maxPanY = viewportHeight / 2;
+    const minPanY = viewportHeight / 2 - worldRenderHeight;
+    workflowPanX = clamp(desiredPanX, minPanX, maxPanX);
+    workflowPanY = clamp(desiredPanY, minPanY, maxPanY);
     refreshWorkflowCanvasDom();
     return;
   }
@@ -5759,7 +6143,7 @@ document.addEventListener("click", async (event) => {
       else addRuntimeWorkflowNode(workflowMaterialDraft.refType, workflowMaterialDraft.refId, point);
       renderWorkflowStable();
     }
-    if (action === "workflow-zoom-in" || action === "workflow-zoom-out" || action === "workflow-zoom-reset" || action === "workflow-fit") {
+    if (action === "workflow-zoom-in" || action === "workflow-zoom-out" || action === "workflow-zoom-reset" || action === "workflow-fit" || action === "workflow-focus-content") {
       readAgentForm();
       if (action === "workflow-zoom-in") workflowZoom = clamp(workflowZoom + 0.1, 0.35, 1.6);
       if (action === "workflow-zoom-out") workflowZoom = clamp(workflowZoom - 0.1, 0.35, 1.6);
@@ -5775,6 +6159,48 @@ document.addEventListener("click", async (event) => {
         workflowZoom = clamp(widthFit, 0.35, 1);
         workflowPanX = 80;
         workflowPanY = 90;
+      }
+      if (action === "workflow-focus-content") {
+        ensureWorkflow();
+        const nodes = currentAgent.workflow_nodes || [];
+        if (!nodes.length) {
+          setFeedback("画布中没有节点。", "warn");
+          return;
+        }
+        const xs = nodes.flatMap(n => [n.x, n.x + WORKFLOW_NODE_WIDTH]);
+        const ys = nodes.flatMap(n => [n.y, n.y + WORKFLOW_NODE_HEIGHT]);
+        const minX = Math.min(...xs);
+        const maxX = Math.max(...xs);
+        const minY = Math.min(...ys);
+        const maxY = Math.max(...ys);
+        const contentWidth = maxX - minX;
+        const contentHeight = maxY - minY;
+        const contentCenterX = (minX + maxX) / 2;
+        const contentCenterY = (minY + maxY) / 2;
+        const wrap = document.querySelector(".workflow-canvas-wrap");
+        const viewportWidth = wrap?.clientWidth || 1200;
+        const viewportHeight = wrap?.clientHeight || 760;
+        const paddingRatio = 0.9;
+        const fitZoom = Math.min(
+          (viewportWidth * paddingRatio) / contentWidth,
+          (viewportHeight * paddingRatio) / contentHeight,
+          1.0
+        );
+        workflowZoom = clamp(fitZoom, 0.35, 1.0);
+        const size = workflowCanvasSize();
+        const offsetX = workflowWorldOffsetX(size);
+        const offsetY = workflowWorldOffsetY(size);
+        workflowPanX = viewportWidth / 2 - (contentCenterX + offsetX) * workflowZoom;
+        workflowPanY = viewportHeight / 2 - (contentCenterY + offsetY) * workflowZoom;
+        const worldRenderWidth = WORKFLOW_WORLD_WIDTH * workflowZoom;
+        const worldRenderHeight = WORKFLOW_WORLD_HEIGHT * workflowZoom;
+        const maxPanX = viewportWidth / 2;
+        const minPanX = viewportWidth / 2 - worldRenderWidth;
+        const maxPanY = viewportHeight / 2;
+        const minPanY = viewportHeight / 2 - worldRenderHeight;
+        workflowPanX = clamp(workflowPanX, minPanX, maxPanX);
+        workflowPanY = clamp(workflowPanY, minPanY, maxPanY);
+        setFeedback("已聚焦到内容中心。");
       }
       renderWorkflowStable();
     }
@@ -6023,7 +6449,8 @@ document.addEventListener("click", async (event) => {
       ensureWorkflow();
       const from = $("workflow-edge-from").value;
       const to = $("workflow-edge-to").value;
-      addWorkflowEdge(from, to);
+      const edgeType = $("workflow-edge-type")?.value || "success";
+      addWorkflowEdge(from, to, edgeType);
       workflowDryRunReport = null;
       renderWorkflowStable();
     }
@@ -6341,19 +6768,27 @@ document.addEventListener("input", (event) => {
   if (!target) return;
   if (target.dataset.action === "filter-plugins") {
     pluginFilter = target.value;
-    renderAndRestoreInput("filter-plugins", pluginFilter);
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
   }
   if (target.dataset.action === "filter-tools") {
     toolFilter = target.value;
-    renderAndRestoreInput("filter-tools", toolFilter);
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
   }
   if (target.dataset.action === "filter-blueprints") {
     blueprintFilter = target.value;
-    renderAndRestoreInput("filter-blueprints", blueprintFilter);
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
   }
   if (target.dataset.action === "filter-workflow-materials") {
     workflowMaterialFilter = target.value;
-    renderWorkflowFilterInput("filter-workflow-materials", workflowMaterialFilter);
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
   }
 });
 
@@ -6447,6 +6882,22 @@ document.addEventListener("DOMContentLoaded", () => {
     route = "settings";
     render();
   });
+
+  document.addEventListener("keydown", (event) => {
+    if (route !== "workflow") return;
+    if (document.activeElement?.matches?.(WORKFLOW_FIELD_SELECTOR)) return;
+    if (event.key === "f" || event.key === "F") {
+      event.preventDefault();
+      const btn = document.querySelector('[data-action="workflow-focus-content"]');
+      btn?.click();
+    }
+    if (event.key === "Home") {
+      event.preventDefault();
+      focusWorkflowStart();
+      renderWorkflowStable();
+    }
+  });
+
   initAuth();
 });
 

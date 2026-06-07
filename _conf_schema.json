@@ -1,97 +1,103 @@
 {
   "private_only": {
     "type": "bool",
-    "description": "仅允许私聊使用",
-    "default": true,
-    "hint": "第一版建议开启，避免群聊误触发、权限扩散和上下文混杂。"
+    "description": "Legacy private-only fallback",
+    "default": false,
+    "hint": "Compatibility fallback only. New workflows should use per-workflow scope: private/group, allowlist/denylist and admin-only."
+  },
+  "workflow_admin_ids": {
+    "type": "string",
+    "description": "Workflow admin QQ IDs",
+    "default": "",
+    "hint": "Comma or newline separated QQ IDs used by per-workflow admin_only scope."
   },
   "standalone_webui_enabled": {
     "type": "bool",
-    "description": "启用独立 Agent Lab 控制台",
+    "description": "Enable standalone Agent Lab console",
     "default": true,
-    "hint": "启动插件自带 Web 服务，不再依赖 AstrBot Dashboard 插件 Page。"
+    "hint": "Starts the built-in WebUI instead of relying on an AstrBot dashboard page."
   },
   "standalone_webui_host": {
     "type": "string",
-    "description": "独立控制台监听地址",
+    "description": "Standalone console host",
     "default": "127.0.0.1",
-    "hint": "默认仅本机可访问；如需局域网访问可改为 0.0.0.0，并务必设置访问 Token。"
+    "hint": "Use 0.0.0.0 only when you also configure an access token."
   },
   "standalone_webui_port": {
     "type": "int",
-    "description": "独立控制台监听端口",
+    "description": "Standalone console port",
     "default": 8788,
-    "hint": "访问地址默认为 http://127.0.0.1:8788"
+    "hint": "Default URL: http://127.0.0.1:8788"
   },
   "standalone_webui_token": {
     "type": "string",
-    "description": "独立控制台访问 Token",
+    "description": "Standalone console API token",
     "default": "",
-    "hint": "为空时不校验 API Token；建议公网或局域网监听时填写。"
+    "hint": "Recommended when the console is exposed beyond localhost."
   },
   "inject_agent_mode_policy": {
     "type": "bool",
-    "description": "注入 Agent Mode 自主判断协议",
+    "description": "Inject workflow entry policy into conversation",
     "default": true,
-    "hint": "开启后 bot 可根据用户自然语言与 Agent 配置判断是否进入 Agent Mode。"
+    "hint": "Allows the bot to decide whether natural language should enter a configured workflow."
   },
   "install_agent_mode_skill": {
     "type": "bool",
-    "description": "安装 agent-mode skill",
+    "description": "Install agent-mode skill",
     "default": true,
-    "hint": "把 Agent Mode 的触发、审批、心跳和归档规范同步为 AstrBot Skill。"
+    "hint": "Syncs entry, approval, heartbeat and archive conventions into an AstrBot Skill."
   },
   "entry_summary_turns": {
     "type": "int",
-    "description": "入口摘要读取最近轮数",
+    "description": "Recent turns used for entry summary",
     "default": 24,
-    "hint": "进入 Agent Mode 时读取最近对话并压缩成 task_brief。"
+    "hint": "Used when a workflow compresses chat context into task_brief."
   },
   "fallback_summary_provider_id": {
     "type": "string",
-    "description": "备用总结模型 Provider ID",
+    "description": "Fallback summary provider ID",
     "default": "",
-    "hint": "当前会话模型总结失败时使用；为空则只用当前模型。"
+    "hint": "Uses the current provider when empty."
   },
   "max_steps_per_tick": {
     "type": "int",
-    "description": "每次 tick 最大工具步数",
+    "description": "Max tool steps per tick",
     "default": 12,
-    "hint": "限制单轮执行范围，避免失控长循环。"
+    "hint": "Limits one runtime tick to avoid runaway loops."
   },
   "tool_call_timeout": {
     "type": "int",
-    "description": "工具调用超时秒数",
+    "description": "Tool call timeout seconds",
     "default": 120,
-    "hint": "单个工具调用的最大等待时间。"
+    "hint": "Maximum wait time for a single tool call."
   },
   "agent_mode_progress_notice_mode": {
     "type": "string",
-    "description": "Agent Mode 运行提示模式",
+    "description": "Progress notice mode",
     "default": "agent_lab",
     "options": ["agent_lab", "astrbot", "silent"],
-    "hint": "agent_lab=插件按节流策略发送任务进度；astrbot=按 AstrBot 原生工具调用样式逐次提示；silent=只记录任务状态，不主动发送进度/工具提示。"
+    "hint": "agent_lab sends throttled progress notices; astrbot follows native tool-call style; silent records state only."
   },
   "agent_mode_progress_every_tools": {
     "type": "int",
-    "description": "插件进度提示工具间隔",
+    "description": "Progress notice tool interval",
     "default": 3,
-    "hint": "仅 agent_lab 模式生效；每累计多少次工具调用允许发送一次插件进度提示，首个工具调用总会提示。"
+    "hint": "Only applies when progress notice mode is agent_lab."
   },
   "agent_mode_progress_min_interval_seconds": {
     "type": "int",
-    "description": "插件进度提示最小秒间隔",
+    "description": "Progress notice minimum interval seconds",
     "default": 45,
-    "hint": "仅 agent_lab 模式生效；距离上次进度提示不足该秒数时跳过，填 0 表示只按工具次数节流。"
+    "hint": "Set 0 to rely only on tool-call count throttling."
   },
   "llm_compress_keep_recent": {
     "type": "int",
-    "description": "Agent loop 压缩保留最近消息数",
+    "description": "Recent messages kept during compression",
     "default": 6
   },
   "truncate_turns": {
     "type": "int",
-    "description": "Agent loop 触发截断时丢弃轮数",
+    "description": "Turns dropped when truncating on trigger",
     "default": 2
   },
   "workflow_auto_steps_per_tick": {

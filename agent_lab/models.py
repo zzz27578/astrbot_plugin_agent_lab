@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -12,6 +13,16 @@ def now_iso() -> str:
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid4().hex[:12]}"
+
+
+def _clean_string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = re.split(r"[\n,，、;；]+", value)
+    elif isinstance(value, list):
+        items = value
+    else:
+        items = []
+    return [str(item).strip() for item in items if str(item).strip()]
 
 
 @dataclass
@@ -297,6 +308,122 @@ class IsolationPolicy:
 
 
 @dataclass
+class WorkflowTrigger:
+    enabled: bool = True
+    types: list[str] = field(default_factory=lambda: ["command"])
+    command_names: list[str] = field(default_factory=lambda: ["agentlab", "al"])
+    keywords: list[str] = field(default_factory=list)
+    regex: list[str] = field(default_factory=list)
+    cron: str = ""
+    plugin_events: list[str] = field(default_factory=list)
+    webhook_path: str = ""
+    description: str = ""
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "WorkflowTrigger":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        base.enabled = bool(base.enabled)
+        valid_types = {
+            "command",
+            "natural",
+            "message_monitor",
+            "keyword",
+            "regex",
+            "schedule",
+            "plugin_event",
+            "webhook",
+            "manual_webui",
+        }
+        if isinstance(base.types, str):
+            base.types = [base.types]
+        elif not isinstance(base.types, list):
+            base.types = []
+        base.types = [
+            str(item).strip()
+            for item in base.types
+            if str(item).strip() in valid_types
+        ] or ["command"]
+        for key in ("command_names", "keywords", "regex", "plugin_events"):
+            value = getattr(base, key)
+            if isinstance(value, str):
+                value = [part.strip() for part in value.replace("；", ",").split(",")]
+            elif not isinstance(value, list):
+                value = []
+            setattr(base, key, [str(item).strip() for item in value if str(item).strip()])
+        for key in ("command_names", "keywords", "regex", "plugin_events"):
+            setattr(base, key, _clean_string_list(getattr(base, key)))
+        base.cron = str(base.cron or "").strip()[:120]
+        base.webhook_path = str(base.webhook_path or "").strip()[:200]
+        base.description = str(base.description or "").strip()[:500]
+        return base
+
+
+@dataclass
+class WorkflowScope:
+    chat_types: list[str] = field(default_factory=lambda: ["private"])
+    platforms: list[str] = field(default_factory=list)
+    umo_allowlist: list[str] = field(default_factory=list)
+    umo_denylist: list[str] = field(default_factory=list)
+    group_allowlist: list[str] = field(default_factory=list)
+    group_denylist: list[str] = field(default_factory=list)
+    user_allowlist: list[str] = field(default_factory=list)
+    user_denylist: list[str] = field(default_factory=list)
+    admin_only: bool = False
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "WorkflowScope":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        valid_chat_types = {"private", "group"}
+        for key in (
+            "chat_types",
+            "platforms",
+            "umo_allowlist",
+            "umo_denylist",
+            "group_allowlist",
+            "group_denylist",
+            "user_allowlist",
+            "user_denylist",
+        ):
+            value = getattr(base, key)
+            if isinstance(value, str):
+                value = [part.strip() for part in value.replace("；", ",").split(",")]
+            elif not isinstance(value, list):
+                value = []
+            cleaned = [str(item).strip() for item in value if str(item).strip()]
+            if key == "chat_types":
+                cleaned = [item for item in cleaned if item in valid_chat_types]
+            setattr(base, key, cleaned)
+        for key in (
+            "chat_types",
+            "platforms",
+            "umo_allowlist",
+            "umo_denylist",
+            "group_allowlist",
+            "group_denylist",
+            "user_allowlist",
+            "user_denylist",
+        ):
+            cleaned = _clean_string_list(getattr(base, key))
+            if key == "chat_types":
+                cleaned = [item for item in cleaned if item in valid_chat_types]
+            setattr(base, key, cleaned)
+        if not base.chat_types:
+            base.chat_types = ["private"]
+        base.admin_only = bool(base.admin_only)
+        return base
+
+
+@dataclass
 class AgentSpec:
     agent_id: str = field(default_factory=lambda: new_id("agent"))
     name: str = ""
@@ -308,6 +435,8 @@ class AgentSpec:
     application_scope: str = "entry"  # entry | global
     entry_channel: str = "command"  # command | natural | webui
     trigger_mode: str = "confirm"  # manual | confirm | smart | always
+    workflow_trigger: WorkflowTrigger = field(default_factory=WorkflowTrigger)
+    workflow_scope: WorkflowScope = field(default_factory=WorkflowScope)
     entry_policy: EntryPolicy = field(default_factory=EntryPolicy)
     isolation_policy: IsolationPolicy = field(default_factory=IsolationPolicy)
     system_prompt: str = (
@@ -622,6 +751,12 @@ class AgentSpec:
         )
         payload["heartbeat_policy"] = HeartbeatPolicy.from_dict(
             payload.get("heartbeat_policy")
+        )
+        payload["workflow_trigger"] = WorkflowTrigger.from_dict(
+            payload.get("workflow_trigger")
+        )
+        payload["workflow_scope"] = WorkflowScope.from_dict(
+            payload.get("workflow_scope")
         )
         payload["entry_policy"] = EntryPolicy.from_dict(payload.get("entry_policy"))
         payload["isolation_policy"] = IsolationPolicy.from_dict(
