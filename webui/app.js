@@ -15,6 +15,7 @@ const GAME_ICON_BASE = "https://raw.githubusercontent.com/Nieobie/Game-Icon-Pack
 const GAME_ICONS = {
   menu: `${GAME_ICON_BASE}/1.UI/menu-open.svg`,
   gridAdd: `${GAME_ICON_BASE}/1.UI/grid-add.svg`,
+  pointer: `${GAME_ICON_BASE}/3.Editing%20Tools/select.svg`,
   select: `${GAME_ICON_BASE}/3.Editing%20Tools/select.svg`,
   copy: `${GAME_ICON_BASE}/3.Editing%20Tools/copy.svg`,
   trash: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/trash.svg`,
@@ -42,13 +43,14 @@ const WORKFLOW_CANVAS_MIN_WIDTH = 7200;
 const WORKFLOW_CANVAS_MIN_HEIGHT = 2800;
 const WORKFLOW_CANVAS_MIN_X = -1400;
 const WORKFLOW_CANVAS_MAX_X = 12000;
+const WORKFLOW_CANVAS_MIN_Y = -1400;
 const WORKFLOW_CANVAS_MAX_Y = 8000;
 const WORKFLOW_MINIMAP_MIN_WIDTH = 104;
 const WORKFLOW_MINIMAP_MIN_HEIGHT = 84;
 const WORKFLOW_MINIMAP_MAX_WIDTH = 360;
 const WORKFLOW_MINIMAP_MAX_HEIGHT = 260;
 const WORKFLOW_FIELD_SELECTOR = ".workflow-inspector-drawer input, .workflow-inspector-drawer select, .workflow-inspector-drawer textarea, .workflow-tool-drawer input";
-const WORKFLOW_CANVAS_BLOCKER_SELECTOR = ".workflow-tool-drawer, .workflow-inspector-drawer, .workflow-page-top, .workflow-context-menu, .workflow-report-panel, .workflow-minimap, .workflow-nav-toggle, .workflow-toolbox-tab";
+const WORKFLOW_CANVAS_BLOCKER_SELECTOR = ".workflow-tool-drawer, .workflow-inspector-drawer, .workflow-page-top, .workflow-context-menu, .workflow-report-panel, .workflow-minimap, .workflow-nav-toggle, .workflow-right-dock";
 const WORKFLOW_KINDS = [
   "state",
   "tool",
@@ -68,17 +70,29 @@ const WORKFLOW_ACTIONS = [
   "confirm_entry",
   "summarize_entry",
   "restore_isolation",
+  "variable_set",
+  "variable_get",
+  "text_template",
+  "json_transform",
+  "merge",
+  "iterator",
+  "subflow_call",
   "plan",
   "route_condition",
+  "conditional_router",
   "parallel_branch",
   "run_tools",
   "call_api",
+  "http_request",
+  "file_operation",
+  "code_exec",
   "transform_context",
   "retrieve_memory",
   "request_approval",
   "wait_user",
   "handoff",
   "validate_output",
+  "debate_validation",
   "retry",
   "save_state",
   "save_memory",
@@ -88,24 +102,39 @@ const WORKFLOW_ACTIONS = [
   "exit_summary",
   "manual",
 ];
+const WORKFLOW_PERMISSION_PROFILES = ["ordinary", "work", "code", "web", "danger"];
+const WORKFLOW_REF_TYPES = ["", "tool", "api", "plugin", "skill", "module", "workflow"];
+const WORKFLOW_WORKER_TYPES = ["", "GenericWorker", "ResearchWorker", "CodeReaderWorker", "PatchWorker", "TestWorker", "ApiWorker", "ToolWorker"];
 
 const WORKFLOW_ACTION_RUNTIME_TYPES = {
   summarize_entry: "entry",
   confirm_entry: "entry",
   restore_isolation: "entry",
+  variable_set: "state",
+  variable_get: "state",
+  text_template: "state",
+  json_transform: "state",
+  merge: "state",
+  iterator: "state",
+  subflow_call: "state",
   retrieve_memory: "memory",
   save_memory: "memory",
   save_state: "state",
   heartbeat: "state",
   transform_context: "state",
   route_condition: "decision",
+  conditional_router: "decision",
   parallel_branch: "parallel",
   run_tools: "tool",
   call_api: "api",
+  http_request: "api",
+  file_operation: "tool",
+  code_exec: "tool",
   request_approval: "guard",
   wait_user: "guard",
   handoff: "guard",
   validate_output: "validation",
+  debate_validation: "validation",
   retry: "decision",
   notify: "notification",
   archive: "terminal",
@@ -134,14 +163,26 @@ const WORKFLOW_EXECUTABLE_ACTIONS = new Set([
   "save_state",
   "heartbeat",
   "transform_context",
+  "variable_set",
+  "variable_get",
+  "text_template",
+  "json_transform",
+  "merge",
+  "iterator",
+  "subflow_call",
   "retrieve_memory",
   "save_memory",
   "parallel_branch",
   "call_api",
+  "http_request",
   "run_tools",
+  "file_operation",
+  "code_exec",
   "route_condition",
+  "conditional_router",
   "retry",
   "validate_output",
+  "debate_validation",
   "request_approval",
   "wait_user",
   "handoff",
@@ -768,6 +809,13 @@ function esc(value) {
 }
 
 function iconImg(name, label = "") {
+  if (name === "pointer") {
+    return `
+      <svg class="game-icon workflow-pointer-icon" viewBox="0 0 24 24" role="img" aria-label="${esc(label)}" focusable="false">
+        <path d="M5.2 3.8 18.6 12l-6.1 1.4 3.5 5.8-2.8 1.7-3.5-5.8-4.5 4.4V3.8Z" fill="currentColor"/>
+      </svg>
+    `;
+  }
   const src = GAME_ICONS[name];
   if (!src) return "";
   return `<img class="game-icon" src="${esc(src)}" alt="${esc(label)}" loading="lazy" />`;
@@ -870,6 +918,38 @@ function workflowNodeParamsJson(item = {}) {
   const raw = item.params ?? item.tool_args ?? item.arguments ?? item.api_payload ?? item.payload ?? "";
   if (raw && typeof raw === "object") return JSON.stringify(raw, null, 2);
   return String(raw || "");
+}
+
+function workflowObjectJson(value) {
+  if (!value) return "";
+  if (typeof value === "object") return JSON.stringify(value, null, 2);
+  return String(value || "");
+}
+
+function parseWorkflowObjectField(id, label, { allowArray = false } = {}) {
+  const raw = $(id)?.value.trim() || "";
+  if (!raw) return null;
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`${label} JSON 格式不正确。`);
+  }
+  if (!parsed || typeof parsed !== "object" || (!allowArray && Array.isArray(parsed))) {
+    throw new Error(`${label} JSON 需要是对象。`);
+  }
+  return parsed;
+}
+
+function setNodeStringField(node, field, value) {
+  const text = String(value || "").trim();
+  if (text) node[field] = text;
+  else delete node[field];
+}
+
+function setNodeJsonField(node, field, value) {
+  if (value === null || value === undefined || value === "") delete node[field];
+  else node[field] = value;
 }
 
 function token() {
@@ -1154,17 +1234,29 @@ function workflowActionLabel(action) {
     summarize_entry: "入口摘要",
     confirm_entry: "开启确认",
     restore_isolation: "记录进入前状态",
+    variable_set: "写入变量",
+    variable_get: "读取变量",
+    text_template: "文本模板",
+    json_transform: "JSON 转换",
+    merge: "合并数据",
+    iterator: "迭代准备",
+    subflow_call: "子流程调用",
     plan: "计划拆解",
     route_condition: "条件分流",
+    conditional_router: "条件路由",
     parallel_branch: "并行分支",
     run_tools: "工具执行",
     call_api: "API 调用",
+    http_request: "HTTP 请求",
+    file_operation: "文件操作",
+    code_exec: "代码执行",
     transform_context: "上下文整理",
     retrieve_memory: "记忆检索",
     request_approval: "请求审批",
     wait_user: "等待用户",
     handoff: "人工接管",
     validate_output: "结果校验",
+    debate_validation: "多视角校验",
     retry: "有限重试",
     save_state: "记录进度",
     save_memory: "保存任务记录",
@@ -1174,6 +1266,41 @@ function workflowActionLabel(action) {
     exit_summary: "结束回流",
     manual: "人工判断",
   }[action] || action;
+}
+
+function workflowPermissionLabel(profile) {
+  return {
+    ordinary: "普通：只读安全动作",
+    work: "工作：常规工具/API",
+    code: "代码：文件、搜索、代码工具",
+    web: "联网：Web/Search/API",
+    danger: "高危：允许高风险工具",
+  }[profile] || profile || "工作";
+}
+
+function workflowRefTypeLabel(type) {
+  return {
+    "": "不绑定",
+    tool: "AstrBot 工具",
+    api: "自定义 API",
+    plugin: "AstrBot 插件",
+    skill: "Skill",
+    module: "模块/蓝图",
+    workflow: "子工作流",
+  }[type] || type;
+}
+
+function workflowWorkerTypeLabel(type) {
+  return {
+    "": "自动推断",
+    GenericWorker: "通用工作包",
+    ResearchWorker: "资料检索",
+    CodeReaderWorker: "代码阅读",
+    PatchWorker: "代码修改",
+    TestWorker: "测试验证",
+    ApiWorker: "API 调用",
+    ToolWorker: "工具调用",
+  }[type] || type;
 }
 
 function labeledOptions(values, selected, labeler) {
@@ -1890,7 +2017,7 @@ function workflowNodeDropPosition(point, fallbackStage, index = 0) {
   const pos = point || defaultWorkflowPosition(fallbackStage || "plan", index);
   return {
     x: clamp(Number(pos.x || 0) - (point ? WORKFLOW_NODE_WIDTH / 2 : 0), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X),
-    y: clamp(Number(pos.y || 0) - (point ? WORKFLOW_NODE_HEIGHT / 2 : 0), 0, WORKFLOW_CANVAS_MAX_Y),
+    y: clamp(Number(pos.y || 0) - (point ? WORKFLOW_NODE_HEIGHT / 2 : 0), WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y),
   };
 }
 
@@ -2048,11 +2175,17 @@ function ensureWorkflow() {
     parallel_group: String(node.parallel_group || "").trim(),
     prompt: String(node.prompt || "").trim(),
     x: clamp(Number(node.x ?? defaultWorkflowPosition(workflowStage(node), index).x), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X),
-    y: clamp(Number(node.y ?? defaultWorkflowPosition(workflowStage(node), index).y), 0, WORKFLOW_CANVAS_MAX_Y),
+    y: clamp(Number(node.y ?? defaultWorkflowPosition(workflowStage(node), index).y), WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y),
   }));
   const ids = new Set(currentAgent.workflow_nodes.map((node) => node.id));
   currentAgent.workflow_edges = currentAgent.workflow_edges
-    .map((edge) => ({ from: String(edge.from || "").trim(), to: String(edge.to || "").trim() }))
+    .map((edge) => ({
+      ...edge,
+      from: String(edge.from || "").trim(),
+      to: String(edge.to || "").trim(),
+      edge_type: String(edge.edge_type || edge.type || "success").trim() || "success",
+      condition: String(edge.condition || edge.when || "").trim(),
+    }))
     .filter((edge) => ids.has(edge.from) && ids.has(edge.to));
   if (!selectedWorkflowNodeId || !ids.has(selectedWorkflowNodeId)) {
     selectedWorkflowNodeId = currentAgent.workflow_nodes[0]?.id || "";
@@ -2823,6 +2956,59 @@ function workflowCanvasTransform() {
   return `translate(${workflowPanX}px, ${workflowPanY}px) scale(${workflowZoom})`;
 }
 
+function workflowAgentOptions() {
+  const agents = [...(state.agents || [])];
+  if (currentAgent && !agents.some((agent) => agent.agent_id === currentAgent.agent_id)) {
+    agents.unshift(currentAgent);
+  }
+  if (!agents.length) agents.push(currentAgent || defaultAgentDraft());
+  return agents.map((agent) => {
+    const id = agent.agent_id || "";
+    const selected = id ? id === currentAgent.agent_id : !currentAgent.agent_id;
+    const suffix = id === state.default_agent_id ? " · 默认" : (!id ? " · 草稿" : "");
+    return `
+      <option value="${esc(id)}" ${selected ? "selected" : ""}>
+        ${esc(agentDisplayName(agent) + suffix)}
+      </option>
+    `;
+  }).join("");
+}
+
+function workflowRightDock(report) {
+  const selectedCount = workflowSelectedNodeIds.size;
+  const valid = report?.valid;
+  return `
+    <aside class="workflow-right-dock" aria-label="画布工具">
+      <div class="workflow-dock-group">
+        <button class="workflow-dock-button ${workflowSelectionMode ? "" : "active"}" data-action="workflow-pointer-mode" title="正常操作" aria-label="正常操作" type="button">${iconImg("pointer", "正常操作")}</button>
+        <button class="workflow-dock-button ${workflowSelectionMode ? "active" : ""}" data-action="workflow-select-mode" title="框选节点" aria-label="框选节点" type="button">${iconImg("select", "框选节点")}</button>
+        <button class="workflow-dock-button" data-action="copy-selected-workflow-nodes" title="复制框选节点" aria-label="复制框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("copy", "复制")}</button>
+        <button class="workflow-dock-button danger" data-action="delete-selected-workflow-nodes" title="删除框选节点" aria-label="删除框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
+      </div>
+      <div class="workflow-dock-group">
+        <button class="workflow-dock-button" data-action="workflow-undo" title="撤销" aria-label="撤销" ${workflowHistoryPast.length ? "" : "disabled"} type="button">${iconImg("undo", "撤销")}</button>
+        <button class="workflow-dock-button" data-action="workflow-redo" title="重做" aria-label="重做" ${workflowHistoryFuture.length ? "" : "disabled"} type="button">${iconImg("redo", "重做")}</button>
+      </div>
+      <div class="workflow-dock-group">
+        <button class="workflow-dock-button text" data-action="check-workflow" title="静态检查" aria-label="静态检查" type="button">${valid ? "OK" : "CHK"}</button>
+        <button class="workflow-dock-button text" data-action="dry-run-workflow" title="预跑诊断" aria-label="预跑诊断" type="button">RUN</button>
+        <button class="workflow-dock-button text" data-action="auto-layout-workflow" title="自动整理" aria-label="自动整理" type="button">LAY</button>
+        <button class="workflow-dock-button text" data-action="reset-workflow" title="恢复默认工作流" aria-label="恢复默认工作流" type="button">RST</button>
+      </div>
+      <div class="workflow-dock-group">
+        <button class="workflow-dock-button text" data-action="workflow-zoom-in" title="放大" aria-label="放大" type="button">+</button>
+        <button class="workflow-dock-button text" data-action="workflow-fit" title="适配画布" aria-label="适配画布" type="button">FIT</button>
+        <button class="workflow-dock-button text" data-action="workflow-zoom-reset" title="100%" aria-label="100%" type="button">1:1</button>
+        <button class="workflow-dock-button text" data-action="workflow-zoom-out" title="缩小" aria-label="缩小" type="button">-</button>
+      </div>
+      <div class="workflow-dock-group">
+        <button class="workflow-dock-button" data-action="toggle-workflow-toolbox" title="${workflowToolboxOpen ? "收起素材" : "打开素材"}" aria-label="${workflowToolboxOpen ? "收起素材" : "打开素材"}" type="button">${iconImg("menu", "素材")}</button>
+        <button class="workflow-dock-button text primary" data-action="save-agent" title="保存方案" aria-label="保存方案" type="button">SAVE</button>
+      </div>
+    </aside>
+  `;
+}
+
 function renderWorkflowPage() {
   currentAgent = ensureAgent(currentAgent || {});
   ensureWorkflow();
@@ -2838,17 +3024,15 @@ function renderWorkflowPage() {
         ${workflowCanvas()}
         ${workflowContextMenuHtml()}
       </main>
-      <div class="workflow-ribbon-hover-zone" aria-hidden="true"></div>
       <header class="workflow-page-top">
-        <div class="workflow-ribbon-handle" aria-hidden="true"></div>
+        <div class="workflow-page-title">
+          <span>工作流方案</span>
+          <strong>${esc(agentDisplayName(currentAgent))}</strong>
+        </div>
         <label class="workflow-agent-picker">
           <span>当前方案</span>
           <select data-action="workflow-agent-select">
-            ${(state.agents || [currentAgent]).map((agent) => `
-              <option value="${esc(agent.agent_id || "")}" ${agent.agent_id === currentAgent.agent_id ? "selected" : ""}>
-                ${esc(agentDisplayName(agent))}
-              </option>
-            `).join("")}
+            ${workflowAgentOptions()}
           </select>
         </label>
         <div class="workflow-page-status">
@@ -2856,26 +3040,20 @@ function renderWorkflowPage() {
           ${badge(`${currentAgent.workflow_edges.length} 连线`)}
           ${badge(report.valid ? "检查通过" : `${report.errors || 0} 错误 / ${report.warnings || 0} 提醒`, report.valid ? "ok" : "warn")}
         </div>
-        <div class="workflow-template-bar">
-          <button class="button secondary" data-action="apply-workflow-template" data-id="code_task" type="button">代码任务</button>
-          <button class="button secondary" data-action="apply-workflow-template" data-id="research_task" type="button">资料研究</button>
-          <button class="button secondary" data-action="apply-workflow-template" data-id="plugin_call" type="button">插件调用</button>
-          <button class="button secondary" data-action="apply-workflow-template" data-id="long_heartbeat" type="button">长任务心跳</button>
+        <div class="workflow-scheme-actions">
+          <button class="button tiny secondary" data-action="new-agent" type="button">新建</button>
+          <button class="button tiny secondary" data-action="duplicate-agent" type="button">复制</button>
+          <button class="button tiny secondary" data-action="make-default" type="button">默认</button>
+          <button class="button tiny danger" data-action="delete-agent" ${((state.agents || []).length <= 1 || !currentAgent.agent_id) ? "disabled" : ""} type="button">删除</button>
         </div>
-      <div class="workflow-page-actions">
-          <button class="button secondary icon-button" data-action="workflow-select-mode" title="${workflowSelectionMode ? "退出框选" : "框选节点"}" type="button">${iconImg("select", "框选")}</button>
-          <button class="button secondary icon-button" data-action="copy-selected-workflow-nodes" title="复制框选节点" ${workflowSelectedNodeIds.size ? "" : "disabled"} type="button">${iconImg("copy", "复制")}</button>
-          <button class="button secondary icon-button" data-action="delete-selected-workflow-nodes" title="删除框选节点" ${workflowSelectedNodeIds.size ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
-          <button class="button secondary icon-button" data-action="workflow-undo" title="上一步" ${workflowHistoryPast.length ? "" : "disabled"} type="button">${iconImg("undo", "上一步")}</button>
-          <button class="button secondary icon-button" data-action="workflow-redo" title="下一步" ${workflowHistoryFuture.length ? "" : "disabled"} type="button">${iconImg("redo", "下一步")}</button>
-          <button class="button secondary" data-action="check-workflow" type="button">静态检查</button>
-          <button class="button secondary" data-action="dry-run-workflow" type="button">预跑诊断</button>
-          <button class="button secondary" data-action="auto-layout-workflow" type="button">自动整理</button>
-          <button class="button secondary" data-action="reset-workflow" type="button">恢复默认</button>
-          <button class="button" data-action="save-agent" type="button">保存方案</button>
+        <div class="workflow-template-bar">
+          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="code_task" type="button">代码</button>
+          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="research_task" type="button">研究</button>
+          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="plugin_call" type="button">插件</button>
+          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="long_heartbeat" type="button">心跳</button>
         </div>
       </header>
-      <button class="workflow-toolbox-tab" data-action="toggle-workflow-toolbox" title="${workflowToolboxOpen ? "收起素材" : "打开素材"}" type="button" aria-label="${workflowToolboxOpen ? "收起素材" : "打开素材"}">${iconImg("menu", "素材")}</button>
+      ${workflowRightDock(report)}
       <aside class="workflow-tool-drawer">
         <div class="drawer-head">
           <div><p class="card-kicker">模块库</p><h3>拼图素材 <small>可直接拖拽</small></h3></div>
@@ -3158,17 +3336,27 @@ function workflowCanvasSize() {
   const maxX = nodes.reduce((value, node) => Math.max(value, Number(node.x || 0)), 0);
   const maxY = nodes.reduce((value, node) => Math.max(value, Number(node.y || 0)), 0);
   const minX = Math.min(WORKFLOW_CANVAS_MIN_X, nodes.reduce((value, node) => Math.min(value, Number(node.x || 0)), 0));
+  const minY = Math.max(
+    WORKFLOW_CANVAS_MIN_Y,
+    Math.min(0, nodes.reduce((value, node) => Math.min(value, Number(node.y || 0)), 0)),
+  );
   return {
     minX,
+    minY,
     maxX: Math.max(WORKFLOW_CANVAS_MAX_X, maxX + WORKFLOW_NODE_WIDTH),
     width: Math.max(WORKFLOW_CANVAS_MIN_WIDTH, maxX - minX + WORKFLOW_NODE_WIDTH + 260),
-    height: Math.max(WORKFLOW_CANVAS_MIN_HEIGHT, maxY + WORKFLOW_NODE_HEIGHT + 180),
+    height: Math.max(WORKFLOW_CANVAS_MIN_HEIGHT, maxY - minY + WORKFLOW_NODE_HEIGHT + 220),
   };
 }
 
 function workflowWorldOffsetX(size = null) {
   const data = size || workflowCanvasSize();
   return Math.abs(Math.min(0, Number(data.minX || 0))) + 140;
+}
+
+function workflowWorldOffsetY(size = null) {
+  const data = size || workflowCanvasSize();
+  return Math.abs(Math.min(0, Number(data.minY || 0))) + 120;
 }
 
 function workflowCanvas() {
@@ -3178,6 +3366,7 @@ function workflowCanvas() {
   const scaledHeight = Math.ceil(size.height * workflowZoom);
   const hasPending = Boolean(workflowPendingPort);
   const worldOffsetX = workflowWorldOffsetX(size);
+  const worldOffsetY = workflowWorldOffsetY(size);
   return `
     <div class="workflow-canvas-toolbar">
       <div class="workflow-canvas-meta">
@@ -3194,24 +3383,15 @@ function workflowCanvas() {
     </div>
     <div class="workflow-canvas-wrap">
       <div class="workflow-canvas-space" style="width:${scaledWidth}px;height:${scaledHeight}px">
-        <div class="workflow-canvas ${hasPending ? "is-connecting" : ""}" data-zoom="${workflowZoom}" data-world-offset-x="${worldOffsetX}" style="width:${size.width}px;height:${size.height}px;transform:${workflowCanvasTransform()}">
-          <div class="workflow-lanes">
-            ${WORKFLOW_STAGES.map(([stage, title, meta], index) => `
-              <div class="workflow-lane" data-stage="${stage}" style="left:${worldOffsetX + index * WORKFLOW_LANE_WIDTH}px">
-                <strong>${esc(title)}</strong>
-                <span>${esc(meta)}</span>
-              </div>
-            `).join("")}
-          </div>
+        <div class="workflow-canvas ${hasPending ? "is-connecting" : ""}" data-zoom="${workflowZoom}" data-world-offset-x="${worldOffsetX}" data-world-offset-y="${worldOffsetY}" style="width:${size.width}px;height:${size.height}px;transform:${workflowCanvasTransform()}">
           <svg class="workflow-links" width="${size.width}" height="${size.height}" viewBox="0 0 ${size.width} ${size.height}" aria-hidden="true">
-            ${workflowLinksSvg(worldOffsetX)}
+            ${workflowLinksSvg(worldOffsetX, worldOffsetY)}
           </svg>
-          ${currentAgent.workflow_nodes.map((item) => node(item, worldOffsetX)).join("")}
+          ${currentAgent.workflow_nodes.map((item) => node(item, worldOffsetX, worldOffsetY)).join("")}
         </div>
       </div>
       ${workflowMinimap(size)}
     </div>
-    ${workflowCompactBoard()}
   `;
 }
 
@@ -3456,7 +3636,7 @@ function workflowCompactBoard() {
   `;
 }
 
-function workflowLinksSvg(offsetX = workflowWorldOffsetX()) {
+function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOffsetY()) {
   ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
   const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
@@ -3464,7 +3644,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX()) {
     const from = nodes.get(edge.from);
     const to = nodes.get(edge.to);
     if (!from || !to) return "";
-    const d = workflowLinkPath(workflowNodeAnchor(from, "out", offsetX), workflowNodeAnchor(to, "in", offsetX));
+    const d = workflowLinkPath(workflowNodeAnchor(from, "out", offsetX, offsetY), workflowNodeAnchor(to, "in", offsetX, offsetY));
     const color = workflowNodeColor(from);
     const marker = workflowMarkerId(from);
     return `
@@ -3610,9 +3790,10 @@ function workflowViewportWorldRect() {
   const height = wrap?.clientHeight || window.innerHeight || 760;
   const zoom = Number(workflowZoom || 1) || 1;
   const offsetX = Number(document.querySelector(".workflow-canvas")?.dataset.worldOffsetX || workflowWorldOffsetX()) || 0;
+  const offsetY = Number(document.querySelector(".workflow-canvas")?.dataset.worldOffsetY || workflowWorldOffsetY()) || 0;
   return {
     x: -workflowPanX / zoom - offsetX,
-    y: -workflowPanY / zoom,
+    y: -workflowPanY / zoom - offsetY,
     width: width / zoom,
     height: height / zoom,
   };
@@ -3629,18 +3810,19 @@ function centerWorkflowFromMinimap(event, minimap) {
   const worldX = clamp((event.clientX - rect.left - offsetX) / scale + bounds.minX, bounds.minX, bounds.maxX);
   const worldY = clamp((event.clientY - rect.top - offsetY) / scale + bounds.minY, bounds.minY, bounds.maxY);
   const renderOffsetX = workflowWorldOffsetX(size);
+  const renderOffsetY = workflowWorldOffsetY(size);
   const wrap = document.querySelector(".workflow-canvas-wrap");
   const width = wrap?.clientWidth || window.innerWidth || 1200;
   const height = wrap?.clientHeight || window.innerHeight || 760;
   workflowPanX = Math.round(width / 2 - (worldX + renderOffsetX) * workflowZoom);
-  workflowPanY = Math.round(height / 2 - worldY * workflowZoom);
+  workflowPanY = Math.round(height / 2 - (worldY + renderOffsetY) * workflowZoom);
   refreshWorkflowCanvasDom();
 }
 
-function workflowNodeAnchor(node, port = "out", offsetX = 0) {
+function workflowNodeAnchor(node, port = "out", offsetX = 0, offsetY = 0) {
   return {
     x: Number(node.x || 0) + offsetX + (port === "out" ? WORKFLOW_NODE_WIDTH : 0),
-    y: Number(node.y || 0) + WORKFLOW_NODE_HEIGHT / 2,
+    y: Number(node.y || 0) + offsetY + WORKFLOW_NODE_HEIGHT / 2,
   };
 }
 
@@ -3759,7 +3941,7 @@ function edgeText() {
   return "工作流边：\n" + edges.map((edge) => `${edge.from} -> ${edge.to}`).join("\n");
 }
 
-function node(item, offsetX = workflowWorldOffsetX()) {
+function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOffsetY()) {
   const selected = item.id === selectedWorkflowNodeId;
   const multiSelected = workflowSelectedNodeIds.has(item.id);
   const pendingIn = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "in";
@@ -3768,7 +3950,7 @@ function node(item, offsetX = workflowWorldOffsetX()) {
   const runtime = workflowNodeRuntimeInfo(item);
   const executorState = workflowNodeExecutorState(item);
   return `
-    <article class="node flow-node ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0)}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
+    <article class="node flow-node ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0) + offsetY}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
       <span class="node-port node-port-in ${pendingIn ? "pending" : ""}" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>
       <span class="node-port node-port-out ${pendingOut ? "pending" : ""}" data-port="out" data-node-id="${esc(item.id)}" title="输出连接点"></span>
       <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
@@ -3788,6 +3970,17 @@ function selectedWorkflowNode() {
   return currentAgent.workflow_nodes.find((item) => item.id === selectedWorkflowNodeId) || currentAgent.workflow_nodes[0];
 }
 
+function workflowDatalistOptions(items, key = "name", label = "description") {
+  return (items || [])
+    .map((item) => {
+      const value = String(item?.[key] || item?.name || item?.api_id || item?.module_id || "").trim();
+      if (!value) return "";
+      const text = String(item?.[label] || item?.display_name || item?.path || item?.url || "").trim();
+      return `<option value="${esc(value)}">${esc(text || value)}</option>`;
+    })
+    .join("");
+}
+
 function workflowInspector() {
   const item = selectedWorkflowNode();
   if (!item) return `<div class="empty">暂无节点。</div>`;
@@ -3797,42 +3990,103 @@ function workflowInspector() {
   const runtime = workflowNodeRuntimeInfo(item);
   const executorState = workflowNodeExecutorState(item);
   const bindingHint = workflowNodeBindingHint(item);
+  const refValue = item.ref_id || item.api_id || item.tool_name || item.plugin_name || item.skill_name || "";
+  const tagsValue = Array.isArray(item.tags) ? item.tags.join(", ") : item.tags || item.memory_tags || "";
+  const action = item.action || "manual";
   return `
     <div class="detail-box workflow-editor">
-      <div class="panel-head"><div><p class="card-kicker">节点</p><h3>编辑节点</h3></div></div>
+      <div class="panel-head"><div><p class="card-kicker">节点协议</p><h3>编辑节点</h3></div></div>
       <div class="workflow-editor-runtime">
         <span class="runtime-badge ${esc(executorState.tone)}">${esc(executorState.label)}</span>
         <span>${esc(WORKFLOW_RUNTIME_LABELS[runtime.runtime_type] || runtime.runtime_type || "ReAct")}节点</span>
         <small>${esc(executorState.hint || bindingHint || "保存方案后由任务运行时读取。")}</small>
       </div>
-      <label>节点标识<input id="workflow-node-id" value="${esc(item.id)}" /></label>
-      <div class="field-hint">用于连线和运行记录，建议用英文或拼音，保存后会同步更新连线。</div>
-      <label>节点名称<input id="workflow-node-title" value="${esc(item.title)}" /></label>
-      <div class="form-grid compact">
-        <label>放在哪一步<select id="workflow-node-stage">${labeledOptions(WORKFLOW_STAGES.map(([id]) => id), item.stage || "plan", workflowStageLabel)}</select></label>
-        <label>节点用途<select id="workflow-node-kind">${labeledOptions(WORKFLOW_KINDS, item.kind || "state", workflowKindLabel)}</select></label>
-        <label>运行方式<select id="workflow-node-action">${labeledOptions(WORKFLOW_ACTIONS, item.action || "manual", workflowActionLabel)}</select></label>
-      </div>
-      <div class="section-note compact-note">工具/API 节点要想直接执行，需要绑定工具名或 API，并提供输入变量或 JSON 参数；没有明确参数时会转给 ReAct 判断。</div>
-      ${(item.ref_type || item.ref_id || item.plugin_name || item.api_id || item.tool_name || item.skill_name) ? `
-        <div class="workflow-ref-line">
-          <span>绑定能力：${esc(item.ref_type || "module")}</span>
-          <b>${esc(item.ref_id || item.plugin_name || item.api_id || item.tool_name || item.skill_name || "")}</b>
+
+      <section class="workflow-editor-section">
+        <h4>基础</h4>
+        <label>节点标识<input id="workflow-node-id" value="${esc(item.id)}" /></label>
+        <label>节点名称<input id="workflow-node-title" value="${esc(item.title)}" /></label>
+        <div class="form-grid compact">
+          <label>阶段<select id="workflow-node-stage">${labeledOptions(WORKFLOW_STAGES.map(([id]) => id), item.stage || "plan", workflowStageLabel)}</select></label>
+          <label>类型<select id="workflow-node-kind">${labeledOptions(WORKFLOW_KINDS, item.kind || "state", workflowKindLabel)}</select></label>
+          <label>动作<select id="workflow-node-action">${labeledOptions(WORKFLOW_ACTIONS, action, workflowActionLabel)}</select></label>
+          <label>权限<select id="workflow-node-permission-profile">${labeledOptions(WORKFLOW_PERMISSION_PROFILES, item.permission_profile || item.profile || "work", workflowPermissionLabel)}</select></label>
         </div>
-      ` : ""}
-      <div class="form-grid compact">
-        <label>文件或接口地址<input id="workflow-node-path" value="${esc(item.path || item.url || "")}" placeholder="文件路径、文档地址或 API 目标 URL" /></label>
-        <label>输入来源<input id="workflow-node-input-variable" value="${esc(item.input_variable || "")}" placeholder="例如 memory.context 或 tool.result" /></label>
-        <label>任务记忆标签<input id="workflow-node-tags" value="${esc(Array.isArray(item.tags) ? item.tags.join(", ") : item.tags || item.memory_tags || "")}" placeholder="任务, 续写, 代码改动" /></label>
-        <label>结果保存名<input id="workflow-node-output-variable" value="${esc(item.output_variable || "")}" placeholder="例如 search.result 或 node.summary" /></label>
-      </div>
-      <div class="field-hint">输入来源读取上游节点保存的变量；结果保存名会写入 task_state.workflow_data.variables，后续节点可继续读取。</div>
-      <label>分支条件<input id="workflow-node-condition" value="${esc(item.condition || "")}" placeholder="例如：高风险、只读排查、API 写入前审批" /></label>
-      <label>一句话说明<input id="workflow-node-description" value="${esc(item.description || "")}" /></label>
-      <label>参数 JSON<textarea id="workflow-node-params" rows="4" placeholder='工具参数或 API 参数，例如 {"query":{"q":"关键词"}}'>${esc(workflowNodeParamsJson(item))}</textarea></label>
-      <div class="field-hint">工具节点会保存为 tool_args，API 节点会保存为 api_payload；留空时可改用输入来源或交给 ReAct 判断。</div>
-      <label>执行说明<textarea id="workflow-node-instruction" rows="5" placeholder="写清这个节点要做什么、成功标准、失败时交给哪个节点。">${esc(item.instruction || "")}</textarea></label>
-      <label>需要模型判断时的提示<textarea id="workflow-node-prompt" rows="5" placeholder="并行 Agent、插件/API/工具模块可在这里写专用提示。">${esc(item.prompt || "")}</textarea></label>
+      </section>
+
+      <section class="workflow-editor-section">
+        <h4>能力绑定</h4>
+        <div class="form-grid compact">
+          <label>引用类型<select id="workflow-node-ref-type">${labeledOptions(WORKFLOW_REF_TYPES, item.ref_type || "", workflowRefTypeLabel)}</select></label>
+          <label>引用 ID<input id="workflow-node-ref-id" list="workflow-ref-list" value="${esc(refValue)}" placeholder="工具名、API ID、插件名或 Skill 名" /></label>
+          <label>AstrBot 工具<input id="workflow-node-tool-name" list="workflow-tool-list" value="${esc(item.tool_name || "")}" /></label>
+          <label>自定义 API<input id="workflow-node-api-id" list="workflow-api-list" value="${esc(item.api_id || "")}" /></label>
+          <label>插件名<input id="workflow-node-plugin-name" list="workflow-plugin-list" value="${esc(item.plugin_name || "")}" /></label>
+          <label>Skill 名<input id="workflow-node-skill-name" list="workflow-skill-list" value="${esc(item.skill_name || "")}" /></label>
+        </div>
+        <datalist id="workflow-ref-list">
+          ${workflowDatalistOptions(state.tools || [], "name", "description")}
+          ${workflowDatalistOptions(state.custom_apis || [], "api_id", "name")}
+          ${workflowDatalistOptions(state.plugins || [], "name", "display_name")}
+          ${workflowDatalistOptions(state.skills || [], "name", "path")}
+        </datalist>
+        <datalist id="workflow-tool-list">${workflowDatalistOptions(state.tools || [], "name", "description")}</datalist>
+        <datalist id="workflow-api-list">${workflowDatalistOptions(state.custom_apis || [], "api_id", "name")}</datalist>
+        <datalist id="workflow-plugin-list">${workflowDatalistOptions(state.plugins || [], "name", "display_name")}</datalist>
+        <datalist id="workflow-skill-list">${workflowDatalistOptions(state.skills || [], "name", "path")}</datalist>
+        ${(item.ref_type || refValue) ? `
+          <div class="workflow-ref-line">
+            <span>${esc(item.ref_type || "module")}</span>
+            <b>${esc(refValue)}</b>
+          </div>
+        ` : ""}
+      </section>
+
+      <section class="workflow-editor-section">
+        <h4>数据流</h4>
+        <div class="form-grid compact">
+          <label>输入变量<input id="workflow-node-input-variable" value="${esc(item.input_variable || "")}" placeholder="variables.memory 或 tool.result" /></label>
+          <label>输出变量<input id="workflow-node-output-variable" value="${esc(item.output_variable || "")}" placeholder="api.search.result" /></label>
+          <label>必需输入<textarea id="workflow-node-required-inputs" rows="3" placeholder="每行一个变量路径">${esc(listToLines(item.required_inputs || []))}</textarea></label>
+          <label>额外输出<textarea id="workflow-node-output-variables" rows="3" placeholder="每行一个变量名">${esc(listToLines(item.output_variables || []))}</textarea></label>
+        </div>
+        <label>参数 JSON<textarea id="workflow-node-params" rows="5" placeholder='{"query":{"q":"{{task.root_goal}}"}}'>${esc(workflowNodeParamsJson(item))}</textarea></label>
+        <div class="form-grid compact">
+          <label>输入 Schema<textarea id="workflow-node-input-schema" rows="5" placeholder='{"type":"object"}'>${esc(workflowObjectJson(item.input_schema))}</textarea></label>
+          <label>输出 Schema<textarea id="workflow-node-output-schema" rows="5" placeholder='{"type":"object"}'>${esc(workflowObjectJson(item.output_schema))}</textarea></label>
+        </div>
+      </section>
+
+      <section class="workflow-editor-section">
+        <h4>路由与执行</h4>
+        <div class="form-grid compact">
+          <label>分支条件<input id="workflow-node-condition" value="${esc(item.condition || "")}" /></label>
+          <label>路由变量<input id="workflow-node-route-variable" value="${esc(item.route_variable || "")}" /></label>
+          <label>并行分组<input id="workflow-node-parallel-group" value="${esc(item.parallel_group || "")}" /></label>
+          <label>Worker 类型<select id="workflow-node-worker-type">${labeledOptions(WORKFLOW_WORKER_TYPES, item.worker_type || item.role || "", workflowWorkerTypeLabel)}</select></label>
+          <label>超时秒数<input id="workflow-node-timeout-seconds" type="number" min="0" max="600" value="${esc(item.timeout_seconds || "")}" /></label>
+          <label>最大重试<input id="workflow-node-max-retries" type="number" min="0" max="8" value="${esc(item.max_retries || "")}" /></label>
+        </div>
+        <div class="form-grid compact">
+          <label>变量名<input id="workflow-node-variable-name" value="${esc(item.variable_name || item.variable || "")}" placeholder="variable_set / variable_get" /></label>
+          <label>模板 ID<input id="workflow-node-template-id" value="${esc(item.template_id || "")}" placeholder="subflow_call" /></label>
+          <label>文件路径<input id="workflow-node-path" value="${esc(item.path || "")}" /></label>
+          <label>URL<input id="workflow-node-url" value="${esc(item.url || "")}" /></label>
+          <label>HTTP 方法<select id="workflow-node-method">${labeledOptions(["", "GET", "POST", "PUT", "PATCH", "DELETE"], item.method || "", (value) => value || "默认")}</select></label>
+          <label>文件操作<select id="workflow-node-operation">${labeledOptions(["", "read", "write", "replace", "append"], item.operation || item.edit_mode || "", (value) => value || "默认")}</select></label>
+          <label>代码语言<select id="workflow-node-language">${labeledOptions(["", "python", "shell", "powershell"], item.language || "", (value) => value || "默认")}</select></label>
+          <label>记忆标签<input id="workflow-node-tags" value="${esc(tagsValue)}" /></label>
+        </div>
+        <label>重试策略 JSON<textarea id="workflow-node-retry-policy" rows="4" placeholder='{"max_attempts":2,"backoff":"linear"}'>${esc(workflowObjectJson(item.retry_policy))}</textarea></label>
+      </section>
+
+      <section class="workflow-editor-section">
+        <h4>说明</h4>
+        <label>一句话说明<input id="workflow-node-description" value="${esc(item.description || "")}" /></label>
+        <label>执行说明<textarea id="workflow-node-instruction" rows="5">${esc(item.instruction || "")}</textarea></label>
+        <label>模型兜底提示<textarea id="workflow-node-prompt" rows="5">${esc(item.prompt || "")}</textarea></label>
+      </section>
+
       ${isEntryNode ? `
         <div class="workflow-node-rule-box">
           <div class="panel-head"><div><p class="card-kicker">入口规则</p><h3>进入任务模式</h3></div></div>
@@ -4781,6 +5035,7 @@ function refreshWorkflowCanvasDom() {
   if (!svg) return;
   const size = workflowCanvasSize();
   const offsetX = workflowWorldOffsetX(size);
+  const offsetY = workflowWorldOffsetY(size);
   const space = document.querySelector(".workflow-canvas-space");
   const canvas = document.querySelector(".workflow-canvas");
   if (space) {
@@ -4793,12 +5048,19 @@ function refreshWorkflowCanvasDom() {
     canvas.style.transform = workflowCanvasTransform();
     canvas.dataset.zoom = String(workflowZoom);
     canvas.dataset.worldOffsetX = String(offsetX);
+    canvas.dataset.worldOffsetY = String(offsetY);
     canvas.classList.toggle("is-connecting", Boolean(workflowConnection || workflowPendingPort));
+  }
+  for (const el of document.querySelectorAll(".flow-node")) {
+    const item = workflowNodeById(el.dataset.id);
+    if (!item) continue;
+    el.style.left = `${Number(item.x || 0) + offsetX}px`;
+    el.style.top = `${Number(item.y || 0) + offsetY}px`;
   }
   svg.setAttribute("width", String(size.width));
   svg.setAttribute("height", String(size.height));
   svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
-  svg.innerHTML = workflowLinksSvg(offsetX);
+  svg.innerHTML = workflowLinksSvg(offsetX, offsetY);
   const minimap = document.querySelector(".workflow-minimap");
   if (minimap && !workflowMinimapPan && !workflowMinimapResize) minimap.outerHTML = workflowMinimap(size);
 }
@@ -4810,9 +5072,10 @@ function workflowCanvasPoint(event) {
   const rect = wrap.getBoundingClientRect();
   const zoom = Number(canvas.dataset.zoom || workflowZoom || 1) || 1;
   const offsetX = Number(canvas.dataset.worldOffsetX || workflowWorldOffsetX()) || 0;
+  const offsetY = Number(canvas.dataset.worldOffsetY || workflowWorldOffsetY()) || 0;
   return {
     x: (event.clientX - rect.left - workflowPanX) / zoom - offsetX,
-    y: (event.clientY - rect.top - workflowPanY) / zoom,
+    y: (event.clientY - rect.top - workflowPanY) / zoom - offsetY,
   };
 }
 
@@ -4859,7 +5122,7 @@ function copyWorkflowNodeById(id) {
   next.id = uniqueWorkflowNodeId(`${source.id || "node"}_copy`);
   next.title = `${source.title || source.id || "节点"} 副本`;
   next.x = clamp(Number(source.x || 0) + 80, WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X);
-  next.y = clamp(Number(source.y || 0) + 80, 0, WORKFLOW_CANVAS_MAX_Y);
+  next.y = clamp(Number(source.y || 0) + 80, WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y);
   currentAgent.workflow_nodes.push(next);
   selectedWorkflowNodeId = next.id;
   workflowInspectorOpen = true;
@@ -4888,8 +5151,9 @@ function focusWorkflowStart() {
   const first = currentAgent.workflow_nodes?.find((item) => workflowStage(item) === "entry") || currentAgent.workflow_nodes?.[0];
   workflowZoom = clamp(workflowZoom || 0.85, 0.55, 1);
   const offsetX = workflowWorldOffsetX();
+  const offsetY = workflowWorldOffsetY();
   workflowPanX = first ? Math.round(120 - (Number(first.x || 0) + offsetX) * workflowZoom) : 80;
-  workflowPanY = first ? Math.round(180 - Number(first.y || 0) * workflowZoom) : 120;
+  workflowPanY = first ? Math.round(180 - (Number(first.y || 0) + offsetY) * workflowZoom) : 120;
 }
 
 function portFromPoint(clientX, clientY) {
@@ -4905,7 +5169,7 @@ function workflowPortInfo(portEl) {
   return {
     nodeId: item.id,
     port,
-    anchor: workflowNodeAnchor(item, port, workflowWorldOffsetX()),
+    anchor: workflowNodeAnchor(item, port, workflowWorldOffsetX(), workflowWorldOffsetY()),
   };
 }
 
@@ -4977,11 +5241,6 @@ document.addEventListener("pointerdown", (event) => {
     if (workflowField.closest(".workflow-tool-drawer")) {
       workflowToolboxScrollTop = scroller?.scrollTop || 0;
     }
-  }
-  if (route === "workflow" && event.target.closest(".workflow-ribbon-hover-zone")) {
-    event.preventDefault();
-    setWorkflowRibbonOpen(true);
-    return;
   }
   const minimapResize = event.target.closest(".workflow-minimap-resize");
   if (minimapResize && route === "workflow") {
@@ -5094,13 +5353,6 @@ document.addEventListener("pointerdown", (event) => {
   wrapEl.setPointerCapture?.(event.pointerId);
 });
 
-document.addEventListener("pointerover", (event) => {
-  if (route !== "workflow") return;
-  if (event.target.closest(".workflow-ribbon-hover-zone") || event.target.closest(".workflow-page-top")) {
-    setWorkflowRibbonOpen(true);
-  }
-});
-
 document.addEventListener("focusin", (event) => {
   const field = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
   if (!field || route !== "workflow") return;
@@ -5125,16 +5377,6 @@ document.addEventListener("input", (event) => {
   if (field.closest(".workflow-inspector-drawer")) workflowInspectorScrollTop = scrollTop || workflowInspectorScrollTop;
   if (field.closest(".workflow-tool-drawer")) workflowToolboxScrollTop = scrollTop || workflowToolboxScrollTop;
 }, true);
-
-document.addEventListener("pointerout", (event) => {
-  if (route !== "workflow") return;
-  const fromRibbon = event.target.closest(".workflow-ribbon-hover-zone, .workflow-page-top");
-  if (!fromRibbon) return;
-  const next = event.relatedTarget;
-  if (next && document.querySelector(".workflow-page-top")?.contains(next)) return;
-  if (next && document.querySelector(".workflow-ribbon-hover-zone")?.contains(next)) return;
-  setWorkflowRibbonOpen(false);
-});
 
 document.addEventListener("pointermove", (event) => {
   if (workflowMinimapResize && workflowMinimapResize.pointerId === event.pointerId) {
@@ -5193,10 +5435,11 @@ document.addEventListener("pointermove", (event) => {
   const dy = event.clientY - workflowDrag.startY;
   workflowDrag.moved ||= Math.abs(dx) + Math.abs(dy) > 3;
   item.x = clamp(workflowDrag.baseX + dx / workflowZoom, WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X);
-  item.y = clamp(workflowDrag.baseY + dy / workflowZoom, 0, WORKFLOW_CANVAS_MAX_Y);
+  item.y = clamp(workflowDrag.baseY + dy / workflowZoom, WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y);
   const offsetX = Number(document.querySelector(".workflow-canvas")?.dataset.worldOffsetX || workflowWorldOffsetX()) || 0;
+  const offsetY = Number(document.querySelector(".workflow-canvas")?.dataset.worldOffsetY || workflowWorldOffsetY()) || 0;
   workflowDrag.element.style.left = `${item.x + offsetX}px`;
-  workflowDrag.element.style.top = `${item.y}px`;
+  workflowDrag.element.style.top = `${item.y + offsetY}px`;
   refreshWorkflowCanvasDom();
 });
 
@@ -5217,7 +5460,6 @@ document.addEventListener("pointerup", (event) => {
       node.classList.toggle("multi-selected", hit);
       if (hit && node.dataset.id) workflowSelectedNodeIds.add(node.dataset.id);
     });
-    setFeedback(workflowSelectedNodeIds.size ? `已框选 ${workflowSelectedNodeIds.size} 个节点，可复制或删除。` : "没有框选到节点。", workflowSelectedNodeIds.size ? "normal" : "warn");
     renderWorkflowStable();
     return;
   }
@@ -5403,6 +5645,7 @@ document.addEventListener("click", async (event) => {
     if (action === "new-agent") {
       readAgentForm();
       currentAgent = defaultAgentDraft();
+      selectedAgentId = "";
       selectedWorkflowNodeId = currentAgent.workflow_nodes?.[0]?.id || "";
       render();
     }
@@ -5412,6 +5655,7 @@ document.addEventListener("click", async (event) => {
       delete currentAgent.agent_id;
       delete currentAgent.created_at;
       delete currentAgent.updated_at;
+      selectedAgentId = "";
       currentAgent.name = `${currentAgent.name || "Agent"} 副本`;
       currentAgent.identity_label_source = "manual";
       render();
@@ -5438,9 +5682,14 @@ document.addEventListener("click", async (event) => {
       currentAgent.entry_channel = ["command", "natural", "webui"].includes(channel) ? channel : "command";
       render();
     }
+    if (action === "workflow-pointer-mode") {
+      workflowSelectionMode = false;
+      workflowSelectionDrag?.box?.remove();
+      workflowSelectionDrag = null;
+      renderWorkflowStable();
+    }
     if (action === "workflow-select-mode") {
-      workflowSelectionMode = !workflowSelectionMode;
-      setFeedback(workflowSelectionMode ? "框选已开启：在画布空白处拖出选择框。" : "框选已关闭。");
+      workflowSelectionMode = true;
       renderWorkflowStable();
     }
     if (action === "workflow-undo") {
@@ -5663,48 +5912,86 @@ document.addEventListener("click", async (event) => {
       const oldId = node.id;
       const requestedId = normalizeWorkflowId($("workflow-node-id").value);
       const newId = requestedId === oldId ? oldId : uniqueWorkflowNodeId(requestedId);
-      const paramsValue = $("workflow-node-params")?.value.trim() || "";
-      let parsedParams = null;
-      if (paramsValue) {
-        try {
-          parsedParams = JSON.parse(paramsValue);
-        } catch (error) {
-          throw new Error("参数 JSON 格式不正确，请检查括号、逗号和引号。");
-        }
-        if (!parsedParams || typeof parsedParams !== "object" || Array.isArray(parsedParams)) {
-          throw new Error("参数 JSON 需要是对象，例如 {\"query\":{\"q\":\"关键词\"}}。");
-        }
-      }
+      const parsedParams = parseWorkflowObjectField("workflow-node-params", "参数") || null;
+      const inputSchema = parseWorkflowObjectField("workflow-node-input-schema", "输入 Schema") || null;
+      const outputSchema = parseWorkflowObjectField("workflow-node-output-schema", "输出 Schema") || null;
+      const retryPolicy = parseWorkflowObjectField("workflow-node-retry-policy", "重试策略") || null;
       node.id = newId;
       node.title = $("workflow-node-title").value.trim() || newId;
       node.kind = $("workflow-node-kind").value;
       node.stage = $("workflow-node-stage").value;
       node.action = $("workflow-node-action").value;
-      node.condition = $("workflow-node-condition").value.trim();
       node.description = $("workflow-node-description").value.trim();
       node.instruction = $("workflow-node-instruction").value.trim();
       node.prompt = $("workflow-node-prompt").value.trim();
-      const pathValue = $("workflow-node-path")?.value.trim() || "";
-      if (/^https?:\/\//i.test(pathValue)) {
-        node.url = pathValue;
-        delete node.path;
-      } else {
-        node.path = pathValue;
-        delete node.url;
-      }
-      node.input_variable = $("workflow-node-input-variable")?.value.trim() || "";
-      node.output_variable = $("workflow-node-output-variable")?.value.trim() || "";
+      const refType = $("workflow-node-ref-type")?.value.trim() || "";
+      const refId = $("workflow-node-ref-id")?.value.trim() || "";
+      const toolName = $("workflow-node-tool-name")?.value.trim() || (refType === "tool" ? refId : "");
+      const apiId = $("workflow-node-api-id")?.value.trim() || (refType === "api" ? refId : "");
+      const pluginName = $("workflow-node-plugin-name")?.value.trim() || (refType === "plugin" ? refId : "");
+      const skillName = $("workflow-node-skill-name")?.value.trim() || (refType === "skill" ? refId : "");
+      setNodeStringField(node, "ref_type", refType || (toolName ? "tool" : apiId ? "api" : pluginName ? "plugin" : skillName ? "skill" : ""));
+      setNodeStringField(node, "ref_id", refId || toolName || apiId || pluginName || skillName);
+      setNodeStringField(node, "tool_name", toolName);
+      setNodeStringField(node, "api_id", apiId);
+      setNodeStringField(node, "plugin_name", pluginName);
+      setNodeStringField(node, "skill_name", skillName);
+      setNodeStringField(node, "permission_profile", $("workflow-node-permission-profile")?.value || "work");
+      delete node.profile;
+      setNodeStringField(node, "condition", $("workflow-node-condition")?.value);
+      setNodeStringField(node, "route_variable", $("workflow-node-route-variable")?.value);
+      setNodeStringField(node, "parallel_group", $("workflow-node-parallel-group")?.value);
+      setNodeStringField(node, "worker_type", $("workflow-node-worker-type")?.value);
+      delete node.role;
+      setNodeStringField(node, "variable_name", $("workflow-node-variable-name")?.value);
+      setNodeStringField(node, "template_id", $("workflow-node-template-id")?.value);
+      setNodeStringField(node, "path", $("workflow-node-path")?.value);
+      setNodeStringField(node, "url", $("workflow-node-url")?.value);
+      setNodeStringField(node, "method", $("workflow-node-method")?.value);
+      setNodeStringField(node, "operation", $("workflow-node-operation")?.value);
+      delete node.edit_mode;
+      setNodeStringField(node, "language", $("workflow-node-language")?.value);
+      setNodeStringField(node, "input_variable", $("workflow-node-input-variable")?.value);
+      setNodeStringField(node, "output_variable", $("workflow-node-output-variable")?.value);
+      node.required_inputs = linesToList($("workflow-node-required-inputs")?.value || "");
+      if (!node.required_inputs.length) delete node.required_inputs;
+      node.output_variables = linesToList($("workflow-node-output-variables")?.value || "");
+      if (!node.output_variables.length) delete node.output_variables;
       node.tags = linesToList($("workflow-node-tags")?.value || "");
+      if (!node.tags.length) delete node.tags;
+      setNodeJsonField(node, "input_schema", inputSchema);
+      setNodeJsonField(node, "output_schema", outputSchema);
+      setNodeJsonField(node, "retry_policy", retryPolicy);
+      const timeoutSeconds = Number($("workflow-node-timeout-seconds")?.value || 0);
+      if (Number.isFinite(timeoutSeconds) && timeoutSeconds > 0) node.timeout_seconds = clamp(Math.round(timeoutSeconds), 1, 600);
+      else delete node.timeout_seconds;
+      const maxRetries = Number($("workflow-node-max-retries")?.value || 0);
+      if (Number.isFinite(maxRetries) && maxRetries > 0) node.max_retries = clamp(Math.round(maxRetries), 1, 8);
+      else delete node.max_retries;
       delete node.tool_args;
       delete node.arguments;
       delete node.api_payload;
       delete node.payload;
       delete node.params;
+      delete node.request;
+      delete node.value;
+      delete node.data;
+      delete node.content;
+      delete node.text;
+      delete node.code;
+      delete node.script;
+      delete node.command;
       if (parsedParams) {
-        const serializedParams = JSON.stringify(parsedParams);
-        if (node.action === "call_api" || node.kind === "api") node.api_payload = serializedParams;
-        else if (node.action === "run_tools" || node.kind === "tool") node.tool_args = serializedParams;
-        else node.params = serializedParams;
+        if (node.action === "call_api" || node.kind === "api") node.api_payload = parsedParams;
+        else if (node.action === "http_request") node.payload = parsedParams;
+        else if (node.action === "run_tools" || node.kind === "tool") node.tool_args = parsedParams;
+        else node.params = parsedParams;
+        for (const key of ["value", "payload", "data", "content", "text", "code", "script", "command", "expression", "json_path", "jq", "inputs", "input_variables", "sources", "items", "source", "perspectives", "checks"]) {
+          if (Object.prototype.hasOwnProperty.call(parsedParams, key)) node[key] = parsedParams[key];
+        }
+        if (parsedParams.operation && !node.operation) node.operation = String(parsedParams.operation).trim();
+        if (parsedParams.language && !node.language) node.language = String(parsedParams.language).trim();
+        if (parsedParams.method && !node.method) node.method = String(parsedParams.method).trim().toUpperCase();
       }
       if ($("workflow-entry-trigger-phrases")) currentAgent.entry_policy.trigger_phrases = linesToList($("workflow-entry-trigger-phrases").value);
       if ($("workflow-entry-trigger-keywords")) currentAgent.entry_policy.trigger_keywords = linesToList($("workflow-entry-trigger-keywords").value);
@@ -5712,8 +5999,9 @@ document.addEventListener("click", async (event) => {
       if ($("workflow-exit-phrases")) currentAgent.entry_policy.exit_phrases = linesToList($("workflow-exit-phrases").value);
       if ($("workflow-default-completion-conditions")) currentAgent.entry_policy.default_completion_conditions = linesToList($("workflow-default-completion-conditions").value);
       node.x = clamp(Number($("workflow-node-x")?.value || node.x || 0), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X);
-      node.y = clamp(Number($("workflow-node-y")?.value || node.y || 0), 0, WORKFLOW_CANVAS_MAX_Y);
+      node.y = clamp(Number($("workflow-node-y")?.value || node.y || 0), WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y);
       currentAgent.workflow_edges = currentAgent.workflow_edges.map((edge) => ({
+        ...edge,
         from: edge.from === oldId ? newId : edge.from,
         to: edge.to === oldId ? newId : edge.to,
       }));

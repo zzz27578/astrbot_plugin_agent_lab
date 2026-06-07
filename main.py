@@ -5653,8 +5653,8 @@ class AgentLabPlugin(Star):
                     "action": action[:80],
                     "description": description[:500],
                     "instruction": instruction[:1000],
-                    "x": cls._clamp_int(raw_node.get("x"), 0, 6200, 70 + index * 260),
-                    "y": cls._clamp_int(raw_node.get("y"), 0, 3600, 120),
+                    "x": cls._clamp_int(raw_node.get("x"), -1400, 12000, 70 + index * 260),
+                    "y": cls._clamp_int(raw_node.get("y"), -1400, 8000, 120),
                 }
             )
             NodeExecutorRegistry.normalize_node_runtime_type(normalized)
