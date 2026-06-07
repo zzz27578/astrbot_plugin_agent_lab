@@ -4,22 +4,20 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent Lab 控制台</title>
-    <link rel="stylesheet" href="./style.css?v=20260607-agent-console-refresh" />
+    <link rel="stylesheet" href="./style.css?v=20260607-clean-workflow-ui" />
   </head>
   <body>
-    <!-- Token 验证页面（未验证时显示） -->
+    <!-- 访问密码验证（未验证时显示） -->
     <div id="auth-screen" class="auth-screen" style="display:none;">
       <div class="auth-card">
-        <div class="auth-icon">🔐</div>
         <h1>Agent Lab 控制台</h1>
-        <p class="auth-hint">请输入访问 Token</p>
+        <p class="auth-hint">输入访问密码后进入控制台</p>
         <div class="auth-form">
-          <input id="auth-token-input" type="password" class="auth-input" placeholder="Token" autocomplete="off" />
+          <input id="auth-token-input" type="password" class="auth-input" placeholder="访问密码" autocomplete="current-password" />
           <button id="auth-submit-btn" type="button" class="auth-button">进入控制台</button>
         </div>
         <p class="auth-note">
-          💡 Token 在插件配置中设置<br/>
-          键: <code>standalone_webui_token</code>
+          访问密码由插件配置项 <code>standalone_webui_token</code> 提供。
         </p>
       </div>
     </div>
@@ -42,18 +40,11 @@
           </span>
         </div>
         <div class="status-right">
-          <span class="status-token">
-            <span class="status-token-label">Token:</span>
-            <span id="token-current">0</span> / <span id="token-limit">240K</span>
-            <div class="token-progress-bar">
-              <div id="token-progress-fill" class="token-progress-fill" style="width: 0%"></div>
-            </div>
-          </span>
           <span class="status-actions">
             <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="打开任务控制台">控制台</button>
             <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
           </span>
-          <button id="refresh" type="button" class="status-refresh-btn" title="刷新数据">🔄</button>
+          <button id="refresh" type="button" class="status-refresh-btn icon-button" title="刷新数据" aria-label="刷新数据"></button>
           <button id="settings-btn" type="button" class="status-refresh-btn settings-gear" title="设置">⚙</button>
         </div>
       </div>
@@ -77,6 +68,6 @@
       </main>
     </div>
 
-    <script type="module" src="./app.js?v=20260607-agent-console-refresh"></script>
+    <script type="module" src="./app.js?v=20260607-clean-workflow-ui"></script>
   </body>
 </html>

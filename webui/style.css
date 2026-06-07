@@ -35,7 +35,7 @@ textarea {
   font: inherit;
 }
 
-/* Token 验证页面 */
+/* 访问密码验证页面 */
 .auth-screen {
   position: fixed;
   top: 0;
@@ -3854,5 +3854,209 @@ pre {
 
   .tag-cloud {
     justify-content: flex-start;
+  }
+}
+
+/* Corrective clean layout pass */
+.auth-screen {
+  background: var(--panel);
+}
+
+.auth-card {
+  width: min(420px, calc(100vw - 32px));
+  padding: 28px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.auth-card h1 {
+  margin: 0 0 8px;
+}
+
+.auth-hint {
+  margin-bottom: 20px;
+}
+
+.auth-note {
+  margin: 0;
+}
+
+.shell {
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+.rail {
+  top: 0;
+  height: 100vh;
+  padding: 14px 10px;
+}
+
+.brand {
+  padding: 6px 8px 16px;
+}
+
+.brand strong {
+  font-size: 21px;
+}
+
+.nav {
+  gap: 5px;
+}
+
+.nav button {
+  padding: 9px 10px;
+}
+
+.rail-note {
+  padding: 10px;
+}
+
+.main {
+  padding: 14px;
+}
+
+.status-token {
+  display: none;
+}
+
+.status-left,
+.status-right {
+  gap: 12px;
+}
+
+.status-refresh-btn.icon-button {
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+}
+
+.stat-card:hover {
+  transform: none;
+  box-shadow: var(--shadow);
+}
+
+.stat-value.animate {
+  animation: none;
+}
+
+.task-mode-basic,
+.task-advanced {
+  display: grid;
+  gap: 12px;
+}
+
+.task-mode-form {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.compact-choice {
+  margin-top: 2px;
+}
+
+.task-advanced summary,
+.workflow-json-box summary {
+  padding: 0;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.task-advanced .note-line {
+  margin-top: 10px;
+}
+
+.segmented {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.segmented button {
+  min-height: 30px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.segmented button.active {
+  background: var(--panel);
+  color: var(--ink);
+  box-shadow: 0 2px 8px rgba(30, 45, 41, 0.1);
+}
+
+.workflow-library-mode {
+  width: 100%;
+}
+
+.workflow-json-box {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.68);
+}
+
+.workflow-json-box textarea {
+  margin-top: 8px;
+  min-height: 170px;
+  font-size: 12px;
+}
+
+body[data-route="workflow"] .global-status-bar {
+  display: none;
+}
+
+body[data-route="workflow"] .shell {
+  grid-template-columns: 216px minmax(0, 1fr);
+}
+
+body[data-route="workflow"] .rail {
+  padding: 14px 10px;
+}
+
+body[data-route="workflow"] .workflow-page {
+  left: 216px;
+}
+
+body[data-route="workflow"].workflow-nav-collapsed .workflow-page {
+  left: 0;
+}
+
+body[data-route="workflow"] .topbar,
+body[data-route="workflow"] .feedback {
+  display: none;
+}
+
+@media (max-width: 1180px) {
+  .task-mode-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1100px) {
+  .rail {
+    height: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  .main,
+  .rail {
+    padding: 12px;
+  }
+
+  .task-mode-form {
+    grid-template-columns: 1fr;
+  }
+
+  body[data-route="workflow"] .workflow-page {
+    left: 0;
   }
 }

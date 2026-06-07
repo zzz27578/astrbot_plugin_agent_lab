@@ -20,6 +20,7 @@ const GAME_ICONS = {
   trash: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/trash.svg`,
   undo: `${GAME_ICON_BASE}/3.Editing%20Tools/undo.svg`,
   redo: `${GAME_ICON_BASE}/3.Editing%20Tools/redo.svg`,
+  refresh: `${GAME_ICON_BASE}/3.Editing%20Tools/redo.svg`,
   tool: `${GAME_ICON_BASE}/6.Items/tool-kit.svg`,
   book: `${GAME_ICON_BASE}/6.Items/book.svg`,
   memory: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/memory-card.svg`,
@@ -597,33 +598,37 @@ function updateStatusBar() {
   if (currentAgentName) currentAgentName.textContent = agentName;
 
   // 更新状态指示
-  if (!statusDot || !statusText || !tokenCurrent || !tokenFill) return;
+  if (!statusDot || !statusText) return;
   statusDot.className = `status-dot ${globalState.status}`;
   const statusLabels = { idle: '空闲', running: '执行中', waiting: '等待审批', error: '出错' };
   statusText.textContent = statusLabels[globalState.status] || '未知';
 
   // 更新任务信息
-  if (globalState.activeTask) {
+  if (globalState.activeTask && statusTask) {
     statusTask.style.display = '';
-    $('current-task-id').textContent = shortId(globalState.activeTask.task_id || '-');
-    $('task-runtime').textContent = formatRuntime(globalState.taskRuntime);
-    pauseBtn.style.display = '';
-    viewBtn.style.display = '';
-  } else {
+    const currentTaskId = $('current-task-id');
+    const taskRuntime = $('task-runtime');
+    if (currentTaskId) currentTaskId.textContent = shortId(globalState.activeTask.task_id || '-');
+    if (taskRuntime) taskRuntime.textContent = formatRuntime(globalState.taskRuntime);
+    if (pauseBtn) pauseBtn.style.display = '';
+    if (viewBtn) viewBtn.style.display = '';
+  } else if (statusTask) {
     statusTask.style.display = 'none';
-    pauseBtn.style.display = 'none';
-    viewBtn.style.display = 'none';
+    if (pauseBtn) pauseBtn.style.display = 'none';
+    if (viewBtn) viewBtn.style.display = 'none';
   }
 
   // 更新 Token 进度
-  const tokenPercent = Math.min(100, (globalState.tokenCurrent / globalState.tokenLimit) * 100);
-  tokenCurrent.textContent = formatTokens(globalState.tokenCurrent);
-  const tokenLimit = $('token-limit');
-  if (tokenLimit) tokenLimit.textContent = formatTokens(globalState.tokenLimit);
-  tokenFill.style.width = `${tokenPercent}%`;
-  tokenFill.className = 'token-progress-fill';
-  if (tokenPercent > 80) tokenFill.classList.add('danger');
-  else if (tokenPercent > 60) tokenFill.classList.add('warning');
+  if (tokenCurrent && tokenFill) {
+    const tokenPercent = Math.min(100, (globalState.tokenCurrent / globalState.tokenLimit) * 100);
+    tokenCurrent.textContent = formatTokens(globalState.tokenCurrent);
+    const tokenLimit = $('token-limit');
+    if (tokenLimit) tokenLimit.textContent = formatTokens(globalState.tokenLimit);
+    tokenFill.style.width = `${tokenPercent}%`;
+    tokenFill.className = 'token-progress-fill';
+    if (tokenPercent > 80) tokenFill.classList.add('danger');
+    else if (tokenPercent > 60) tokenFill.classList.add('warning');
+  }
 }
 
 function formatRuntime(seconds) {
@@ -738,6 +743,7 @@ let workflowInspectorFocusScrollTop = 0;
 let workflowToastTimer = null;
 let workflowMaterialDraft = null;
 let workflowMaterialFilter = "";
+let workflowLibraryMode = "basic";
 let workflowToolboxOpenGroups = new Set();
 let workflowMinimapWidth = 128;
 let workflowMinimapHeight = 128;
@@ -881,7 +887,7 @@ function setFeedback(message, tone = "normal") {
     feedback.textContent = message;
     feedback.dataset.tone = tone;
   }
-  showToast(message, tone);
+  if (tone === "error" || tone === "warn") showToast(message, tone);
 }
 
 function showToast(message, tone = "normal") {
@@ -2161,7 +2167,7 @@ function renderLocked() {
   $("view").innerHTML = `
     <section class="panel">
       <h2>需要连接独立控制台</h2>
-      <p class="row-meta">如果你配置了 standalone_webui_token，请在右上角填写 Token 后刷新。</p>
+      <p class="row-meta">如果你配置了访问密码，请回到登录页输入密码后刷新。</p>
     </section>
   `;
 }
@@ -2271,7 +2277,7 @@ function runOverview() {
         <div class="mini-stats">
           <span>活跃 ${tasks.length}</span>
           <span>审批 ${approvals}</span>
-          <span>Token ${formatTokens(totalTokenUsage([...(state.tasks || []), ...(state.archives || [])]))}</span>
+          <span>记忆 ${state.memories?.length || 0}</span>
           <span>日志 ${task?.progress_log?.length || 0}</span>
         </div>
       </div>
@@ -2292,7 +2298,7 @@ function systemStatusPanel() {
         ${statusTile("心跳正常", m.heartbeat_online || 0, "ok", `${m.heartbeat_stale || 0} 异常 / ${m.heartbeat_offline || 0} 未开启`)}
         ${statusTile("记忆条目", state.memories?.length || 0, "", `${formatBytes(memoryEstimatedBytes())} 估算`)}
         ${statusTile("插件/工具", `${pluginCount}/${toolCount}`, "ok", `${apiCount} 个自定义 API`)}
-        ${statusTile("WebUI", webui.standalone ? "在线" : "未启动", webui.standalone ? "ok" : "warn", webui.auth ? "Token 已启用" : "未启用 Token")}
+        ${statusTile("WebUI", webui.standalone ? "在线" : "未启动", webui.standalone ? "ok" : "warn", webui.auth ? "密码验证已启用" : "未启用密码验证")}
       </div>
     </section>
   `;
@@ -2469,7 +2475,7 @@ function renderSettingsPage() {
           <div class="panel-head"><div><p class="card-kicker">插件配置</p><h3>WebUI</h3></div></div>
           <div class="state-fields single">
             ${stateField("控制台地址", webui.url || "-")}
-            ${stateField("访问 Token", webui.auth ? "已启用" : "未启用")}
+            ${stateField("访问密码", webui.auth ? "已启用" : "未启用")}
             ${stateField("运行状态", webui.standalone ? "独立控制台在线" : "独立控制台未启动")}
           </div>
         </div>
@@ -2494,7 +2500,6 @@ function renderDashboard() {
   const agents = state.agents || [];
   const tasks = state.tasks || [];
   const archives = state.archives || [];
-  const m = state.metrics || {};
   const selectedStats = currentAgent ? agentStats(currentAgent) : null;
   const runtimeBuckets = runtimeDistribution();
 
@@ -2505,29 +2510,29 @@ function renderDashboard() {
         <div class="stat-card">
           <div class="stat-icon">${iconImg("book", "Agent")}</div>
           <div class="stat-content">
-            <div class="stat-value animate">${agents.length}</div>
+            <div class="stat-value">${agents.length}</div>
             <div class="stat-label">Agent 配置</div>
           </div>
         </div>
         <div class="stat-card">
           <div class="stat-icon">${iconImg("gridAdd", "任务")}</div>
           <div class="stat-content">
-            <div class="stat-value animate">${tasks.length}</div>
+            <div class="stat-value">${tasks.length}</div>
             <div class="stat-label">活跃任务</div>
           </div>
         </div>
         <div class="stat-card">
           <div class="stat-icon">${iconImg("select", "归档")}</div>
           <div class="stat-content">
-            <div class="stat-value animate">${archives.length}</div>
+            <div class="stat-value">${archives.length}</div>
             <div class="stat-label">已完成任务</div>
           </div>
         </div>
         <div class="stat-card">
-          <div class="stat-icon">${iconImg("memory", "Token")}</div>
+          <div class="stat-icon">${iconImg("memory", "记忆")}</div>
           <div class="stat-content">
-            <div class="stat-value animate">${formatTokens(m.token_usage || 0)}</div>
-            <div class="stat-label">累计 Token</div>
+            <div class="stat-value">${state.memories?.length || 0}</div>
+            <div class="stat-label">任务记忆</div>
           </div>
         </div>
       </div>
@@ -2552,9 +2557,9 @@ function renderDashboard() {
                       ${badge(stats.health_label, stats.health_tone)}
                     </span>
                   </div>
-                  <div class="agent-health-stats">
+                    <div class="agent-health-stats">
                     <div class="health-stat"><span class="health-stat-value">${stats.triggers}</span><span class="health-stat-label">触发</span></div>
-                    <div class="health-stat"><span class="health-stat-value">${formatTokens(stats.tokens)}</span><span class="health-stat-label">Token</span></div>
+                    <div class="health-stat"><span class="health-stat-value">${formatTokens(stats.tokens)}</span><span class="health-stat-label">消耗</span></div>
                     <div class="health-stat"><span class="health-stat-value">${stats.approvals}</span><span class="health-stat-label">审批</span></div>
                   </div>
                 </button>
@@ -2620,7 +2625,7 @@ function agentRows() {
           <div class="mini-stats">
             <span>运行 ${stats.active}</span>
             <span>触发 ${stats.triggers}</span>
-            <span>Token ${stats.tokens}</span>
+            <span>消耗 ${formatTokens(stats.tokens)}</span>
             <span>审批 ${stats.approvals}</span>
           </div>
         </button>
@@ -2696,7 +2701,7 @@ function renderCanvas() {
   const currentName = agentDisplayName(currentAgent);
   const stats = agentStats(currentAgent);
   $("view").innerHTML = `
-    <section class="panel canvas-hero">
+    <section class="panel canvas-hero task-mode-hero">
       <div class="canvas-hero-main">
         <div>
           <p class="card-kicker">当前任务模式配置</p>
@@ -2707,18 +2712,36 @@ function renderCanvas() {
             ${badge(triggerLabel(currentAgent.trigger_mode || "confirm"))}
             ${badge(currentAgent.enabled === false ? "已停用" : "已启用", currentAgent.enabled === false ? "bad" : "ok")}
           </div>
-          <div class="row-meta">${esc(currentAgent.agent_id || "新配置尚未保存")} · 运行 ${stats.active} · 触发 ${stats.triggers} · Token ${stats.tokens} · 待审批 ${stats.approvals}</div>
+          <div class="row-meta">${esc(currentAgent.agent_id || "新配置尚未保存")} · 运行 ${stats.active} · 触发 ${stats.triggers} · 消耗 ${formatTokens(stats.tokens)} · 待审批 ${stats.approvals}</div>
         </div>
         <div class="inline-actions">
           <button class="button secondary" data-action="new-agent" type="button">新建配置</button>
           <button class="button secondary" data-action="duplicate-agent" type="button">复制配置</button>
           <button class="button danger" data-action="delete-agent" type="button" ${((state.agents || []).length <= 1 || !currentAgent.agent_id) ? "disabled" : ""}>删除配置</button>
           <button class="button secondary" data-action="make-default" type="button">设为默认</button>
+          <button class="button secondary" data-route="workflow" type="button">打开画布</button>
           <button class="button" data-action="save-agent" type="button">保存配置</button>
         </div>
       </div>
       ${agentPolicyOverview()}
-      <div class="choice-grid two-choice">
+    </section>
+
+    <section class="panel task-mode-basic">
+      <div class="panel-head">
+        <div><p class="card-kicker">基础设置</p><h2>先决定何时进入任务模式</h2></div>
+        <button class="button secondary" data-route="tasks" type="button">查看任务状态</button>
+      </div>
+      <div class="form-grid task-mode-form">
+        <label>配置名称<input id="agent-name" value="${esc(currentAgent.name || "")}" placeholder="${esc(runtimeAgentName())}" /></label>
+        <label>底层模型供应商 ID<input id="provider-id" value="${esc(currentAgent.provider_id || "")}" placeholder="为空则使用当前会话模型" /></label>
+        <label>配置状态<select id="agent-enabled">${labeledOptions(["true", "false"], String(currentAgent.enabled !== false), (value) => value === "true" ? "启用" : "停用")}</select></label>
+        <label>触发模式<select id="trigger-mode">${labeledOptions(["manual", "confirm", "smart", "always"], currentAgent.trigger_mode || "confirm", triggerLabel)}</select></label>
+        <label>开启确认<select id="entry-require-confirmation">${labeledOptions(["true", "false"], String(currentAgent.entry_policy.require_confirmation !== false), (value) => value === "true" ? "需要确认" : "直接开启")}</select></label>
+        <label>隔离模式<select id="isolation-mode">${labeledOptions(["strict", "session", "off"], currentAgent.isolation_policy.mode || "strict", isolationModeLabel)}</select></label>
+        <label>工具模式<select id="tool-mode">${labeledOptions(["whitelist", "no_external", "full"], currentAgent.isolation_policy.tool_mode || "whitelist", toolModeLabel)}</select></label>
+        <label>审批模式<select id="approval-mode">${labeledOptions(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
+      </div>
+      <div class="choice-grid two-choice compact-choice">
         ${["entry", "global"].map((scope) => `
           <button class="choice-card ${currentAgent.application_scope === scope ? "active" : ""}" data-action="set-agent-scope" data-id="${scope}" type="button">
             <strong>${esc(scopeLabel(scope))}</strong>
@@ -2726,7 +2749,7 @@ function renderCanvas() {
           </button>
         `).join("")}
       </div>
-      <div class="choice-grid three-choice">
+      <div class="choice-grid three-choice compact-choice">
         ${["command", "natural", "webui"].map((channel) => `
           <button class="choice-card ${currentAgent.entry_channel === channel ? "active" : ""}" data-action="set-entry-channel" data-id="${channel}" type="button">
             <strong>${esc(entryChannelLabel(channel))}</strong>
@@ -2739,7 +2762,7 @@ function renderCanvas() {
     <section class="grid two setup-grid">
       <div class="panel">
         <div class="panel-head">
-          <div><p class="card-kicker">进入入口</p><h2>从 WebUI 进入任务模式</h2></div>
+          <div><p class="card-kicker">手动入口</p><h2>从 WebUI 创建任务</h2></div>
         </div>
         <div class="form-grid">
           <label>会话 UMO<input id="canvas-umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
@@ -2751,66 +2774,31 @@ function renderCanvas() {
         </div>
         <div class="button-row">
           <button class="button" data-action="canvas-start-task" type="button">进入任务模式</button>
-          <button class="button secondary" data-route="tasks" type="button">查看任务状态</button>
+          <button class="button secondary" data-route="workflow" type="button">先调整工作流</button>
         </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">规则配置</p><h2>触发、记忆、审批、心跳</h2></div></div>
-        <div class="form-grid">
-          <label>任务模式配置名称<input id="agent-name" value="${esc(currentAgent.name || "")}" placeholder="${esc(runtimeAgentName())}" /></label>
-        <label>底层模型供应商 ID<input id="provider-id" value="${esc(currentAgent.provider_id || "")}" placeholder="为空则使用当前会话模型" /></label>
-          <label>配置状态<select id="agent-enabled">${labeledOptions(["true", "false"], String(currentAgent.enabled !== false), (value) => value === "true" ? "启用" : "停用")}</select></label>
-          <label>触发模式<select id="trigger-mode">${labeledOptions(["manual", "confirm", "smart", "always"], currentAgent.trigger_mode || "confirm", triggerLabel)}</select></label>
-          <label>开启确认<select id="entry-require-confirmation">${labeledOptions(["true", "false"], String(currentAgent.entry_policy.require_confirmation !== false), (value) => value === "true" ? "需要确认" : "直接开启")}</select></label>
-          <label>隔离模式<select id="isolation-mode">${labeledOptions(["strict", "session", "off"], currentAgent.isolation_policy.mode || "strict", isolationModeLabel)}</select></label>
-          <label>工具模式<select id="tool-mode">${labeledOptions(["whitelist", "no_external", "full"], currentAgent.isolation_policy.tool_mode || "whitelist", toolModeLabel)}</select></label>
-          <label>退出后恢复<select id="restore-on-exit">${labeledOptions(["true", "false"], String(currentAgent.isolation_policy.restore_on_exit !== false), (value) => value === "true" ? "恢复会话隔离快照" : "保留当前会话状态")}</select></label>
-          <label>记忆模式<select id="memory-mode">${labeledOptions(["inherit", "task_filtered", "strict"], currentAgent.memory_policy.mode || "task_filtered", memoryModeLabel)}</select></label>
-          <label>审批模式<select id="approval-mode">${labeledOptions(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
-          <label>心跳模式<select id="heartbeat-mode">${labeledOptions(["off", "manual", "auto"], currentAgent.heartbeat_policy.mode || "manual", heartbeatModeLabel)}</select></label>
-          <label>允许心跳<select id="heartbeat-allowed">${labeledOptions(["true", "false"], String(currentAgent.heartbeat_policy.allowed !== false), (value) => value === "true" ? "允许" : "禁止")}</select></label>
-          <label>上下文摘要轮数<input id="entry-summary-turns" type="number" min="1" value="${esc(currentAgent.memory_policy.entry_summary_turns || 24)}" /></label>
-          <label>心跳 Cron<input id="heartbeat-cron" value="${esc(currentAgent.heartbeat_policy.cron_expression || "*/5 * * * *")}" /></label>
-          <div class="span-2 note-line">开启暗号、任务关键词、确认话术、默认完成条件和结束暗号已迁到工作流画布：点击入口节点或结束回流节点即可编辑。</div>
-          <label class="span-2">隔离说明<textarea id="isolation-notes" rows="3">${esc(currentAgent.isolation_policy.notes || "")}</textarea></label>
-          <div class="span-2 note-line">当前运行时身份：${esc(state.runtime?.bot_label || "等待读取")}；来源：${esc(identitySourceLabel(state.runtime?.bot_label_source))}。这里配置的是任务模式模板名和规则，不会覆盖 AstrBot 当前身份。</div>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel workflow-card">
-      <div class="panel-head">
-        <div><p class="card-kicker">工作流</p><h2>独立画布工作台</h2></div>
-        <div class="inline-actions">
-          <button class="button secondary" data-route="workflow" type="button">打开画布</button>
-          <button class="button secondary" data-action="check-workflow" type="button">检查工作流</button>
-          <button class="button secondary" data-action="dry-run-workflow" type="button">预跑诊断</button>
-        </div>
-      </div>
-      <div class="workflow-card-grid">
-        ${metric("节点", currentAgent.workflow_nodes.length)}
-        ${metric("连线", currentAgent.workflow_edges.length)}
-        ${metric("入口模块", currentAgent.workflow_nodes.filter((node) => workflowStage(node) === "entry").length)}
-        ${metric("出口模块", currentAgent.workflow_nodes.filter((node) => workflowStage(node) === "archive").length)}
-      </div>
-      <div class="section-note">流程图已经移到独立工作台；这里保留基础策略、隔离和提示词配置。入口/出口暗号请在画布对应节点里维护。</div>
-    </section>
-
-    <section class="grid two">
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">提示词</p><h2>任务运行协议</h2></div></div>
-        <label class="span-2">任务模式补充提示词（不是身份替换）<textarea id="system-prompt" rows="5">${esc(currentAgent.system_prompt || "")}</textarea></label>
-        <label class="span-2">每轮执行协议<textarea id="task-prompt" rows="5">${esc(currentAgent.task_prompt || "")}</textarea></label>
-        <details class="advanced-json">
-          <summary>高级：工作流 JSON 导入/导出</summary>
-          <textarea id="workflow-json" rows="8" data-original="${esc(JSON.stringify(workflowData(), null, 2))}">${esc(JSON.stringify(workflowData(), null, 2))}</textarea>
-        </details>
       </div>
       <div class="panel">
         <div class="panel-head"><div><p class="card-kicker">资产列表</p><h2>选择任务模式配置</h2></div></div>
         <div class="list">${agentRows()}</div>
       </div>
+    </section>
+
+    <section class="panel">
+      <details class="advanced-json task-advanced">
+        <summary>高级策略与提示词</summary>
+        <div class="form-grid task-mode-form">
+          <label>退出后恢复<select id="restore-on-exit">${labeledOptions(["true", "false"], String(currentAgent.isolation_policy.restore_on_exit !== false), (value) => value === "true" ? "恢复会话隔离快照" : "保留当前会话状态")}</select></label>
+          <label>记忆模式<select id="memory-mode">${labeledOptions(["inherit", "task_filtered", "strict"], currentAgent.memory_policy.mode || "task_filtered", memoryModeLabel)}</select></label>
+          <label>心跳模式<select id="heartbeat-mode">${labeledOptions(["off", "manual", "auto"], currentAgent.heartbeat_policy.mode || "manual", heartbeatModeLabel)}</select></label>
+          <label>允许心跳<select id="heartbeat-allowed">${labeledOptions(["true", "false"], String(currentAgent.heartbeat_policy.allowed !== false), (value) => value === "true" ? "允许" : "禁止")}</select></label>
+          <label>上下文摘要轮数<input id="entry-summary-turns" type="number" min="1" value="${esc(currentAgent.memory_policy.entry_summary_turns || 24)}" /></label>
+          <label>心跳 Cron<input id="heartbeat-cron" value="${esc(currentAgent.heartbeat_policy.cron_expression || "*/5 * * * *")}" /></label>
+          <label class="span-2">隔离说明<textarea id="isolation-notes" rows="3">${esc(currentAgent.isolation_policy.notes || "")}</textarea></label>
+          <label class="span-2">任务模式补充提示词<textarea id="system-prompt" rows="5">${esc(currentAgent.system_prompt || "")}</textarea></label>
+          <label class="span-2">每轮执行协议<textarea id="task-prompt" rows="5">${esc(currentAgent.task_prompt || "")}</textarea></label>
+        </div>
+        <div class="note-line">入口暗号、任务关键词、确认话术、默认完成条件、结束暗号和工作流 JSON 已放到工作流画布中维护。</div>
+      </details>
     </section>
   `;
 }
@@ -3320,27 +3308,21 @@ function workflowToolbox() {
   const activePlugins = (state.plugins || []).filter((item) => item.activated !== false);
   const apis = state.custom_apis || [];
   const filter = workflowMaterialFilter.trim();
+  const basicGroupIds = new Set(["entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
   const templates = WORKFLOW_NODE_TEMPLATES.filter((item) =>
     includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
   );
-  const groupedTemplates = WORKFLOW_NODE_GROUPS
+  const libraryGroups = WORKFLOW_NODE_GROUPS.filter((group) =>
+    workflowLibraryMode === "advanced" || filter || basicGroupIds.has(group.id)
+  );
+  const groupedTemplates = libraryGroups
     .map((group) => ({ group, items: templates.filter((item) => workflowNodeGroupKey(item) === group.id) }))
     .filter(({ items }) => items.length || !filter);
   const runtimeSections = [
     {
-      id: "runtime_plugins",
-      title: "插件模块",
-      hint: "把已启用 AstrBot 插件作为能力来源。",
-      items: activePlugins
-        .map((plugin) => workflowRuntimeModuleNode("plugin", plugin.name))
-        .filter(Boolean)
-        .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
-      empty: "暂无可用插件",
-    },
-    {
       id: "runtime_apis",
-      title: "API 模块",
-      hint: "调用 Agent Lab 注册 API，不在节点里暴露密钥。",
+      title: "已注册 API",
+      hint: "像积木一样插入自定义 API，凭证仍由后端注入。",
       items: apis
         .map((item) => workflowRuntimeModuleNode("api", item.api_id))
         .filter(Boolean)
@@ -3357,12 +3339,27 @@ function workflowToolbox() {
         .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
       empty: "仅任务内置工具",
     },
-  ];
+    {
+      id: "runtime_plugins",
+      title: "插件模块",
+      hint: "把已启用 AstrBot 插件作为能力来源。",
+      advancedOnly: true,
+      items: activePlugins
+        .map((plugin) => workflowRuntimeModuleNode("plugin", plugin.name))
+        .filter(Boolean)
+        .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
+      empty: "暂无可用插件",
+    },
+  ].filter((section) => workflowLibraryMode === "advanced" || filter || !section.advancedOnly);
   return `
     <div class="workflow-toolbox">
       <div class="workflow-toolbox-intro">
         <strong>节点素材</strong>
-        <span>按任务流分类；点击看配置，拖拽或点应用节点才会加入画布。</span>
+        <span>${workflowLibraryMode === "advanced" ? "显示完整节点规范、插件、API 和工具模块。" : "先显示常用流程，新手按入口到出口拼起来即可。"}</span>
+      </div>
+      <div class="segmented workflow-library-mode">
+        <button class="${workflowLibraryMode === "basic" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="basic" type="button">新手</button>
+        <button class="${workflowLibraryMode === "advanced" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="advanced" type="button">高级</button>
       </div>
       <input class="filter-input workflow-material-filter" data-action="filter-workflow-materials" value="${esc(workflowMaterialFilter)}" placeholder="搜索节点、工具、API 或插件" />
       <div class="workflow-template-groups">
@@ -3417,6 +3414,10 @@ function workflowToolbox() {
           <button class="button secondary" data-action="apply-material-node" type="button">应用节点</button>
         </div>
       ` : ""}
+      <details class="advanced-json workflow-json-box">
+        <summary>工作流 JSON</summary>
+        <textarea id="workflow-json" rows="8" data-original="${esc(JSON.stringify(workflowData(), null, 2))}">${esc(JSON.stringify(workflowData(), null, 2))}</textarea>
+      </details>
     </div>
   `;
 }
@@ -3908,8 +3909,20 @@ function options(values, selected, labeler = (value) => value) {
     .join("");
 }
 
+function readWorkflowJsonDraft() {
+  const workflowJson = $("workflow-json");
+  if (!workflowJson || workflowJson.value.trim() === (workflowJson.dataset.original || "").trim()) return;
+  const workflow = JSON.parse(workflowJson.value || "{}");
+  currentAgent.workflow_nodes = Array.isArray(workflow.nodes) ? workflow.nodes : currentAgent.workflow_nodes;
+  currentAgent.workflow_edges = Array.isArray(workflow.edges) ? workflow.edges : currentAgent.workflow_edges;
+  ensureWorkflow();
+}
+
 function readAgentForm() {
-  if (!$("agent-name")) return;
+  if (!$("agent-name")) {
+    readWorkflowJsonDraft();
+    return;
+  }
   const typedName = $("agent-name").value.trim();
   currentAgent.name = typedName;
   if (!typedName || (isAutoIdentitySource(currentAgent.identity_label_source) && typedName === runtimeAgentName())) {
@@ -3940,13 +3953,7 @@ function readAgentForm() {
   currentAgent.heartbeat_policy.cron_expression = $("heartbeat-cron").value.trim() || "*/5 * * * *";
   currentAgent.system_prompt = $("system-prompt").value;
   currentAgent.task_prompt = $("task-prompt").value;
-  const workflowJson = $("workflow-json");
-  if (workflowJson && workflowJson.value.trim() !== (workflowJson.dataset.original || "").trim()) {
-    const workflow = JSON.parse(workflowJson.value || "{}");
-    currentAgent.workflow_nodes = Array.isArray(workflow.nodes) ? workflow.nodes : currentAgent.workflow_nodes;
-    currentAgent.workflow_edges = Array.isArray(workflow.edges) ? workflow.edges : currentAgent.workflow_edges;
-    ensureWorkflow();
-  }
+  readWorkflowJsonDraft();
 }
 
 function renderTasks() {
@@ -4052,7 +4059,7 @@ function taskDetail(task) {
       <div class="mini-stats">
         <span>记录 ${task.state_snapshots?.length || 0}</span>
         <span>日志 ${task.progress_log?.length || 0}</span>
-        <span>Token ${task.token_usage?.total || 0}</span>
+        <span>消耗 ${formatTokens(task.token_usage?.total || 0)}</span>
         <span>审批 ${pendingApprovals.length}</span>
       </div>
     </div>
@@ -5267,7 +5274,6 @@ document.addEventListener("pointerup", (event) => {
       workflowHistoryFuture = [];
     }
     workflowSuppressClick = true;
-    setFeedback("节点位置已更新，保存配置后生效。");
   }
   workflowDrag = null;
 });
@@ -5529,6 +5535,10 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "toggle-workflow-toolbox") {
       workflowToolboxOpen = !workflowToolboxOpen;
+      renderWorkflowStable();
+    }
+    if (action === "set-workflow-library-mode") {
+      workflowLibraryMode = target.dataset.id === "advanced" ? "advanced" : "basic";
       renderWorkflowStable();
     }
     if (action === "close-workflow-inspector") {
@@ -6118,7 +6128,7 @@ function initAuth() {
       authSubmitBtn.textContent = "进入控制台";
       authSubmitBtn.disabled = false;
       showAuthScreen();
-      setFeedback(isAuthError(error) ? "Token 验证失败，请检查配置。" : `连接失败：${error.message}`, "error");
+      setFeedback(isAuthError(error) ? "密码验证失败，请检查配置。" : `连接失败：${error.message}`, "error");
     }
   });
 
@@ -6130,6 +6140,8 @@ function initAuth() {
 }
 
 document.addEventListener("DOMContentLoaded", () => {
+  const refreshBtn = $("refresh");
+  if (refreshBtn) refreshBtn.innerHTML = iconImg("refresh", "刷新");
   $("refresh")?.addEventListener("click", load);
   $("agent-switcher")?.addEventListener("click", () => {
     route = "canvas";
