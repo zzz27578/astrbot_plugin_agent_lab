@@ -28,6 +28,16 @@ Each workflow owns its own activation policy:
 
 This replaces the old global/private-only mindset. The legacy `private_only` config remains only as a compatibility fallback and now defaults to `false`.
 
+Backend trigger entrypoints now share one dispatcher:
+
+- AstrBot web API: `POST /astrbot_plugin_agent_lab/workflow/trigger`.
+- AstrBot web API: `POST /astrbot_plugin_agent_lab/workflow/webhook`.
+- Standalone console API: `POST /api/workflow/trigger`.
+- Standalone console API: `POST /api/workflow/webhook` or `POST /api/workflow/webhook/<path>`.
+- Schedule workflows are rehydrated at plugin startup from `workflow_trigger.cron`.
+
+The trigger payload is written into `task.workflow_data.trigger_payload` and `variables.trigger_payload`, then the deterministic workflow runtime runs immediately for event-style workflows.
+
 ## Detectors And Routes
 
 Detector modules should make route decisions explicit:
@@ -43,6 +53,15 @@ Detector modules should make route decisions explicit:
 
 LLM detectors are allowed, but should be constrained by templates, output schema and route labels. They should not freely decide actions. The canvas should guide users to define "passed", "failed" and "uncertain" behavior directly.
 
+Backend detector executors currently implement:
+
+- `match_keyword`: deterministic keyword match against trigger text or node input.
+- `match_regex`: deterministic regex match against trigger text or node input.
+- `scope_filter`: deterministic workflow scope check.
+- `llm_detect`: constrained fallback that returns `success` or `failed` when keywords are configured, otherwise `uncertain` instead of inventing an action.
+
+Runtime routing now reads `result.data.route`, so detector/control modules can route to `success`, `failed`, `uncertain`, `error`, `timeout`, `retry` and `always` edges without requiring ReAct.
+
 ## Plugin And Tool Orchestration
 
 The canvas can call tools, custom APIs and other plugin capabilities through modules. This reduces plugin-to-plugin compatibility pressure: other plugins do not need to know each other directly if Agent Lab can act as a small orchestration layer around events, calls, results and reports.
@@ -53,6 +72,15 @@ Examples:
 - Detect a user event from another plugin, call a favorability plugin action, then write a task record.
 - Run a scheduled report workflow that queries tools/APIs, summarizes results and emails admins.
 - Catch an API/plugin failure, route to retry, then notify an admin if the retry budget is exhausted.
+
+Notification modules (`send_message`, `send_private_message`, `send_email`) currently write structured delivery intents to `task.workflow_data.outbox`. This is deliberate: Agent Lab records what should happen, and a platform/plugin adapter can consume the outbox item to perform the actual QQ/private-message/email delivery without hard-coding one plugin dependency.
+
+Report and record modules are also deterministic:
+
+- `write_record` appends structured records to `task.workflow_data.records`.
+- `generate_report` appends immutable report snapshots to `task.workflow_data.reports`.
+- `limit_rate` stores per-node buckets in `task.workflow_data.rate_limits`.
+- `catch_error` routes based on blockers or the latest node output.
 
 ## Long Tasks Still Fit
 

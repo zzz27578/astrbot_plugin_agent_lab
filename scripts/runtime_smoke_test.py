@@ -1500,6 +1500,103 @@ async def main() -> None:
         assert archives[0].status == "completed"
 
     with TemporaryDirectory() as tmp:
+        debug("workflow automation trigger fixture")
+        plugin_main.StarTools.get_data_dir = staticmethod(
+            lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
+        )
+        plugin = plugin_main.AgentLabPlugin(FakeContext(), config={"private_only": False})
+        plugin.guard = FakeGuard()
+        spec = plugin.storage.get_agent()
+        spec.name = "Workflow automation smoke"
+        spec.identity_label_source = "manual"
+        spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
+            {
+                "enabled": True,
+                "types": ["webhook", "keyword"],
+                "keywords": ["spam"],
+                "webhook_path": "moderation/spam",
+            }
+        )
+        spec.workflow_scope = plugin_main.WorkflowScope.from_dict({"chat_types": ["private"]})
+        spec.workflow_nodes = [
+            {"id": "trigger", "kind": "trigger", "action": "webhook_trigger"},
+            {
+                "id": "detect",
+                "kind": "detector",
+                "action": "match_keyword",
+                "keywords": ["spam"],
+            },
+            {
+                "id": "report",
+                "kind": "report",
+                "action": "generate_report",
+                "message": "moderation report",
+            },
+            {
+                "id": "notify",
+                "kind": "notification",
+                "action": "send_private_message",
+                "target": "admin",
+                "message": "spam detected",
+            },
+        ]
+        spec.workflow_edges = [
+            {"from": "trigger", "to": "detect", "edge_type": "success"},
+            {"from": "detect", "to": "report", "edge_type": "success"},
+            {"from": "report", "to": "notify", "edge_type": "success"},
+        ]
+        plugin._prepare_agent_spec_for_save(spec)
+        plugin.storage.save_agent(spec)
+        event = FakeEvent(message_str="this contains spam")
+        payload = plugin._build_trigger_payload(
+            source="webhook",
+            event=event,
+            text="this contains spam",
+            data={"webhook_path": "moderation/spam"},
+        )
+        result = await plugin._trigger_workflow_from_payload(
+            event=event,
+            source="webhook",
+            payload=payload,
+            agent_id=spec.agent_id,
+        )
+        assert result["ok"] is True
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        assert task.workflow_data["trigger_payload"]["webhook_path"] == "moderation/spam"
+        detect_output = task.workflow_data["node_outputs"]["detect"]
+        assert detect_output["data"]["route"] == "success"
+        assert "spam" in detect_output["data"]["matched"]
+        assert task.workflow_data["reports"]
+        assert task.workflow_data["outbox"][-1]["channel"] == "private_message"
+        assert task.workflow_current_node_id == "notify"
+
+        unmatched_event = FakeEvent(unified_msg_origin="aiocqhttp:FriendMessage:654321", message_str="clean")
+        unmatched_payload = plugin._build_trigger_payload(
+            source="webhook",
+            event=unmatched_event,
+            text="clean",
+            data={"webhook_path": "wrong/path"},
+        )
+        unmatched = await plugin._trigger_workflow_from_payload(
+            event=unmatched_event,
+            source="webhook",
+            payload=unmatched_payload,
+            agent_id=spec.agent_id,
+        )
+        assert unmatched["ok"] is False
+
+        schedule_spec = plugin_main.AgentSpec(name="schedule smoke", identity_label_source="manual")
+        schedule_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
+            {"enabled": True, "types": ["schedule"], "cron": "*/5 * * * *"}
+        )
+        plugin.storage.save_agent(schedule_spec)
+        await plugin._rehydrate_workflow_schedules()
+        assert schedule_spec.agent_id in plugin._workflow_schedule_jobs
+        await plugin._disable_workflow_schedules()
+        assert not plugin._workflow_schedule_jobs
+
+    with TemporaryDirectory() as tmp:
         debug("third runtime fixture")
         plugin_main.StarTools.get_data_dir = staticmethod(
             lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")

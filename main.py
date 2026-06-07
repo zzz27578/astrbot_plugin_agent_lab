@@ -308,6 +308,7 @@ class AgentLabPlugin(Star):
         self.tool_executor = AstrBotToolExecutor(self)
         self.node_executors = NodeExecutorRegistry()
         self._register_node_executors()
+        self._workflow_schedule_jobs: dict[str, str] = {}
         self.summarizer = AgentSummarizer(
             context,
             {
@@ -326,6 +327,7 @@ class AgentLabPlugin(Star):
         self._sync_default_agent_identity()
         self._sync_agent_mode_skill()
         await self._rehydrate_heartbeats()
+        await self._rehydrate_workflow_schedules()
         await self._start_webui_server()
         # Prune stale memory candidates so the system starts clean.
         try:
@@ -343,6 +345,7 @@ class AgentLabPlugin(Star):
         logger.info("[AgentLab] initialized")
 
     async def terminate(self):
+        await self._disable_workflow_schedules()
         await self._stop_webui_server()
         logger.info("[AgentLab] terminated")
 
@@ -1140,6 +1143,9 @@ class AgentLabPlugin(Star):
         source: str,
         risk_level: str,
         agent_id: str = "",
+        trigger_payload: dict[str, Any] | None = None,
+        auto_run: bool = False,
+        skip_scope_check: bool = False,
     ) -> str:
         umo = event.unified_msg_origin
         if self.storage.load_active_task(umo):
@@ -1195,6 +1201,10 @@ class AgentLabPlugin(Star):
             heartbeat=spec.heartbeat_policy,
         )
         self._initialize_task_workflow(task, spec, source=source)
+        if trigger_payload:
+            data = self._ensure_workflow_data(task)
+            data["trigger_payload"] = trigger_payload
+            data.setdefault("variables", {})["trigger_payload"] = trigger_payload
         self._sync_agent_runtime(task, spec, reason="created")
         self.agent_runtime.record_decision(
             task,
@@ -1239,12 +1249,25 @@ class AgentLabPlugin(Star):
             heartbeat_text = "\n" + await self._enable_heartbeat(
                 event, task, reason="start_request"
             )
+        runtime_text = ""
+        if auto_run:
+            self._budget_before_tick(task, source or "workflow_trigger")
+            runtime_run = await self._run_workflow_runtime(
+                event=event,
+                task=task,
+                spec=spec,
+                reason=source or "workflow_trigger",
+            )
+            self.storage.save_task(task)
+            if runtime_run.changed:
+                runtime_text = f"\n- workflow_runtime: {self._compact_text(runtime_run.summary(), 500)}"
         return (
             f"已进入 Agent Mode。\n"
             f"- task_id: {task.task_id}\n"
             f"- agent: {effective_agent_name}\n"
             f"- 状态文件: {self.storage.task_markdown_path(umo, task.task_id)}\n"
             f"- 下一步: /agentlab tick\n"
+            f"{runtime_text}"
             f"{heartbeat_text}"
         )
 
@@ -1435,6 +1458,74 @@ class AgentLabPlugin(Star):
                 if event:
                     await self._enable_heartbeat(event, task, reason="rehydrate")
 
+    async def _rehydrate_workflow_schedules(self) -> None:
+        if not self.context.cron_manager:
+            return
+        for spec in self.storage.list_agents():
+            self._normalize_agent_workflow(spec)
+            trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
+            if not spec.enabled or not trigger.enabled:
+                continue
+            if "schedule" not in set(trigger.types or []) or not trigger.cron:
+                continue
+            if spec.agent_id in self._workflow_schedule_jobs:
+                continue
+            try:
+                job = await self.context.cron_manager.add_basic_job(
+                    name=f"agent_lab_workflow_{spec.agent_id}",
+                    cron_expression=trigger.cron,
+                    handler=self._workflow_schedule_tick,
+                    payload={
+                        "agent_id": spec.agent_id,
+                        "source": "schedule",
+                        "cron": trigger.cron,
+                        "description": trigger.description,
+                    },
+                    persistent=False,
+                    description=f"Agent Lab workflow schedule for {spec.name or spec.agent_id}",
+                    enabled=True,
+                )
+                self._workflow_schedule_jobs[spec.agent_id] = job.job_id
+                logger.info("[AgentLab] workflow schedule enabled for %s: %s", spec.agent_id, job.job_id)
+            except Exception as exc:
+                logger.warning("[AgentLab] cannot enable workflow schedule for %s: %s", spec.agent_id, exc)
+
+    async def _disable_workflow_schedules(self) -> None:
+        if not self.context.cron_manager:
+            self._workflow_schedule_jobs.clear()
+            return
+        for agent_id, job_id in list(self._workflow_schedule_jobs.items()):
+            try:
+                await self.context.cron_manager.delete_job(job_id)
+            except Exception:
+                pass
+            self._workflow_schedule_jobs.pop(agent_id, None)
+
+    async def _workflow_schedule_tick(self, **payload) -> None:
+        agent_id = str(payload.get("agent_id") or "").strip()
+        spec = self.storage.get_agent(agent_id or None)
+        trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
+        umo = str(
+            payload.get("umo")
+            or f"aiocqhttp:FriendMessage:agent_lab_schedule_{agent_id}_{int(time.time() * 1000)}"
+        ).strip()
+        event = self._make_cron_event(umo, f"Agent Lab workflow schedule: {spec.name or agent_id}")
+        if event is None:
+            logger.warning("[AgentLab] workflow schedule skipped; cannot create event for %s", agent_id)
+            return
+        trigger_payload = self._build_trigger_payload(
+            source="schedule",
+            event=event,
+            text=str(payload.get("description") or trigger.description or f"scheduled workflow {agent_id}"),
+            data=dict(payload),
+        )
+        await self._trigger_workflow_from_payload(
+            event=event,
+            source="schedule",
+            payload=trigger_payload,
+            agent_id=agent_id,
+        )
+
     def _resolve_approval(self, umo: str, approval_id: str, approved: bool, user_id: str) -> str:
         task = self.storage.load_active_task(umo)
         if not task:
@@ -1619,6 +1710,10 @@ class AgentLabPlugin(Star):
         )
 
     def _register_node_executors(self) -> None:
+        for action in ("listen_message", "schedule_trigger", "plugin_event_trigger", "webhook_trigger"):
+            self.node_executors.register(action, self._execute_trigger_node)
+        for action in ("match_keyword", "match_regex", "llm_detect", "scope_filter"):
+            self.node_executors.register(action, self._execute_detector_node)
         for action in ("summarize_entry", "confirm_entry", "restore_isolation"):
             self.node_executors.register(action, self._execute_entry_node)
         for action in (
@@ -1645,12 +1740,18 @@ class AgentLabPlugin(Star):
         self.node_executors.register("route_condition", self._execute_route_node)
         self.node_executors.register("conditional_router", self._execute_route_node)
         self.node_executors.register("retry", self._execute_retry_node)
+        self.node_executors.register("limit_rate", self._execute_rate_limit_node)
+        self.node_executors.register("catch_error", self._execute_catch_error_node)
         self.node_executors.register("validate_output", self._execute_validation_node)
         self.node_executors.register("debate_validation", self._execute_debate_validation_node)
         self.node_executors.register("request_approval", self._execute_approval_node)
         self.node_executors.register("wait_user", self._execute_wait_node)
         self.node_executors.register("handoff", self._execute_wait_node)
         self.node_executors.register("notify", self._execute_notify_node)
+        self.node_executors.register("write_record", self._execute_record_node)
+        self.node_executors.register("generate_report", self._execute_report_node)
+        for action in ("send_message", "send_private_message", "send_email"):
+            self.node_executors.register(action, self._execute_notify_node)
         self.node_executors.register("archive", self._execute_terminal_node)
         self.node_executors.register("exit_summary", self._execute_terminal_node)
 
@@ -2037,8 +2138,33 @@ class AgentLabPlugin(Star):
         node_id: str,
         result: NodeExecutionResult | None,
     ) -> list[dict[str, Any]]:
-        failed = bool(result and (not result.ok or result.blocked or result.status == "blocked"))
-        desired = {"error", "always"} if failed else {"success", "always"}
+        route = ""
+        if result and isinstance(result.data, dict):
+            route = str(result.data.get("route") or result.data.get("edge_type") or "").strip().lower()
+        if not route and result:
+            note = str(result.note or "").strip().lower()
+            if note == "node_executor_timeout":
+                route = "timeout"
+            elif result.blocked or not result.ok or result.status == "blocked":
+                route = str(result.status or "error").strip().lower()
+            else:
+                route = str(result.status or "success").strip().lower()
+        if route in {"completed", "complete", "matched", "passed", "ok", "true"}:
+            route = "success"
+        elif route in {"unmatched", "not_matched", "not_passed", "false"}:
+            route = "failed"
+        elif route in {"blocked", "exception"}:
+            route = "error"
+        elif not route:
+            route = "success"
+
+        desired = {route, "always"}
+        if result and (not result.ok or result.blocked or result.status == "blocked"):
+            desired.update({"failed", "error"})
+        elif route == "failed":
+            desired.add("error")
+        elif route == "error":
+            desired.add("failed")
         edges: list[dict[str, Any]] = []
         context = self._condition_context(task)
         for edge in self._workflow_edges_from(spec, node_id):
@@ -2957,6 +3083,243 @@ class AgentLabPlugin(Star):
                 default_target = str(item.get("id") or "").strip()
         return default_target if default_target in outgoing else ""
 
+    def _workflow_trigger_payload(self, task: TaskState) -> dict[str, Any]:
+        data = self._ensure_workflow_data(task)
+        payload = data.get("trigger_payload")
+        return payload if isinstance(payload, dict) else {}
+
+    def _workflow_text_from_context(self, ctx: NodeExecutionContext) -> str:
+        value = self._node_payload_from_variable(ctx.task, ctx.node)
+        if value is None:
+            value = self._node_json_value(ctx.task, ctx.node, "text", "message", "input", "content")
+        if value is None:
+            payload = self._workflow_trigger_payload(ctx.task)
+            value = payload.get("text") or payload.get("message") or payload.get("content")
+        if value is None:
+            value = getattr(ctx.event, "message_str", "") or ctx.task.root_goal or ctx.task.last_observation
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False, default=str)
+        return str(value or "")
+
+    def _node_patterns(self, task: TaskState, node: dict[str, Any], *keys: str) -> list[str]:
+        patterns = self._node_string_list(task, node, *keys)
+        if patterns:
+            return patterns
+        tags = node.get("tags")
+        if isinstance(tags, str):
+            return [part.strip() for part in re.split(r"[,;\s]+", tags) if part.strip()]
+        if isinstance(tags, list):
+            return [str(item).strip() for item in tags if str(item).strip()]
+        return []
+
+    async def _execute_trigger_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        payload = dict(self._workflow_trigger_payload(ctx.task))
+        action = str(ctx.node.get("action") or "").strip()
+        if not payload:
+            payload = self._build_trigger_payload(
+                source=action or "manual",
+                event=ctx.event,
+                text=getattr(ctx.event, "message_str", "") or ctx.task.root_goal,
+            )
+            self._ensure_workflow_data(ctx.task)["trigger_payload"] = payload
+        self._set_workflow_variable(ctx.task, "trigger_payload", payload)
+        data = {
+            "route": "success",
+            "source": payload.get("source") or action,
+            "text": payload.get("text") or "",
+            "payload": payload,
+        }
+        return NodeExecutionResult(
+            outcome=f"Trigger accepted from {data['source'] or 'workflow'}.",
+            next_node_id=self._single_next(ctx.outgoing),
+            data=data,
+            needs_react=False,
+            advance=True,
+            note="node_executor_trigger",
+        )
+
+    async def _execute_detector_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        action = str(ctx.node.get("action") or "").strip()
+        text = self._workflow_text_from_context(ctx)
+        route = "uncertain"
+        matched: list[str] = []
+        error = ""
+        if action == "scope_filter":
+            allowed, reason = self._workflow_scope_allows_event(ctx.spec, ctx.event)
+            route = "success" if allowed else "failed"
+            matched = [reason]
+        elif action in {"match_keyword", "llm_detect"}:
+            keywords = self._node_patterns(
+                ctx.task,
+                ctx.node,
+                "keywords",
+                "keyword",
+                "patterns",
+                "rules",
+                "allow",
+                "deny",
+            )
+            lowered = text.lower()
+            matched = [item for item in keywords if item.lower() in lowered]
+            if keywords:
+                route = "success" if matched else "failed"
+            elif action == "llm_detect":
+                route = "uncertain"
+        elif action == "match_regex":
+            patterns = self._node_patterns(ctx.task, ctx.node, "regex", "pattern", "patterns")
+            for pattern in patterns:
+                try:
+                    if re.search(pattern, text, flags=re.IGNORECASE):
+                        matched.append(pattern)
+                except re.error as exc:
+                    error = f"Invalid regex {pattern}: {exc}"
+                    route = "error"
+                    break
+            if not error:
+                route = "success" if matched else ("failed" if patterns else "uncertain")
+
+        data = {
+            "route": route,
+            "matched": matched,
+            "text": self._compact_text(text, 1000),
+            "action": action,
+        }
+        if error:
+            data["error"] = error
+        return NodeExecutionResult(
+            ok=route in {"success", "failed", "uncertain"},
+            status="completed" if route != "error" else "blocked",
+            outcome=f"Detector route={route}; matched={len(matched)}." if not error else error,
+            data=data,
+            blocked=route == "error",
+            note="node_executor_detector",
+        )
+
+    async def _execute_rate_limit_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        try:
+            window_seconds = max(1, min(int(ctx.node.get("window_seconds") or ctx.node.get("window") or 60), 86400))
+        except Exception:
+            window_seconds = 60
+        try:
+            max_hits = max(1, min(int(ctx.node.get("max_hits") or ctx.node.get("limit") or 5), 10000))
+        except Exception:
+            max_hits = 5
+        key_parts = [
+            str(ctx.node.get("id") or ""),
+            str(ctx.node.get("bucket") or ""),
+            str(getattr(ctx.event, "unified_msg_origin", "") or ""),
+            str(ctx.event.get_sender_id() if hasattr(ctx.event, "get_sender_id") else ""),
+        ]
+        bucket_key = hashlib.sha256("|".join(key_parts).encode("utf-8")).hexdigest()[:24]
+        data = self._ensure_workflow_data(ctx.task)
+        buckets = data.setdefault("rate_limits", {})
+        if not isinstance(buckets, dict):
+            buckets = {}
+            data["rate_limits"] = buckets
+        now_ts = time.time()
+        hits = [
+            float(item)
+            for item in buckets.get(bucket_key, [])
+            if isinstance(item, (int, float)) and now_ts - float(item) <= window_seconds
+        ]
+        hits.append(now_ts)
+        buckets[bucket_key] = hits[-max_hits * 2 :]
+        allowed = len(hits) <= max_hits
+        route = "success" if allowed else "failed"
+        return NodeExecutionResult(
+            ok=True,
+            status="completed",
+            outcome=f"Rate limit route={route}; hits={len(hits)}/{max_hits}.",
+            data={
+                "route": route,
+                "bucket": bucket_key,
+                "hits": len(hits),
+                "max_hits": max_hits,
+                "window_seconds": window_seconds,
+            },
+            note="node_executor_rate_limit",
+        )
+
+    async def _execute_catch_error_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        data = self._ensure_workflow_data(ctx.task)
+        outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
+        latest = next(reversed(outputs.values()), {}) if outputs else {}
+        has_error = bool(
+            ctx.task.blockers
+            or (isinstance(latest, dict) and (latest.get("blocked") or latest.get("ok") is False))
+        )
+        route = "error" if has_error else "success"
+        return NodeExecutionResult(
+            ok=True,
+            status="completed",
+            outcome=f"Catch error route={route}.",
+            data={"route": route, "latest": latest, "blockers": list(ctx.task.blockers or [])[-8:]},
+            note="node_executor_catch_error",
+        )
+
+    async def _execute_record_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        payload = self._node_payload_from_variable(ctx.task, ctx.node)
+        if payload is None:
+            payload = self._node_templated_json_object(ctx.task, ctx.node, "payload", "record", "data")
+        record = {
+            "time": now_iso(),
+            "node_id": str(ctx.node.get("id") or ""),
+            "title": str(ctx.node.get("title") or ""),
+            "payload": payload,
+        }
+        data = self._ensure_workflow_data(ctx.task)
+        records = data.setdefault("records", [])
+        if not isinstance(records, list):
+            records = []
+        records.append(record)
+        data["records"] = records[-120:]
+        ctx.task.add_log("workflow_record", self._compact_text(json.dumps(record, ensure_ascii=False), 800))
+        return NodeExecutionResult(
+            outcome="Workflow record written.",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "record": record},
+            needs_react=False,
+            advance=True,
+            note="node_executor_record",
+        )
+
+    async def _execute_report_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        data = self._ensure_workflow_data(ctx.task)
+        try:
+            node_outputs_snapshot = json.loads(
+                json.dumps(data.get("node_outputs") or {}, ensure_ascii=False, default=str)
+            )
+        except Exception:
+            node_outputs_snapshot = {}
+        payload = {
+            "time": now_iso(),
+            "task_id": ctx.task.task_id,
+            "agent_id": ctx.spec.agent_id,
+            "trigger": data.get("trigger_payload") or {},
+            "path": list(ctx.task.workflow_path or []),
+            "node_outputs": node_outputs_snapshot,
+            "blockers": list(ctx.task.blockers or [])[-12:],
+        }
+        reports = data.setdefault("reports", [])
+        if not isinstance(reports, list):
+            reports = []
+        reports.append(payload)
+        data["reports"] = reports[-40:]
+        summary = self._compact_text(
+            str(ctx.node.get("template") or ctx.node.get("message") or "")
+            or f"Workflow report generated for task {ctx.task.task_id}.",
+            1200,
+        )
+        ctx.task.add_log("workflow_report", summary)
+        return NodeExecutionResult(
+            outcome=summary,
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "report": payload, "summary": summary},
+            needs_react=False,
+            advance=True,
+            note="node_executor_report",
+        )
+
     async def _execute_entry_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         action = str(ctx.node.get("action") or "").strip()
         if action == "summarize_entry":
@@ -3796,15 +4159,37 @@ class AgentLabPlugin(Star):
         )
 
     async def _execute_notify_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        action = str(ctx.node.get("action") or "notify").strip()
         outcome = self._compact_text(
             str(ctx.node.get("message") or ctx.task.current_summary or ctx.task.last_confirmed_progress or "Notification checkpoint."),
             1000,
         )
+        channel = {
+            "send_message": "message",
+            "send_private_message": "private_message",
+            "send_email": "email",
+        }.get(action, "notify")
+        target = str(ctx.node.get("target") or ctx.node.get("to") or ctx.node.get("recipient") or "").strip()
+        item = {
+            "time": now_iso(),
+            "node_id": str(ctx.node.get("id") or ""),
+            "action": action,
+            "channel": channel,
+            "target": target,
+            "message": outcome,
+            "delivery": "outbox",
+        }
+        data = self._ensure_workflow_data(ctx.task)
+        outbox = data.setdefault("outbox", [])
+        if not isinstance(outbox, list):
+            outbox = []
+        outbox.append(item)
+        data["outbox"] = outbox[-120:]
         ctx.task.add_log("notify", outcome)
         return NodeExecutionResult(
             outcome=outcome,
             next_node_id=self._single_next(ctx.outgoing),
-            data={"message": outcome},
+            data={"route": "success", "message": outcome, "outbox": item},
             needs_react=len(ctx.outgoing) > 1,
             advance=len(ctx.outgoing) <= 1,
             note="node_executor_notify",
@@ -3900,15 +4285,15 @@ class AgentLabPlugin(Star):
 
             if self.node_executors.can_execute(decision.node):
                 nodes = self.workflow_runtime.node_map(spec)
-                success_edges = self._workflow_success_edges(spec, decision.node_id)
-                outgoing = [str(edge.get("to") or "") for edge in success_edges if str(edge.get("to") or "") in nodes]
+                context_edges = self._workflow_edges_from(spec, decision.node_id)
+                outgoing = [str(edge.get("to") or "") for edge in context_edges if str(edge.get("to") or "") in nodes]
                 ctx = NodeExecutionContext(
                     event=event,
                     task=task,
                     spec=spec,
                     node=decision.node,
                     outgoing=outgoing,
-                    next_candidates=self._candidate_nodes_from_edges(nodes, success_edges),
+                    next_candidates=self._candidate_nodes_from_edges(nodes, context_edges),
                     reason=reason,
                 )
                 result = await self._execute_node_with_policy(ctx)
@@ -4866,6 +5251,8 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST", "DELETE"], "Agent specs")
         self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/check", self.api_workflow_check, ["GET", "POST"], "Check Agent workflow")
         self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/dry-run", self.api_workflow_dry_run, ["GET", "POST"], "Dry-run Agent workflow")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/trigger", self.api_workflow_trigger, ["POST"], "Trigger workflow automation")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/webhook", self.api_workflow_webhook, ["POST"], "Workflow webhook trigger")
         self.context.register_web_api(f"/{PLUGIN_NAME}/modules", self.api_modules, ["GET", "POST"], "Agent modules")
         self.context.register_web_api(f"/{PLUGIN_NAME}/registry", self.api_registry, ["GET", "POST"], "Agent integrations registry")
         self.context.register_web_api(f"/{PLUGIN_NAME}/memory", self.api_memory, ["GET", "POST", "DELETE"], "Agent memory entries")
@@ -4982,6 +5369,66 @@ class AgentLabPlugin(Star):
                 "dry_run": self._workflow_dry_run_report(spec, workflow),
             }
         )
+
+    async def api_workflow_trigger(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        source = str(payload.get("source") or "manual_webui").strip()
+        agent_id = str(payload.get("agent_id") or "").strip()
+        text = str(payload.get("text") or payload.get("message") or payload.get("event_name") or source).strip()
+        umo = str(
+            payload.get("umo")
+            or f"aiocqhttp:FriendMessage:agent_lab_workflow_{agent_id or 'default'}_{int(time.time() * 1000)}"
+        ).strip()
+        event = self._make_cron_event(umo, text or "Agent Lab workflow trigger")
+        if event is None:
+            return jsonify({"ok": False, "error": "cannot create event"})
+        trigger_payload = self._build_trigger_payload(
+            source=source,
+            event=event,
+            text=text,
+            data=payload,
+        )
+        result = await self._trigger_workflow_from_payload(
+            event=event,
+            source=source,
+            payload=trigger_payload,
+            agent_id=agent_id,
+        )
+        return jsonify(result)
+
+    async def api_workflow_webhook(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        view_args = getattr(request, "view_args", None) or {}
+        path = str(
+            payload.get("webhook_path")
+            or payload.get("path")
+            or view_args.get("webhook_path")
+            or request.args.get("path")
+            or ""
+        ).strip().strip("/")
+        payload["webhook_path"] = path
+        payload["source"] = "webhook"
+        text = str(payload.get("text") or payload.get("message") or f"webhook:{path}").strip()
+        umo = str(
+            payload.get("umo")
+            or f"aiocqhttp:FriendMessage:agent_lab_webhook_{path or 'default'}_{int(time.time() * 1000)}"
+        ).strip()
+        event = self._make_cron_event(umo, text)
+        if event is None:
+            return jsonify({"ok": False, "error": "cannot create event"})
+        trigger_payload = self._build_trigger_payload(
+            source="webhook",
+            event=event,
+            text=text,
+            data=payload,
+        )
+        result = await self._trigger_workflow_from_payload(
+            event=event,
+            source="webhook",
+            payload=trigger_payload,
+            agent_id=str(payload.get("agent_id") or ""),
+        )
+        return jsonify(result)
 
     async def api_modules(self):
         if request.method == "POST":
@@ -5675,6 +6122,146 @@ class AgentLabPlugin(Star):
     def _workflow_admin_ids(self) -> list[str]:
         raw = _cfg(self.config, "workflow_admin_ids", []) or _cfg(self.config, "admin_qq_ids", [])
         return self._clean_string_list(raw)
+
+    def _build_trigger_payload(
+        self,
+        *,
+        source: str,
+        event: AstrMessageEvent | None = None,
+        text: str = "",
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(data or {})
+        umo = str(getattr(event, "unified_msg_origin", "") or payload.get("umo") or "")
+        sender_id = ""
+        if event is not None:
+            try:
+                sender_id = str(event.get_sender_id() or "")
+            except Exception:
+                sender_id = ""
+        payload.update(
+            {
+                "source": str(source or "manual").strip(),
+                "text": str(text or payload.get("text") or payload.get("message") or ""),
+                "umo": umo,
+                "sender_id": sender_id or str(payload.get("sender_id") or ""),
+                "group_id": self._event_group_id(event) if event is not None else str(payload.get("group_id") or ""),
+                "platform": self._event_platform_name(event) if event is not None else str(payload.get("platform") or ""),
+                "received_at": now_iso(),
+            }
+        )
+        return payload
+
+    def _workflow_trigger_matches(
+        self,
+        spec: AgentSpec,
+        event: AstrMessageEvent,
+        *,
+        source: str,
+        payload: dict[str, Any] | None = None,
+    ) -> tuple[bool, str]:
+        trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
+        if not trigger.enabled:
+            return False, "trigger disabled"
+        types = set(trigger.types or [])
+        source = str(source or "").strip().lower()
+        source_type = {
+            "message": "message_monitor",
+            "message_monitor": "message_monitor",
+            "natural": "natural",
+            "keyword": "keyword",
+            "regex": "regex",
+            "schedule": "schedule",
+            "plugin_event": "plugin_event",
+            "webhook": "webhook",
+            "manual_webui": "manual_webui",
+            "command": "command",
+        }.get(source, source)
+        if source_type not in types and source not in types:
+            return False, f"source={source or '-'} not enabled"
+        payload = payload or {}
+        text = str(payload.get("text") or getattr(event, "message_str", "") or "").lower()
+        if source_type in {"keyword", "message_monitor", "natural"} and trigger.keywords:
+            if not any(keyword.lower() in text for keyword in trigger.keywords):
+                return False, "keyword not matched"
+        if source_type == "regex" or (source_type in {"message_monitor", "natural"} and trigger.regex):
+            if trigger.regex:
+                matched = False
+                for pattern in trigger.regex:
+                    try:
+                        if re.search(pattern, text, flags=re.IGNORECASE):
+                            matched = True
+                            break
+                    except re.error:
+                        continue
+                if not matched:
+                    return False, "regex not matched"
+        if source_type == "plugin_event" and trigger.plugin_events:
+            event_name = str(payload.get("event_name") or payload.get("name") or "").strip()
+            if event_name not in set(trigger.plugin_events):
+                return False, "plugin event not matched"
+        if source_type == "webhook" and trigger.webhook_path:
+            requested = str(payload.get("webhook_path") or payload.get("path") or "").strip().strip("/")
+            expected = trigger.webhook_path.strip().strip("/")
+            if requested != expected:
+                return False, "webhook path not matched"
+        return True, "matched"
+
+    def _candidate_workflows_for_trigger(
+        self,
+        event: AstrMessageEvent,
+        *,
+        source: str,
+        payload: dict[str, Any] | None = None,
+        agent_id: str = "",
+    ) -> list[AgentSpec]:
+        candidates: list[AgentSpec] = []
+        specs = [self.storage.get_agent(agent_id)] if agent_id else self.storage.list_agents()
+        default_id = self.storage.default_agent_id()
+        specs = sorted(specs, key=lambda item: 0 if item.agent_id == default_id else 1)
+        for spec in specs:
+            if not spec.enabled:
+                continue
+            self._normalize_agent_workflow(spec)
+            allowed, _ = self._workflow_scope_allows_event(spec, event)
+            if not allowed:
+                continue
+            matched, _ = self._workflow_trigger_matches(spec, event, source=source, payload=payload)
+            if matched:
+                candidates.append(spec)
+        return candidates
+
+    async def _trigger_workflow_from_payload(
+        self,
+        *,
+        event: AstrMessageEvent,
+        source: str,
+        payload: dict[str, Any],
+        agent_id: str = "",
+    ) -> dict[str, Any]:
+        specs = self._candidate_workflows_for_trigger(
+            event,
+            source=source,
+            payload=payload,
+            agent_id=agent_id,
+        )
+        if not specs:
+            return {"ok": False, "error": "no matching workflow", "source": source}
+        spec = specs[0]
+        text = str(payload.get("text") or payload.get("message") or source or "workflow trigger").strip()
+        message = await self._start_task(
+            event,
+            goal=text or f"Workflow trigger: {source}",
+            completion_conditions="Workflow automation route completed.",
+            brief=json.dumps(payload, ensure_ascii=False, default=str),
+            request_heartbeat=False,
+            source=f"workflow:{source}",
+            risk_level=str(payload.get("risk_level") or "work"),
+            agent_id=spec.agent_id,
+            trigger_payload=payload,
+            auto_run=True,
+        )
+        return {"ok": True, "agent_id": spec.agent_id, "message": message}
 
     @staticmethod
     def _event_group_id(event: AstrMessageEvent) -> str:

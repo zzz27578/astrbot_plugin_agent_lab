@@ -26,6 +26,21 @@ REACT_ACTIONS = {
 REACT_KINDS = {"tool", "api", "subflow", "branch", "loop", "human", "validation"}
 
 DETERMINISTIC_ACTIONS = {
+    "listen_message",
+    "schedule_trigger",
+    "plugin_event_trigger",
+    "webhook_trigger",
+    "match_keyword",
+    "match_regex",
+    "llm_detect",
+    "scope_filter",
+    "limit_rate",
+    "catch_error",
+    "write_record",
+    "generate_report",
+    "send_message",
+    "send_private_message",
+    "send_email",
     "summarize_entry",
     "confirm_entry",
     "restore_isolation",
@@ -150,7 +165,18 @@ class WorkflowRuntime:
                 outcome="Parallel branch should be executed by workflow runtime.",
             )
 
-        if action in DETERMINISTIC_ACTIONS or kind in {"state", "guard", "memory", "retrieval"}:
+        if action in DETERMINISTIC_ACTIONS or kind in {
+            "state",
+            "guard",
+            "memory",
+            "retrieval",
+            "trigger",
+            "detector",
+            "report",
+            "rate_limit",
+            "error_handler",
+            "notification",
+        }:
             target = outgoing[0] if len(outgoing) == 1 else ""
             needs_react = len(outgoing) > 1
             return WorkflowDecision(

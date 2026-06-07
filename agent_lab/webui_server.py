@@ -94,6 +94,15 @@ class StandaloneWebUIServer:
         async def workflow_dry_run():
             return await self._guard(self.owner.api_workflow_dry_run)
 
+        @app.post("/api/workflow/trigger")
+        async def workflow_trigger():
+            return await self._guard(self.owner.api_workflow_trigger)
+
+        @app.route("/api/workflow/webhook", methods=["POST"])
+        @app.route("/api/workflow/webhook/<path:webhook_path>", methods=["POST"])
+        async def workflow_webhook(webhook_path: str = ""):
+            return await self._guard(self.owner.api_workflow_webhook)
+
         @app.route("/api/integrations", methods=["GET", "POST"])
         async def integrations():
             return await self._guard(self.owner.api_modules)
