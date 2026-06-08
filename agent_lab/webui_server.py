@@ -103,6 +103,10 @@ class StandaloneWebUIServer:
         async def workflow_webhook(webhook_path: str = ""):
             return await self._guard(self.owner.api_workflow_webhook)
 
+        @app.get("/api/workflow/runs")
+        async def workflow_runs():
+            return await self._guard(self.owner.api_workflow_runs)
+
         @app.route("/api/integrations", methods=["GET", "POST"])
         async def integrations():
             return await self._guard(self.owner.api_modules)

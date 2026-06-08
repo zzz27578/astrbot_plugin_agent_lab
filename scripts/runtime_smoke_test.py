@@ -1596,6 +1596,91 @@ async def main() -> None:
         await plugin._disable_workflow_schedules()
         assert not plugin._workflow_schedule_jobs
 
+        multi_schedule_spec = plugin_main.AgentSpec(name="multi schedule smoke", identity_label_source="manual")
+        multi_schedule_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
+            {"enabled": True, "types": ["schedule"], "cron_expressions": ["*/5 * * * *", "0 * * * *"]}
+        )
+        plugin.storage.save_agent(multi_schedule_spec)
+        await plugin._rehydrate_workflow_schedules()
+        assert f"{multi_schedule_spec.agent_id}:0" in plugin._workflow_schedule_jobs
+        assert f"{multi_schedule_spec.agent_id}:1" in plugin._workflow_schedule_jobs
+        await plugin._disable_workflow_schedules()
+        assert not plugin._workflow_schedule_jobs
+
+        discovered = plugin._discovered_workflow_modules()
+        module_ids = {item["module_id"] for item in discovered}
+        assert "plugin:memory_noise" in module_ids
+        assert "tool:safe_registered_tool" in module_ids
+        assert "builtin:llm_detect" in module_ids
+        assert "builtin:archive_task" in module_ids
+
+        class LlmDetectContext(FakeContext):
+            async def llm_generate(self, **kwargs):
+                return SimpleNamespace(
+                    completion_text=json.dumps(
+                        {
+                            "route": "success",
+                            "reason": "matched toxic insult",
+                            "evidence": ["badword"],
+                            "confidence": 0.91,
+                        }
+                    )
+                )
+
+        llm_plugin = plugin_main.AgentLabPlugin(LlmDetectContext(), config={"private_only": False})
+        llm_plugin.guard = FakeGuard()
+        llm_spec = llm_plugin.storage.get_agent()
+        llm_spec.name = "llm detector smoke"
+        llm_spec.identity_label_source = "manual"
+        llm_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
+            {"enabled": True, "types": ["silent_global"], "keywords": ["badword"]}
+        )
+        llm_spec.workflow_scope = plugin_main.WorkflowScope.from_dict({"chat_types": ["private"]})
+        llm_spec.workflow_nodes = [
+            {"id": "listen", "kind": "trigger", "action": "listen_message"},
+            {"id": "detect", "kind": "detector", "action": "llm_detect", "criteria": "detect toxic content"},
+            {"id": "memory", "kind": "memory", "action": "export_task_memory"},
+            {"id": "archive", "kind": "memory", "stage": "archive", "action": "archive_task", "summary": "moderation completed"},
+        ]
+        llm_spec.workflow_edges = [
+            {"from": "listen", "to": "detect", "from_port": "success"},
+            {"from": "detect", "to": "memory", "from_port": "success"},
+            {"from": "memory", "to": "archive", "from_port": "success"},
+        ]
+        llm_plugin._prepare_agent_spec_for_save(llm_spec)
+        llm_plugin.storage.save_agent(llm_spec)
+        llm_event = FakeEvent(unified_msg_origin="aiocqhttp:FriendMessage:llm-detect", message_str="badword here")
+        await llm_plugin._maybe_trigger_message_monitor(llm_event, mode="native")
+        assert llm_plugin.storage.load_active_task(llm_event.unified_msg_origin) is None
+        llm_archives = llm_plugin.storage.list_archives(llm_event.unified_msg_origin)
+        assert len(llm_archives) == 1
+        archived = llm_archives[0]
+        assert archived.status == "completed"
+        assert archived.workflow_data["node_outputs"]["detect"]["data"]["route"] == "success"
+        assert archived.workflow_data["node_outputs"]["detect"]["data"]["llm_result"]["confidence"] == 0.91
+        assert archived.workflow_data["memory_exports"]
+
+        dedupe_plugin = plugin_main.AgentLabPlugin(FakeContext(), config={"private_only": False})
+        dedupe_plugin.guard = FakeGuard()
+        dedupe_spec = dedupe_plugin.storage.get_agent()
+        dedupe_spec.name = "dedupe smoke"
+        dedupe_spec.identity_label_source = "manual"
+        dedupe_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
+            {"enabled": True, "types": ["silent_global"], "keywords": ["once"]}
+        )
+        dedupe_spec.workflow_scope = plugin_main.WorkflowScope.from_dict({"chat_types": ["private"]})
+        dedupe_spec.workflow_nodes = [
+            {"id": "listen", "kind": "trigger", "action": "listen_message"},
+            {"id": "report", "kind": "report", "action": "generate_report", "message": "once"},
+        ]
+        dedupe_spec.workflow_edges = [{"from": "listen", "to": "report"}]
+        dedupe_plugin._prepare_agent_spec_for_save(dedupe_spec)
+        dedupe_plugin.storage.save_agent(dedupe_spec)
+        dedupe_event = FakeEvent(unified_msg_origin="aiocqhttp:FriendMessage:dedupe", message_str="once")
+        await dedupe_plugin._maybe_trigger_message_monitor(dedupe_event, mode="native")
+        await dedupe_plugin._maybe_trigger_message_monitor(dedupe_event, mode="native")
+        assert len(dedupe_plugin.storage.list_tasks(dedupe_event.unified_msg_origin)) == 1
+
         special_spec = plugin_main.AgentSpec(name="special module compile", identity_label_source="manual")
         special_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
             {"enabled": True, "types": ["message_monitor"], "keywords": ["loop"]}

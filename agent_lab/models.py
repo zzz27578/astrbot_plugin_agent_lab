@@ -315,6 +315,7 @@ class WorkflowTrigger:
     keywords: list[str] = field(default_factory=list)
     regex: list[str] = field(default_factory=list)
     cron: str = ""
+    cron_expressions: list[str] = field(default_factory=list)
     plugin_events: list[str] = field(default_factory=list)
     webhook_path: str = ""
     description: str = ""
@@ -331,6 +332,7 @@ class WorkflowTrigger:
         valid_types = {
             "command",
             "natural",
+            "silent_global",
             "message_monitor",
             "keyword",
             "regex",
@@ -348,16 +350,21 @@ class WorkflowTrigger:
             for item in base.types
             if str(item).strip() in valid_types
         ] or ["command"]
-        for key in ("command_names", "keywords", "regex", "plugin_events"):
+        for key in ("command_names", "keywords", "regex", "cron_expressions", "plugin_events"):
             value = getattr(base, key)
             if isinstance(value, str):
                 value = [part.strip() for part in value.replace("；", ",").split(",")]
             elif not isinstance(value, list):
                 value = []
             setattr(base, key, [str(item).strip() for item in value if str(item).strip()])
-        for key in ("command_names", "keywords", "regex", "plugin_events"):
+        for key in ("command_names", "keywords", "regex", "cron_expressions", "plugin_events"):
             setattr(base, key, _clean_string_list(getattr(base, key)))
         base.cron = str(base.cron or "").strip()[:120]
+        if base.cron and base.cron not in base.cron_expressions:
+            base.cron_expressions.insert(0, base.cron)
+        base.cron_expressions = [item[:120] for item in base.cron_expressions if item.strip()][:12]
+        if not base.cron and base.cron_expressions:
+            base.cron = base.cron_expressions[0]
         base.webhook_path = str(base.webhook_path or "").strip()[:200]
         base.description = str(base.description or "").strip()[:500]
         return base

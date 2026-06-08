@@ -40,7 +40,7 @@ Registered executors now cover:
 - `save_state`, `heartbeat`, `transform_context`
 - `variable_set`, `variable_get`, `text_template`, `json_transform`
 - `merge`, `iterator`, `subflow_call`
-- `retrieve_memory`, `save_memory`
+- `retrieve_memory`, `save_memory`, `summarize_memory`, `export_task_memory`, `promote_memory_candidate`, `forget_task_memory`
 - `parallel_branch`
 - `call_api`, `http_request`
 - `run_tools`, `file_operation`, `code_exec`
@@ -48,15 +48,20 @@ Registered executors now cover:
 - `listen_message`, `schedule_trigger`, `plugin_event_trigger`, `webhook_trigger`
 - `match_keyword`, `match_regex`, `llm_detect`, `scope_filter`
 - `limit_rate`, `catch_error`, `write_record`, `generate_report`
-- `send_message`, `send_private_message`, `send_email`
+- `send_message`, `send_private_message`, `send_email`, `deliver_outbox`
 - `validate_output`, `debate_validation`
 - `request_approval`, `wait_user`, `handoff`
 - `notify`
+- `archive_task` as deterministic workflow archive
 - `archive`, `exit_summary` as terminal ReAct handoff nodes
 
 This means state mutation, variable reads, template rendering, simple JSON path extraction, merges, iterator preparation, API/HTTP calls, tool calls, sandbox-scoped file operations, guarded code execution, memory checkpoints, approval/wait gates, validation gates, routing, and parallel branches have backend runtime semantics. They are no longer only text in the system prompt.
 
 `subflow_call` is currently a deterministic preparation node: it resolves the template id and parameters and records them for the parent workflow. A nested subflow runner is still future work.
+
+`/modules` now returns discovered module catalogs in addition to user-defined module manifests: installed AstrBot plugins, registered tools, and Agent Lab builtin actions. This lets the future canvas become a scanner/orchestrator for downloaded plugins and their tools instead of depending on a fixed template pack.
+
+`/workflow/runs` returns workflow-centric active/archive rows with trigger payloads, latest path events, reports, records, outbox status and heartbeat health. It is the backend contract for a future workflow run management UI.
 
 `agent_lab/agent_runtime.py` adds the task-level agent contract around that executor. It persists an `agent_instance`, a capability catalog, a workflow-derived `TaskPlan`, decision records, observation records, verifier-style verdicts, and a resume anchor under `TaskState.workflow_data.agent_runtime`.
 
@@ -95,6 +100,7 @@ Those handoffs are recorded in `TaskState.workflow_data.react_traces` with the n
 - `react_traces`: ReAct/tool-loop handoff audit trail.
 - `execution_counts`: retry and loop guard support.
 - `tool_outputs`: normalized audit rows for tool-like nodes, including `run_tools`, `call_api`, `http_request`, `file_operation`, and `code_exec`.
+- `records`, `reports`, `outbox`, `outbox_delivery_history`, `memory_exports`, `memory_summary`: deterministic outputs for static/event workflows.
 
 If a node defines `output_variable`, its result is saved into `variables`. Later nodes can read it with `input_variable`.
 
@@ -120,6 +126,10 @@ Workflow edges are normalized with an `edge_type`:
 Edge `condition` expressions are evaluated against the same workflow context used by variables. `condition_visual` is preserved for WebUI round-tripping. When a registered executor returns `ok=False` or `blocked=True`, the runtime first looks for matching `error`/`always` edges before globally blocking the task.
 
 Retry/loop modules are special route producers. While under budget they emit `route=retry`; once exhausted they emit `route=failed`, so the canvas can connect a retry body and a separate failure/report path.
+
+LLM detector nodes are constrained route producers. If no deterministic keyword rule is present, `llm_detect` asks the AstrBot provider for a JSON object containing only `route`, `reason`, `evidence` and `confidence`; unsupported routes or low confidence become `uncertain`.
+
+`archive_task` is deterministic and can close short/static workflows without pretending they are long Agent Mode tasks. It still runs the archive side effects: heartbeat disable, session plugin restore, archive evidence, memory orchestrator, markdown/json archive, and task pattern capture. `archive` and `exit_summary` remain ReAct handoff terminal nodes for workflows that need a final LLM summary/verifier pass.
 
 ## Isolation Boundary
 

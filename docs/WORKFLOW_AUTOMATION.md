@@ -22,7 +22,7 @@ This means "detect garbage talk and ban", "call QQ manager then reduce favorabil
 Each workflow owns its own activation policy:
 
 - Trigger switch: enabled or disabled per workflow.
-- Trigger types: command, natural language, message monitor, keyword, regex, schedule, plugin event, webhook and manual WebUI.
+- Trigger types: command, natural language, silent global monitor, received-message monitor, keyword, regex, schedule, plugin event, webhook and manual WebUI.
 - Scope: private chat, group chat, platform allowlist, UMO allow/deny, group allow/deny, user allow/deny.
 - Admin-only: uses `workflow_admin_ids` in plugin config.
 
@@ -34,9 +34,11 @@ Backend trigger entrypoints now share one dispatcher:
 - AstrBot web API: `POST /astrbot_plugin_agent_lab/workflow/webhook`.
 - Standalone console API: `POST /api/workflow/trigger`.
 - Standalone console API: `POST /api/workflow/webhook` or `POST /api/workflow/webhook/<path>`.
-- Schedule workflows are rehydrated at plugin startup from `workflow_trigger.cron`.
+- Schedule workflows are rehydrated at plugin startup from `workflow_trigger.cron` or `workflow_trigger.cron_expressions`.
 - Command simulation: `/agentlab trigger <source> [agent=<agent_id>] <text>`.
-- Message monitor: `on_llm_request` tries `message_monitor`, `keyword`, `regex` and `natural` workflow triggers when the current UMO has no active Agent Lab task.
+- Native message monitor: AstrBot `event_message_type(EventMessageType.ALL)` can trigger `silent_global`, `message_monitor`, `keyword`, `regex` and `natural` workflows without requiring an LLM request.
+- LLM-request monitor: optional compatibility path controlled by `workflow_message_monitor_on_llm_request_enabled`.
+- Duplicate protection: trigger payloads are deduped for a short TTL so native hooks and LLM hooks do not create duplicate runs for the same message.
 
 The trigger payload is written into `task.workflow_data.trigger_payload` and `variables.trigger_payload`, then the deterministic workflow runtime runs immediately for event-style workflows.
 
@@ -60,7 +62,7 @@ Backend detector executors currently implement:
 - `match_keyword`: deterministic keyword match against trigger text or node input.
 - `match_regex`: deterministic regex match against trigger text or node input.
 - `scope_filter`: deterministic workflow scope check.
-- `llm_detect`: constrained fallback that returns `success` or `failed` when keywords are configured, otherwise `uncertain` instead of inventing an action.
+- `llm_detect`: first honors deterministic keywords when configured; otherwise calls the configured AstrBot provider with a strict JSON-only route contract: `success`, `failed`, `uncertain` or `error`, plus reason/evidence/confidence. Low confidence is downgraded to `uncertain`.
 
 Runtime routing now reads `result.data.route`, so detector/control modules can route to `success`, `failed`, `uncertain`, `error`, `timeout`, `retry` and `always` edges without requiring ReAct.
 
@@ -88,6 +90,8 @@ Examples:
 
 Notification modules (`send_message`, `send_private_message`, `send_email`) currently write structured delivery intents to `task.workflow_data.outbox`. This is deliberate: Agent Lab records what should happen, and a platform/plugin adapter can consume the outbox item to perform the actual QQ/private-message/email delivery without hard-coding one plugin dependency.
 
+`deliver_outbox` prepares same-session delivery items and leaves cross-session/platform-specific items in the outbox for adapter/plugin consumption. This keeps Agent Lab from hard-coding QQ/email adapter internals while still making delivery intent visible to workflow runs.
+
 Report and record modules are also deterministic:
 
 - `write_record` appends structured records to `task.workflow_data.records`.
@@ -95,13 +99,25 @@ Report and record modules are also deterministic:
 - `limit_rate` stores per-node buckets in `task.workflow_data.rate_limits`.
 - `catch_error` routes based on blockers or the latest node output.
 
+Installed AstrBot plugins and registered tools are exposed as discovered workflow modules from `/astrbot_plugin_agent_lab/modules`:
+
+- `plugin:<plugin_name>` modules represent installed/downloaded AstrBot plugins and their inferred capabilities.
+- `tool:<tool_name>` modules represent registered LLM tools with input/output schema, risk and source plugin metadata.
+- `builtin:<action>` modules represent Agent Lab native actions such as listener, detector, retry, memory, outbox and archive modules.
+
+The backend does not need a fixed template library for cases like moderation, favorability changes or admin notifications. The canvas can scan these discovered modules and bind concrete plugin/tool actions at edit time.
+
+Workflow run management is available at `GET /astrbot_plugin_agent_lab/workflow/runs`. It returns active/archive rows with trigger payload, path, latest events, reports, records, pending outbox and heartbeat health.
+
 ## Long Tasks Still Fit
 
 Long tasks are a specialized workflow style:
 
 - Heartbeat is a module, not the whole product.
 - Memory isolation is a module/policy, not a global-only mode.
-- Task memory export/reporting can be explicit workflow modules.
+- Task memory export/reporting/promotion/forgetting can be explicit workflow modules: `summarize_memory`, `export_task_memory`, `promote_memory_candidate`, `forget_task_memory`.
 - Resume points and watchdog checks can be ordinary state/control nodes.
+
+Short/long task shape is determined by the workflow graph, not by a hardcoded task type. `archive_task` is the deterministic archive module for event/static workflows. `exit_summary` remains a terminal ReAct handoff for long tasks that need an LLM-written final summary and verifier-style completion evidence.
 
 This keeps the original Agent-like runtime while expanding the product into a broader visual automation platform for AstrBot.
