@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent Lab 控制台</title>
-    <link rel="stylesheet" href="./style.css?v=20260609-loginfix2" />
+    <link rel="stylesheet" href="./style.css?v=20260609-cleanlogin" />
   </head>
   <body>
     <div id="auth" class="auth-screen" hidden>
@@ -17,7 +17,7 @@
           <input id="token-input" type="password" autocomplete="current-password" placeholder="对应 standalone_webui_token" />
         </label>
         <p id="auth-status" class="auth-status">如果没有设置访问密码，控制台会自动进入。</p>
-        <p id="auth-version" class="auth-version">前端版本：20260609-loginfix2</p>
+        <p id="auth-version" class="auth-version">前端版本：20260609-cleanlogin</p>
         <button id="login-submit" class="button primary" type="button">进入控制台</button>
       </form>
     </div>
@@ -57,64 +57,6 @@
     </div>
 
     <div id="toast-host" class="toast-host"></div>
-    <script defer src="./app.js?v=20260609-loginfix2"></script>
-    <script>
-      (function () {
-        var version = "20260609-loginfix2";
-        function byId(id) { return document.getElementById(id); }
-        function status(text, tone) {
-          var el = byId("auth-status");
-          if (!el) return;
-          el.textContent = text;
-          el.dataset.tone = tone || "";
-        }
-        function esc(value) {
-          return String(value == null ? "" : value).replace(/[&<>\"']/g, function (ch) {
-            return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[ch];
-          });
-        }
-        function tokenPath(path, token) {
-          var parts = String(path).split("?");
-          var query = new URLSearchParams(parts[1] || "");
-          query.set("token", token);
-          return parts[0] + "?" + query.toString();
-        }
-        async function fallbackLogin(event) {
-          if (window.AgentLabFullAppReady) return;
-          if (event) event.preventDefault();
-          var input = byId("token-input");
-          var button = byId("login-submit");
-          var token = input ? input.value.trim() : "";
-          if (!token) return status("请输入插件配置 standalone_webui_token 中的访问密码。", "error");
-          if (button) button.disabled = true;
-          status("正在验证访问密码...", "");
-          try {
-            var res = await fetch(tokenPath("/api/state", token), { headers: { "Authorization": "Bearer " + token, "X-Agent-Lab-Token": token } });
-            var data = await res.json().catch(function () { return {}; });
-            if (res.status === 401) return status("访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。", "error");
-            if (!res.ok || data.ok === false) throw new Error(data.error || (res.status + " " + res.statusText));
-            byId("auth").hidden = true;
-            byId("app").hidden = false;
-            byId("page-title").textContent = "总览";
-            byId("page-subtitle").textContent = "控制台已连接";
-            byId("identity-name").textContent = (data.runtime && (data.runtime.display_name || data.runtime.name)) || "当前机器人";
-            byId("identity-source").textContent = "AstrBot 运行时";
-            byId("agent-select").innerHTML = (data.agents || []).map(function (agent) { return "<option>" + esc(agent.name || agent.agent_id || "任务配置") + "</option>"; }).join("");
-            byId("nav").innerHTML = '<button class="active" type="button"><span><strong>总览</strong><small>控制台已连接</small></span></button>';
-            byId("view").innerHTML = '<section class="panel"><h2>Agent Lab 控制台</h2><p>访问密码已通过，控制台数据已读取。</p><p>前端版本：' + version + '</p><div class="metric-grid compact-metrics"><div class="metric"><span>任务配置</span><strong>' + ((data.agents || []).length) + '</strong><small>配置数量</small></div><div class="metric"><span>运行中</span><strong>' + ((data.tasks || []).length) + '</strong><small>当前任务</small></div><div class="metric"><span>任务记忆</span><strong>' + ((data.memories || []).length) + '</strong><small>记忆条目</small></div><div class="metric"><span>归档</span><strong>' + ((data.archives || []).length) + '</strong><small>已完成任务</small></div></div></section>';
-          } catch (error) {
-            status("控制台连接失败：" + (error && error.message ? error.message : error), "error");
-          } finally {
-            if (button) button.disabled = false;
-          }
-        }
-        window.addEventListener("DOMContentLoaded", function () {
-          var versionEl = byId("auth-version");
-          if (versionEl) versionEl.textContent = "前端版本：" + version;
-          byId("login-submit") && byId("login-submit").addEventListener("click", fallbackLogin);
-          byId("auth-form") && byId("auth-form").addEventListener("submit", fallbackLogin);
-        });
-      })();
-    </script>
+    <script defer src="./app.js?v=20260609-cleanlogin"></script>
   </body>
 </html>

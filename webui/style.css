@@ -31,6 +31,7 @@ body {
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: 0.48; }
+[hidden] { display: none !important; }
 
 .auth-screen {
   min-height: 100vh;

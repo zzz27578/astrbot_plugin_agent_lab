@@ -78,7 +78,7 @@ const DEFAULT_EDGES = [
 
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
-const WEBUI_VERSION = "20260609-loginfix2";
+const WEBUI_VERSION = "20260609-cleanlogin";
 const API_TIMEOUT_MS = 7000;
 
 const STATUS_LABELS = {
@@ -108,8 +108,18 @@ const ACTION_LABELS = {
 };
 const SOURCE_LABELS = { astrbot_runtime: "AstrBot 运行时", persona: "人格配置", config: "AstrBot 配置", fallback: "默认占位", webui: "控制台", manual_webui: "控制台手动" };
 
+function storageGet(store, key, fallback = "") {
+  try { return store.getItem(key) || fallback; } catch { return fallback; }
+}
+function storageSet(store, key, value) {
+  try { store.setItem(key, value); } catch {}
+}
+function storageRemove(store, key) {
+  try { store.removeItem(key); } catch {}
+}
+
 const app = {
-  route: localStorage.getItem("agent_lab_route") || "dashboard",
+  route: storageGet(localStorage, "agent_lab_route", "dashboard"),
   state: null,
   currentAgent: null,
   selectedAgentId: "",
@@ -137,20 +147,12 @@ function icon(name, label = "") { return `<img class="game-icon" src="${ICONS[na
 function badge(text, tone = "") { return `<span class="badge ${tone}">${esc(text)}</span>`; }
 function compactId(value) { const text = String(value || ""); return text.length > 18 ? `${text.slice(0, 8)}...${text.slice(-6)}` : text || "-"; }
 function token() {
-  try {
-    return sessionStorage.getItem("agent_lab_token") || app.authToken || "";
-  } catch {
-    return app.authToken || "";
-  }
+  return storageGet(sessionStorage, "agent_lab_token", app.authToken || "") || app.authToken || "";
 }
 function saveToken(value) {
   app.authToken = String(value || "").trim();
-  try {
-    if (app.authToken) sessionStorage.setItem("agent_lab_token", app.authToken);
-    else sessionStorage.removeItem("agent_lab_token");
-  } catch {
-    // Some embedded browsers can deny sessionStorage; keep the token in memory for this page load.
-  }
+  if (app.authToken) storageSet(sessionStorage, "agent_lab_token", app.authToken);
+  else storageRemove(sessionStorage, "agent_lab_token");
 }
 function clearToken() { saveToken(""); }
 function labelOf(map, value) { return map[String(value || "")] || value || "-"; }
@@ -439,7 +441,7 @@ function updateChrome() {
 
 function setRoute(route) {
   app.route = route;
-  localStorage.setItem("agent_lab_route", route);
+  storageSet(localStorage, "agent_lab_route", route);
   updateChrome();
   render();
 }
