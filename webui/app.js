@@ -78,6 +78,7 @@ const DEFAULT_EDGES = [
 
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
+const API_TIMEOUT_MS = 9000;
 
 const STATUS_LABELS = {
   all: "全部", active: "运行中", archived: "已归档", pending: "待处理", candidate: "候选", accepted: "已接受", rejected: "已拒绝",
@@ -129,7 +130,7 @@ function attr(value) { return esc(value).replace(/\n/g, " "); }
 function clone(value) { return JSON.parse(JSON.stringify(value ?? null)); }
 function lines(value) { return Array.isArray(value) ? value.map(String).map((x) => x.trim()).filter(Boolean) : String(value || "").split(/[\n,，]+/).map((x) => x.trim()).filter(Boolean); }
 function listText(value) { return Array.isArray(value) ? value.join("\n") : String(value || ""); }
-function icon(name, label = "") { return `<img class="game-icon" src="${ICONS[name] || ICONS.brand}" alt="${attr(label)}" loading="lazy" />`; }
+function icon(name, label = "") { return `<img class="game-icon" src="${ICONS[name] || ICONS.brand}" alt="${attr(label)}" />`; }
 function badge(text, tone = "") { return `<span class="badge ${tone}">${esc(text)}</span>`; }
 function compactId(value) { const text = String(value || ""); return text.length > 18 ? `${text.slice(0, 8)}...${text.slice(-6)}` : text || "-"; }
 function token() { return sessionStorage.getItem("agent_lab_token") || ""; }
@@ -193,12 +194,34 @@ function apiPathCandidates(path) {
 async function fetchWithAuthFallback(path, options = {}) {
   const candidates = apiPathCandidates(path);
   let last = null;
+  const failures = [];
   for (const candidate of candidates) {
-    const response = await fetch(candidate, options);
+    let response;
+    try {
+      response = await fetchWithTimeout(candidate, options);
+    } catch (error) {
+      failures.push(`${candidate}: ${error.name === "AbortError" ? "请求超时" : error.message}`);
+      continue;
+    }
+    response.agentLabEndpoint = candidate;
     if (![401, 404, 405].includes(response.status) || candidates.length === 1) return response;
     last = response;
   }
-  return last;
+  if (last) return last;
+  const error = new Error(failures.length ? `接口请求失败：${failures.join("；")}` : `接口请求失败：${path}`);
+  error.status = 0;
+  error.endpoint = path;
+  throw error;
+}
+
+async function fetchWithTimeout(path, options = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  try {
+    return await fetch(path, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function toast(message, tone = "ok") {
@@ -240,9 +263,24 @@ function renderLoadError(error) {
   $("identity-name").textContent = "未连接";
   $("identity-source").textContent = "等待数据";
   $("agent-select").innerHTML = `<option>暂无任务配置</option>`;
-  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
   $("retry-load")?.addEventListener("click", () => boot().catch((err) => toast(err.message, "error")));
   $("reenter-token")?.addEventListener("click", () => { sessionStorage.removeItem("agent_lab_token"); showAuth("请重新输入插件配置 standalone_webui_token 中的访问密码。"); });
+}
+
+function renderLoading(message = "正在加载控制台数据...") {
+  document.body.dataset.route = app.route;
+  $("brand-icon").src = ICONS.brand;
+  $("auth-icon").src = ICONS.brand;
+  $("refresh").innerHTML = icon("refresh", "刷新");
+  $("collapse-nav").innerHTML = icon("menu", "侧栏");
+  $("page-title").textContent = "正在连接";
+  $("page-subtitle").textContent = message;
+  $("nav").innerHTML = NAV.map(([id, title, sub]) => `<button class="${app.route === id ? "active" : ""}" data-route="${id}" type="button">${icon(id)}<span><strong>${title}</strong><small>${sub}</small></span></button>`).join("");
+  $("identity-name").textContent = "正在读取";
+  $("identity-source").textContent = "控制台数据";
+  $("agent-select").innerHTML = `<option>正在加载任务配置</option>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>正在加载控制台</h2><p>${esc(message)}</p></section>`;
 }
 
 async function api(path, options = {}) {
@@ -255,11 +293,17 @@ async function api(path, options = {}) {
   let payload = {};
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) {
-    const error = new Error(payload.error || `${response.status} ${response.statusText}`);
+    const endpoint = response.agentLabEndpoint || response.url || path;
+    const error = new Error(payload.error || `${response.status} ${response.statusText}：${endpoint}`);
     error.status = response.status;
+    error.endpoint = endpoint;
     throw error;
   }
-  if (payload.ok === false) throw new Error(payload.error || "请求失败");
+  if (payload.ok === false) {
+    const error = new Error(payload.error || "请求失败");
+    error.endpoint = path;
+    throw error;
+  }
   return payload;
 }
 
@@ -1100,6 +1144,7 @@ async function boot() {
   }
   showApp();
   setAuthStatus("访问密码已通过，正在加载控制台...");
+  renderLoading("访问密码已通过，正在加载控制台数据...");
   try {
     await load();
     if (bootId !== app.bootId) return;
