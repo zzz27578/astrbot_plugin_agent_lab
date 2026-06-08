@@ -78,9 +78,8 @@ const DEFAULT_EDGES = [
 
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
-const WEBUI_VERSION = "20260608-diagnostics3";
+const WEBUI_VERSION = "20260608-normalpage";
 const API_TIMEOUT_MS = 7000;
-const BOOT_TIMEOUT_MS = 12000;
 
 const STATUS_LABELS = {
   all: "全部", active: "运行中", archived: "已归档", pending: "待处理", candidate: "候选", accepted: "已接受", rejected: "已拒绝",
@@ -122,7 +121,7 @@ const app = {
   integrationTab: "plugins",
   registryTab: "apis",
   bootId: 0,
-  loadingStep: "准备连接",
+  loadId: 0,
   workflow: { zoom: 0.82, x: 60, y: 70, selectedNodeId: "", linkingFrom: "", report: null, dryRun: null, dragging: null, panning: null, materialFilter: "", contextMenu: null },
 };
 
@@ -143,11 +142,6 @@ function riskLabel(value) { return labelOf(RISK_LABELS, value); }
 function sourceLabel(value) { return labelOf(SOURCE_LABELS, value); }
 function selectOptions(map, values) { return values.map((id) => [id, map[id] || id]); }
 
-function authHeaders() {
-  const value = token();
-  return value ? { Authorization: `Bearer ${value}`, "X-Agent-Lab-Token": value } : {};
-}
-
 function safeAuthHeaders() {
   const value = token();
   if (!value) return {};
@@ -159,13 +153,6 @@ function safeAuthHeaders() {
   }
 }
 
-function tokenizedPath(path) {
-  if (!token()) return path;
-  const url = new URL(path, location.href);
-  url.searchParams.set("token", token());
-  return `${url.pathname}${url.search}${url.hash}`;
-}
-
 function addTokenToPath(path) {
   if (!token()) return path;
   const text = String(path || "");
@@ -174,47 +161,6 @@ function addTokenToPath(path) {
   const params = new URLSearchParams(search);
   params.set("token", token());
   return `${pathname}?${params.toString()}${hash ? `#${hash}` : ""}`;
-}
-
-function apiPathCandidates(path) {
-  const raw = String(path || "");
-  const candidates = [];
-  const add = (value) => {
-    const next = token() ? addTokenToPath(value) : value;
-    if (!candidates.includes(next)) candidates.push(next);
-  };
-  if (raw.startsWith("http://") || raw.startsWith("https://")) return [raw];
-  add(raw);
-  if (raw.startsWith("/")) {
-    const baseDir = location.pathname.endsWith("/") ? location.pathname : location.pathname.replace(/[^/]*$/, "");
-    if (baseDir && baseDir !== "/") add(`${baseDir.replace(/\/$/, "")}${raw}`);
-  } else {
-    add(`/${raw.replace(/^\.\//, "")}`);
-  }
-  return candidates;
-}
-
-async function fetchWithAuthFallback(path, options = {}) {
-  const candidates = apiPathCandidates(path);
-  let last = null;
-  const failures = [];
-  for (const candidate of candidates) {
-    let response;
-    try {
-      response = await fetchWithTimeout(candidate, options);
-    } catch (error) {
-      failures.push(`${candidate}: ${error.name === "AbortError" ? "请求超时" : error.message}`);
-      continue;
-    }
-    response.agentLabEndpoint = candidate;
-    if (![401, 404, 405].includes(response.status) || candidates.length === 1) return response;
-    last = response;
-  }
-  if (last) return last;
-  const error = new Error(failures.length ? `接口请求失败：${failures.join("；")}` : `接口请求失败：${path}`);
-  error.status = 0;
-  error.endpoint = path;
-  throw error;
 }
 
 async function fetchWithTimeout(path, options = {}) {
@@ -279,13 +225,12 @@ function renderLoadError(error) {
   $("identity-name").textContent = "未连接";
   $("identity-source").textContent = "等待数据";
   $("agent-select").innerHTML = `<option>暂无任务配置</option>`;
-  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<p>当前步骤：${esc(app.loadingStep || "未知")}</p><p>前端版本：${WEBUI_VERSION}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<p>前端版本：${WEBUI_VERSION}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
   $("retry-load")?.addEventListener("click", () => boot().catch((err) => toast(err.message, "error")));
   $("reenter-token")?.addEventListener("click", () => { sessionStorage.removeItem("agent_lab_token"); showAuth("请重新输入插件配置 standalone_webui_token 中的访问密码。"); });
 }
 
 function renderLoading(message = "正在加载控制台数据...") {
-  app.loadingStep = message;
   document.body.dataset.route = app.route;
   $("brand-icon").src = ICONS.brand;
   $("auth-icon").src = ICONS.brand;
@@ -301,7 +246,6 @@ function renderLoading(message = "正在加载控制台数据...") {
 }
 
 function setLoadingStep(message) {
-  app.loadingStep = message;
   const subtitle = $("page-subtitle");
   if (subtitle) subtitle.textContent = message;
   const el = $("load-step");
@@ -314,11 +258,11 @@ async function api(path, options = {}) {
     headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.body);
   }
-  const response = await fetchWithAuthFallback(path, { ...options, headers });
+  const endpoint = token() ? addTokenToPath(path) : path;
+  const response = await fetchWithTimeout(endpoint, { ...options, headers });
   let payload = {};
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) {
-    const endpoint = response.agentLabEndpoint || response.url || path;
     const error = new Error(payload.error || `${response.status} ${response.statusText}：${endpoint}`);
     error.status = response.status;
     error.endpoint = endpoint;
@@ -327,20 +271,6 @@ async function api(path, options = {}) {
   if (payload.ok === false) {
     const error = new Error(payload.error || "请求失败");
     error.endpoint = path;
-    throw error;
-  }
-  return payload;
-}
-
-async function health() {
-  const headers = safeAuthHeaders();
-  const response = await fetchWithAuthFallback("/api/health", { headers });
-  let payload = {};
-  try { payload = await response.json(); } catch { payload = {}; }
-  if (!response.ok) {
-    const error = new Error(payload.error || "控制台健康检查失败");
-    error.status = response.status;
-    error.endpoint = response.agentLabEndpoint || response.url || "/api/health";
     throw error;
   }
   return payload;
@@ -415,12 +345,28 @@ function ensureAgent(agent = {}) {
   return base;
 }
 
-async function load() {
-  setLoadingStep("正在请求 /api/state");
-  app.state = await api("/api/state");
+function prepareState(rawState) {
+  const previous = app.state || {};
+  app.state = {
+    ...rawState,
+    modules: rawState.modules || previous.modules || [],
+    discovered_modules: rawState.discovered_modules || previous.discovered_modules || [],
+    plugin_modules: rawState.plugin_modules || previous.plugin_modules || [],
+    tool_modules: rawState.tool_modules || previous.tool_modules || [],
+    builtin_modules: rawState.builtin_modules || previous.builtin_modules || [],
+    workflow_runs: rawState.workflow_runs || previous.workflow_runs || { counts: {}, runs: [] },
+  };
+  const agents = app.state.agents || [];
+  app.selectedAgentId = app.selectedAgentId || app.state.default_agent_id || agents[0]?.agent_id || "";
+  if (!agents.some((agent) => agent.agent_id === app.selectedAgentId)) app.selectedAgentId = agents[0]?.agent_id || "";
+  app.currentAgent = ensureAgent(clone(agents.find((agent) => agent.agent_id === app.selectedAgentId) || agents[0] || {}));
+}
+
+async function hydrateOptionalState(loadId) {
+  let changed = false;
   try {
-    setLoadingStep("正在请求 /api/modules");
     const modules = await api("/api/modules");
+    if (loadId !== app.loadId) return;
     Object.assign(app.state, {
       modules: modules.modules || app.state.modules || [],
       discovered_modules: modules.discovered_modules || [],
@@ -428,22 +374,33 @@ async function load() {
       tool_modules: modules.tool_modules || [],
       builtin_modules: modules.builtin_modules || [],
     });
+    changed = true;
   } catch (error) {
     console.warn("module discovery failed", error);
   }
   try {
-    setLoadingStep("正在请求 /api/workflow/runs");
-    app.state.workflow_runs = await api("/api/workflow/runs?limit=80");
+    const runs = await api("/api/workflow/runs?limit=80");
+    if (loadId !== app.loadId) return;
+    app.state.workflow_runs = runs;
+    changed = true;
   } catch (error) {
     console.warn("workflow runs failed", error);
   }
-  const agents = app.state.agents || [];
-  app.selectedAgentId = app.selectedAgentId || app.state.default_agent_id || agents[0]?.agent_id || "";
-  if (!agents.some((agent) => agent.agent_id === app.selectedAgentId)) app.selectedAgentId = agents[0]?.agent_id || "";
-  app.currentAgent = ensureAgent(clone(agents.find((agent) => agent.agent_id === app.selectedAgentId) || agents[0] || {}));
-  setLoadingStep("正在渲染控制台");
+  if (changed && loadId === app.loadId) {
+    updateChrome();
+    render();
+  }
+}
+
+async function load() {
+  const loadId = ++app.loadId;
+  setLoadingStep("正在读取控制台状态");
+  const state = await api("/api/state");
+  if (loadId !== app.loadId) return;
+  prepareState(state);
   updateChrome();
   render();
+  hydrateOptionalState(loadId).catch((error) => console.warn("optional state failed", error));
 }
 
 function updateChrome() {
@@ -1170,40 +1127,25 @@ $("auth-form").addEventListener("submit", async (event) => {
 
 async function boot() {
   const bootId = ++app.bootId;
-  setAuthStatus("正在连接控制台...");
+  setAuthStatus(token() ? "正在验证访问密码..." : "正在检查控制台访问状态...");
   updateAuthVersion();
-  const timeout = setTimeout(() => {
-    if (bootId !== app.bootId) return;
-    const error = new Error(`启动超时，卡在：${app.loadingStep || "未知步骤"}`);
-    error.endpoint = app.loadingStep || "boot";
-    showApp();
-    renderLoadError(error);
-  }, BOOT_TIMEOUT_MS);
+  showApp();
+  renderLoading(token() ? "正在读取控制台数据..." : "正在尝试无密码访问控制台...");
   try {
-    setLoadingStep("正在请求 /api/health");
-    const info = await health();
-    if (bootId !== app.bootId) return;
-    if (info.auth && !token()) {
-      showAuth("请输入插件配置 standalone_webui_token 中的访问密码。");
-      return;
-    }
-    showApp();
-    setAuthStatus("访问密码已通过，正在加载控制台...");
-    renderLoading("访问密码已通过，正在加载控制台数据...");
     await load();
     if (bootId !== app.bootId) return;
+    setAuthStatus("控制台已连接");
   } catch (error) {
     if (bootId !== app.bootId) return;
     if (error.status === 401) {
+      const hadToken = !!token();
       sessionStorage.removeItem("agent_lab_token");
-      showAuth("访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。", "error");
+      showAuth(hadToken ? "访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。" : "请输入插件配置 standalone_webui_token 中的访问密码。", hadToken ? "error" : "");
       return;
     }
     showApp();
     renderLoadError(error);
     toast("访问密码已通过，但控制台数据加载失败。", "error");
-  } finally {
-    clearTimeout(timeout);
   }
 }
 
