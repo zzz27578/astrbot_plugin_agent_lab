@@ -78,7 +78,7 @@ const DEFAULT_EDGES = [
 
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
-const WEBUI_VERSION = "20260608-diagnostics";
+const WEBUI_VERSION = "20260608-diagnostics2";
 const API_TIMEOUT_MS = 9000;
 
 const STATUS_LABELS = {
@@ -240,6 +240,11 @@ function setAuthStatus(message, tone = "") {
   el.dataset.tone = tone;
 }
 
+function updateAuthVersion() {
+  const el = $("auth-version");
+  if (el) el.textContent = `前端版本：${WEBUI_VERSION}`;
+}
+
 function showAuth(message = "请输入插件配置 standalone_webui_token 中的访问密码。", tone = "") {
   $("auth").hidden = false;
   $("app").hidden = true;
@@ -316,6 +321,7 @@ async function health() {
   if (!response.ok) {
     const error = new Error(payload.error || "控制台健康检查失败");
     error.status = response.status;
+    error.endpoint = response.agentLabEndpoint || response.url || "/api/health";
     throw error;
   }
   return payload;
@@ -1127,8 +1133,13 @@ $("auth-form").addEventListener("submit", async (event) => {
   try {
     await boot();
   } catch (error) {
-    sessionStorage.removeItem("agent_lab_token");
-    showAuth(error.status === 401 ? "访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。" : error.message, "error");
+    if (error.status === 401) {
+      sessionStorage.removeItem("agent_lab_token");
+      showAuth("访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。", "error");
+    } else {
+      showApp();
+      renderLoadError(error);
+    }
   } finally {
     if (button) button.disabled = false;
   }
@@ -1137,7 +1148,16 @@ $("auth-form").addEventListener("submit", async (event) => {
 async function boot() {
   const bootId = ++app.bootId;
   setAuthStatus("正在连接控制台...");
-  const info = await health();
+  updateAuthVersion();
+  let info;
+  try {
+    info = await health();
+  } catch (error) {
+    if (bootId !== app.bootId) return;
+    showApp();
+    renderLoadError(error);
+    return;
+  }
   if (bootId !== app.bootId) return;
   if (info.auth && !token()) {
     showAuth("请输入插件配置 standalone_webui_token 中的访问密码。");
@@ -1163,4 +1183,5 @@ async function boot() {
 
 const queryToken = new URLSearchParams(location.search).get("token");
 if (queryToken) sessionStorage.setItem("agent_lab_token", queryToken);
+updateAuthVersion();
 boot().catch((error) => toast(error.message, "error"));

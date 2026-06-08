@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Agent Lab 控制台</title>
-    <link rel="stylesheet" href="./style.css?v=20260608-diagnostics" />
+    <link rel="stylesheet" href="./style.css?v=20260608-diagnostics2" />
   </head>
   <body>
     <div id="auth" class="auth-screen" hidden>
@@ -17,6 +17,7 @@
           <input id="token-input" type="password" autocomplete="current-password" placeholder="对应 standalone_webui_token" />
         </label>
         <p id="auth-status" class="auth-status">如果没有设置访问密码，控制台会自动进入。</p>
+        <p id="auth-version" class="auth-version">前端版本：20260608-diagnostics2</p>
         <button class="button primary" type="submit">进入控制台</button>
       </form>
     </div>
@@ -56,6 +57,6 @@
     </div>
 
     <div id="toast-host" class="toast-host"></div>
-    <script type="module" src="./app.js?v=20260608-diagnostics"></script>
+    <script type="module" src="./app.js?v=20260608-diagnostics2"></script>
   </body>
 </html>
