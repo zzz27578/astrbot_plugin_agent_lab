@@ -1607,6 +1607,19 @@ async def main() -> None:
         await plugin._disable_workflow_schedules()
         assert not plugin._workflow_schedule_jobs
 
+        discovery_credential = plugin.storage.save_credential(
+            {"label": "Discovery API Key", "provider": "test", "value": "runtime-secret"}
+        )
+        discovery_api = plugin.storage.save_custom_api(
+            {
+                "name": "Discovery API",
+                "method": "post",
+                "url": "https://example.com/runtime",
+                "credential_id": discovery_credential["credential_id"],
+                "auth_type": "header",
+                "auth_header": "X-Test-Key",
+            }
+        )
         discovered = plugin._discovered_workflow_modules()
         module_ids = {item["module_id"] for item in discovered}
         assert "plugin:memory_noise" in module_ids
@@ -1616,6 +1629,18 @@ async def main() -> None:
         assert "builtin:credential_ref" in module_ids
         assert "builtin:browser_profile" in module_ids
         assert "builtin:llm_prompt" in module_ids
+        assert "builtin:run_tools" in module_ids
+        assert "builtin:call_api" in module_ids
+        assert "builtin:request_approval" in module_ids
+        assert "builtin:generate_report" in module_ids
+        assert "builtin:plan" in module_ids
+        assert f"api:{discovery_api['api_id']}" in module_ids
+        api_module = next(item for item in discovered if item["module_id"] == f"api:{discovery_api['api_id']}")
+        assert api_module["action"] == "call_api"
+        assert api_module["runtime_type"] == "api"
+        assert api_module["metadata"]["url_host"] == "https://example.com"
+        assert api_module["metadata"]["credential_configured"] is True
+        assert "runtime-secret" not in json.dumps(api_module, ensure_ascii=False)
 
         class LlmDetectContext(FakeContext):
             async def llm_generate(self, **kwargs):

@@ -105,7 +105,8 @@ Installed AstrBot plugins and registered tools are exposed as discovered workflo
 
 - `plugin:<plugin_name>` modules represent installed/downloaded AstrBot plugins and their inferred capabilities.
 - `tool:<tool_name>` modules represent registered LLM tools with input/output schema, risk and source plugin metadata.
-- `builtin:<action>` modules represent Agent Lab native actions such as listener, detector, retry, memory, outbox and archive modules.
+- `api:<api_id>` modules represent Agent Lab registered custom APIs. They expose method, host, timeout and whether auth is configured, but never expose credential values, headers or cookies.
+- `builtin:<action>` modules represent all Agent Lab native workflow actions, including listener, detector, prompt, state, tool/API bridge, identity/session, memory, approval, retry, notification, report and archive modules.
 
 The backend does not need a fixed template library for cases like moderation, favorability changes or admin notifications. The canvas can scan these discovered modules and bind concrete plugin/tool actions at edit time.
 
