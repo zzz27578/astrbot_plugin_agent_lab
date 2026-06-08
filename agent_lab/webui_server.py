@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from quart import Quart, Response, jsonify, request, send_from_directory
+from quart import Quart, jsonify, request, send_from_directory
 
 
 class StandaloneWebUIServer:
@@ -64,22 +64,15 @@ class StandaloneWebUIServer:
 
         @app.get("/")
         async def index():
-            return await self._static_response("index.html")
+            return await send_from_directory(self.static_dir, "index.html")
 
         @app.get("/app.js")
         async def app_js():
-            return await self._static_response("app.js")
+            return await send_from_directory(self.static_dir, "app.js")
 
         @app.get("/style.css")
         async def style_css():
-            return await self._static_response("style.css")
-
-        @app.get("/favicon.ico")
-        async def favicon():
-            svg = """<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 32\"><rect width=\"32\" height=\"32\" rx=\"6\" fill=\"#111c18\"/><path d=\"M8 9h14l4 4v10H8z\" fill=\"#e7eeea\"/><path d=\"M11 13h11M11 17h8M11 21h5\" stroke=\"#245f98\" stroke-width=\"2\" stroke-linecap=\"round\"/></svg>"""
-            response = Response(svg, mimetype="image/svg+xml")
-            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-            return response
+            return await send_from_directory(self.static_dir, "style.css")
 
         @app.get("/api/health")
         async def health():
@@ -162,13 +155,6 @@ class StandaloneWebUIServer:
         if not self._authorized():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         return await handler()
-
-    async def _static_response(self, filename: str) -> Any:
-        response = await send_from_directory(self.static_dir, filename)
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Expires"] = "0"
-        return response
 
     def _authorized(self) -> bool:
         if not self.token:
