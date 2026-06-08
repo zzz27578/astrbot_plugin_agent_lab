@@ -38,8 +38,9 @@ Registered executors now cover:
 
 - `summarize_entry`, `confirm_entry`, `restore_isolation`
 - `save_state`, `heartbeat`, `transform_context`
-- `variable_set`, `variable_get`, `text_template`, `json_transform`
+- `variable_set`, `variable_get`, `text_template`, `llm_prompt`, `prompt_transform`, `json_transform`
 - `merge`, `iterator`, `subflow_call`
+- `credential_ref`, `cookie_jar`, `browser_profile`, `login_flow`, `session_check`, `refresh_session`, `credential_scope`, `secret_redaction`, `human_login_handoff`, `revoke_session`
 - `retrieve_memory`, `save_memory`, `summarize_memory`, `export_task_memory`, `promote_memory_candidate`, `forget_task_memory`
 - `parallel_branch`
 - `call_api`, `http_request`
@@ -130,6 +131,10 @@ Retry/loop modules are special route producers. While under budget they emit `ro
 LLM detector nodes are constrained route producers. If no deterministic keyword rule is present, `llm_detect` asks the AstrBot provider for a JSON object containing only `route`, `reason`, `evidence` and `confidence`; unsupported routes or low confidence become `uncertain`.
 
 `archive_task` is deterministic and can close short/static workflows without pretending they are long Agent Mode tasks. It still runs the archive side effects: heartbeat disable, session plugin restore, archive evidence, memory orchestrator, markdown/json archive, and task pattern capture. `archive` and `exit_summary` remain ReAct handoff terminal nodes for workflows that need a final LLM summary/verifier pass.
+
+Identity/session modules are deterministic guard/state nodes. They write public session descriptors into `workflow_data.identity_sessions` and variables, but never emit credential secrets, cookie values or passwords. Login modules pause with `need_login` when captcha/2FA/admin handoff is required. `secret_redaction` scrubs stored credential values and token/cookie-looking fields before downstream reports or archives.
+
+`llm_prompt` / `prompt_transform` are bounded prompt nodes. They call the AstrBot provider, can return `text`, JSON, or route JSON, and optionally validate against `output_schema`. They are intended for local transformations between nodes, not for unbounded action execution.
 
 ## Isolation Boundary
 

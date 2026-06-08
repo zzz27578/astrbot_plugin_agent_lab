@@ -1613,6 +1613,9 @@ async def main() -> None:
         assert "tool:safe_registered_tool" in module_ids
         assert "builtin:llm_detect" in module_ids
         assert "builtin:archive_task" in module_ids
+        assert "builtin:credential_ref" in module_ids
+        assert "builtin:browser_profile" in module_ids
+        assert "builtin:llm_prompt" in module_ids
 
         class LlmDetectContext(FakeContext):
             async def llm_generate(self, **kwargs):
@@ -1680,6 +1683,85 @@ async def main() -> None:
         await dedupe_plugin._maybe_trigger_message_monitor(dedupe_event, mode="native")
         await dedupe_plugin._maybe_trigger_message_monitor(dedupe_event, mode="native")
         assert len(dedupe_plugin.storage.list_tasks(dedupe_event.unified_msg_origin)) == 1
+
+        class PromptContext(FakeContext):
+            async def llm_generate(self, **kwargs):
+                return SimpleNamespace(
+                    completion_text=json.dumps(
+                        {"route": "success", "summary": "safe summary", "tags": ["github"]}
+                    )
+                )
+
+        prompt_plugin = plugin_main.AgentLabPlugin(PromptContext(), config={"private_only": False})
+        prompt_plugin.guard = FakeGuard()
+        prompt_credential = prompt_plugin.storage.save_credential(
+            {"label": "GitHub PAT", "provider": "github", "scope": "repo", "value": "ghp_secret_runtime"}
+        )
+        prompt_spec = prompt_plugin.storage.get_agent()
+        prompt_spec.name = "identity prompt smoke"
+        prompt_spec.identity_label_source = "manual"
+        prompt_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
+            {"enabled": True, "types": ["webhook"], "webhook_path": "identity/prompt"}
+        )
+        prompt_spec.workflow_scope = plugin_main.WorkflowScope.from_dict({"chat_types": ["private"]})
+        prompt_spec.workflow_nodes = [
+            {"id": "trigger", "kind": "trigger", "action": "webhook_trigger"},
+            {
+                "id": "identity",
+                "kind": "guard",
+                "action": "credential_ref",
+                "credential_id": prompt_credential["credential_id"],
+                "provider": "github",
+                "output_variable": "github_session",
+            },
+            {
+                "id": "prompt",
+                "kind": "state",
+                "action": "llm_prompt",
+                "prompt": "Summarize repository maintenance request.",
+                "output_mode": "json",
+                "input": "Maintain GitHub repo",
+                "output_schema": {
+                    "type": "object",
+                    "properties": {"route": {"type": "string"}, "summary": {"type": "string"}},
+                    "required": ["route", "summary"],
+                },
+            },
+            {"id": "redact", "kind": "state", "action": "secret_redaction", "text": "token=ghp_secret_runtime"},
+        ]
+        prompt_spec.workflow_edges = [
+            {"from": "trigger", "to": "identity"},
+            {"from": "identity", "to": "prompt"},
+            {"from": "prompt", "to": "redact"},
+        ]
+        prompt_plugin._prepare_agent_spec_for_save(prompt_spec)
+        prompt_plugin.storage.save_agent(prompt_spec)
+        prompt_report = prompt_plugin._workflow_report(prompt_spec)
+        assert "identity" in prompt_report["special_modules"]
+        prompt_event = FakeEvent(unified_msg_origin="aiocqhttp:FriendMessage:identity-prompt", message_str="identity")
+        prompt_payload = prompt_plugin._build_trigger_payload(
+            source="webhook",
+            event=prompt_event,
+            text="identity",
+            data={"webhook_path": "identity/prompt"},
+        )
+        prompt_result = await prompt_plugin._trigger_workflow_from_payload(
+            event=prompt_event,
+            source="webhook",
+            payload=prompt_payload,
+            agent_id=prompt_spec.agent_id,
+        )
+        assert prompt_result["ok"] is True
+        prompt_task = prompt_plugin.storage.load_active_task(prompt_event.unified_msg_origin)
+        assert prompt_task is not None
+        identity_output = prompt_task.workflow_data["node_outputs"]["identity"]["data"]
+        assert identity_output["session"]["has_credential"] is True
+        assert "ghp_secret_runtime" not in json.dumps(identity_output, ensure_ascii=False)
+        prompt_output = prompt_task.workflow_data["node_outputs"]["prompt"]["data"]
+        assert prompt_output["summary"] == "safe summary"
+        redact_output = prompt_task.workflow_data["node_outputs"]["redact"]["data"]
+        assert "ghp_secret_runtime" not in json.dumps(redact_output, ensure_ascii=False)
+        assert redact_output["redacted"] == "token=********"
 
         special_spec = plugin_main.AgentSpec(name="special module compile", identity_label_source="manual")
         special_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(

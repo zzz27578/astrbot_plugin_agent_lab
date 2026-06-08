@@ -111,6 +111,8 @@ WORKFLOW_ACTIONS = {
     "variable_set",
     "variable_get",
     "text_template",
+    "llm_prompt",
+    "prompt_transform",
     "json_transform",
     "merge",
     "iterator",
@@ -125,6 +127,16 @@ WORKFLOW_ACTIONS = {
     "file_operation",
     "code_exec",
     "transform_context",
+    "credential_ref",
+    "cookie_jar",
+    "browser_profile",
+    "login_flow",
+    "session_check",
+    "refresh_session",
+    "credential_scope",
+    "secret_redaction",
+    "human_login_handoff",
+    "revoke_session",
     "retrieve_memory",
     "summarize_memory",
     "export_task_memory",
@@ -1807,12 +1819,27 @@ class AgentLabPlugin(Star):
             "variable_set",
             "variable_get",
             "text_template",
+            "llm_prompt",
+            "prompt_transform",
             "json_transform",
             "merge",
             "iterator",
             "subflow_call",
         ):
             self.node_executors.register(action, self._execute_state_node)
+        for action in (
+            "credential_ref",
+            "cookie_jar",
+            "browser_profile",
+            "login_flow",
+            "session_check",
+            "refresh_session",
+            "credential_scope",
+            "secret_redaction",
+            "human_login_handoff",
+            "revoke_session",
+        ):
+            self.node_executors.register(action, self._execute_identity_session_node)
         self.node_executors.register("retrieve_memory", self._execute_retrieve_memory_node)
         self.node_executors.register("save_memory", self._execute_save_memory_node)
         for action in ("summarize_memory", "export_task_memory", "promote_memory_candidate", "forget_task_memory"):
@@ -3620,6 +3647,20 @@ class AgentLabPlugin(Star):
             rendered_text = str(rendered if rendered is not None else "")
             outcome = "Text template rendered."
             data = {"text": rendered_text}
+        elif action in {"llm_prompt", "prompt_transform"}:
+            data = await self._run_llm_prompt_node(ctx)
+            route = str(data.get("route") or "success").strip().lower()
+            return NodeExecutionResult(
+                ok=route in {"success", "failed", "uncertain"},
+                status="completed" if route != "error" else "blocked",
+                outcome=str(data.get("reason") or f"LLM prompt route={route}."),
+                next_node_id=self._single_next(ctx.outgoing) if route == "success" and len(ctx.outgoing) <= 1 else "",
+                data=data,
+                needs_react=False,
+                advance=route == "success" and len(ctx.outgoing) <= 1,
+                blocked=route == "error",
+                note="node_executor_llm_prompt",
+            )
         elif action == "json_transform":
             source = self._node_payload_from_variable(ctx.task, ctx.node)
             if source is None:
@@ -3699,6 +3740,93 @@ class AgentLabPlugin(Star):
             note="node_executor_state",
         )
 
+    async def _run_llm_prompt_node(self, ctx: NodeExecutionContext) -> dict[str, Any]:
+        source = self._node_payload_from_variable(ctx.task, ctx.node)
+        if source is None:
+            source = self._node_json_value(ctx.task, ctx.node, "input", "text", "content")
+        if source is None:
+            source = self._workflow_trigger_payload(ctx.task).get("text") or ctx.task.last_observation or ctx.task.root_goal
+        output_mode = str(ctx.node.get("output_mode") or ctx.node.get("format") or "text").strip().lower()
+        if output_mode not in {"text", "json", "route"}:
+            output_mode = "text"
+        schema = self._node_schema(ctx.node, "output_schema")
+        user_prompt = str(
+            ctx.node.get("user_prompt")
+            or ctx.node.get("prompt")
+            or ctx.node.get("instruction")
+            or "Transform the input for the next workflow node."
+        ).strip()
+        system_prompt = str(
+            ctx.node.get("system_prompt")
+            or "You are a bounded workflow prompt module. Do not execute actions or reveal secrets."
+        ).strip()
+        prompt_payload = {
+            "instruction": user_prompt,
+            "output_mode": output_mode,
+            "allowed_routes": ["success", "failed", "uncertain", "error"],
+            "output_schema": schema or {},
+            "input": source,
+        }
+        prompt = json.dumps(prompt_payload, ensure_ascii=False, default=str)
+        if output_mode in {"json", "route"}:
+            system_prompt += " Return one JSON object only."
+        provider_ids: list[str] = []
+        provider_id = str(ctx.spec.provider_id or "").strip()
+        if provider_id:
+            provider_ids.append(provider_id)
+        try:
+            current = await self.context.get_current_chat_provider_id(ctx.event.unified_msg_origin)
+            if current and current not in provider_ids:
+                provider_ids.append(current)
+        except Exception:
+            pass
+        fallback = str(_cfg(self.config, "fallback_summary_provider_id", "") or "").strip()
+        if fallback and fallback not in provider_ids:
+            provider_ids.append(fallback)
+        last_error = ""
+        for provider_id in provider_ids:
+            try:
+                resp = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=prompt,
+                    system_prompt=system_prompt,
+                )
+                raw = self._redact_known_secrets(str(getattr(resp, "completion_text", "") or "").strip())
+                if output_mode == "text":
+                    return {"route": "success", "text": raw, "provider_id": provider_id}
+                parsed = self._parse_prompt_json(raw)
+                if output_mode == "route":
+                    route = str(parsed.get("route") or "uncertain").strip().lower()
+                    if route not in {"success", "failed", "uncertain", "error"}:
+                        route = "uncertain"
+                    parsed["route"] = route
+                else:
+                    parsed.setdefault("route", "success")
+                if schema:
+                    schema_message = self._schema_validation_message(schema, parsed, "LLM prompt output")
+                    if schema_message:
+                        return {"route": "error", "reason": schema_message, "raw": raw, "provider_id": provider_id}
+                parsed["provider_id"] = provider_id
+                return parsed
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+                continue
+        return {"route": "error", "reason": last_error or "llm prompt provider unavailable"}
+
+    @staticmethod
+    def _parse_prompt_json(raw: str) -> dict[str, Any]:
+        text = str(raw or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE).strip()
+            text = re.sub(r"\s*```$", "", text).strip()
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if match:
+            text = match.group(0)
+        parsed = json.loads(text)
+        if not isinstance(parsed, dict):
+            raise ValueError("prompt output must be a JSON object")
+        return parsed
+
     async def _execute_http_request_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         gate = self._node_builtin_tool_allowed(
             ctx.spec,
@@ -3768,6 +3896,196 @@ class AgentLabPlugin(Star):
             blocked=not ok,
             note="node_executor_http",
         )
+
+    async def _execute_identity_session_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        action = str(ctx.node.get("action") or "").strip()
+        data = self._ensure_workflow_data(ctx.task)
+        sessions = data.setdefault("identity_sessions", {})
+        if not isinstance(sessions, dict):
+            sessions = {}
+            data["identity_sessions"] = sessions
+        credential_id = str(ctx.node.get("credential_id") or ctx.node.get("ref_id") or "").strip()
+        provider = str(ctx.node.get("provider") or ctx.node.get("site") or ctx.node.get("domain") or "").strip()
+        account = str(ctx.node.get("account") or ctx.node.get("username") or ctx.node.get("login") or "").strip()
+        session_id = str(ctx.node.get("session_id") or ctx.node.get("name") or "").strip()
+        if not session_id:
+            seed = "|".join([action, provider, account, credential_id, str(ctx.node.get("id") or "")])
+            session_id = "sess_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+        if action == "secret_redaction":
+            source = self._node_payload_from_variable(ctx.task, ctx.node)
+            if source is None:
+                source = self._node_json_value(ctx.task, ctx.node, "text", "payload", "content")
+            redacted = self._redact_known_secrets(source)
+            return NodeExecutionResult(
+                outcome="Secret redaction applied.",
+                next_node_id=self._single_next(ctx.outgoing),
+                data={"route": "success", "redacted": redacted},
+                note="node_executor_secret_redaction",
+            )
+        if action == "credential_scope":
+            allowed = self._identity_scope_allowed(ctx.spec, ctx.node)
+            route = "success" if allowed else "failed"
+            return NodeExecutionResult(
+                ok=True,
+                status="completed",
+                outcome="Credential scope allowed." if allowed else "Credential scope denied.",
+                next_node_id=self._single_next(ctx.outgoing) if allowed else "",
+                data={"route": route, "provider": provider, "credential_id": credential_id, "allowed": allowed},
+                note="node_executor_credential_scope",
+            )
+        if action in {"credential_ref", "cookie_jar", "browser_profile"}:
+            session = self._identity_session_descriptor(ctx.node, session_id=session_id, action=action)
+            if credential_id:
+                public_credential = self._credential_public_row(credential_id)
+                if not public_credential or not public_credential.get("has_value"):
+                    return NodeExecutionResult(
+                        ok=False,
+                        status="blocked",
+                        outcome=f"Credential is missing or empty: {credential_id}",
+                        data={"route": "failed", "credential_id": credential_id},
+                        blocked=True,
+                        advance=False,
+                        note="node_executor_identity_missing_credential",
+                    )
+                session["credential"] = public_credential
+            sessions[session_id] = session
+            self._set_workflow_variable(ctx.task, str(ctx.node.get("output_variable") or "identity_session"), session)
+            return NodeExecutionResult(
+                outcome=f"Identity session reference prepared: {session_id}.",
+                next_node_id=self._single_next(ctx.outgoing),
+                data={"route": "success", "session": session},
+                note="node_executor_identity_reference",
+            )
+        if action in {"session_check", "refresh_session"}:
+            session = sessions.get(session_id) if isinstance(sessions.get(session_id), dict) else {}
+            has_credential = bool(credential_id and self.storage.get_credential_secret(credential_id))
+            has_reference = bool(session or has_credential or ctx.node.get("profile_path") or ctx.node.get("cookie_domain"))
+            route = "success" if has_reference else "failed"
+            if action == "refresh_session" and route == "success":
+                session = dict(session or self._identity_session_descriptor(ctx.node, session_id=session_id, action=action))
+                session["refreshed_at"] = now_iso()
+                session["status"] = "refresh_requested"
+                sessions[session_id] = session
+            return NodeExecutionResult(
+                ok=True,
+                status="completed",
+                outcome=f"Identity session {action} route={route}.",
+                next_node_id=self._single_next(ctx.outgoing) if route == "success" else "",
+                data={"route": route, "session_id": session_id, "session": self._public_identity_session(session)},
+                note=f"node_executor_{action}",
+            )
+        if action in {"login_flow", "human_login_handoff"}:
+            message = str(
+                ctx.node.get("message")
+                or ctx.node.get("instruction")
+                or "Login/2FA/captcha requires administrator handoff before this workflow can continue."
+            ).strip()
+            session = self._identity_session_descriptor(ctx.node, session_id=session_id, action=action)
+            session["status"] = "waiting_human_login"
+            session["handoff_message"] = message
+            sessions[session_id] = session
+            ctx.task.status = "paused"
+            ctx.task.set_wait(
+                wait_reason="need_login",
+                message=message,
+                source=f"workflow_{action}",
+                required_input=[provider or session_id or "login"],
+            )
+            return NodeExecutionResult(
+                ok=False,
+                status="running",
+                outcome=message,
+                data={"route": "timeout", "session": self._public_identity_session(session)},
+                advance=False,
+                note=f"node_executor_{action}",
+            )
+        if action == "revoke_session":
+            existed = session_id in sessions
+            sessions.pop(session_id, None)
+            return NodeExecutionResult(
+                ok=True,
+                status="completed",
+                outcome="Identity session revoked." if existed else "Identity session was already absent.",
+                next_node_id=self._single_next(ctx.outgoing),
+                data={"route": "success", "session_id": session_id, "revoked": existed},
+                note="node_executor_revoke_session",
+            )
+        return NodeExecutionResult(
+            ok=False,
+            status="blocked",
+            outcome=f"Unsupported identity/session action: {action}",
+            data={"route": "error"},
+            blocked=True,
+            advance=False,
+            note="node_executor_identity_unknown",
+        )
+
+    def _credential_public_row(self, credential_id: str) -> dict[str, Any] | None:
+        for item in self.storage.list_credentials():
+            if str(item.get("credential_id") or "") == str(credential_id or ""):
+                return dict(item)
+        return None
+
+    def _identity_session_descriptor(self, node: dict[str, Any], *, session_id: str, action: str) -> dict[str, Any]:
+        credential_id = str(node.get("credential_id") or node.get("ref_id") or "").strip()
+        provider = str(node.get("provider") or node.get("site") or node.get("domain") or "").strip()
+        profile_path = str(node.get("profile_path") or node.get("browser_profile") or "").strip()
+        cookie_domain = str(node.get("cookie_domain") or node.get("domain") or "").strip()
+        scopes = self._clean_string_list(node.get("scopes") or node.get("scope") or [])
+        return {
+            "session_id": session_id,
+            "type": action,
+            "provider": provider,
+            "account": str(node.get("account") or node.get("username") or "").strip(),
+            "credential_id": credential_id,
+            "has_credential": bool(credential_id and self.storage.get_credential_secret(credential_id)),
+            "cookie_domain": cookie_domain,
+            "cookie_ref": str(node.get("cookie_ref") or "").strip(),
+            "profile_path": profile_path,
+            "scopes": scopes,
+            "status": "referenced",
+            "created_at": now_iso(),
+            "secret_material": "redacted",
+        }
+
+    @staticmethod
+    def _public_identity_session(session: dict[str, Any]) -> dict[str, Any]:
+        public = dict(session or {})
+        for key in ("cookie", "cookies", "token", "password", "secret", "encrypted_value"):
+            public.pop(key, None)
+        if public.get("has_credential"):
+            public["masked_value"] = "********"
+        public["secret_material"] = "redacted"
+        return public
+
+    def _identity_scope_allowed(self, spec: AgentSpec, node: dict[str, Any]) -> bool:
+        credential_id = str(node.get("credential_id") or node.get("ref_id") or "").strip()
+        provider = str(node.get("provider") or node.get("site") or "").strip().lower()
+        requested_scopes = set(self._clean_string_list(node.get("scopes") or node.get("scope") or []))
+        if credential_id and not self.storage.get_credential_secret(credential_id):
+            return False
+        allowed = set(str(item).strip().lower() for item in (spec.approval_policy.preapproved_scopes or []) if str(item).strip())
+        if not requested_scopes:
+            return True
+        if not allowed:
+            return False
+        normalized = set(scope.lower() for scope in requested_scopes)
+        if provider and provider in allowed:
+            return True
+        return bool(normalized.intersection(allowed))
+
+    def _redact_known_secrets(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: self._redact_known_secrets(item) for key, item in value.items() if key not in {"encrypted_value"}}
+        if isinstance(value, list):
+            return [self._redact_known_secrets(item) for item in value]
+        text = str(value or "")
+        for item in self.storage.list_credentials():
+            secret = self.storage.get_credential_secret(str(item.get("credential_id") or ""))
+            if secret:
+                text = text.replace(secret, "********")
+        text = re.sub(r"(?i)(cookie|token|password|secret)=([^\s;]+)", r"\1=********", text)
+        return text
 
     async def _execute_file_operation_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         operation = str(ctx.node.get("operation") or ctx.node.get("edit_mode") or "read").strip().lower()
@@ -6272,7 +6590,19 @@ class AgentLabPlugin(Star):
             "match_keyword": ("detector", "plan", "detector"),
             "match_regex": ("detector", "plan", "detector"),
             "llm_detect": ("detector", "plan", "detector"),
+            "llm_prompt": ("state", "plan", "prompt"),
+            "prompt_transform": ("state", "plan", "prompt"),
             "scope_filter": ("guard", "guard", "detector"),
+            "credential_ref": ("guard", "guard", "identity"),
+            "cookie_jar": ("guard", "guard", "identity"),
+            "browser_profile": ("guard", "guard", "identity"),
+            "login_flow": ("guard", "guard", "identity"),
+            "session_check": ("guard", "guard", "identity"),
+            "refresh_session": ("guard", "guard", "identity"),
+            "credential_scope": ("guard", "guard", "identity"),
+            "secret_redaction": ("state", "guard", "control"),
+            "human_login_handoff": ("guard", "guard", "identity"),
+            "revoke_session": ("guard", "archive", "identity"),
             "retry": ("loop", "checkpoint", "loop"),
             "limit_rate": ("guard", "guard", "control"),
             "catch_error": ("guard", "checkpoint", "control"),
@@ -7253,6 +7583,17 @@ class AgentLabPlugin(Star):
             "webhook_trigger",
         }
         detector_actions = {"match_keyword", "match_regex", "llm_detect", "scope_filter"}
+        identity_actions = {
+            "credential_ref",
+            "cookie_jar",
+            "browser_profile",
+            "login_flow",
+            "session_check",
+            "refresh_session",
+            "credential_scope",
+            "human_login_handoff",
+            "revoke_session",
+        }
         report_actions = {
             "notify",
             "send_message",
@@ -7432,6 +7773,22 @@ class AgentLabPlugin(Star):
                 node.get("tags") or node.get("memory_tags") or node.get("prompt") or node.get("instruction") or ""
             ).strip():
                 add_issue("warn", "memory_without_schema", "任务记忆模块需要写清标签、摘要规则或保存字段。", node_id)
+            if node.get("action") in {"llm_prompt", "prompt_transform"}:
+                if not str(node.get("prompt") or node.get("instruction") or node.get("user_prompt") or "").strip():
+                    add_issue("warn", "prompt_module_without_prompt", "纯提示词模块需要写清局部指令，否则运行时无法稳定变换输入。", node_id)
+                if not (node.get("output_schema") or node.get("output_mode") or node.get("format")):
+                    add_issue("warn", "prompt_module_without_contract", "纯提示词模块建议配置 output_mode 或 output_schema，避免输出无法接线。", node_id)
+            if node.get("action") in identity_actions:
+                credential_id = str(node.get("credential_id") or node.get("ref_id") or "").strip()
+                provider = str(node.get("provider") or node.get("site") or node.get("domain") or "").strip()
+                if node.get("action") in {"credential_ref", "cookie_jar", "browser_profile", "session_check", "refresh_session"} and not (credential_id or provider or node.get("profile_path") or node.get("cookie_ref")):
+                    add_issue("warn", "identity_module_unbound", "身份/登录态模块需要绑定 credential_id、站点、cookie_ref 或浏览器 profile。", node_id)
+                if credential_id and not self._credential_public_row(credential_id):
+                    add_issue("warn", "missing_credential", f"未找到引用的凭证：{credential_id}", node_id)
+                if node.get("action") in {"login_flow", "refresh_session"} and "human_login_handoff" not in action_ids:
+                    add_issue("warn", "login_without_handoff", "登录/刷新登录态流程建议连接 human_login_handoff，以处理验证码、2FA 或风控验证。", node_id)
+                if node.get("action") in {"cookie_jar", "browser_profile", "credential_ref"} and "secret_redaction" not in action_ids:
+                    add_issue("warn", "identity_without_redaction", "身份/Cookie/浏览器会话工作流建议加入 secret_redaction，防止报告或归档泄露敏感字段。", node_id)
             if node.get("kind") == "api" or node.get("action") == "call_api":
                 api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
                 if api_id:

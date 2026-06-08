@@ -13,6 +13,8 @@ Workflows are composed from modules. The module graph determines the task shape:
 - Action modules: AstrBot tool calls, custom API calls, plugin capability calls, notification, private message and email.
 - State modules: task state, task memory, variable store, record writing and report generation.
 - Control modules: retry loop, rate limit, approval, human handoff, error catch and timeout routes.
+- Identity/session modules: credential references, cookie jars, browser profiles, login handoff, session checks, refresh and revocation.
+- Prompt modules: bounded `llm_prompt` / `prompt_transform` nodes for local LLM transformations with explicit output contracts.
 - Agent modules: plan, ReAct handoff, subflow and heartbeat/resume loops.
 
 This means "detect garbage talk and ban", "call QQ manager then reduce favorability", "send a private warning", "generate a moderation report", "run a scheduled digest" and "continue a long coding task with heartbeat" are all first-class workflow variants.
@@ -108,6 +110,33 @@ Installed AstrBot plugins and registered tools are exposed as discovered workflo
 The backend does not need a fixed template library for cases like moderation, favorability changes or admin notifications. The canvas can scan these discovered modules and bind concrete plugin/tool actions at edit time.
 
 Workflow run management is available at `GET /astrbot_plugin_agent_lab/workflow/runs`. It returns active/archive rows with trigger payload, path, latest events, reports, records, pending outbox and heartbeat health.
+
+## Identity, Cookie And Login Modules
+
+Account maintenance workflows need identity state, but secrets must not become prompt text. Agent Lab therefore exposes identity/session modules as references and checks rather than raw cookie injection:
+
+- `credential_ref`: bind a stored credential ID and expose only masked metadata plus a usable session reference.
+- `cookie_jar`: describe a cookie store/domain reference without writing cookie values into node output.
+- `browser_profile`: bind a persistent browser profile path or profile name for tools/adapters that can use it.
+- `login_flow` and `human_login_handoff`: pause for admin login, captcha, 2FA or risk verification.
+- `session_check` and `refresh_session`: verify or refresh a referenced login/session state.
+- `credential_scope`: check whether the workflow is allowed to use a requested credential/provider/scope.
+- `secret_redaction`: scrub known credentials and token/cookie-looking fields from text before reporting or archiving.
+- `revoke_session`: remove the workflow session reference when the flow is done.
+
+For GitHub repository maintenance, prefer GitHub App/PAT/OAuth/API or a registered AstrBot tool first. Browser cookies and profile sessions are a fallback for sites without suitable APIs, and should normally be paired with `human_login_handoff`, `credential_scope` and `secret_redaction`.
+
+## Prompt Modules
+
+`llm_prompt` and `prompt_transform` are the safe version of an empty prompt box. They are useful for classification, extraction, rewriting, report drafting and field normalization between structured nodes. They should not directly receive secrets.
+
+Recommended fields:
+
+- `input_variable` or `input`: where the prompt reads from.
+- `system_prompt` and `prompt` / `user_prompt`: local behavior contract.
+- `output_mode`: `text`, `json` or `route`.
+- `output_schema`: optional JSON schema checked by the runtime.
+- explicit `success`, `failed`, `uncertain` and `error` routes when the output is used for branching.
 
 ## Long Tasks Still Fit
 
