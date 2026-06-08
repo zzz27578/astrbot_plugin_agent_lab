@@ -78,7 +78,7 @@ const DEFAULT_EDGES = [
 
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
-const WEBUI_VERSION = "20260608-normalpage";
+const WEBUI_VERSION = "20260609-loginfix2";
 const API_TIMEOUT_MS = 7000;
 
 const STATUS_LABELS = {
@@ -122,6 +122,7 @@ const app = {
   registryTab: "apis",
   bootId: 0,
   loadId: 0,
+  authToken: "",
   workflow: { zoom: 0.82, x: 60, y: 70, selectedNodeId: "", linkingFrom: "", report: null, dryRun: null, dragging: null, panning: null, materialFilter: "", contextMenu: null },
 };
 
@@ -135,7 +136,23 @@ function listText(value) { return Array.isArray(value) ? value.join("\n") : Stri
 function icon(name, label = "") { return `<img class="game-icon" src="${ICONS[name] || ICONS.brand}" alt="${attr(label)}" />`; }
 function badge(text, tone = "") { return `<span class="badge ${tone}">${esc(text)}</span>`; }
 function compactId(value) { const text = String(value || ""); return text.length > 18 ? `${text.slice(0, 8)}...${text.slice(-6)}` : text || "-"; }
-function token() { return sessionStorage.getItem("agent_lab_token") || ""; }
+function token() {
+  try {
+    return sessionStorage.getItem("agent_lab_token") || app.authToken || "";
+  } catch {
+    return app.authToken || "";
+  }
+}
+function saveToken(value) {
+  app.authToken = String(value || "").trim();
+  try {
+    if (app.authToken) sessionStorage.setItem("agent_lab_token", app.authToken);
+    else sessionStorage.removeItem("agent_lab_token");
+  } catch {
+    // Some embedded browsers can deny sessionStorage; keep the token in memory for this page load.
+  }
+}
+function clearToken() { saveToken(""); }
 function labelOf(map, value) { return map[String(value || "")] || value || "-"; }
 function statusLabel(value) { return labelOf(STATUS_LABELS, value); }
 function riskLabel(value) { return labelOf(RISK_LABELS, value); }
@@ -227,7 +244,7 @@ function renderLoadError(error) {
   $("agent-select").innerHTML = `<option>暂无任务配置</option>`;
   $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<p>前端版本：${WEBUI_VERSION}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
   $("retry-load")?.addEventListener("click", () => boot().catch((err) => toast(err.message, "error")));
-  $("reenter-token")?.addEventListener("click", () => { sessionStorage.removeItem("agent_lab_token"); showAuth("请重新输入插件配置 standalone_webui_token 中的访问密码。"); });
+  $("reenter-token")?.addEventListener("click", () => { clearToken(); showAuth("请重新输入插件配置 standalone_webui_token 中的访问密码。"); });
 }
 
 function renderLoading(message = "正在加载控制台数据...") {
@@ -1099,22 +1116,23 @@ $("agent-select").addEventListener("change", (event) => {
 $("refresh").addEventListener("click", () => load().catch((error) => toast(error.message, "error")));
 $("collapse-nav").addEventListener("click", () => document.body.classList.toggle("nav-collapsed"));
 
-$("auth-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const button = event.currentTarget.querySelector("button[type='submit']");
+async function submitLogin(event) {
+  if (event) event.preventDefault();
+  const form = $("auth-form");
+  const button = $("login-submit") || form?.querySelector("button");
   const value = $("token-input").value.trim();
   if (!value) {
     showAuth("请输入插件配置 standalone_webui_token 中的访问密码。", "error");
     return;
   }
-  if (value) sessionStorage.setItem("agent_lab_token", value);
+  saveToken(value);
   if (button) button.disabled = true;
   setAuthStatus("正在验证访问密码...");
   try {
     await boot();
   } catch (error) {
     if (error.status === 401) {
-      sessionStorage.removeItem("agent_lab_token");
+      clearToken();
       showAuth("访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。", "error");
     } else {
       showApp();
@@ -1123,7 +1141,14 @@ $("auth-form").addEventListener("submit", async (event) => {
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+$("auth-form").addEventListener("submit", submitLogin);
+$("login-submit")?.addEventListener("click", submitLogin);
+$("token-input")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") submitLogin(event).catch((error) => toast(error.message, "error"));
 });
+window.AgentLabFullAppReady = true;
 
 async function boot() {
   const bootId = ++app.bootId;
@@ -1139,7 +1164,7 @@ async function boot() {
     if (bootId !== app.bootId) return;
     if (error.status === 401) {
       const hadToken = !!token();
-      sessionStorage.removeItem("agent_lab_token");
+      clearToken();
       showAuth(hadToken ? "访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。" : "请输入插件配置 standalone_webui_token 中的访问密码。", hadToken ? "error" : "");
       return;
     }
@@ -1150,6 +1175,6 @@ async function boot() {
 }
 
 const queryToken = new URLSearchParams(location.search).get("token");
-if (queryToken) sessionStorage.setItem("agent_lab_token", queryToken);
+if (queryToken) saveToken(queryToken);
 updateAuthVersion();
 boot().catch((error) => toast(error.message, "error"));
