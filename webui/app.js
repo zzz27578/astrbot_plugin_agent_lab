@@ -78,6 +78,7 @@ const DEFAULT_EDGES = [
 
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
+const WEBUI_VERSION = "20260608-diagnostics";
 const API_TIMEOUT_MS = 9000;
 
 const STATUS_LABELS = {
@@ -263,7 +264,7 @@ function renderLoadError(error) {
   $("identity-name").textContent = "未连接";
   $("identity-source").textContent = "等待数据";
   $("agent-select").innerHTML = `<option>暂无任务配置</option>`;
-  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<p>前端版本：${WEBUI_VERSION}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
   $("retry-load")?.addEventListener("click", () => boot().catch((err) => toast(err.message, "error")));
   $("reenter-token")?.addEventListener("click", () => { sessionStorage.removeItem("agent_lab_token"); showAuth("请重新输入插件配置 standalone_webui_token 中的访问密码。"); });
 }
@@ -280,7 +281,7 @@ function renderLoading(message = "正在加载控制台数据...") {
   $("identity-name").textContent = "正在读取";
   $("identity-source").textContent = "控制台数据";
   $("agent-select").innerHTML = `<option>正在加载任务配置</option>`;
-  $("view").innerHTML = `<section class="panel load-error"><h2>正在加载控制台</h2><p>${esc(message)}</p></section>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>正在加载控制台</h2><p>${esc(message)}</p><p>前端版本：${WEBUI_VERSION}</p></section>`;
 }
 
 async function api(path, options = {}) {

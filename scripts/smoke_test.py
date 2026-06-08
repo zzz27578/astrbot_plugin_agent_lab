@@ -72,6 +72,7 @@ async def smoke_webui_server() -> None:
     dry_run = await client.post("/api/workflow/dry-run", headers={"X-Agent-Lab-Token": "secret"})
     agents_delete = await client.delete("/api/agents", headers={"X-Agent-Lab-Token": "secret"})
     page = await client.get("/")
+    favicon = await client.get("/favicon.ico")
     assert denied.status_code == 401
     assert ok.status_code == 200
     assert ok_query.status_code == 200
@@ -81,6 +82,7 @@ async def smoke_webui_server() -> None:
     assert agents_delete.status_code == 200
     assert page.status_code == 200
     assert "no-store" in page.headers.get("Cache-Control", "")
+    assert favicon.status_code == 200
 
 
 def main() -> None:
