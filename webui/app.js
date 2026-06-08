@@ -25,26 +25,26 @@ const ICONS = {
 
 const NAV = [
   ["dashboard", "总览", "看状态"],
-  ["settings", "任务模式", "配置 Agent"],
+  ["settings", "任务模式", "配置任务模板"],
   ["workflow", "工作流画布", "搭流程"],
   ["tasks", "任务控制", "启动与推进"],
   ["memory", "任务记忆", "筛选与回流"],
   ["monitor", "运行监控", "心跳与运行"],
-  ["integrations", "插件与集成", "工具/API/蓝图"],
-  ["registry", "规则与凭证", "API 与 Skill"],
+  ["integrations", "插件与集成", "工具/接口/蓝图"],
+  ["registry", "规则与凭证", "接口与技能"],
 ];
 
 const STAGES = [
   ["entry", "入口", "触发、确认、上下文压缩"],
   ["plan", "计划", "拆解、路由、并行"],
-  ["execute", "执行", "工具、插件、API"],
+  ["execute", "执行", "工具、插件、接口"],
   ["guard", "安全", "审批、人工接管、心跳"],
   ["checkpoint", "记录", "校验、状态、记忆"],
   ["archive", "出口", "通知、归档、回流"],
 ];
 
 const NODE_TEMPLATES = [
-  { id: "entry", title: "入口识别", kind: "trigger", stage: "entry", action: "summarize_entry", instruction: "识别命令、关键词、自然语言或 WebUI 手动入口。" },
+  { id: "entry", title: "入口识别", kind: "trigger", stage: "entry", action: "summarize_entry", instruction: "识别命令、关键词、自然语言或控制台手动入口。" },
   { id: "entry_gate", title: "开启确认", kind: "human", stage: "entry", action: "confirm_entry", instruction: "需要确认时向用户说明隔离、记忆和审批边界。" },
   { id: "context_bridge", title: "上下文压缩", kind: "memory", stage: "entry", action: "summarize_entry", instruction: "把普通聊天压缩成 task_brief，只保留目标、约束、授权和风险。" },
   { id: "isolation_gate", title: "隔离快照", kind: "guard", stage: "entry", action: "restore_isolation", instruction: "进入任务前记录会话插件状态，并应用工具白名单。" },
@@ -53,9 +53,9 @@ const NODE_TEMPLATES = [
   { id: "risk_router", title: "风险分流", kind: "branch", stage: "plan", action: "route_condition", instruction: "把低风险、工作风险、高风险动作路由到不同节点。" },
   { id: "parallel_branch", title: "并行分支", kind: "branch", stage: "plan", action: "parallel_branch", instruction: "把互不依赖的检索、复核、测试任务拆给并行工作包。" },
   { id: "parallel_research", title: "并行检索包", kind: "subflow", stage: "execute", action: "manual", instruction: "只读收集证据、结论、风险和下一步建议。" },
-  { id: "execute", title: "工具执行", kind: "tool", stage: "execute", action: "run_tools", instruction: "调用当前 Agent 允许的 AstrBot 工具并写回关键结果。" },
-  { id: "api_call", title: "自定义 API", kind: "api", stage: "execute", action: "call_api", instruction: "调用已注册 API；凭证由后端注入，不写入提示词。" },
-  { id: "transform", title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", instruction: "把工具/API 输出整理成结构化观察。" },
+  { id: "execute", title: "工具执行", kind: "tool", stage: "execute", action: "run_tools", instruction: "调用当前任务配置允许的 AstrBot 工具并写回关键结果。" },
+  { id: "api_call", title: "自定义接口", kind: "api", stage: "execute", action: "call_api", instruction: "调用已注册接口；凭证由后端注入，不写入提示词。" },
+  { id: "transform", title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", instruction: "把工具和接口输出整理成结构化观察。" },
   { id: "approval", title: "审批闸门", kind: "guard", stage: "guard", action: "request_approval", instruction: "危险动作前请求用户审批。" },
   { id: "human_handoff", title: "人工接管", kind: "human", stage: "guard", action: "handoff", instruction: "遇到登录、验证码、业务判断或重复阻塞时暂停等待输入。" },
   { id: "validation", title: "结果校验", kind: "validation", stage: "checkpoint", action: "validate_output", instruction: "对照完成条件、测试结果和副作用判断继续、重试或归档。" },
@@ -79,6 +79,33 @@ const DEFAULT_EDGES = [
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
 
+const STATUS_LABELS = {
+  all: "全部", active: "运行中", archived: "已归档", pending: "待处理", candidate: "候选", accepted: "已接受", rejected: "已拒绝",
+  completed: "已完成", failed: "失败", cancelled: "已取消", canceled: "已取消", blocked: "已暂停", running: "运行中", idle: "空闲", ok: "正常",
+};
+const RISK_LABELS = { safe: "低风险", work: "工作风险", high: "高风险" };
+const TRIGGER_LABELS = { manual: "手动", confirm: "先确认", smart: "低风险自动", always: "尽量使用" };
+const ISOLATION_LABELS = { strict: "严格隔离", session: "会话隔离", off: "关闭隔离" };
+const TOOL_MODE_LABELS = { whitelist: "白名单", no_external: "仅内置工具", full: "全部工具" };
+const MEMORY_MODE_LABELS = { task_filtered: "任务过滤", inherit: "继承会话", strict: "严格任务记忆" };
+const APPROVAL_LABELS = { observe: "仅观察", work: "工作审批", high_risk_review: "高风险复核", delegated: "委托执行" };
+const HEARTBEAT_LABELS = { off: "关闭", manual: "手动", auto: "自动" };
+const KIND_LABELS = {
+  trigger: "触发", state: "状态", branch: "分支", tool: "工具", api: "接口", guard: "安全", human: "人工", memory: "记忆",
+  retrieval: "检索", transform: "整理", validation: "校验", loop: "循环", subflow: "子流程", notification: "通知", detector: "检测", report: "报告",
+  rate_limit: "限速", error_handler: "错误处理",
+};
+const ACTION_LABELS = {
+  summarize_entry: "入口摘要", confirm_entry: "入口确认", restore_isolation: "恢复隔离", retrieve_memory: "检索记忆", plan: "制定计划",
+  route_condition: "条件路由", parallel_branch: "并行分支", manual: "人工步骤", run_tools: "执行工具", call_api: "调用接口",
+  transform_context: "整理上下文", request_approval: "请求审批", handoff: "人工接管", validate_output: "校验结果", retry: "重试",
+  save_state: "保存状态", save_memory: "保存记忆", heartbeat: "心跳续跑", notify: "发送通知", archive: "归档", exit_summary: "出口摘要",
+  match_keyword: "匹配关键词", match_regex: "匹配正则", llm_detect: "模型检测", scope_filter: "范围过滤", schedule_trigger: "定时触发",
+  plugin_event_trigger: "插件事件触发", webhook_trigger: "外部回调触发", listen_message: "监听消息", write_record: "写入记录",
+  generate_report: "生成报告", send_message: "发送消息", limit_rate: "限制频率", catch_error: "捕获错误",
+};
+const SOURCE_LABELS = { astrbot_runtime: "AstrBot 运行时", persona: "人格配置", config: "AstrBot 配置", fallback: "默认占位", webui: "控制台", manual_webui: "控制台手动" };
+
 const app = {
   route: localStorage.getItem("agent_lab_route") || "dashboard",
   state: null,
@@ -91,6 +118,7 @@ const app = {
   taskLogs: {},
   integrationTab: "plugins",
   registryTab: "apis",
+  bootId: 0,
   workflow: { zoom: 0.82, x: 60, y: 70, selectedNodeId: "", linkingFrom: "", report: null, dryRun: null, dragging: null, panning: null, materialFilter: "", contextMenu: null },
 };
 
@@ -105,6 +133,16 @@ function icon(name, label = "") { return `<img class="game-icon" src="${ICONS[na
 function badge(text, tone = "") { return `<span class="badge ${tone}">${esc(text)}</span>`; }
 function compactId(value) { const text = String(value || ""); return text.length > 18 ? `${text.slice(0, 8)}...${text.slice(-6)}` : text || "-"; }
 function token() { return sessionStorage.getItem("agent_lab_token") || ""; }
+function labelOf(map, value) { return map[String(value || "")] || value || "-"; }
+function statusLabel(value) { return labelOf(STATUS_LABELS, value); }
+function riskLabel(value) { return labelOf(RISK_LABELS, value); }
+function sourceLabel(value) { return labelOf(SOURCE_LABELS, value); }
+function selectOptions(map, values) { return values.map((id) => [id, map[id] || id]); }
+
+function authHeaders() {
+  const value = token();
+  return value ? { Authorization: `Bearer ${value}`, "X-Agent-Lab-Token": value } : {};
+}
 
 function toast(message, tone = "ok") {
   const item = document.createElement("div");
@@ -114,9 +152,27 @@ function toast(message, tone = "ok") {
   setTimeout(() => item.remove(), 4200);
 }
 
+function setAuthStatus(message, tone = "") {
+  const el = $("auth-status");
+  if (!el) return;
+  el.textContent = message;
+  el.dataset.tone = tone;
+}
+
+function showAuth(message = "请输入插件配置 standalone_webui_token 中的访问密码。", tone = "") {
+  $("auth").hidden = false;
+  $("app").hidden = true;
+  setAuthStatus(message, tone);
+  setTimeout(() => $("token-input")?.focus(), 0);
+}
+
+function showApp() {
+  $("auth").hidden = true;
+  $("app").hidden = false;
+}
+
 async function api(path, options = {}) {
-  const headers = { ...(options.headers || {}) };
-  if (token()) headers.Authorization = `Bearer ${token()}`;
+  const headers = { ...authHeaders(), ...(options.headers || {}) };
   if (options.body !== undefined) {
     headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.body);
@@ -130,6 +186,18 @@ async function api(path, options = {}) {
     throw error;
   }
   if (payload.ok === false) throw new Error(payload.error || "请求失败");
+  return payload;
+}
+
+async function health() {
+  const response = await fetch("/api/health", { headers: authHeaders() });
+  let payload = {};
+  try { payload = await response.json(); } catch { payload = {}; }
+  if (!response.ok) {
+    const error = new Error(payload.error || "控制台健康检查失败");
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
@@ -154,7 +222,7 @@ function ensureAgent(agent = {}) {
     memory_policy: agent.memory_policy || {},
     approval_policy: agent.approval_policy || {},
     heartbeat_policy: agent.heartbeat_policy || {},
-    system_prompt: agent.system_prompt || "你仍然是当前 AstrBot 的原本角色，但进入 Agent Mode 后以任务推进为中心。",
+    system_prompt: agent.system_prompt || "你仍然是当前 AstrBot 的原本角色，但进入任务模式后以任务推进为中心。",
     task_prompt: agent.task_prompt || "先读取任务状态，再执行一个有限步骤，随后总结并写回状态。",
     plugin_overrides: agent.plugin_overrides || {},
     tool_risk_overrides: agent.tool_risk_overrides || {},
@@ -193,7 +261,7 @@ function ensureAgent(agent = {}) {
     require_confirmation: base.entry_policy.require_confirmation !== false,
     confirmation_text: base.entry_policy.confirmation_text || "我会进入任务模式：隔离当前会话插件、压缩上下文、创建 task_state，并在高风险动作前请求审批。是否开启？",
     default_completion_conditions: Array.isArray(base.entry_policy.default_completion_conditions) ? base.entry_policy.default_completion_conditions : ["用户验收通过", "任务成果已归档", "关键改动和风险已总结"],
-    exit_phrases: Array.isArray(base.entry_policy.exit_phrases) ? base.entry_policy.exit_phrases : ["完成任务", "退出 Agent Mode", "/agentlab finish", "/agentlab cancel"],
+    exit_phrases: Array.isArray(base.entry_policy.exit_phrases) ? base.entry_policy.exit_phrases : ["完成任务", "退出任务模式", "/agentlab finish", "/agentlab cancel"],
   };
   base.isolation_policy = { mode: base.isolation_policy.mode || "strict", tool_mode: base.isolation_policy.tool_mode || "whitelist", restore_on_exit: base.isolation_policy.restore_on_exit !== false, protect_self: base.isolation_policy.protect_self !== false, hide_disabled_plugin_tools: base.isolation_policy.hide_disabled_plugin_tools !== false };
   base.memory_policy = { mode: base.memory_policy.mode || "task_filtered", entry_summary_turns: Number(base.memory_policy.entry_summary_turns || 24), keep_identity: base.memory_policy.keep_identity !== false, allow_long_memory: base.memory_policy.allow_long_memory !== false, exit_memory_candidates: base.memory_policy.exit_memory_candidates !== false, compression_enabled: base.memory_policy.compression_enabled !== false, compression_strategy: base.memory_policy.compression_strategy || "smart_extract", compression_max_tokens: Number(base.memory_policy.compression_max_tokens || 6000), preserve_keywords: Array.isArray(base.memory_policy.preserve_keywords) ? base.memory_policy.preserve_keywords : [] };
@@ -237,13 +305,13 @@ function updateChrome() {
   $("collapse-nav").innerHTML = icon("menu", "侧栏");
   $("nav").innerHTML = NAV.map(([id, title, sub]) => `<button class="${app.route === id ? "active" : ""}" data-route="${id}" type="button">${icon(id)}<span><strong>${title}</strong><small>${sub}</small></span></button>`).join("");
   const runtime = app.state?.runtime || {};
-  $("identity-name").textContent = runtime.display_name || runtime.name || app.currentAgent?.name || "当前 Bot";
-  $("identity-source").textContent = runtime.source || app.currentAgent?.identity_label_source || "astrbot_runtime";
+  $("identity-name").textContent = runtime.display_name || runtime.name || app.currentAgent?.name || "当前机器人";
+  $("identity-source").textContent = sourceLabel(runtime.source || app.currentAgent?.identity_label_source || "astrbot_runtime");
   const selected = NAV.find(([id]) => id === app.route) || NAV[0];
   $("page-title").textContent = selected[1];
   $("page-subtitle").textContent = selected[2];
   const agents = app.state?.agents || [];
-  $("agent-select").innerHTML = agents.map((agent) => `<option value="${attr(agent.agent_id)}" ${agent.agent_id === app.selectedAgentId ? "selected" : ""}>${esc(agent.name || app.state?.runtime?.display_name || "未命名 Agent")} · ${compactId(agent.agent_id)}</option>`).join("");
+  $("agent-select").innerHTML = agents.map((agent) => `<option value="${attr(agent.agent_id)}" ${agent.agent_id === app.selectedAgentId ? "selected" : ""}>${esc(agent.name || app.state?.runtime?.display_name || "未命名配置")} · ${compactId(agent.agent_id)}</option>`).join("");
 }
 
 function setRoute(route) {
@@ -276,9 +344,9 @@ function renderDashboard() {
   const active = app.state.tasks || [];
   const agents = app.state.agents || [];
   return `<div class="stack">
-    <section class="hero panel"><div><p class="eyebrow">Agent Lab</p><h1>把长任务和自动化流程放到一张清楚的控制台里。</h1><p>先选一个 Agent，配置触发与隔离，再在画布里组合节点。后端会负责持久化、心跳、审批、任务记忆、插件工具和自定义 API。</p></div><div class="hero-actions"><button class="button primary" data-route="workflow">打开画布</button><button class="button" data-route="tasks">启动任务</button><button class="button danger" data-action="delete-agent">删除当前 Agent</button></div></section>
-    <section class="metric-grid">${stat("Agent", m.agents, "配置数量")}${stat("运行中", m.tasks, "active task")}${stat("工作流运行", m.runs, `${m.activeRuns} active`)}${stat("待审批", m.pending, "pending")}${stat("任务记忆", m.memories, "memory rows")}${stat("Token", m.tokens, "累计")}</section>
-    <section class="split"><div class="panel"><div class="panel-head"><h2>Agent 配置</h2><button class="button small" data-action="new-agent">新建</button></div><div class="list">${agents.map(agentCard).join("") || empty("没有 Agent 配置")}</div></div>
+    <section class="hero panel"><div><p class="eyebrow">Agent Lab</p><h1>把长任务和自动化流程放到一张清楚的控制台里。</h1><p>先选一个任务配置，设置触发、隔离和审批，再在画布里组合节点。后端负责持久化、心跳、任务记忆、插件工具和自定义接口。</p></div><div class="hero-actions"><button class="button primary" data-route="workflow">打开画布</button><button class="button" data-route="tasks">启动任务</button><button class="button danger" data-action="delete-agent">删除当前配置</button></div></section>
+    <section class="metric-grid">${stat("任务配置", m.agents, "配置数量")}${stat("运行中", m.tasks, "当前任务")}${stat("工作流运行", m.runs, `${m.activeRuns} 个活跃`)}${stat("待审批", m.pending, "等待处理")}${stat("任务记忆", m.memories, "记忆条目")}${stat("用量", m.tokens, "累计令牌")}</section>
+    <section class="split"><div class="panel"><div class="panel-head"><h2>任务配置</h2><button class="button small" data-action="new-agent">新建</button></div><div class="list">${agents.map(agentCard).join("") || empty("没有任务配置")}</div></div>
     <div class="panel"><div class="panel-head"><h2>运行中任务</h2><button class="button small" data-route="tasks">查看</button></div><div class="list">${active.slice(0, 6).map(taskCard).join("") || empty("当前没有运行中的任务")}</div></div></section>
   </div>`;
 }
@@ -288,11 +356,11 @@ function empty(text) { return `<div class="empty">${esc(text)}</div>`; }
 function agentTitle(agent) { return agent.name || app.state?.runtime?.display_name || "跟随 AstrBot 身份"; }
 function agentCard(agent) {
   const active = agent.agent_id === app.selectedAgentId;
-  return `<button class="list-row ${active ? "selected" : ""}" data-action="select-agent" data-id="${attr(agent.agent_id)}" type="button"><strong>${esc(agentTitle(agent))}</strong><span>${compactId(agent.agent_id)} · ${esc(agent.trigger_mode || "confirm")} · ${esc(agent.isolation_policy?.mode || "strict")}</span></button>`;
+  return `<button class="list-row ${active ? "selected" : ""}" data-action="select-agent" data-id="${attr(agent.agent_id)}" type="button"><strong>${esc(agentTitle(agent))}</strong><span>${compactId(agent.agent_id)} · ${esc(labelOf(TRIGGER_LABELS, agent.trigger_mode || "confirm"))} · ${esc(labelOf(ISOLATION_LABELS, agent.isolation_policy?.mode || "strict"))}</span></button>`;
 }
 function taskCard(task) {
   const pending = (task.approvals || []).filter((item) => item.status === "pending").length;
-  return `<button class="list-row" data-action="select-task" data-id="${attr(task.task_id)}" type="button"><strong>${esc(task.root_goal || task.agent_name || task.task_id)}</strong><span>${esc(task.status)} · ${compactId(task.umo)} ${pending ? `· ${pending} 个审批` : ""}</span></button>`;
+  return `<button class="list-row" data-action="select-task" data-id="${attr(task.task_id)}" type="button"><strong>${esc(task.root_goal || task.agent_name || task.task_id)}</strong><span>${esc(statusLabel(task.status))} · ${compactId(task.umo)} ${pending ? `· ${pending} 个审批` : ""}</span></button>`;
 }
 
 function field(label, id, value = "", type = "text", extra = "") { return `<label><span>${esc(label)}</span><input id="${id}" type="${type}" value="${attr(value)}" ${extra} /></label>`; }
@@ -302,16 +370,16 @@ function checkField(label, id, checked) { return `<label class="check"><input id
 
 function renderSettings() {
   const a = app.currentAgent;
-  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>任务模式配置</h2><p>名称留空时继续跟随 AstrBot 当前 Persona / 配置名。</p></div><div class="row"><button class="button" data-action="duplicate-agent">复制</button><button class="button primary" data-action="save-agent">保存</button><button class="button" data-action="make-default">设为默认</button></div></div>
+  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>任务模式配置</h2><p>名称留空时继续跟随 AstrBot 当前人格或配置名。</p></div><div class="row"><button class="button" data-action="duplicate-agent">复制</button><button class="button primary" data-action="save-agent">保存</button><button class="button" data-action="make-default">设为默认</button></div></div>
     <div class="form-grid">
-      ${field("配置名称", "agent-name", a.name)}${selectField("触发模式", "trigger-mode", a.trigger_mode, [["manual", "manual 手动"], ["confirm", "confirm 先确认"], ["smart", "smart 低风险自动"], ["always", "always 尽量使用"]])}
-      ${selectField("应用范围", "application-scope", a.application_scope, [["entry", "入口触发"], ["global", "全局监控"]])}${selectField("入口渠道", "entry-channel", a.entry_channel, [["command", "命令"], ["natural", "自然语言"], ["webui", "WebUI"]])}
+      ${field("配置名称", "agent-name", a.name)}${selectField("触发模式", "trigger-mode", a.trigger_mode, selectOptions(TRIGGER_LABELS, ["manual", "confirm", "smart", "always"]))}
+      ${selectField("应用范围", "application-scope", a.application_scope, [["entry", "入口触发"], ["global", "全局监控"]])}${selectField("入口渠道", "entry-channel", a.entry_channel, [["command", "命令"], ["natural", "自然语言"], ["webui", "控制台"]])}
       ${area("说明", "agent-description", a.description, 3)}${area("系统提示补充", "system-prompt", a.system_prompt, 5)}${area("任务提示补充", "task-prompt", a.task_prompt, 5)}
     </div></section>
     <section class="split"><div class="panel"><h2>触发与范围</h2><div class="form-grid single">
-      ${checkField("启用工作流触发", "workflow-trigger-enabled", a.workflow_trigger.enabled)}${area("触发类型", "workflow-trigger-types", listText(a.workflow_trigger.types), 3)}${area("命令名", "command-names", listText(a.workflow_trigger.command_names), 3)}${area("关键词", "trigger-keywords", listText(a.workflow_trigger.keywords), 3)}${area("正则", "trigger-regex", listText(a.workflow_trigger.regex), 3)}${field("Cron", "trigger-cron", a.workflow_trigger.cron)}${field("Webhook 路径", "webhook-path", a.workflow_trigger.webhook_path)}${checkField("仅管理员", "admin-only", a.workflow_scope.admin_only)}${area("会话类型", "chat-types", listText(a.workflow_scope.chat_types), 2)}${area("UMO 白名单", "umo-allow", listText(a.workflow_scope.umo_allowlist), 3)}${area("入口短语", "entry-phrases", listText(a.entry_policy.trigger_phrases), 4)}${area("入口关键词", "entry-keywords", listText(a.entry_policy.trigger_keywords), 4)}${area("确认文案", "entry-confirmation", a.entry_policy.confirmation_text, 4)}${area("退出短语", "exit-phrases", listText(a.entry_policy.exit_phrases), 3)}${area("默认完成条件", "completion-conditions", listText(a.entry_policy.default_completion_conditions), 3)}
+      ${checkField("启用工作流触发", "workflow-trigger-enabled", a.workflow_trigger.enabled)}${area("触发类型", "workflow-trigger-types", listText(a.workflow_trigger.types), 3)}${area("命令名", "command-names", listText(a.workflow_trigger.command_names), 3)}${area("关键词", "trigger-keywords", listText(a.workflow_trigger.keywords), 3)}${area("正则", "trigger-regex", listText(a.workflow_trigger.regex), 3)}${field("定时表达式", "trigger-cron", a.workflow_trigger.cron)}${field("外部回调路径", "webhook-path", a.workflow_trigger.webhook_path)}${checkField("仅管理员", "admin-only", a.workflow_scope.admin_only)}${area("会话类型", "chat-types", listText(a.workflow_scope.chat_types), 2)}${area("会话白名单", "umo-allow", listText(a.workflow_scope.umo_allowlist), 3)}${area("入口短语", "entry-phrases", listText(a.entry_policy.trigger_phrases), 4)}${area("入口关键词", "entry-keywords", listText(a.entry_policy.trigger_keywords), 4)}${area("确认文案", "entry-confirmation", a.entry_policy.confirmation_text, 4)}${area("退出短语", "exit-phrases", listText(a.entry_policy.exit_phrases), 3)}${area("默认完成条件", "completion-conditions", listText(a.entry_policy.default_completion_conditions), 3)}
     </div></div><div class="panel"><h2>记忆 / 审批 / 心跳</h2><div class="form-grid single">
-      ${selectField("隔离模式", "isolation-mode", a.isolation_policy.mode, [["strict", "strict 严格"], ["session", "session 会话"], ["off", "off 关闭"]])}${selectField("工具模式", "tool-mode", a.isolation_policy.tool_mode, [["whitelist", "白名单"], ["no_external", "仅内部"], ["full", "全部"]])}${selectField("记忆模式", "memory-mode", a.memory_policy.mode, [["task_filtered", "任务过滤"], ["inherit", "继承"], ["strict", "严格"]])}${field("压缩最大 Token", "compression-max", a.memory_policy.compression_max_tokens, "number")}${area("保留关键词", "preserve-keywords", listText(a.memory_policy.preserve_keywords), 3)}${selectField("审批模式", "approval-mode", a.approval_policy.mode, [["observe", "observe"], ["work", "work"], ["high_risk_review", "high risk review"], ["delegated", "delegated"]])}${area("预授权范围", "preapproved-scopes", listText(a.approval_policy.preapproved_scopes), 3)}${area("必须审批动作", "require-approval", listText(a.approval_policy.require_approval), 3)}${area("审批备注", "approval-note", a.approval_policy.note, 3)}${selectField("心跳模式", "heartbeat-mode", a.heartbeat_policy.mode, [["off", "off"], ["manual", "manual"], ["auto", "auto"]])}${field("心跳 Cron", "heartbeat-cron", a.heartbeat_policy.cron_expression)}
+      ${selectField("隔离模式", "isolation-mode", a.isolation_policy.mode, selectOptions(ISOLATION_LABELS, ["strict", "session", "off"]))}${selectField("工具模式", "tool-mode", a.isolation_policy.tool_mode, selectOptions(TOOL_MODE_LABELS, ["whitelist", "no_external", "full"]))}${selectField("记忆模式", "memory-mode", a.memory_policy.mode, selectOptions(MEMORY_MODE_LABELS, ["task_filtered", "inherit", "strict"]))}${field("压缩上限", "compression-max", a.memory_policy.compression_max_tokens, "number")}${area("保留关键词", "preserve-keywords", listText(a.memory_policy.preserve_keywords), 3)}${selectField("审批模式", "approval-mode", a.approval_policy.mode, selectOptions(APPROVAL_LABELS, ["observe", "work", "high_risk_review", "delegated"]))}${area("预授权范围", "preapproved-scopes", listText(a.approval_policy.preapproved_scopes), 3)}${area("必须审批动作", "require-approval", listText(a.approval_policy.require_approval), 3)}${area("审批备注", "approval-note", a.approval_policy.note, 3)}${selectField("心跳模式", "heartbeat-mode", a.heartbeat_policy.mode, selectOptions(HEARTBEAT_LABELS, ["off", "manual", "auto"]))}${field("心跳定时", "heartbeat-cron", a.heartbeat_policy.cron_expression)}
     </div></div></section></div>`;
 }
 
@@ -364,7 +432,7 @@ async function saveAgent(makeDefault = false) {
   const payload = readAgentForm();
   const result = await api("/api/agents", { method: "POST", body: { ...payload, _make_default: makeDefault } });
   app.selectedAgentId = result.agent.agent_id;
-  toast(makeDefault ? "已保存并设为默认 Agent" : "Agent 已保存");
+  toast(makeDefault ? "已保存并设为默认任务配置" : "任务配置已保存");
   await load();
   return result.agent;
 }
@@ -380,7 +448,7 @@ function renderWorkflow() {
   return `<div class="workflow-page">
     <aside class="toolbox">
       <div class="toolbox-head"><h2>节点素材</h2><button class="icon-btn" data-action="auto-layout" title="自动布局">${icon("workflow")}</button></div>
-      <input class="search" id="node-search" data-action="node-search" placeholder="搜索节点、插件、工具、API" value="${attr(app.workflow.materialFilter)}" />
+      <input class="search" id="node-search" data-action="node-search" placeholder="搜索节点、插件、工具、接口" value="${attr(app.workflow.materialFilter)}" />
       <div class="tool-list">${materialGroupsHtml()}</div>
     </aside>
     <section class="canvas-shell">
@@ -405,10 +473,10 @@ function renderWorkflow() {
 }
 
 function nodeMaterials() {
-  const native = NODE_TEMPLATES.map((item) => ({ type: "template", group: stageLabel(item.stage), label: item.title, ref: item.id, hint: `${item.stage} · ${item.action}`, payload: item }));
-  const modules = (app.state.discovered_modules || app.state.builtin_modules || []).slice(0, 80).map((item) => ({ type: "module", group: item.kind === "plugin" ? "插件模块" : item.kind === "tool" ? "工具模块" : "内置模块", label: item.name || item.module_id || item.id, ref: item.module_id || item.id || item.name, hint: item.kind || item.action || "module", payload: item }));
-  const tools = (app.state.tools || []).slice(0, 100).map((item) => ({ type: "tool", group: item.plugin_display_name || item.plugin_name || "注册工具", label: item.name, ref: item.name, hint: item.risk || "tool", payload: item }));
-  const apis = (app.state.custom_apis || []).map((item) => ({ type: "api", group: "自定义 API", label: item.name || item.api_id, ref: item.api_id || item.name, hint: item.method || "custom API", payload: item }));
+  const native = NODE_TEMPLATES.map((item) => ({ type: "template", group: stageLabel(item.stage), label: item.title, ref: item.id, hint: `${stageLabel(item.stage)} · ${labelOf(ACTION_LABELS, item.action)}`, payload: item }));
+  const modules = (app.state.discovered_modules || app.state.builtin_modules || []).slice(0, 80).map((item) => ({ type: "module", group: item.kind === "plugin" ? "插件模块" : item.kind === "tool" ? "工具模块" : "内置模块", label: item.name || item.module_id || item.id, ref: item.module_id || item.id || item.name, hint: labelOf(KIND_LABELS, item.kind) || labelOf(ACTION_LABELS, item.action) || "模块", payload: item }));
+  const tools = (app.state.tools || []).slice(0, 100).map((item) => ({ type: "tool", group: item.plugin_display_name || item.plugin_name || "注册工具", label: item.name, ref: item.name, hint: riskLabel(item.risk) || "工具", payload: item }));
+  const apis = (app.state.custom_apis || []).map((item) => ({ type: "api", group: "自定义接口", label: item.name || item.api_id, ref: item.api_id || item.name, hint: item.method || "自定义接口", payload: item }));
   const filter = app.workflow.materialFilter.trim().toLowerCase();
   return [...native, ...modules, ...tools, ...apis].filter((item) => !filter || `${item.group} ${item.label} ${item.ref} ${item.hint}`.toLowerCase().includes(filter));
 }
@@ -439,13 +507,13 @@ function workflowContextMenu() {
 function nodeEditor(node) {
   return `<div class="panel flat"><div class="panel-head"><div><h2>节点编辑</h2><p>${esc(node.id)}</p></div><button class="icon-btn danger" data-action="delete-node" title="删除">${icon("trash")}</button></div>
     <div class="form-grid single compact">
-      ${field("节点 ID", "node-id", node.id)}${field("标题", "node-title", node.title)}
+      ${field("节点标识", "node-id", node.id)}${field("标题", "node-title", node.title)}
       ${selectField("阶段", "node-stage", node.stage || "execute", STAGES.map(([id, label]) => [id, label]))}
-      ${selectField("类型", "node-kind", node.kind || "state", KINDS.map((id) => [id, id]))}
-      ${selectField("动作", "node-action", node.action || "manual", ACTIONS.map((id) => [id, id]))}
-      ${field("工具名", "node-tool", node.tool_name || node.ref_id || "")}${field("API ID", "node-api", node.api_id || "")}
+      ${selectField("类型", "node-kind", node.kind || "state", KINDS.map((id) => [id, labelOf(KIND_LABELS, id)]))}
+      ${selectField("动作", "node-action", node.action || "manual", ACTIONS.map((id) => [id, labelOf(ACTION_LABELS, id)]))}
+      ${field("工具名", "node-tool", node.tool_name || node.ref_id || "")}${field("接口标识", "node-api", node.api_id || "")}
       ${field("输入变量", "node-input", node.input_variable || "")}${field("输出变量", "node-output", node.output_variable || "")}
-      ${field("路径 / URL", "node-path", node.path || node.url || "")}${field("并行组", "node-parallel", node.parallel_group || "")}
+      ${field("路径或地址", "node-path", node.path || node.url || "")}${field("并行组", "node-parallel", node.parallel_group || "")}
       ${area("说明", "node-instruction", node.instruction || "", 4)}${area("节点提示词", "node-prompt", node.prompt || "", 5)}${area("标签", "node-tags", listText(node.tags), 3)}
       <button class="button primary span-2" data-action="apply-node">应用节点修改</button>
     </div></div>`;
@@ -454,7 +522,7 @@ function nodeEditor(node) {
 function workflowReport(report, dryRun) {
   const issues = report.issues || report.workflow?.issues || [];
   const dry = dryRun?.steps || dryRun?.path || [];
-  return `<div class="panel flat report"><h2>诊断</h2><div class="list small-list">${issues.slice(0, 12).map((item) => `<div class="issue ${esc(item.severity || item.tone || "warn")}"><strong>${esc(item.code || item.kind || "issue")}</strong><span>${esc(item.message || item.detail || JSON.stringify(item))}</span></div>`).join("") || empty("暂无检查问题")}</div>${dry.length ? `<h3>预跑路径</h3><ol>${dry.slice(0, 12).map((item) => `<li>${esc(item.node_id || item.id || item)}</li>`).join("")}</ol>` : ""}</div>`;
+  return `<div class="panel flat report"><h2>诊断</h2><div class="list small-list">${issues.slice(0, 12).map((item) => `<div class="issue ${esc(item.severity || item.tone || "warn")}"><strong>${esc(item.code || item.kind || "问题")}</strong><span>${esc(item.message || item.detail || JSON.stringify(item))}</span></div>`).join("") || empty("暂无检查问题")}</div>${dry.length ? `<h3>预跑路径</h3><ol>${dry.slice(0, 12).map((item) => `<li>${esc(item.node_id || item.id || item)}</li>`).join("")}</ol>` : ""}</div>`;
 }
 
 function mountWorkflow() {
@@ -542,7 +610,7 @@ function nodeHtml(node) {
   const selected = node.id === app.workflow.selectedNodeId;
   const left = Number(node.x ?? stageIndex(node.stage) * 360 + 80);
   const top = Number(node.y ?? 80);
-  return `<div class="workflow-node ${selected ? "selected" : ""}" data-id="${attr(node.id)}" style="left:${left}px;top:${top}px"><div class="node-top"><span>${esc(node.kind || "node")}</span>${badge(node.stage || "execute")}</div><strong>${esc(node.title || node.id)}</strong><p>${esc(node.instruction || node.action || "")}</p><button class="port" data-action="port" data-id="${attr(node.id)}" title="连线"></button></div>`;
+  return `<div class="workflow-node ${selected ? "selected" : ""}" data-id="${attr(node.id)}" style="left:${left}px;top:${top}px"><div class="node-top"><span>${esc(labelOf(KIND_LABELS, node.kind || "state"))}</span>${badge(stageLabel(node.stage || "execute"))}</div><strong>${esc(node.title || node.id)}</strong><p>${esc(node.instruction || labelOf(ACTION_LABELS, node.action) || "")}</p><button class="port" data-action="port" data-id="${attr(node.id)}" title="连线"></button></div>`;
 }
 
 function edgePath(edge, index = 0) {
@@ -591,7 +659,7 @@ function addNodeFrom(type, name, ref = name) {
   const index = app.currentAgent.workflow_nodes.length;
   let node = clone(NODE_TEMPLATES.find((item) => item.title === name || item.id === name) || NODE_TEMPLATES[0]);
   if (type === "tool") node = { id: `tool_${Date.now()}`, title: name, kind: "tool", stage: "execute", action: "run_tools", tool_name: ref, ref_id: ref, instruction: "调用这个 AstrBot 工具并整理结果。" };
-  if (type === "api") node = { id: `api_${Date.now()}`, title: name, kind: "api", stage: "execute", action: "call_api", api_id: ref, ref_id: ref, instruction: "调用这个自定义 API。" };
+  if (type === "api") node = { id: `api_${Date.now()}`, title: name, kind: "api", stage: "execute", action: "call_api", api_id: ref, ref_id: ref, instruction: "调用这个自定义接口。" };
   if (type === "module") node = { id: `module_${Date.now()}`, title: name, kind: "state", stage: "execute", action: "manual", ref_id: ref, module_id: ref, instruction: "绑定发现模块，按节点提示执行。" };
   node.id = uniqueNodeId(node.id || `node_${Date.now()}`);
   node.x = 120 + stageIndex(node.stage) * 360;
@@ -643,21 +711,21 @@ function renderTasks() {
   const archives = app.state.archives || [];
   const selected = [...tasks, ...archives].find((task) => task.task_id === app.selectedTaskId) || tasks[0] || archives[0];
   if (selected) app.selectedTaskId = selected.task_id;
-  return `<div class="task-layout"><aside class="panel task-list-panel"><h2>任务</h2><div class="list">${tasks.map(taskCard).join("") || empty("没有运行中任务")}</div><h3>归档</h3><div class="list">${archives.slice(0, 30).map(taskCard).join("") || empty("暂无归档")}</div></aside><section class="stack"><div class="panel"><h2>启动新任务</h2><div class="form-grid task-start">${field("UMO", "task-umo", "aiocqhttp:FriendMessage:agent_lab_webui")} ${selectField("风险", "task-risk", "work", [["safe", "safe"], ["work", "work"], ["high", "high"]])}${area("目标", "task-goal", "", 3)}${area("完成条件", "task-completion", listText(app.currentAgent.entry_policy.default_completion_conditions), 3)}${area("补充 brief", "task-brief", "", 4)}${checkField("启动后开心跳", "task-heartbeat", false)}<button class="button primary span-2" data-action="start-task">启动任务</button></div></div>${selected ? taskDetail(selected) : empty("选择任务查看详情")}</section></div>`;
+  return `<div class="task-layout"><aside class="panel task-list-panel"><h2>任务</h2><div class="list">${tasks.map(taskCard).join("") || empty("没有运行中任务")}</div><h3>归档</h3><div class="list">${archives.slice(0, 30).map(taskCard).join("") || empty("暂无归档")}</div></aside><section class="stack"><div class="panel"><h2>启动新任务</h2><div class="form-grid task-start">${field("会话标识", "task-umo", "aiocqhttp:FriendMessage:agent_lab_webui")} ${selectField("风险", "task-risk", "work", selectOptions(RISK_LABELS, ["safe", "work", "high"]))}${area("目标", "task-goal", "", 3)}${area("完成条件", "task-completion", listText(app.currentAgent.entry_policy.default_completion_conditions), 3)}${area("补充说明", "task-brief", "", 4)}${checkField("启动后开心跳", "task-heartbeat", false)}<button class="button primary span-2" data-action="start-task">启动任务</button></div></div>${selected ? taskDetail(selected) : empty("选择任务查看详情")}</section></div>`;
 }
 
 function taskDetail(task) {
   const approvals = (task.approvals || []).filter((item) => item.status === "pending");
   const liveLogs = app.taskLogs[task.task_id]?.logs || task.progress_log || [];
   const snapshots = app.taskLogs[task.task_id]?.snapshots || task.state_snapshots || [];
-  return `<div class="panel"><div class="panel-head"><div><h2>${esc(task.root_goal || task.task_id)}</h2><p>${esc(task.status)} · ${esc(task.heartbeat_health?.message || "")}</p></div><div class="row"><button class="button" data-action="tick-task">Tick</button><button class="button" data-action="toggle-heartbeat">${task.heartbeat?.enabled ? "关心跳" : "开心跳"}</button><button class="button" data-action="load-task-logs">刷新日志</button><button class="button" data-action="finish-task">完成</button><button class="button danger" data-action="cancel-task">取消</button></div></div><div class="state-grid">${stateTile("当前摘要", task.current_summary)}${stateTile("已确认进度", task.last_confirmed_progress)}${stateTile("下一步", task.next_step)}${stateTile("最后观察", task.last_observation)}</div>${parallelRunSummary(task)}${approvals.length ? `<h3>待审批</h3><div class="list">${approvals.map((item) => `<div class="approval"><strong>${esc(item.operation || item.approval_id)}</strong><p>${esc(item.reason || item.impact || "")}</p><button class="button primary" data-action="resolve-approval" data-id="${attr(item.approval_id)}" data-approved="true">通过</button><button class="button danger" data-action="resolve-approval" data-id="${attr(item.approval_id)}" data-approved="false">拒绝</button></div>`).join("")}</div>` : ""}<h3>时间线</h3><div class="timeline">${liveLogs.slice(-14).reverse().map((item) => `<div><span>${esc(item.time || "")}</span><p>${esc(item.text || item.kind || "")}</p></div>`).join("") || empty("暂无日志")}</div><h3>状态快照</h3><div class="timeline compact-line">${snapshots.slice(-8).reverse().map((item) => `<div><span>${esc(item.time || "")}</span><p>${esc(item.kind || item.status || "state")} · ${esc(item.next_step || item.current_summary || "")}</p></div>`).join("") || empty("暂无快照")}</div></div>`;
+  return `<div class="panel"><div class="panel-head"><div><h2>${esc(task.root_goal || task.task_id)}</h2><p>${esc(statusLabel(task.status))} · ${esc(task.heartbeat_health?.message || "")}</p></div><div class="row"><button class="button" data-action="tick-task">推进一轮</button><button class="button" data-action="toggle-heartbeat">${task.heartbeat?.enabled ? "关闭心跳" : "开心跳"}</button><button class="button" data-action="load-task-logs">刷新日志</button><button class="button" data-action="finish-task">完成</button><button class="button danger" data-action="cancel-task">取消</button></div></div><div class="state-grid">${stateTile("当前摘要", task.current_summary)}${stateTile("已确认进度", task.last_confirmed_progress)}${stateTile("下一步", task.next_step)}${stateTile("最后观察", task.last_observation)}</div>${parallelRunSummary(task)}${approvals.length ? `<h3>待审批</h3><div class="list">${approvals.map((item) => `<div class="approval"><strong>${esc(item.operation || item.approval_id)}</strong><p>${esc(item.reason || item.impact || "")}</p><button class="button primary" data-action="resolve-approval" data-id="${attr(item.approval_id)}" data-approved="true">通过</button><button class="button danger" data-action="resolve-approval" data-id="${attr(item.approval_id)}" data-approved="false">拒绝</button></div>`).join("")}</div>` : ""}<h3>时间线</h3><div class="timeline">${liveLogs.slice(-14).reverse().map((item) => `<div><span>${esc(item.time || "")}</span><p>${esc(item.text || labelOf(ACTION_LABELS, item.kind) || statusLabel(item.kind) || "")}</p></div>`).join("") || empty("暂无日志")}</div><h3>状态快照</h3><div class="timeline compact-line">${snapshots.slice(-8).reverse().map((item) => `<div><span>${esc(item.time || "")}</span><p>${esc(labelOf(ACTION_LABELS, item.kind) || statusLabel(item.status) || "状态")} · ${esc(item.next_step || item.current_summary || "")}</p></div>`).join("") || empty("暂无快照")}</div></div>`;
 }
 function stateTile(label, value) { return `<div class="state-tile"><span>${esc(label)}</span><p>${esc(value || "-")}</p></div>`; }
 
 function parallelRunSummary(task) {
   const runs = task.parallel_runs || [];
   if (!runs.length) return "";
-  return `<h3>并行工作包</h3><div class="tool-grid compact-tools">${runs.slice(-4).reverse().map((run) => `<div class="tool-card"><strong>${esc(run.node_id || run.parallel_group || run.time || "parallel")}</strong><span>${esc(run.status || (run.ok === false ? "failed" : "completed"))}</span><small>${esc(run.summary || run.message || JSON.stringify(run).slice(0, 180))}</small></div>`).join("")}</div>`;
+  return `<h3>并行工作包</h3><div class="tool-grid compact-tools">${runs.slice(-4).reverse().map((run) => `<div class="tool-card"><strong>${esc(run.node_id || run.parallel_group || run.time || "并行")}</strong><span>${esc(statusLabel(run.status || (run.ok === false ? "failed" : "completed")))}</span><small>${esc(run.summary || run.message || JSON.stringify(run).slice(0, 180))}</small></div>`).join("")}</div>`;
 }
 
 function renderMemory() {
@@ -665,15 +733,15 @@ function renderMemory() {
   const selected = memories.find((item) => item.memory_id === app.selectedMemoryId) || memories[0];
   if (selected) app.selectedMemoryId = selected.memory_id;
   const counts = ["candidate", "accepted", "rejected"].map((status) => [status, memories.filter((item) => item.status === status).length]);
-  return `<div class="memory-layout"><section class="stack"><div class="metric-grid compact-metrics">${counts.map(([status, count]) => stat(status, count, "memory")).join("")}${stat("total", memories.length, "rows")}</div><div class="panel"><div class="panel-head"><h2>任务记忆</h2><button class="button" data-action="new-memory-draft">写入记忆</button></div><div class="list memory-list">${memories.map(memoryCard).join("") || empty("还没有任务记忆")}</div></div></section><aside class="panel detail-sticky">${selected ? memoryDetail(selected) : empty("选择记忆查看详情")}</aside></div>`;
+  return `<div class="memory-layout"><section class="stack"><div class="metric-grid compact-metrics">${counts.map(([status, count]) => stat(statusLabel(status), count, "记忆")).join("")}${stat("全部", memories.length, "条目")}</div><div class="panel"><div class="panel-head"><h2>任务记忆</h2><button class="button" data-action="new-memory-draft">写入记忆</button></div><div class="list memory-list">${memories.map(memoryCard).join("") || empty("还没有任务记忆")}</div></div></section><aside class="panel detail-sticky">${selected ? memoryDetail(selected) : empty("选择记忆查看详情")}</aside></div>`;
 }
 
 function memoryCard(item) {
-  return `<button class="memory-row ${item.memory_id === app.selectedMemoryId ? "selected" : ""}" data-action="select-memory" data-id="${attr(item.memory_id)}" type="button"><strong>${esc(item.brief || item.text || item.memory_id)}</strong><span>${esc(item.status || "candidate")} · ${esc((item.tags || []).join(", "))}</span></button>`;
+  return `<button class="memory-row ${item.memory_id === app.selectedMemoryId ? "selected" : ""}" data-action="select-memory" data-id="${attr(item.memory_id)}" type="button"><strong>${esc(item.brief || item.text || item.memory_id)}</strong><span>${esc(statusLabel(item.status || "candidate"))} · ${esc((item.tags || []).join(", "))}</span></button>`;
 }
 
 function memoryDetail(item) {
-  return `<div class="memory-detail"><h2>${esc(item.brief || "记忆详情")}</h2>${badge(item.status || "candidate")}<p>${esc(item.text || "")}</p><dl><dt>来源任务</dt><dd>${compactId(item.source_task_id)}</dd><dt>来源 UMO</dt><dd>${compactId(item.source_umo)}</dd><dt>可普通读取</dt><dd>${item.expose_to_normal ? "是" : "否"}</dd></dl><div class="row"><button class="button primary" data-action="accept-memory" data-id="${attr(item.memory_id)}">接受</button><button class="button" data-action="reject-memory" data-id="${attr(item.memory_id)}">拒绝</button><button class="button" data-action="use-memory-context" data-id="${attr(item.memory_id)}">带入新任务</button><button class="button danger" data-action="delete-memory" data-id="${attr(item.memory_id)}">删除</button></div><h3>续写草稿</h3><textarea rows="8" readonly>${esc(memoryContextText(item))}</textarea></div>`;
+  return `<div class="memory-detail"><h2>${esc(item.brief || "记忆详情")}</h2>${badge(statusLabel(item.status || "candidate"))}<p>${esc(item.text || "")}</p><dl><dt>来源任务</dt><dd>${compactId(item.source_task_id)}</dd><dt>来源会话</dt><dd>${compactId(item.source_umo)}</dd><dt>普通模式可读</dt><dd>${item.expose_to_normal ? "是" : "否"}</dd></dl><div class="row"><button class="button primary" data-action="accept-memory" data-id="${attr(item.memory_id)}">接受</button><button class="button" data-action="reject-memory" data-id="${attr(item.memory_id)}">拒绝</button><button class="button" data-action="use-memory-context" data-id="${attr(item.memory_id)}">带入新任务</button><button class="button danger" data-action="delete-memory" data-id="${attr(item.memory_id)}">删除</button></div><h3>续写草稿</h3><textarea rows="8" readonly>${esc(memoryContextText(item))}</textarea></div>`;
 }
 
 function memoryContextText(item) {
@@ -691,34 +759,34 @@ function renderMemoryV2() {
   if (selected) app.selectedMemoryId = selected.memory_id;
   const counts = ["candidate", "accepted", "rejected"].map((status) => [status, all.filter((item) => item.status === status).length]);
   const archives = (app.state.archives || []).slice(0, 8);
-  return `<div class="memory-layout"><section class="stack"><div class="metric-grid compact-metrics">${counts.map(([status, count]) => stat(status, count, "memory")).join("")}${stat("total", all.length, "rows")}</div><div class="panel"><div class="panel-head"><h2>任务记忆</h2><div class="row"><div class="tabs mini-tabs">${["all", "candidate", "accepted", "rejected"].map((id) => `<button class="${app.memoryFilter === id ? "active" : ""}" data-action="memory-filter" data-id="${id}">${id}</button>`).join("")}</div><button class="button" data-action="new-memory-draft">写入记忆</button></div></div><div class="list memory-list">${memories.map(memoryCard).join("") || empty("当前筛选没有任务记忆")}</div></div><div class="panel"><h2>归档回流</h2><div class="list">${archives.map((archive) => `<div class="list-row static"><strong>${esc(archive.root_goal || archive.task_id)}</strong><span>${esc(archive.status || "archived")} · ${compactId(archive.task_id)}</span><button class="button small" data-action="use-archive-context" data-id="${attr(archive.task_id)}">带入新任务</button></div>`).join("") || empty("暂无归档任务")}</div></div></section><aside class="panel detail-sticky">${selected ? memoryDetail(selected) : memoryDraftForm()}</aside></div>`;
+  return `<div class="memory-layout"><section class="stack"><div class="metric-grid compact-metrics">${counts.map(([status, count]) => stat(statusLabel(status), count, "记忆")).join("")}${stat("全部", all.length, "条目")}</div><div class="panel"><div class="panel-head"><h2>任务记忆</h2><div class="row"><div class="tabs mini-tabs">${["all", "candidate", "accepted", "rejected"].map((id) => `<button class="${app.memoryFilter === id ? "active" : ""}" data-action="memory-filter" data-id="${id}">${esc(statusLabel(id))}</button>`).join("")}</div><button class="button" data-action="new-memory-draft">写入记忆</button></div></div><div class="list memory-list">${memories.map(memoryCard).join("") || empty("当前筛选没有任务记忆")}</div></div><div class="panel"><h2>归档回流</h2><div class="list">${archives.map((archive) => `<div class="list-row static"><strong>${esc(archive.root_goal || archive.task_id)}</strong><span>${esc(statusLabel(archive.status || "archived"))} · ${compactId(archive.task_id)}</span><button class="button small" data-action="use-archive-context" data-id="${attr(archive.task_id)}">带入新任务</button></div>`).join("") || empty("暂无归档任务")}</div></div></section><aside class="panel detail-sticky">${selected ? memoryDetail(selected) : memoryDraftForm()}</aside></div>`;
 }
 
 function memoryDraftForm() {
-  return `<div class="memory-detail"><h2>写入任务记忆</h2><div class="form-grid single">${area("记忆内容", "memory-text", "", 6)}${selectField("状态", "memory-status", "candidate", [["candidate", "candidate"], ["accepted", "accepted"], ["rejected", "rejected"]])}${area("标签", "memory-tags", "task\nmanual", 3)}${checkField("普通模式可读取", "memory-expose", false)}<button class="button primary span-2" data-action="save-memory">保存记忆</button></div></div>`;
+  return `<div class="memory-detail"><h2>写入任务记忆</h2><div class="form-grid single">${area("记忆内容", "memory-text", "", 6)}${selectField("状态", "memory-status", "candidate", selectOptions(STATUS_LABELS, ["candidate", "accepted", "rejected"]))}${area("标签", "memory-tags", "任务\n手动", 3)}${checkField("普通模式可读取", "memory-expose", false)}<button class="button primary span-2" data-action="save-memory">保存记忆</button></div></div>`;
 }
 
 function renderIntegrations() {
-  const tabs = [["plugins", "AstrBot 插件"], ["tools", "注册工具"], ["blueprints", "外部蓝图"], ["skills", "Skills"]];
-  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>插件与集成</h2><p>这些数据来自后端扫描：插件、工具、Skills、内置/外部蓝图。当前 Agent 只保存会话级覆盖，不改 AstrBot 全局开关。</p></div><button class="button primary" data-action="save-agent">保存 Agent</button></div><div class="tabs">${tabs.map(([id, label]) => `<button class="${app.integrationTab === id ? "active" : ""}" data-action="integration-tab" data-id="${id}">${esc(label)}</button>`).join("")}</div></section>${integrationBody()}</div>`;
+  const tabs = [["plugins", "AstrBot 插件"], ["tools", "注册工具"], ["blueprints", "外部蓝图"], ["skills", "技能"]];
+  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>插件与集成</h2><p>这些数据来自后端扫描：插件、工具、技能、内置和外部蓝图。当前任务配置只保存会话级覆盖，不改 AstrBot 全局开关。</p></div><button class="button primary" data-action="save-agent">保存配置</button></div><div class="tabs">${tabs.map(([id, label]) => `<button class="${app.integrationTab === id ? "active" : ""}" data-action="integration-tab" data-id="${id}">${esc(label)}</button>`).join("")}</div></section>${integrationBody()}</div>`;
 }
 
 function renderIntegrationsV2() {
-  const tabs = [["plugins", "AstrBot 插件"], ["tools", "注册工具"], ["blueprints", "外部蓝图"], ["skills", "Skills"]];
-  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>插件与集成</h2><p>插件隔离、工具白名单、风险覆盖、Skill 和外部蓝图都会保存到当前 AgentSpec。</p></div><button class="button primary" data-action="save-agent">保存 Agent</button></div><div class="tabs">${tabs.map(([id, label]) => `<button class="${app.integrationTab === id ? "active" : ""}" data-action="integration-tab" data-id="${id}">${esc(label)}</button>`).join("")}</div></section>${integrationBodyV2()}</div>`;
+  const tabs = [["plugins", "AstrBot 插件"], ["tools", "注册工具"], ["blueprints", "外部蓝图"], ["skills", "技能"]];
+  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>插件与集成</h2><p>插件隔离、工具白名单、风险覆盖、技能和外部蓝图都会保存到当前任务配置。</p></div><button class="button primary" data-action="save-agent">保存配置</button></div><div class="tabs">${tabs.map(([id, label]) => `<button class="${app.integrationTab === id ? "active" : ""}" data-action="integration-tab" data-id="${id}">${esc(label)}</button>`).join("")}</div></section>${integrationBodyV2()}</div>`;
 }
 
 function integrationBodyV2() {
   if (app.integrationTab === "tools") return `<section class="panel"><h2>注册工具</h2><div class="tool-grid">${(app.state.tools || []).map(toolRowV2).join("") || empty("没有工具数据")}</div></section>`;
   if (app.integrationTab === "blueprints") return blueprintPanel();
-  if (app.integrationTab === "skills") return `<section class="panel"><h2>Skills</h2><div class="tool-grid">${(app.state.skills || []).map(skillRow).join("") || empty("没有 Skill 数据")}</div></section>`;
+  if (app.integrationTab === "skills") return `<section class="panel"><h2>任务技能</h2><div class="tool-grid">${(app.state.skills || []).map(skillRow).join("") || empty("没有技能数据")}</div></section>`;
   return `<section class="panel"><h2>AstrBot 插件隔离</h2><div class="tool-grid">${(app.state.plugins || []).map(pluginRow).join("") || empty("没有插件数据")}</div></section>`;
 }
 
 function toolRowV2(tool) {
   const enabled = (app.currentAgent.enabled_tools || []).includes(tool.name);
   const risk = app.currentAgent.tool_risk_overrides?.[tool.name] || tool.risk || "work";
-  return `<div class="tool-card ${enabled ? "on" : ""}"><div><strong>${esc(tool.name)}</strong><span>${esc(tool.description || tool.plugin_display_name || tool.source || "")}</span></div><div class="row">${badge(risk)}<select class="inline-select" data-action="tool-risk" data-id="${attr(tool.name)}"><option value="safe" ${risk === "safe" ? "selected" : ""}>safe</option><option value="work" ${risk === "work" ? "selected" : ""}>work</option><option value="high" ${risk === "high" ? "selected" : ""}>high</option></select><button class="button small" data-action="toggle-tool" data-id="${attr(tool.name)}">${enabled ? "移除" : "允许"}</button></div></div>`;
+  return `<div class="tool-card ${enabled ? "on" : ""}"><div><strong>${esc(tool.name)}</strong><span>${esc(tool.description || tool.plugin_display_name || tool.source || "")}</span></div><div class="row">${badge(riskLabel(risk))}<select class="inline-select" data-action="tool-risk" data-id="${attr(tool.name)}"><option value="safe" ${risk === "safe" ? "selected" : ""}>低风险</option><option value="work" ${risk === "work" ? "selected" : ""}>工作风险</option><option value="high" ${risk === "high" ? "selected" : ""}>高风险</option></select><button class="button small" data-action="toggle-tool" data-id="${attr(tool.name)}">${enabled ? "移除" : "允许"}</button></div></div>`;
 }
 
 function blueprintPanel() {
@@ -726,7 +794,7 @@ function blueprintPanel() {
   const selected = modules.find((item) => (item.module_id || item.id || item.name) === app.selectedModuleId) || modules[0];
   if (selected) app.selectedModuleId = selected.module_id || selected.id || selected.name;
   const settings = selected ? (app.currentAgent.module_settings?.[app.selectedModuleId] || selected.default_settings || {}) : {};
-  return `<section class="split"><div class="panel"><h2>集成蓝图</h2><div class="list">${modules.map(moduleRow).join("") || empty("没有蓝图")}</div></div><div class="panel"><h2>蓝图设置</h2>${selected ? `<p>${esc(selected.description || selected.source || app.selectedModuleId)}</p><div class="row">${badge((app.currentAgent.module_ids || []).includes(app.selectedModuleId) ? "已启用" : "未启用")}</div>${schemaSettingsForm(selected, settings)}${area("高级 JSON", "module-settings-json", JSON.stringify(settings, null, 2), 10)}<button class="button primary" data-action="save-module-settings">保存设置到 Agent</button>` : empty("选择蓝图后编辑设置")}<h3>导入 / 更新 Manifest</h3>${area("JSON Manifest", "blueprint-json", "{}", 10)}<button class="button" data-action="save-blueprint">保存蓝图</button></div></section>`;
+  return `<section class="split"><div class="panel"><h2>集成蓝图</h2><div class="list">${modules.map(moduleRow).join("") || empty("没有蓝图")}</div></div><div class="panel"><h2>蓝图设置</h2>${selected ? `<p>${esc(selected.description || selected.source || app.selectedModuleId)}</p><div class="row">${badge((app.currentAgent.module_ids || []).includes(app.selectedModuleId) ? "已启用" : "未启用")}</div>${schemaSettingsForm(selected, settings)}${area("高级配置", "module-settings-json", JSON.stringify(settings, null, 2), 10)}<button class="button primary" data-action="save-module-settings">保存到任务配置</button>` : empty("选择蓝图后编辑设置")}<h3>导入或更新清单</h3>${area("清单内容", "blueprint-json", "{}", 10)}<button class="button" data-action="save-blueprint">保存蓝图</button></div></section>`;
 }
 
 function schemaSettingsForm(module, settings) {
@@ -759,13 +827,13 @@ function readSchemaSettings(module, fallback) {
 function renderMonitor() {
   const rows = app.state.workflow_runs?.runs || [];
   const active = app.state.tasks || [];
-  return `<div class="stack"><section class="metric-grid">${stat("运行中任务", active.length, "active")}${stat("工作流运行", app.state.workflow_runs?.counts?.total || rows.length, "runs")}${stat("活跃工作流", app.state.workflow_runs?.counts?.active || 0, "active")}${stat("归档工作流", app.state.workflow_runs?.counts?.archived || 0, "archived")}</section><section class="split"><div class="panel"><h2>心跳健康</h2><div class="list">${active.map((task) => `<div class="list-row static"><strong>${esc(task.root_goal || task.task_id)}</strong><span>${esc(task.heartbeat_health?.message || "")} · ${esc(task.heartbeat_health?.state || "")}</span></div>`).join("") || empty("没有运行中任务")}</div></div><div class="panel"><h2>工作流运行</h2><div class="list">${rows.slice(0, 40).map((run) => `<button class="list-row" data-action="select-task" data-id="${attr(run.task_id)}"><strong>${esc(run.agent_name || run.task_id)}</strong><span>${esc(run.status || "")} · ${esc(run.source || "manual")} · ${esc(run.workflow_current_node_id || "")}</span></button>`).join("") || empty("暂无运行记录")}</div></div></section></div>`;
+  return `<div class="stack"><section class="metric-grid">${stat("运行中任务", active.length, "当前")}${stat("工作流运行", app.state.workflow_runs?.counts?.total || rows.length, "总次数")}${stat("活跃工作流", app.state.workflow_runs?.counts?.active || 0, "正在运行")}${stat("归档工作流", app.state.workflow_runs?.counts?.archived || 0, "已归档")}</section><section class="split"><div class="panel"><h2>心跳健康</h2><div class="list">${active.map((task) => `<div class="list-row static"><strong>${esc(task.root_goal || task.task_id)}</strong><span>${esc(task.heartbeat_health?.message || "")} · ${esc(statusLabel(task.heartbeat_health?.state || ""))}</span></div>`).join("") || empty("没有运行中任务")}</div></div><div class="panel"><h2>工作流运行</h2><div class="list">${rows.slice(0, 40).map((run) => `<button class="list-row" data-action="select-task" data-id="${attr(run.task_id)}"><strong>${esc(run.agent_name || run.task_id)}</strong><span>${esc(statusLabel(run.status || ""))} · ${esc(sourceLabel(run.source || "manual_webui"))} · ${esc(run.workflow_current_node_id || "")}</span></button>`).join("") || empty("暂无运行记录")}</div></div></section></div>`;
 }
 
 function integrationBody() {
   if (app.integrationTab === "tools") return `<section class="panel"><h2>注册工具</h2><div class="tool-grid">${(app.state.tools || []).map(toolRow).join("") || empty("没有工具数据")}</div></section>`;
-  if (app.integrationTab === "blueprints") return `<section class="split"><div class="panel"><h2>集成蓝图</h2><div class="list">${(app.state.modules || app.state.integrations || []).map(moduleRow).join("") || empty("没有蓝图")}</div></div><div class="panel"><h2>导入 / 更新 Manifest</h2>${area("JSON Manifest", "blueprint-json", "{}", 12)}<button class="button primary" data-action="save-blueprint">保存蓝图</button></div></section>`;
-  if (app.integrationTab === "skills") return `<section class="panel"><h2>Skills</h2><div class="tool-grid">${(app.state.skills || []).map(skillRow).join("") || empty("没有 Skill 数据")}</div></section>`;
+  if (app.integrationTab === "blueprints") return `<section class="split"><div class="panel"><h2>集成蓝图</h2><div class="list">${(app.state.modules || app.state.integrations || []).map(moduleRow).join("") || empty("没有蓝图")}</div></div><div class="panel"><h2>导入或更新清单</h2>${area("清单内容", "blueprint-json", "{}", 12)}<button class="button primary" data-action="save-blueprint">保存蓝图</button></div></section>`;
+  if (app.integrationTab === "skills") return `<section class="panel"><h2>任务技能</h2><div class="tool-grid">${(app.state.skills || []).map(skillRow).join("") || empty("没有技能数据")}</div></section>`;
   return `<section class="panel"><h2>AstrBot 插件隔离</h2><div class="tool-grid">${(app.state.plugins || []).map(pluginRow).join("") || empty("没有插件数据")}</div></section>`;
 }
 
@@ -784,7 +852,7 @@ function pluginRow(plugin) {
 
 function toolRow(tool) {
   const enabled = (app.currentAgent.enabled_tools || []).includes(tool.name);
-  return `<div class="tool-card ${enabled ? "on" : ""}"><div><strong>${esc(tool.name)}</strong><span>${esc(tool.description || tool.plugin_display_name || tool.source || "")}</span></div><div class="row">${badge(tool.risk || "work")}<button class="button small" data-action="toggle-tool" data-id="${attr(tool.name)}">${enabled ? "移除" : "允许"}</button></div></div>`;
+  return `<div class="tool-card ${enabled ? "on" : ""}"><div><strong>${esc(tool.name)}</strong><span>${esc(tool.description || tool.plugin_display_name || tool.source || "")}</span></div><div class="row">${badge(riskLabel(tool.risk || "work"))}<button class="button small" data-action="toggle-tool" data-id="${attr(tool.name)}">${enabled ? "移除" : "允许"}</button></div></div>`;
 }
 
 function moduleRow(module) {
@@ -800,17 +868,17 @@ function skillRow(skill) {
 }
 
 function renderRegistry() {
-  const tabs = [["apis", "自定义 API"], ["credentials", "凭证"], ["rules", "Skill 规则"]];
-  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>规则与凭证</h2><p>凭证只保存在后端；Agent Mode 通过 api_id / credential_id 引用，不把密钥写进提示词。</p></div></div><div class="tabs">${tabs.map(([id, label]) => `<button class="${app.registryTab === id ? "active" : ""}" data-action="registry-tab" data-id="${id}">${esc(label)}</button>`).join("")}</div></section>${registryBody()}</div>`;
+  const tabs = [["apis", "自定义接口"], ["credentials", "凭证"], ["rules", "技能规则"]];
+  return `<div class="stack"><section class="panel"><div class="panel-head"><div><h2>规则与凭证</h2><p>凭证只保存在后端；任务模式通过接口标识和凭证标识引用，不把密钥写进提示词。</p></div></div><div class="tabs">${tabs.map(([id, label]) => `<button class="${app.registryTab === id ? "active" : ""}" data-action="registry-tab" data-id="${id}">${esc(label)}</button>`).join("")}</div></section>${registryBody()}</div>`;
 }
 
 function registryBody() {
-  if (app.registryTab === "credentials") return `<section class="split"><div class="panel"><h2>已保存凭证</h2><div class="list">${(app.state.credentials || []).map((item) => `<div class="list-row static"><strong>${esc(item.label || item.credential_id)}</strong><span>${esc(item.provider || item.scope || "")}</span></div>`).join("") || empty("没有凭证")}</div></div><div class="panel"><h2>新增凭证</h2><div class="form-grid single">${field("标签", "cred-label")}${field("Provider", "cred-provider")}${field("Scope", "cred-scope")}${area("密钥值", "cred-value", "", 4)}<button class="button primary span-2" data-action="save-credential">保存凭证</button></div></div></section>`;
+  if (app.registryTab === "credentials") return `<section class="split"><div class="panel"><h2>已保存凭证</h2><div class="list">${(app.state.credentials || []).map((item) => `<div class="list-row static"><strong>${esc(item.label || item.credential_id)}</strong><span>${esc(item.provider || item.scope || "")}</span></div>`).join("") || empty("没有凭证")}</div></div><div class="panel"><h2>新增凭证</h2><div class="form-grid single">${field("标签", "cred-label")}${field("服务商", "cred-provider")}${field("使用范围", "cred-scope")}${area("密钥值", "cred-value", "", 4)}<button class="button primary span-2" data-action="save-credential">保存凭证</button></div></div></section>`;
   if (app.registryTab === "rules") {
     const rules = Object.fromEntries((app.state.skill_rules || []).map((item) => [item.skill_name || item.name, item.content || ""]));
-    return `<section class="panel"><h2>agent-mode 规则</h2><div class="form-grid single">${area("主规则", "rule-agent-mode", rules["agent-mode"] || "", 10)}${area("入口摘要规则", "rule-entry", rules["agent-mode-entry-summary"] || "", 6)}${area("出口归档规则", "rule-exit", rules["agent-mode-exit-summary"] || "", 6)}<button class="button primary span-2" data-action="save-rules">保存规则</button></div></section>`;
+    return `<section class="panel"><h2>任务模式规则</h2><div class="form-grid single">${area("主规则", "rule-agent-mode", rules["agent-mode"] || "", 10)}${area("入口摘要规则", "rule-entry", rules["agent-mode-entry-summary"] || "", 6)}${area("出口归档规则", "rule-exit", rules["agent-mode-exit-summary"] || "", 6)}<button class="button primary span-2" data-action="save-rules">保存规则</button></div></section>`;
   }
-  return `<section class="split"><div class="panel"><h2>已注册 API</h2><div class="list">${(app.state.custom_apis || []).map((item) => `<div class="list-row static"><strong>${esc(item.name || item.api_id)}</strong><span>${esc(item.method || "GET")} · ${esc(item.url || "")}</span></div>`).join("") || empty("没有 API")}</div></div><div class="panel"><h2>注册 API</h2><div class="form-grid single">${field("名称", "api-name")}${selectField("方法", "api-method", "GET", [["GET", "GET"], ["POST", "POST"], ["PUT", "PUT"], ["PATCH", "PATCH"], ["DELETE", "DELETE"]])}${field("URL", "api-url")}${field("Credential ID", "api-credential")}${selectField("认证方式", "api-auth-type", "none", [["none", "none"], ["bearer", "bearer"], ["header", "header"], ["query", "query"]])}${field("认证 Header", "api-auth-header", "Authorization")}${field("认证 Query", "api-auth-query")}${area("Headers JSON", "api-headers", "{}", 4)}${area("说明", "api-description", "", 4)}<button class="button primary span-2" data-action="save-api">注册 API</button></div></div></section>`;
+  return `<section class="split"><div class="panel"><h2>已注册接口</h2><div class="list">${(app.state.custom_apis || []).map((item) => `<div class="list-row static"><strong>${esc(item.name || item.api_id)}</strong><span>${esc(item.method || "GET")} · ${esc(item.url || "")}</span></div>`).join("") || empty("没有接口")}</div></div><div class="panel"><h2>注册接口</h2><div class="form-grid single">${field("名称", "api-name")}${selectField("请求方法", "api-method", "GET", [["GET", "GET"], ["POST", "POST"], ["PUT", "PUT"], ["PATCH", "PATCH"], ["DELETE", "DELETE"]])}${field("地址", "api-url")}${field("凭证标识", "api-credential")}${selectField("认证方式", "api-auth-type", "none", [["none", "不认证"], ["bearer", "Bearer 令牌"], ["header", "请求头"], ["query", "查询参数"]])}${field("认证请求头", "api-auth-header", "Authorization")}${field("认证查询参数", "api-auth-query")}${area("请求头配置", "api-headers", "{}", 4)}${area("说明", "api-description", "", 4)}<button class="button primary span-2" data-action="save-api">注册接口</button></div></div></section>`;
 }
 
 function selectedTask() {
@@ -828,8 +896,8 @@ async function handleAction(target) {
   if (target.dataset.route) return setRoute(target.dataset.route);
   if (action === "select-agent") { app.selectedAgentId = target.dataset.id; app.currentAgent = ensureAgent(clone((app.state.agents || []).find((agent) => agent.agent_id === app.selectedAgentId))); updateChrome(); return render(); }
   if (action === "new-agent") { app.currentAgent = ensureAgent({ workflow_nodes: defaultNodes(), workflow_edges: clone(DEFAULT_EDGES) }); app.selectedAgentId = ""; setRoute("settings"); return; }
-  if (action === "duplicate-agent") { readAgentForm(); app.currentAgent.agent_id = ""; app.currentAgent.name = `${app.currentAgent.name || "Agent"} 副本`; toast("已生成副本草稿，保存后生效"); return render(); }
-  if (action === "delete-agent") { if (!app.currentAgent.agent_id) return toast("当前是未保存草稿"); if (!confirm("删除当前 Agent 配置？")) return; await api("/api/agents", { method: "DELETE", body: { agent_id: app.currentAgent.agent_id } }); toast("Agent 已删除"); app.selectedAgentId = ""; return load(); }
+  if (action === "duplicate-agent") { readAgentForm(); app.currentAgent.agent_id = ""; app.currentAgent.name = `${app.currentAgent.name || "任务配置"} 副本`; toast("已生成副本草稿，保存后生效"); return render(); }
+  if (action === "delete-agent") { if (!app.currentAgent.agent_id) return toast("当前是未保存草稿"); if (!confirm("删除当前任务配置？")) return; await api("/api/agents", { method: "DELETE", body: { agent_id: app.currentAgent.agent_id } }); toast("任务配置已删除"); app.selectedAgentId = ""; return load(); }
   if (action === "save-agent") return saveAgent(false);
   if (action === "make-default") return saveAgent(true);
   if (action === "workflow-check") return workflowCheck(false);
@@ -862,14 +930,14 @@ async function handleAction(target) {
   if (action === "delete-node") { const id = app.workflow.selectedNodeId; app.currentAgent.workflow_nodes = app.currentAgent.workflow_nodes.filter((node) => node.id !== id); app.currentAgent.workflow_edges = app.currentAgent.workflow_edges.filter((edge) => edge.from !== id && edge.to !== id); app.workflow.selectedNodeId = app.currentAgent.workflow_nodes[0]?.id || ""; return render(); }
   if (action === "apply-node") return applyNodeEditor();
   if (action === "add-edge") { const from = app.workflow.selectedNodeId; const to = prompt("连接到哪个节点 ID？"); if (from && to) app.currentAgent.workflow_edges.push({ from, to, edge_type: "success" }); return render(); }
-  if (action === "trigger-workflow") { const text = $("workflow-trigger-text")?.value || "WebUI manual workflow trigger"; const saved = await saveAgent(false); await api("/api/workflow/trigger", { method: "POST", body: { source: "manual_webui", agent_id: saved.agent_id, text } }); toast("工作流已触发"); return load(); }
+  if (action === "trigger-workflow") { const text = $("workflow-trigger-text")?.value || "控制台手动触发工作流"; const saved = await saveAgent(false); await api("/api/workflow/trigger", { method: "POST", body: { source: "manual_webui", agent_id: saved.agent_id, text } }); toast("工作流已触发"); return load(); }
   if (action === "select-task") { app.selectedTaskId = target.dataset.id; return setRoute("tasks"); }
   if (action === "start-task") { await api("/api/task/start", { method: "POST", body: { umo: $("task-umo").value.trim(), goal: $("task-goal").value, completion_conditions: $("task-completion").value, brief: $("task-brief").value, heartbeat: $("task-heartbeat").checked, risk_level: $("task-risk").value, agent_id: app.currentAgent.agent_id } }); toast("任务已启动"); return load(); }
   if (action === "tick-task") { const task = selectedTask(); await api("/api/task/tick", { method: "POST", body: { umo: task.umo } }); toast("已推进一轮"); return load(); }
   if (action === "toggle-heartbeat") { const task = selectedTask(); await api("/api/task/heartbeat", { method: "POST", body: { umo: task.umo, enabled: !task.heartbeat?.enabled } }); toast("心跳状态已更新"); return load(); }
   if (action === "load-task-logs") { const task = selectedTask(); const query = new URLSearchParams({ umo: task.umo || "", task_id: task.task_id || "" }); app.taskLogs[task.task_id] = await api(`/api/task/logs?${query}`); toast("日志已刷新"); return render(); }
-  if (action === "finish-task") { const task = selectedTask(); await api("/api/task/finish", { method: "POST", body: { umo: task.umo, summary: "WebUI 标记完成。" } }); toast("任务已归档"); return load(); }
-  if (action === "cancel-task") { const task = selectedTask(); await api("/api/task/cancel", { method: "POST", body: { umo: task.umo, reason: "WebUI 取消任务。" } }); toast("任务已取消"); return load(); }
+  if (action === "finish-task") { const task = selectedTask(); await api("/api/task/finish", { method: "POST", body: { umo: task.umo, summary: "控制台标记完成。" } }); toast("任务已归档"); return load(); }
+  if (action === "cancel-task") { const task = selectedTask(); await api("/api/task/cancel", { method: "POST", body: { umo: task.umo, reason: "控制台取消任务。" } }); toast("任务已取消"); return load(); }
   if (action === "resolve-approval") { const task = selectedTask(); await api("/api/task/approval", { method: "POST", body: { umo: task.umo, approval_id: target.dataset.id, approved: target.dataset.approved === "true" } }); toast("审批已处理"); return load(); }
   if (action === "select-memory") { app.selectedMemoryId = target.dataset.id; return render(); }
   if (action === "memory-filter") { app.memoryFilter = target.dataset.id || "all"; return render(); }
@@ -887,10 +955,10 @@ async function handleAction(target) {
   if (action === "select-module") { app.selectedModuleId = target.dataset.id; return render(); }
   if (action === "toggle-module") { toggleList("module_ids", target.dataset.id); return render(); }
   if (action === "toggle-skill") { toggleList("enabled_skills", target.dataset.id); return render(); }
-  if (action === "save-module-settings") { const module = (app.state.modules || app.state.integrations || []).find((item) => (item.module_id || item.id || item.name) === app.selectedModuleId); app.currentAgent.module_settings ||= {}; const advanced = JSON.parse($("module-settings-json").value || "{}"); app.currentAgent.module_settings[app.selectedModuleId] = readSchemaSettings(module, advanced); toast("蓝图设置已写入 Agent 草稿"); return render(); }
+  if (action === "save-module-settings") { const module = (app.state.modules || app.state.integrations || []).find((item) => (item.module_id || item.id || item.name) === app.selectedModuleId); app.currentAgent.module_settings ||= {}; const advanced = JSON.parse($("module-settings-json").value || "{}"); app.currentAgent.module_settings[app.selectedModuleId] = readSchemaSettings(module, advanced); toast("蓝图设置已写入任务配置草稿"); return render(); }
   if (action === "save-blueprint") { const result = await api("/api/modules", { method: "POST", body: JSON.parse($("blueprint-json").value || "{}") }); toast(`蓝图已保存：${result.module?.name || result.module?.module_id || "ok"}`); return load(); }
   if (action === "save-credential") { await api("/api/registry", { method: "POST", body: { kind: "credential", label: $("cred-label").value, provider: $("cred-provider").value, scope: $("cred-scope").value, value: $("cred-value").value } }); toast("凭证已保存"); return load(); }
-  if (action === "save-api") { await api("/api/registry", { method: "POST", body: { kind: "api", name: $("api-name").value, method: $("api-method").value, url: $("api-url").value, credential_id: $("api-credential").value, auth_type: $("api-auth-type").value, auth_header: $("api-auth-header").value, auth_query_param: $("api-auth-query").value, headers: $("api-headers").value, description: $("api-description").value } }); toast("API 已注册"); return load(); }
+  if (action === "save-api") { await api("/api/registry", { method: "POST", body: { kind: "api", name: $("api-name").value, method: $("api-method").value, url: $("api-url").value, credential_id: $("api-credential").value, auth_type: $("api-auth-type").value, auth_header: $("api-auth-header").value, auth_query_param: $("api-auth-query").value, headers: $("api-headers").value, description: $("api-description").value } }); toast("接口已注册"); return load(); }
   if (action === "save-rules") { for (const [skill_name, content] of [["agent-mode", $("rule-agent-mode").value], ["agent-mode-entry-summary", $("rule-entry").value], ["agent-mode-exit-summary", $("rule-exit").value]]) await api("/api/registry", { method: "POST", body: { kind: "skill_rule", skill_name, content } }); toast("规则已保存"); return load(); }
 }
 
@@ -927,28 +995,43 @@ $("collapse-nav").addEventListener("click", () => document.body.classList.toggle
 
 $("auth-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const button = event.currentTarget.querySelector("button[type='submit']");
   const value = $("token-input").value.trim();
+  if (!value) {
+    showAuth("请输入插件配置 standalone_webui_token 中的访问密码。", "error");
+    return;
+  }
   if (value) sessionStorage.setItem("agent_lab_token", value);
+  if (button) button.disabled = true;
+  setAuthStatus("正在验证访问密码...");
   try {
     await boot();
   } catch (error) {
     sessionStorage.removeItem("agent_lab_token");
-    $("auth").hidden = false;
-    $("app").hidden = true;
-    toast(error.message, "error");
+    showAuth(error.status === 401 ? "访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。" : error.message, "error");
+  } finally {
+    if (button) button.disabled = false;
   }
 });
 
 async function boot() {
-  $("auth").hidden = true;
-  $("app").hidden = false;
+  const bootId = ++app.bootId;
+  setAuthStatus("正在连接控制台...");
+  const info = await health();
+  if (bootId !== app.bootId) return;
+  if (info.auth && !token()) {
+    showAuth("请输入插件配置 standalone_webui_token 中的访问密码。");
+    return;
+  }
+  showApp();
   try {
     await load();
+    if (bootId !== app.bootId) return;
   } catch (error) {
+    if (bootId !== app.bootId) return;
     if (error.status === 401) {
-      $("auth").hidden = false;
-      $("app").hidden = true;
-      $("token-input").focus();
+      sessionStorage.removeItem("agent_lab_token");
+      showAuth("访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。", "error");
       return;
     }
     throw error;

@@ -3,19 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Agent Lab Console</title>
-    <link rel="stylesheet" href="./style.css?v=20260608-rewrite" />
+    <title>Agent Lab 控制台</title>
+    <link rel="stylesheet" href="./style.css?v=20260608-auth-cn" />
   </head>
   <body>
     <div id="auth" class="auth-screen" hidden>
       <form id="auth-form" class="auth-card">
         <div class="mark"><img alt="" id="auth-icon" /></div>
         <h1>Agent Lab</h1>
-        <p>输入控制台访问 Token 后继续。</p>
+        <p>输入 AstrBot 插件管理里配置的访问密码后继续。</p>
         <label>
-          <span>访问 Token</span>
-          <input id="token-input" type="password" autocomplete="current-password" />
+          <span>访问密码</span>
+          <input id="token-input" type="password" autocomplete="current-password" placeholder="对应 standalone_webui_token" />
         </label>
+        <p id="auth-status" class="auth-status">如果没有设置访问密码，控制台会自动进入。</p>
         <button class="button primary" type="submit">进入控制台</button>
       </form>
     </div>
@@ -33,7 +34,7 @@
         <div class="identity-box">
           <span>当前身份</span>
           <strong id="identity-name">读取中</strong>
-          <small id="identity-source">runtime</small>
+          <small id="identity-source">运行时</small>
         </div>
       </aside>
 
@@ -41,11 +42,11 @@
         <header class="top" id="topbar">
           <button id="collapse-nav" class="icon-btn" type="button" title="收起侧栏"></button>
           <div class="top-title">
-            <strong id="page-title">Dashboard</strong>
+            <strong id="page-title">总览</strong>
             <span id="page-subtitle">正在连接 Agent Lab</span>
           </div>
           <div class="top-actions">
-            <select id="agent-select" title="选择 Agent"></select>
+            <select id="agent-select" title="选择任务配置"></select>
             <button id="refresh" class="icon-btn" type="button" title="刷新"></button>
           </div>
         </header>
@@ -55,6 +56,6 @@
     </div>
 
     <div id="toast-host" class="toast-host"></div>
-    <script type="module" src="./app.js?v=20260608-rewrite"></script>
+    <script type="module" src="./app.js?v=20260608-auth-cn"></script>
   </body>
 </html>
