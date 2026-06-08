@@ -3,71 +3,58 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Agent Lab 控制台</title>
-    <link rel="stylesheet" href="./style.css?v=20260607-clean-workflow-ui" />
+    <title>Agent Lab Console</title>
+    <link rel="stylesheet" href="./style.css?v=20260608-rewrite" />
   </head>
   <body>
-    <!-- 访问密码验证（未验证时显示） -->
-    <div id="auth-screen" class="auth-screen" style="display:none;">
-      <div class="auth-card">
-        <h1>Agent Lab 控制台</h1>
-        <p class="auth-hint">输入访问密码后进入控制台</p>
-        <div class="auth-form">
-          <input id="auth-token-input" type="password" class="auth-input" placeholder="访问密码" autocomplete="current-password" />
-          <button id="auth-submit-btn" type="button" class="auth-button">进入控制台</button>
-        </div>
-        <p class="auth-note">
-          访问密码由插件配置项 <code>standalone_webui_token</code> 提供。
-        </p>
-      </div>
+    <div id="auth" class="auth-screen" hidden>
+      <form id="auth-form" class="auth-card">
+        <div class="mark"><img alt="" id="auth-icon" /></div>
+        <h1>Agent Lab</h1>
+        <p>输入控制台访问 Token 后继续。</p>
+        <label>
+          <span>访问 Token</span>
+          <input id="token-input" type="password" autocomplete="current-password" />
+        </label>
+        <button class="button primary" type="submit">进入控制台</button>
+      </form>
     </div>
 
-    <div class="shell" id="main-app" style="display:none;">
-      <!-- 全局状态栏 -->
-      <div id="global-status-bar" class="global-status-bar">
-        <div class="status-left">
-          <span class="status-agent">
-            <strong id="current-agent-name">加载中...</strong>
-            <button id="agent-switcher" class="agent-switcher-btn" title="切换 Agent">▼</button>
-          </span>
-          <span class="status-indicator">
-            <span id="status-dot" class="status-dot idle"></span>
-            <span id="status-text">空闲</span>
-          </span>
-          <span class="status-task" id="status-task" style="display:none;">
-            任务: <code id="current-task-id">-</code> |
-            已运行: <span id="task-runtime">0s</span>
-          </span>
-        </div>
-        <div class="status-right">
-          <span class="status-actions">
-            <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="打开任务控制台">控制台</button>
-            <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
-          </span>
-          <button id="refresh" type="button" class="status-refresh-btn icon-button" title="刷新数据" aria-label="刷新数据"></button>
-          <button id="settings-btn" type="button" class="status-refresh-btn settings-gear" title="设置">⚙</button>
-        </div>
-      </div>
-
-      <aside class="rail">
+    <div id="app" class="app-shell" hidden>
+      <aside class="side" id="side">
         <div class="brand">
-          <strong>Agent Lab</strong>
-          <span>AstrBot 任务模式框架</span>
+          <img alt="" id="brand-icon" />
+          <div>
+            <strong>Agent Lab</strong>
+            <span>AstrBot 工作流控制台</span>
+          </div>
         </div>
         <nav id="nav" class="nav"></nav>
-        <div class="rail-note">
-          <span>运行时身份来源</span>
-          <strong id="bot-label">等待读取</strong>
-          <small id="bot-source">等待运行时读取</small>
+        <div class="identity-box">
+          <span>当前身份</span>
+          <strong id="identity-name">读取中</strong>
+          <small id="identity-source">runtime</small>
         </div>
       </aside>
 
-      <main class="main">
-        <div id="feedback" class="feedback">正在连接 Agent Lab...</div>
+      <main class="main" id="main">
+        <header class="top" id="topbar">
+          <button id="collapse-nav" class="icon-btn" type="button" title="收起侧栏"></button>
+          <div class="top-title">
+            <strong id="page-title">Dashboard</strong>
+            <span id="page-subtitle">正在连接 Agent Lab</span>
+          </div>
+          <div class="top-actions">
+            <select id="agent-select" title="选择 Agent"></select>
+            <button id="refresh" class="icon-btn" type="button" title="刷新"></button>
+          </div>
+        </header>
+
         <section id="view" class="view"></section>
       </main>
     </div>
 
-    <script type="module" src="./app.js?v=20260607-clean-workflow-ui"></script>
+    <div id="toast-host" class="toast-host"></div>
+    <script type="module" src="./app.js?v=20260608-rewrite"></script>
   </body>
 </html>
