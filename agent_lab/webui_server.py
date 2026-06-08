@@ -64,15 +64,15 @@ class StandaloneWebUIServer:
 
         @app.get("/")
         async def index():
-            return await send_from_directory(self.static_dir, "index.html")
+            return await self._static_response("index.html")
 
         @app.get("/app.js")
         async def app_js():
-            return await send_from_directory(self.static_dir, "app.js")
+            return await self._static_response("app.js")
 
         @app.get("/style.css")
         async def style_css():
-            return await send_from_directory(self.static_dir, "style.css")
+            return await self._static_response("style.css")
 
         @app.get("/api/health")
         async def health():
@@ -155,6 +155,13 @@ class StandaloneWebUIServer:
         if not self._authorized():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
         return await handler()
+
+    async def _static_response(self, filename: str) -> Any:
+        response = await send_from_directory(self.static_dir, filename)
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+        return response
 
     def _authorized(self) -> bool:
         if not self.token:

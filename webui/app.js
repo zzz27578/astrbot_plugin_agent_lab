@@ -144,6 +144,63 @@ function authHeaders() {
   return value ? { Authorization: `Bearer ${value}`, "X-Agent-Lab-Token": value } : {};
 }
 
+function safeAuthHeaders() {
+  const value = token();
+  if (!value) return {};
+  try {
+    new Headers({ Authorization: `Bearer ${value}`, "X-Agent-Lab-Token": value });
+    return { Authorization: `Bearer ${value}`, "X-Agent-Lab-Token": value };
+  } catch {
+    return {};
+  }
+}
+
+function tokenizedPath(path) {
+  if (!token()) return path;
+  const url = new URL(path, location.href);
+  url.searchParams.set("token", token());
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function addTokenToPath(path) {
+  if (!token()) return path;
+  const text = String(path || "");
+  const [base, hash = ""] = text.split("#", 2);
+  const [pathname, search = ""] = base.split("?", 2);
+  const params = new URLSearchParams(search);
+  params.set("token", token());
+  return `${pathname}?${params.toString()}${hash ? `#${hash}` : ""}`;
+}
+
+function apiPathCandidates(path) {
+  const raw = String(path || "");
+  const candidates = [];
+  const add = (value) => {
+    const next = token() ? addTokenToPath(value) : value;
+    if (!candidates.includes(next)) candidates.push(next);
+  };
+  if (raw.startsWith("http://") || raw.startsWith("https://")) return [raw];
+  add(raw);
+  if (raw.startsWith("/")) {
+    const baseDir = location.pathname.endsWith("/") ? location.pathname : location.pathname.replace(/[^/]*$/, "");
+    if (baseDir && baseDir !== "/") add(`${baseDir.replace(/\/$/, "")}${raw}`);
+  } else {
+    add(`/${raw.replace(/^\.\//, "")}`);
+  }
+  return candidates;
+}
+
+async function fetchWithAuthFallback(path, options = {}) {
+  const candidates = apiPathCandidates(path);
+  let last = null;
+  for (const candidate of candidates) {
+    const response = await fetch(candidate, options);
+    if (![401, 404, 405].includes(response.status) || candidates.length === 1) return response;
+    last = response;
+  }
+  return last;
+}
+
 function toast(message, tone = "ok") {
   const item = document.createElement("div");
   item.className = `toast ${tone}`;
@@ -171,13 +228,30 @@ function showApp() {
   $("app").hidden = false;
 }
 
+function renderLoadError(error) {
+  document.body.dataset.route = app.route;
+  $("brand-icon").src = ICONS.brand;
+  $("auth-icon").src = ICONS.brand;
+  $("refresh").innerHTML = icon("refresh", "刷新");
+  $("collapse-nav").innerHTML = icon("menu", "侧栏");
+  $("page-title").textContent = "连接失败";
+  $("page-subtitle").textContent = "访问密码已提交，但控制台数据暂时没有加载成功";
+  $("nav").innerHTML = NAV.map(([id, title, sub]) => `<button class="${app.route === id ? "active" : ""}" data-route="${id}" type="button">${icon(id)}<span><strong>${title}</strong><small>${sub}</small></span></button>`).join("");
+  $("identity-name").textContent = "未连接";
+  $("identity-source").textContent = "等待数据";
+  $("agent-select").innerHTML = `<option>暂无任务配置</option>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
+  $("retry-load")?.addEventListener("click", () => boot().catch((err) => toast(err.message, "error")));
+  $("reenter-token")?.addEventListener("click", () => { sessionStorage.removeItem("agent_lab_token"); showAuth("请重新输入插件配置 standalone_webui_token 中的访问密码。"); });
+}
+
 async function api(path, options = {}) {
-  const headers = { ...authHeaders(), ...(options.headers || {}) };
+  const headers = { ...safeAuthHeaders(), ...(options.headers || {}) };
   if (options.body !== undefined) {
     headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.body);
   }
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetchWithAuthFallback(path, { ...options, headers });
   let payload = {};
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) {
@@ -190,7 +264,8 @@ async function api(path, options = {}) {
 }
 
 async function health() {
-  const response = await fetch("/api/health", { headers: authHeaders() });
+  const headers = safeAuthHeaders();
+  const response = await fetchWithAuthFallback("/api/health", { headers });
   let payload = {};
   try { payload = await response.json(); } catch { payload = {}; }
   if (!response.ok) {
@@ -1024,6 +1099,7 @@ async function boot() {
     return;
   }
   showApp();
+  setAuthStatus("访问密码已通过，正在加载控制台...");
   try {
     await load();
     if (bootId !== app.bootId) return;
@@ -1034,7 +1110,8 @@ async function boot() {
       showAuth("访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。", "error");
       return;
     }
-    throw error;
+    renderLoadError(error);
+    toast("访问密码已通过，但控制台数据加载失败。", "error");
   }
 }
 

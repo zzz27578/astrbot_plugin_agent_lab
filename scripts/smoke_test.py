@@ -66,6 +66,7 @@ async def smoke_webui_server() -> None:
     client = server.app.test_client()
     denied = await client.get("/api/state")
     ok = await client.get("/api/state", headers={"X-Agent-Lab-Token": "secret"})
+    ok_query = await client.get("/api/state?token=secret")
     modules = await client.get("/api/modules", headers={"X-Agent-Lab-Token": "secret"})
     workflow = await client.post("/api/workflow/check", headers={"X-Agent-Lab-Token": "secret"})
     dry_run = await client.post("/api/workflow/dry-run", headers={"X-Agent-Lab-Token": "secret"})
@@ -73,11 +74,13 @@ async def smoke_webui_server() -> None:
     page = await client.get("/")
     assert denied.status_code == 401
     assert ok.status_code == 200
+    assert ok_query.status_code == 200
     assert modules.status_code == 200
     assert workflow.status_code == 200
     assert dry_run.status_code == 200
     assert agents_delete.status_code == 200
     assert page.status_code == 200
+    assert "no-store" in page.headers.get("Cache-Control", "")
 
 
 def main() -> None:
