@@ -78,8 +78,9 @@ const DEFAULT_EDGES = [
 
 const KINDS = ["trigger", "state", "branch", "tool", "api", "guard", "human", "memory", "retrieval", "transform", "validation", "loop", "subflow", "notification", "detector", "report", "rate_limit", "error_handler"];
 const ACTIONS = ["summarize_entry", "confirm_entry", "restore_isolation", "retrieve_memory", "plan", "route_condition", "parallel_branch", "manual", "run_tools", "call_api", "transform_context", "request_approval", "handoff", "validate_output", "retry", "save_state", "save_memory", "heartbeat", "notify", "archive", "exit_summary", "match_keyword", "match_regex", "llm_detect", "scope_filter", "schedule_trigger", "plugin_event_trigger", "webhook_trigger", "listen_message", "write_record", "generate_report", "send_message", "limit_rate", "catch_error"];
-const WEBUI_VERSION = "20260608-diagnostics2";
-const API_TIMEOUT_MS = 9000;
+const WEBUI_VERSION = "20260608-diagnostics3";
+const API_TIMEOUT_MS = 7000;
+const BOOT_TIMEOUT_MS = 12000;
 
 const STATUS_LABELS = {
   all: "全部", active: "运行中", archived: "已归档", pending: "待处理", candidate: "候选", accepted: "已接受", rejected: "已拒绝",
@@ -121,6 +122,7 @@ const app = {
   integrationTab: "plugins",
   registryTab: "apis",
   bootId: 0,
+  loadingStep: "准备连接",
   workflow: { zoom: 0.82, x: 60, y: 70, selectedNodeId: "", linkingFrom: "", report: null, dryRun: null, dragging: null, panning: null, materialFilter: "", contextMenu: null },
 };
 
@@ -217,9 +219,17 @@ async function fetchWithAuthFallback(path, options = {}) {
 
 async function fetchWithTimeout(path, options = {}) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+  let timer = null;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      const error = new Error(`请求超时：${path}`);
+      error.name = "AbortError";
+      reject(error);
+    }, API_TIMEOUT_MS);
+  });
   try {
-    return await fetch(path, { ...options, signal: controller.signal });
+    return await Promise.race([fetch(path, { ...options, signal: controller.signal }), timeout]);
   } finally {
     clearTimeout(timer);
   }
@@ -269,12 +279,13 @@ function renderLoadError(error) {
   $("identity-name").textContent = "未连接";
   $("identity-source").textContent = "等待数据";
   $("agent-select").innerHTML = `<option>暂无任务配置</option>`;
-  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<p>前端版本：${WEBUI_VERSION}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>控制台数据加载失败</h2><p>${esc(error.message || "后端接口没有返回可用数据。")}</p>${error.endpoint ? `<p>失败接口：${esc(error.endpoint)}</p>` : ""}<p>当前步骤：${esc(app.loadingStep || "未知")}</p><p>前端版本：${WEBUI_VERSION}</p><div class="row"><button class="button primary" id="retry-load" type="button">重新加载</button><button class="button" id="reenter-token" type="button">重新输入访问密码</button></div></section>`;
   $("retry-load")?.addEventListener("click", () => boot().catch((err) => toast(err.message, "error")));
   $("reenter-token")?.addEventListener("click", () => { sessionStorage.removeItem("agent_lab_token"); showAuth("请重新输入插件配置 standalone_webui_token 中的访问密码。"); });
 }
 
 function renderLoading(message = "正在加载控制台数据...") {
+  app.loadingStep = message;
   document.body.dataset.route = app.route;
   $("brand-icon").src = ICONS.brand;
   $("auth-icon").src = ICONS.brand;
@@ -286,7 +297,15 @@ function renderLoading(message = "正在加载控制台数据...") {
   $("identity-name").textContent = "正在读取";
   $("identity-source").textContent = "控制台数据";
   $("agent-select").innerHTML = `<option>正在加载任务配置</option>`;
-  $("view").innerHTML = `<section class="panel load-error"><h2>正在加载控制台</h2><p>${esc(message)}</p><p>前端版本：${WEBUI_VERSION}</p></section>`;
+  $("view").innerHTML = `<section class="panel load-error"><h2>正在加载控制台</h2><p id="load-step">${esc(message)}</p><p>前端版本：${WEBUI_VERSION}</p></section>`;
+}
+
+function setLoadingStep(message) {
+  app.loadingStep = message;
+  const subtitle = $("page-subtitle");
+  if (subtitle) subtitle.textContent = message;
+  const el = $("load-step");
+  if (el) el.textContent = message;
 }
 
 async function api(path, options = {}) {
@@ -397,8 +416,10 @@ function ensureAgent(agent = {}) {
 }
 
 async function load() {
+  setLoadingStep("正在请求 /api/state");
   app.state = await api("/api/state");
   try {
+    setLoadingStep("正在请求 /api/modules");
     const modules = await api("/api/modules");
     Object.assign(app.state, {
       modules: modules.modules || app.state.modules || [],
@@ -411,6 +432,7 @@ async function load() {
     console.warn("module discovery failed", error);
   }
   try {
+    setLoadingStep("正在请求 /api/workflow/runs");
     app.state.workflow_runs = await api("/api/workflow/runs?limit=80");
   } catch (error) {
     console.warn("workflow runs failed", error);
@@ -419,6 +441,7 @@ async function load() {
   app.selectedAgentId = app.selectedAgentId || app.state.default_agent_id || agents[0]?.agent_id || "";
   if (!agents.some((agent) => agent.agent_id === app.selectedAgentId)) app.selectedAgentId = agents[0]?.agent_id || "";
   app.currentAgent = ensureAgent(clone(agents.find((agent) => agent.agent_id === app.selectedAgentId) || agents[0] || {}));
+  setLoadingStep("正在渲染控制台");
   updateChrome();
   render();
 }
@@ -1149,24 +1172,24 @@ async function boot() {
   const bootId = ++app.bootId;
   setAuthStatus("正在连接控制台...");
   updateAuthVersion();
-  let info;
-  try {
-    info = await health();
-  } catch (error) {
+  const timeout = setTimeout(() => {
     if (bootId !== app.bootId) return;
+    const error = new Error(`启动超时，卡在：${app.loadingStep || "未知步骤"}`);
+    error.endpoint = app.loadingStep || "boot";
     showApp();
     renderLoadError(error);
-    return;
-  }
-  if (bootId !== app.bootId) return;
-  if (info.auth && !token()) {
-    showAuth("请输入插件配置 standalone_webui_token 中的访问密码。");
-    return;
-  }
-  showApp();
-  setAuthStatus("访问密码已通过，正在加载控制台...");
-  renderLoading("访问密码已通过，正在加载控制台数据...");
+  }, BOOT_TIMEOUT_MS);
   try {
+    setLoadingStep("正在请求 /api/health");
+    const info = await health();
+    if (bootId !== app.bootId) return;
+    if (info.auth && !token()) {
+      showAuth("请输入插件配置 standalone_webui_token 中的访问密码。");
+      return;
+    }
+    showApp();
+    setAuthStatus("访问密码已通过，正在加载控制台...");
+    renderLoading("访问密码已通过，正在加载控制台数据...");
     await load();
     if (bootId !== app.bootId) return;
   } catch (error) {
@@ -1176,8 +1199,11 @@ async function boot() {
       showAuth("访问密码不正确，请检查 AstrBot 插件管理里的 standalone_webui_token。", "error");
       return;
     }
+    showApp();
     renderLoadError(error);
     toast("访问密码已通过，但控制台数据加载失败。", "error");
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
