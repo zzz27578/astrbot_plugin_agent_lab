@@ -145,6 +145,48 @@ KIND_RUNTIME_TYPES = {
     "validation": "validation",
 }
 
+NODE_PORT_SCHEMAS: dict[str, dict[str, list[str]]] = {
+    "trigger": {"inputs": [], "outputs": ["success", "error"]},
+    "entry": {"inputs": ["start"], "outputs": ["success", "failed", "error"]},
+    "detector": {"inputs": ["input"], "outputs": ["success", "failed", "uncertain", "error"]},
+    "decision": {"inputs": ["input"], "outputs": ["success", "failed", "retry", "error", "always"]},
+    "parallel": {"inputs": ["input"], "outputs": ["success", "failed", "error", "always"]},
+    "guard": {"inputs": ["input"], "outputs": ["success", "failed", "approved", "rejected", "error", "timeout"]},
+    "validation": {"inputs": ["input"], "outputs": ["success", "failed", "retry", "error"]},
+    "notification": {"inputs": ["input"], "outputs": ["success", "failed", "error"]},
+    "report": {"inputs": ["input"], "outputs": ["success", "failed", "error"]},
+    "terminal": {"inputs": ["input"], "outputs": []},
+}
+
+ACTION_PORT_SCHEMAS: dict[str, dict[str, list[str]]] = {
+    "listen_message": {"inputs": [], "outputs": ["success", "failed", "error"]},
+    "schedule_trigger": {"inputs": [], "outputs": ["success", "error"]},
+    "plugin_event_trigger": {"inputs": [], "outputs": ["success", "failed", "error"]},
+    "webhook_trigger": {"inputs": [], "outputs": ["success", "failed", "error"]},
+    "match_keyword": {"inputs": ["input"], "outputs": ["success", "failed", "uncertain", "error"]},
+    "match_regex": {"inputs": ["input"], "outputs": ["success", "failed", "uncertain", "error"]},
+    "llm_detect": {"inputs": ["input"], "outputs": ["success", "failed", "uncertain", "error"]},
+    "scope_filter": {"inputs": ["input"], "outputs": ["success", "failed", "error"]},
+    "retry": {"inputs": ["start", "retry", "error"], "outputs": ["retry", "success", "failed", "error"]},
+    "limit_rate": {"inputs": ["input"], "outputs": ["success", "failed", "error"]},
+    "catch_error": {"inputs": ["input", "error"], "outputs": ["success", "error", "failed"]},
+    "request_approval": {"inputs": ["input"], "outputs": ["approved", "rejected", "timeout", "error"]},
+}
+
+SPECIAL_MODULES = {
+    "listen_message": "listener",
+    "schedule_trigger": "listener",
+    "plugin_event_trigger": "listener",
+    "webhook_trigger": "listener",
+    "retry": "loop",
+    "limit_rate": "control",
+    "catch_error": "control",
+    "match_keyword": "detector",
+    "match_regex": "detector",
+    "llm_detect": "detector",
+    "scope_filter": "detector",
+}
+
 
 @dataclass
 class NodeExecutionResult:
@@ -246,3 +288,58 @@ class NodeExecutorRegistry:
         mode = NodeExecutorRegistry.execution_mode(node)
         node["execution_mode"] = mode
         return mode
+
+    @staticmethod
+    def port_schema(node: dict[str, Any]) -> dict[str, list[str]]:
+        raw = (node or {}).get("port_schema")
+        if isinstance(raw, dict):
+            inputs = raw.get("inputs") if isinstance(raw.get("inputs"), list) else []
+            outputs = raw.get("outputs") if isinstance(raw.get("outputs"), list) else []
+            return {
+                "inputs": [str(item).strip() for item in inputs if str(item).strip()],
+                "outputs": [str(item).strip() for item in outputs if str(item).strip()],
+            }
+        action = NodeExecutorRegistry.action(node)
+        if action in ACTION_PORT_SCHEMAS:
+            return {key: list(value) for key, value in ACTION_PORT_SCHEMAS[action].items()}
+        runtime_type = NodeExecutorRegistry.runtime_type(node)
+        schema = NODE_PORT_SCHEMAS.get(runtime_type, {"inputs": ["input"], "outputs": ["success", "error"]})
+        return {key: list(value) for key, value in schema.items()}
+
+    @staticmethod
+    def normalize_port_schema(node: dict[str, Any]) -> dict[str, list[str]]:
+        schema = NodeExecutorRegistry.port_schema(node)
+        node["port_schema"] = schema
+        special = SPECIAL_MODULES.get(NodeExecutorRegistry.action(node))
+        if special:
+            node["special_module"] = special
+        elif "special_module" in node:
+            node.pop("special_module", None)
+        return schema
+
+    @staticmethod
+    def edge_type_from_port(port: str) -> str:
+        port = str(port or "").strip().lower()
+        aliases = {
+            "ok": "success",
+            "pass": "success",
+            "passed": "success",
+            "yes": "success",
+            "true": "success",
+            "fail": "failed",
+            "failed": "failed",
+            "no": "failed",
+            "false": "failed",
+            "else": "failed",
+            "unknown": "uncertain",
+            "uncertain": "uncertain",
+            "retry": "retry",
+            "again": "retry",
+            "error": "error",
+            "exception": "error",
+            "timeout": "timeout",
+            "approved": "approved",
+            "rejected": "rejected",
+            "always": "always",
+        }
+        return aliases.get(port, "")

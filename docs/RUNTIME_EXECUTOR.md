@@ -23,9 +23,16 @@ References:
 `agent_lab/node_runtime.py` introduces `NodeExecutorRegistry`. Canvas nodes are normalized into these runtime types:
 
 ```text
-entry, state, decision, parallel, tool, api, memory, guard,
-validation, notification, terminal, react
+trigger, entry, detector, state, decision, parallel, tool, api, memory,
+guard, validation, notification, report, terminal, react
 ```
+
+Workflow compilation also normalizes backend module contracts:
+
+- `port_schema.inputs` / `port_schema.outputs` declare legal connection ports.
+- `special_module` marks listener, detector, loop and control modules.
+- Edge `from_port` / `to_port` are preserved; `from_port` can infer `edge_type` when the edge type is omitted.
+- `/workflow/check` returns `special_modules`, `port_schemas` and per-node `node_runtime` for inspection.
 
 Registered executors now cover:
 
@@ -38,6 +45,10 @@ Registered executors now cover:
 - `call_api`, `http_request`
 - `run_tools`, `file_operation`, `code_exec`
 - `route_condition`, `conditional_router`, `retry`
+- `listen_message`, `schedule_trigger`, `plugin_event_trigger`, `webhook_trigger`
+- `match_keyword`, `match_regex`, `llm_detect`, `scope_filter`
+- `limit_rate`, `catch_error`, `write_record`, `generate_report`
+- `send_message`, `send_private_message`, `send_email`
 - `validate_output`, `debate_validation`
 - `request_approval`, `wait_user`, `handoff`
 - `notify`
@@ -98,10 +109,17 @@ Archived Markdown now includes `Agent Runtime`, `Workflow Node Outputs`, and `Re
 Workflow edges are normalized with an `edge_type`:
 
 - `success`: follows completed node results.
+- `failed`: follows explicit failed detector/control results.
+- `uncertain`: follows detector results that cannot safely decide.
 - `error`: follows blocked or failed node results.
+- `retry`: follows loop/retry modules back to a body node.
+- `timeout`: follows timeout results.
+- `approved` / `rejected`: follows approval guard results.
 - `always`: eligible for either result.
 
 Edge `condition` expressions are evaluated against the same workflow context used by variables. `condition_visual` is preserved for WebUI round-tripping. When a registered executor returns `ok=False` or `blocked=True`, the runtime first looks for matching `error`/`always` edges before globally blocking the task.
+
+Retry/loop modules are special route producers. While under budget they emit `route=retry`; once exhausted they emit `route=failed`, so the canvas can connect a retry body and a separate failure/report path.
 
 ## Isolation Boundary
 
@@ -123,6 +141,8 @@ This prevents the canvas executor from bypassing plugin/tool isolation.
 `agent_lab_update_workflow check` now reports:
 
 - `runtime_types`
+- `special_modules`
+- `port_schemas`
 - `executor_nodes`
 - `react_handoff_nodes`
 - `node_runtime`

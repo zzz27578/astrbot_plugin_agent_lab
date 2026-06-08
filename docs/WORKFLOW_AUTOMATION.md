@@ -35,6 +35,8 @@ Backend trigger entrypoints now share one dispatcher:
 - Standalone console API: `POST /api/workflow/trigger`.
 - Standalone console API: `POST /api/workflow/webhook` or `POST /api/workflow/webhook/<path>`.
 - Schedule workflows are rehydrated at plugin startup from `workflow_trigger.cron`.
+- Command simulation: `/agentlab trigger <source> [agent=<agent_id>] <text>`.
+- Message monitor: `on_llm_request` tries `message_monitor`, `keyword`, `regex` and `natural` workflow triggers when the current UMO has no active Agent Lab task.
 
 The trigger payload is written into `task.workflow_data.trigger_payload` and `variables.trigger_payload`, then the deterministic workflow runtime runs immediately for event-style workflows.
 
@@ -61,6 +63,17 @@ Backend detector executors currently implement:
 - `llm_detect`: constrained fallback that returns `success` or `failed` when keywords are configured, otherwise `uncertain` instead of inventing an action.
 
 Runtime routing now reads `result.data.route`, so detector/control modules can route to `success`, `failed`, `uncertain`, `error`, `timeout`, `retry` and `always` edges without requiring ReAct.
+
+## Special Module Compilation
+
+The backend now compiles special module contracts instead of treating every node as a generic box:
+
+- Listener modules (`listen_message`, `schedule_trigger`, `plugin_event_trigger`, `webhook_trigger`) have no normal input port and expose trigger result ports such as `success`, `failed` and `error`.
+- Detector modules expose `success`, `failed`, `uncertain` and `error` ports.
+- Loop/retry modules expose reversed control semantics: inputs include `start`, `retry` and `error`; outputs include `retry`, `success`, `failed` and `error`.
+- Edge `from_port` / `to_port` are preserved, and `from_port` can infer `edge_type`, so a `from_port=retry` edge becomes a retry route even if the UI did not set `edge_type` explicitly.
+
+`/workflow/check` returns `special_modules`, `port_schemas` and `node_runtime`, and warns when listener triggers, detector routes or loop exits are incomplete.
 
 ## Plugin And Tool Orchestration
 

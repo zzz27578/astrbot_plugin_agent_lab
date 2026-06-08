@@ -1068,6 +1068,7 @@ class AgentLabPlugin(Star):
                 req.system_prompt += "\n\n" + pattern_prompt
             if memory_prompt:
                 req.system_prompt += "\n\n" + memory_prompt
+            await self._maybe_trigger_message_monitor(event)
 
     async def _handle_command(self, event: AstrMessageEvent, tail: str) -> str:
         if not tail or tail in ("help", "帮助"):
@@ -1098,6 +1099,8 @@ class AgentLabPlugin(Star):
             return self._patterns_text(rest)
         if cmd in ("modules", "integrations", "blueprints", "模块", "集成", "蓝图"):
             return self._modules_text()
+        if cmd in ("trigger", "fire", "emit", "listen"):
+            return await self._trigger_command(event, rest)
         if cmd in ("start", "enter", "开启", "开始"):
             goal = rest or "未命名任务"
             return await self._start_task(
@@ -1270,6 +1273,55 @@ class AgentLabPlugin(Star):
             f"{runtime_text}"
             f"{heartbeat_text}"
         )
+
+    async def _trigger_command(self, event: AstrMessageEvent, rest: str) -> str:
+        parts = str(rest or "").strip().split()
+        source = parts[0] if parts else "message_monitor"
+        agent_id = ""
+        text_parts: list[str] = []
+        for part in parts[1:]:
+            if part.startswith("agent=") or part.startswith("agent_id="):
+                agent_id = part.split("=", 1)[1].strip()
+            else:
+                text_parts.append(part)
+        text = " ".join(text_parts).strip() or str(getattr(event, "message_str", "") or rest or "workflow trigger")
+        payload = self._build_trigger_payload(
+            source=source,
+            event=event,
+            text=text,
+            data={"command": "agentlab trigger", "agent_id": agent_id},
+        )
+        result = await self._trigger_workflow_from_payload(
+            event=event,
+            source=source,
+            payload=payload,
+            agent_id=agent_id,
+        )
+        if not result.get("ok"):
+            return f"Workflow trigger not matched: {result.get('error') or '-'}"
+        return str(result.get("message") or "Workflow triggered.")
+
+    async def _maybe_trigger_message_monitor(self, event: AstrMessageEvent) -> None:
+        if self.storage.load_active_task(event.unified_msg_origin):
+            return
+        text = str(getattr(event, "message_str", "") or "").strip()
+        if not text:
+            return
+        for source in ("message_monitor", "keyword", "regex", "natural"):
+            payload = self._build_trigger_payload(source=source, event=event, text=text)
+            candidates = self._candidate_workflows_for_trigger(event, source=source, payload=payload)
+            if not candidates:
+                continue
+            try:
+                await self._trigger_workflow_from_payload(
+                    event=event,
+                    source=source,
+                    payload=payload,
+                    agent_id=candidates[0].agent_id,
+                )
+            except Exception as exc:
+                logger.warning("[AgentLab] message monitor trigger failed: %s", exc)
+            return
 
     async def _tick(self, event: AstrMessageEvent, reason: str) -> str:
         return (await self.service.run_tick(event, reason=reason)).message
@@ -2208,6 +2260,8 @@ class AgentLabPlugin(Star):
     ) -> str:
         nodes = self.workflow_runtime.node_map(spec)
         requested = str(result.next_node_id or "").strip()
+        if isinstance(result.data, dict) and str(result.data.get("route") or "").strip():
+            requested = ""
         allowed = {str(edge.get("to") or "").strip() for edge in self._workflow_edges_from(spec, node_id)}
         if requested and requested in nodes and (not allowed or requested in allowed):
             return requested
@@ -3968,20 +4022,21 @@ class AgentLabPlugin(Star):
         if count >= max_retries:
             ctx.task.status = "blocked"
             return NodeExecutionResult(
-                ok=False,
-                status="blocked",
+                ok=True,
+                status="completed",
                 outcome=f"Retry limit reached ({count}/{max_retries}).",
-                blocked=True,
-                advance=False,
-                data={"count": count, "max_retries": max_retries},
+                data={"route": "failed", "count": count, "max_retries": max_retries},
                 note="node_executor_retry_limit",
             )
+        retry_target = self._candidate_by_action(ctx.next_candidates, {"run_tools", "call_api", "http_request", "file_operation", "code_exec"}) or self._candidate_by_stage(
+            ctx.next_candidates, {"execute", "plan"}
+        )
         return NodeExecutionResult(
             outcome=f"Retry allowed ({count + 1}/{max_retries}).",
-            next_node_id=self._single_next(ctx.outgoing),
-            data={"count": count + 1, "max_retries": max_retries},
-            needs_react=len(ctx.outgoing) > 1,
-            advance=len(ctx.outgoing) <= 1,
+            next_node_id=retry_target,
+            data={"route": "retry", "count": count + 1, "max_retries": max_retries},
+            needs_react=False,
+            advance=True,
             note="node_executor_retry",
         )
 
@@ -6346,6 +6401,7 @@ class AgentLabPlugin(Star):
             )
             NodeExecutorRegistry.normalize_node_runtime_type(normalized)
             NodeExecutorRegistry.normalize_execution_mode(normalized)
+            NodeExecutorRegistry.normalize_port_schema(normalized)
             for schema_key in ("input_schema", "output_schema"):
                 schema = cls._workflow_json_object(normalized.get(schema_key))
                 if schema:
@@ -6403,7 +6459,7 @@ class AgentLabPlugin(Star):
             nodes.append(normalized)
 
         edges: list[dict[str, Any]] = []
-        seen_edges: set[tuple[str, str, str, str]] = set()
+        seen_edges: set[tuple[str, str, str, str, str, str]] = set()
         for raw_edge in spec.workflow_edges if isinstance(spec.workflow_edges, list) else []:
             if not isinstance(raw_edge, dict):
                 continue
@@ -6411,13 +6467,27 @@ class AgentLabPlugin(Star):
             end = id_map.get(str(raw_edge.get("to") or "").strip(), str(raw_edge.get("to") or "").strip())
             if start not in used_ids or end not in used_ids or start == end:
                 continue
-            edge_type = cls._normalize_workflow_edge_type(raw_edge.get("edge_type") or raw_edge.get("type"))
+            from_port = str(
+                raw_edge.get("from_port")
+                or raw_edge.get("source_port")
+                or raw_edge.get("port")
+                or ""
+            ).strip().lower()[:80]
+            to_port = str(raw_edge.get("to_port") or raw_edge.get("target_port") or "").strip().lower()[:80]
+            inferred_type = NodeExecutorRegistry.edge_type_from_port(from_port)
+            edge_type = cls._normalize_workflow_edge_type(
+                raw_edge.get("edge_type") or raw_edge.get("type") or inferred_type
+            )
             condition = str(raw_edge.get("condition") or raw_edge.get("when") or "").strip()[:1000]
-            key = (start, end, edge_type, condition)
+            key = (start, end, edge_type, condition, from_port, to_port)
             if key in seen_edges:
                 continue
             seen_edges.add(key)
             edge = {"from": start, "to": end, "edge_type": edge_type}
+            if from_port:
+                edge["from_port"] = from_port
+            if to_port:
+                edge["to_port"] = to_port
             if condition:
                 edge["condition"] = condition
             condition_visual = raw_edge.get("condition_visual")
@@ -6626,6 +6696,8 @@ class AgentLabPlugin(Star):
         )
         action_ids: dict[str, list[str]] = {}
         runtime_type_ids: dict[str, list[str]] = {}
+        special_module_ids: dict[str, list[str]] = {}
+        port_schemas: dict[str, dict[str, list[str]]] = {}
         executor_nodes: list[str] = []
         react_handoff_nodes: list[str] = []
         node_runtime: dict[str, dict[str, Any]] = {}
@@ -6633,9 +6705,14 @@ class AgentLabPlugin(Star):
             node_id = str(node.get("id") or "")
             action = str(node.get("action") or "")
             runtime_type = NodeExecutorRegistry.runtime_type(node)
+            port_schema = NodeExecutorRegistry.port_schema(node)
+            special_module = str(node.get("special_module") or "").strip()
             has_executor = self.node_executors.can_execute(node)
             action_ids.setdefault(action, []).append(node_id)
             runtime_type_ids.setdefault(runtime_type, []).append(node_id)
+            port_schemas[node_id] = port_schema
+            if special_module:
+                special_module_ids.setdefault(special_module, []).append(node_id)
             if has_executor:
                 executor_nodes.append(node_id)
             if not has_executor or action in {"plan", "manual"} or runtime_type in {"react", "terminal"}:
@@ -6643,6 +6720,8 @@ class AgentLabPlugin(Star):
             node_runtime[node_id] = {
                 "runtime_type": runtime_type,
                 "action": action,
+                "special_module": special_module,
+                "port_schema": port_schema,
                 "has_executor": has_executor,
                 "react_handoff": node_id in react_handoff_nodes,
             }
@@ -6699,6 +6778,16 @@ class AgentLabPlugin(Star):
                 }
                 if not edge_types.intersection({"success", "failed", "uncertain", "error"}):
                     add_issue("warn", "detector_without_result_routes", "检测模块建议显式配置通过/失败/不确定/错误出口。", node_id)
+            if node.get("special_module") == "listener":
+                trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
+                if not trigger.enabled:
+                    add_issue("warn", "listener_trigger_disabled", "监听模块所在工作流的 workflow_trigger 未启用。", node_id)
+                if node.get("action") == "listen_message" and not set(trigger.types or []).intersection({"message_monitor", "keyword", "regex", "natural"}):
+                    add_issue("warn", "listener_without_message_trigger", "消息监听模块需要在 workflow_trigger.types 中启用 message_monitor、keyword、regex 或 natural。", node_id)
+                if node.get("action") == "webhook_trigger" and "webhook" not in set(trigger.types or []):
+                    add_issue("warn", "webhook_trigger_not_enabled", "Webhook 监听模块需要在 workflow_trigger.types 中启用 webhook。", node_id)
+                if node.get("action") == "schedule_trigger" and ("schedule" not in set(trigger.types or []) or not trigger.cron):
+                    add_issue("warn", "schedule_trigger_not_configured", "定时监听模块需要启用 schedule 并配置 cron。", node_id)
             if node.get("kind") == "loop" or node.get("action") == "retry":
                 edge_types = {
                     str(edge.get("edge_type") or "success")
@@ -6707,6 +6796,8 @@ class AgentLabPlugin(Star):
                 }
                 if not edge_types.intersection({"retry", "failed", "error"}):
                     add_issue("warn", "retry_without_retry_routes", "循环/重试模块建议配置 retry、failed 或 error 出口。", node_id)
+                if not edge_types.intersection({"success", "failed"}):
+                    add_issue("warn", "loop_without_exit_route", "循环/重试模块建议配置 success 或 failed 出口作为结束点。", node_id)
             if node.get("kind") in {"subflow", "tool", "api"} and node.get("action") in {"manual", ""} and not str(node.get("prompt") or "").strip():
                 add_issue("warn", "module_without_prompt", "模块节点建议写入节点提示词或明确动作，否则运行时只能依赖泛化说明。", node_id)
             node_text = " ".join(
@@ -6779,6 +6870,16 @@ class AgentLabPlugin(Star):
             end = str(edge.get("to") or "")
             source_node = node_lookup.get(start) or {}
             target_node = node_lookup.get(end) or {}
+            from_port = str(edge.get("from_port") or "").strip()
+            to_port = str(edge.get("to_port") or "").strip()
+            if from_port:
+                outputs = set((port_schemas.get(start) or {}).get("outputs") or [])
+                if outputs and from_port not in outputs:
+                    add_issue("warn", "edge_from_port_invalid", f"Edge from_port {from_port} is not declared by node {start}.", start)
+            if to_port:
+                inputs = set((port_schemas.get(end) or {}).get("inputs") or [])
+                if inputs and to_port not in inputs:
+                    add_issue("warn", "edge_to_port_invalid", f"Edge to_port {to_port} is not declared by node {end}.", end)
             source_schema = self._node_schema(source_node, "output_schema")
             target_schema = self._node_schema(target_node, "input_schema")
             if source_schema and target_schema and not schema_compatible(source_schema, target_schema):
@@ -6806,6 +6907,8 @@ class AgentLabPlugin(Star):
             "guard_nodes": guard_ids,
             "memory_nodes": action_ids.get("save_memory", []),
             "runtime_types": runtime_type_ids,
+            "special_modules": special_module_ids,
+            "port_schemas": port_schemas,
             "executor_nodes": executor_nodes,
             "react_handoff_nodes": react_handoff_nodes,
             "node_runtime": node_runtime,
@@ -6822,12 +6925,14 @@ class AgentLabPlugin(Star):
         node_map = {str(node.get("id") or ""): node for node in nodes}
         outgoing: dict[str, list[str]] = {node_id: [] for node_id in node_map}
         incoming: dict[str, list[str]] = {node_id: [] for node_id in node_map}
+        edge_by_start: dict[str, list[dict[str, Any]]] = {node_id: [] for node_id in node_map}
         for edge in edges:
             start = str(edge.get("from") or "")
             end = str(edge.get("to") or "")
             if start in node_map and end in node_map:
                 outgoing.setdefault(start, []).append(end)
                 incoming.setdefault(end, []).append(start)
+                edge_by_start.setdefault(start, []).append(edge)
 
         entry_ids = list(workflow.get("entry_nodes") or []) or [
             str(node.get("id") or "")
@@ -6846,7 +6951,15 @@ class AgentLabPlugin(Star):
             candidates = outgoing.get(current, [])
             if not candidates:
                 break
-            current = candidates[0]
+            preferred = next(
+                (
+                    str(edge.get("to") or "")
+                    for edge in edge_by_start.get(current, [])
+                    if str(edge.get("edge_type") or "success") in {"success", "always", "retry"}
+                ),
+                "",
+            )
+            current = preferred if preferred in candidates else candidates[0]
 
         branch_nodes = [
             node_id

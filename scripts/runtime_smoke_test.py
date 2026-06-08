@@ -1596,6 +1596,58 @@ async def main() -> None:
         await plugin._disable_workflow_schedules()
         assert not plugin._workflow_schedule_jobs
 
+        special_spec = plugin_main.AgentSpec(name="special module compile", identity_label_source="manual")
+        special_spec.workflow_trigger = plugin_main.WorkflowTrigger.from_dict(
+            {"enabled": True, "types": ["message_monitor"], "keywords": ["loop"]}
+        )
+        special_spec.workflow_nodes = [
+            {"id": "listen", "kind": "trigger", "action": "listen_message"},
+            {"id": "detect", "kind": "detector", "action": "match_keyword", "keywords": ["loop"]},
+            {"id": "retry", "kind": "loop", "action": "retry", "max_retries": 1},
+            {"id": "execute", "kind": "state", "action": "save_state"},
+            {"id": "failed", "kind": "report", "action": "generate_report", "message": "retry exhausted"},
+        ]
+        special_spec.workflow_edges = [
+            {"from": "listen", "to": "detect", "from_port": "success"},
+            {"from": "detect", "to": "retry", "from_port": "success"},
+            {"from": "retry", "to": "execute", "from_port": "retry", "to_port": "input"},
+            {"from": "retry", "to": "failed", "from_port": "failed", "to_port": "input"},
+        ]
+        plugin._prepare_agent_spec_for_save(special_spec)
+        plugin.storage.save_agent(special_spec)
+        compiled = plugin._workflow_report(special_spec)
+        assert compiled["special_modules"]["listener"] == ["listen"]
+        assert "retry" in compiled["special_modules"]["loop"]
+        assert compiled["port_schemas"]["retry"]["inputs"] == ["start", "retry", "error"]
+        retry_edges = {edge["to"]: edge for edge in special_spec.workflow_edges if edge["from"] == "retry"}
+        assert retry_edges["execute"]["edge_type"] == "retry"
+        assert retry_edges["failed"]["edge_type"] == "failed"
+
+        retry_event = FakeEvent(unified_msg_origin="aiocqhttp:FriendMessage:loop-special", message_str="loop")
+        retry_payload = plugin._build_trigger_payload(source="message_monitor", event=retry_event, text="loop")
+        retry_result = await plugin._trigger_workflow_from_payload(
+            event=retry_event,
+            source="message_monitor",
+            payload=retry_payload,
+            agent_id=special_spec.agent_id,
+        )
+        assert retry_result["ok"] is True
+        retry_task = plugin.storage.load_active_task(retry_event.unified_msg_origin)
+        assert retry_task is not None
+        assert retry_task.workflow_current_node_id == "execute"
+        retry_task.workflow_current_node_id = "retry"
+        retry_task.workflow_data.setdefault("execution_counts", {})["retry"] = 1
+        plugin.storage.save_task(retry_task)
+        rerun = await plugin._run_workflow_runtime(
+            event=retry_event,
+            task=retry_task,
+            spec=special_spec,
+            reason="runtime_smoke_retry_failed_route",
+        )
+        assert rerun.changed
+        assert retry_task.workflow_current_node_id == "failed"
+        assert retry_task.workflow_data["node_outputs"]["retry"]["data"]["route"] == "failed"
+
     with TemporaryDirectory() as tmp:
         debug("third runtime fixture")
         plugin_main.StarTools.get_data_dir = staticmethod(
