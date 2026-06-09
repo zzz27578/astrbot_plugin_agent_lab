@@ -1688,6 +1688,49 @@ button.list-row {
   transform: scale(1.24);
 }
 
+/* 类型化出口端口：按 edge_type 上色，并在端口右侧显示中文小标签 */
+.node-port-typed::after {
+  background: var(--port-color, var(--blue));
+}
+.node-port-typed .port-tag {
+  position: absolute;
+  left: 26px;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 1px 6px;
+  border: 1px solid var(--port-color, var(--line-strong));
+  border-radius: 999px;
+  background: #fff;
+  color: var(--port-color, var(--ink));
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.4;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.flow-node.has-multi-out {
+  /* 给右侧标签留出空间，避免被裁切 */
+  overflow: visible;
+}
+/* retry 回环出口：画在节点左侧，标签朝左，表示"绕回上一步" */
+.node-port-loop {
+  left: -20px;
+  right: auto;
+}
+.node-port-typed .port-tag.port-tag-left {
+  left: auto;
+  right: 26px;
+}
+/* 连线中段的类型标签 */
+.workflow-link-label text {
+  font-size: 11px;
+  font-weight: 600;
+  paint-order: stroke;
+}
+.workflow-link-label rect {
+  opacity: 0.96;
+}
+
 .workflow-card-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
