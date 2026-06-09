@@ -1,145 +1,80 @@
 {
-  "private_only": {
-    "type": "bool",
-    "description": "Legacy private-only fallback",
-    "default": false,
-    "hint": "Compatibility fallback only. New workflows should use per-workflow scope: private/group, allowlist/denylist and admin-only."
-  },
-  "workflow_admin_ids": {
-    "type": "string",
-    "description": "Workflow admin QQ IDs",
-    "default": "",
-    "hint": "Comma or newline separated QQ IDs used by per-workflow admin_only scope."
-  },
   "standalone_webui_enabled": {
     "type": "bool",
-    "description": "Enable standalone Agent Lab console",
+    "description": "启用独立网页控制台",
     "default": true,
-    "hint": "Starts the built-in WebUI instead of relying on an AstrBot dashboard page."
+    "hint": "开启后可通过浏览器管理任务模式方案和工作流画布。"
   },
   "standalone_webui_host": {
     "type": "string",
-    "description": "Standalone console host",
+    "description": "网页控制台监听地址",
     "default": "127.0.0.1",
-    "hint": "Use 0.0.0.0 only when you also configure an access token."
+    "hint": "建议保持 127.0.0.1。只有在可信网络中才改为 0.0.0.0。"
   },
   "standalone_webui_port": {
     "type": "int",
-    "description": "Standalone console port",
+    "description": "网页控制台端口",
     "default": 8788,
-    "hint": "Default URL: http://127.0.0.1:8788"
+    "hint": "默认地址：http://127.0.0.1:8788"
   },
-  "standalone_webui_token": {
+  "workflow_admin_ids": {
     "type": "string",
-    "description": "Standalone console API token",
+    "description": "管理员 QQ 号",
     "default": "",
-    "hint": "Recommended when the console is exposed beyond localhost."
+    "hint": "多个 QQ 号可用逗号或换行分隔；仅在工作流生效范围启用“仅管理员可触发”时使用。"
   },
   "inject_agent_mode_policy": {
     "type": "bool",
-    "description": "Inject workflow entry policy into conversation",
+    "description": "注入任务模式触发规则",
     "default": true,
-    "hint": "Allows the bot to decide whether natural language should enter a configured workflow."
+    "hint": "允许机器人根据自然语言判断是否进入已配置的任务模式方案。"
   },
   "install_agent_mode_skill": {
     "type": "bool",
-    "description": "Install agent-mode skill",
+    "description": "同步任务模式技能规则",
     "default": true,
-    "hint": "Syncs entry, approval, heartbeat and archive conventions into an AstrBot Skill."
+    "hint": "把入口、审批、心跳和归档约定同步到 AstrBot 技能。"
   },
   "entry_summary_turns": {
     "type": "int",
-    "description": "Recent turns used for entry summary",
+    "description": "入口摘要保留轮数",
     "default": 24,
-    "hint": "Used when a workflow compresses chat context into task_brief."
+    "hint": "进入任务模式时，用最近多少轮对话生成任务摘要。"
   },
   "fallback_summary_provider_id": {
     "type": "string",
-    "description": "Fallback summary provider ID",
+    "description": "摘要模型供应商 ID",
     "default": "",
-    "hint": "Uses the current provider when empty."
-  },
-  "max_steps_per_tick": {
-    "type": "int",
-    "description": "Max tool steps per tick",
-    "default": 12,
-    "hint": "Limits one runtime tick to avoid runaway loops."
+    "hint": "留空则使用当前会话模型。"
   },
   "tool_call_timeout": {
     "type": "int",
-    "description": "Tool call timeout seconds",
+    "description": "工具调用超时（秒）",
     "default": 120,
-    "hint": "Maximum wait time for a single tool call."
-  },
-  "agent_mode_progress_notice_mode": {
-    "type": "string",
-    "description": "Progress notice mode",
-    "default": "agent_lab",
-    "options": ["agent_lab", "astrbot", "silent"],
-    "hint": "agent_lab sends throttled progress notices; astrbot follows native tool-call style; silent records state only."
-  },
-  "agent_mode_progress_every_tools": {
-    "type": "int",
-    "description": "Progress notice tool interval",
-    "default": 3,
-    "hint": "Only applies when progress notice mode is agent_lab."
-  },
-  "agent_mode_progress_min_interval_seconds": {
-    "type": "int",
-    "description": "Progress notice minimum interval seconds",
-    "default": 45,
-    "hint": "Set 0 to rely only on tool-call count throttling."
-  },
-  "llm_compress_keep_recent": {
-    "type": "int",
-    "description": "Recent messages kept during compression",
-    "default": 6
-  },
-  "truncate_turns": {
-    "type": "int",
-    "description": "Turns dropped when truncating on trigger",
-    "default": 2
-  },
-  "workflow_auto_steps_per_tick": {
-    "type": "int",
-    "description": "Workflow auto node steps per tick",
-    "default": 6,
-    "hint": "Limits deterministic canvas node execution before handing control to ReAct."
-  },
-  "task_lease_ttl_seconds": {
-    "type": "int",
-    "description": "Task lease TTL seconds",
-    "default": 600,
-    "hint": "Prevents duplicated heartbeat/manual ticks from running the same task concurrently."
+    "hint": "单次工具调用最长等待时间。"
   },
   "max_seconds_per_tick": {
     "type": "int",
-    "description": "Max seconds per tick",
+    "description": "单轮最长运行时间（秒）",
     "default": 240,
-    "hint": "Watchdog pauses a task when one tick exceeds this runtime budget."
-  },
-  "max_tokens_per_tick": {
-    "type": "int",
-    "description": "Max tokens per tick",
-    "default": 12000,
-    "hint": "Per-tick token budget recorded from provider usage."
+    "hint": "超过后任务会暂停，避免单轮执行过久。"
   },
   "max_total_ticks": {
     "type": "int",
-    "description": "Max total task ticks",
+    "description": "任务最大推进轮数",
     "default": 120,
-    "hint": "Total task heartbeat/manual progress budget."
+    "hint": "限制一次任务模式运行的总推进次数。"
   },
   "max_total_tool_calls": {
     "type": "int",
-    "description": "Max total task tool calls",
+    "description": "任务最大工具调用次数",
     "default": 240,
-    "hint": "Total budget for concrete tool/API executions across the task."
+    "hint": "限制整个任务期间的工具或接口调用总数。"
   },
   "max_total_tokens": {
     "type": "int",
-    "description": "Max total task tokens",
+    "description": "任务最大令牌预算",
     "default": 240000,
-    "hint": "Total token budget across the task."
+    "hint": "限制整个任务期间累计使用的模型令牌。"
   }
 }

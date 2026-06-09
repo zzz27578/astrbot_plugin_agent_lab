@@ -68,14 +68,14 @@ from .agent_lab.workers import normalize_worker_output, worker_spec_for_node
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
 PLUGIN_VERSION = "v0.1.1"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
-PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人 Agent Mode。"
+PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
 ENTRY_SUMMARY_RULE_NAME = "agent-mode-entry-summary"
 EXIT_SUMMARY_RULE_NAME = "agent-mode-exit-summary"
 NO_EXTERNAL_TOOLS_SENTINEL = "__agent_lab_no_external_tools__"
 CUSTOM_API_TOOL_NAME = "agent_lab_call_custom_api"
 DEFAULT_BOT_LABEL = "当前 Bot"
-AGENT_NAME_SUFFIX = " Agent Mode"
+AGENT_NAME_SUFFIX = "任务模式"
 WORKFLOW_KINDS = {
     "state",
     "tool",
@@ -183,8 +183,8 @@ CONFIG_BOT_LABEL_KEYS = (
 DEFAULT_AGENT_NAMES = {
     "",
     f"{DEFAULT_BOT_LABEL}{AGENT_NAME_SUFFIX}",
-    "AstrBot Agent Mode",
-    "Agent Mode",
+    "AstrBot 任务模式",
+    "任务模式",
 }
 
 BUILTIN_TOOL_CATALOG = [
@@ -245,7 +245,7 @@ BUILTIN_TOOL_CATALOG = [
     },
     {
         "name": "agent_lab_read_task_memory",
-        "description": "Read tagged Agent Lab task memories without entering Agent Mode.",
+        "description": "读取带标签的任务模式记忆，不需要进入任务模式。",
         "risk": "safe",
     },
     {
@@ -554,22 +554,22 @@ class AgentLabPlugin(Star):
         need_heartbeat: bool = False,
         agent_id: str = "",
     ) -> str:
-        """进入 AstrBot Agent Lab 的 Agent Mode，创建任务状态。
+        """进入 AstrBot 任务模式，创建任务状态。
 
         Args:
             goal(string): 用户原始根目标，必须稳定清楚。
             completion_conditions(string): 完成条件，多个条件可用换行分隔。
             risk_level(string): low/work/high。涉及文件写入、命令、部署、删除、密钥时至少为 work/high。
-            user_confirmed(boolean): 用户是否明确同意进入 Agent Mode 或授权当前风险等级。
+            user_confirmed(boolean): 用户是否明确同意进入任务模式或授权当前风险等级。
             need_heartbeat(boolean): 是否需要为长任务开启心跳。
             agent_id(string): 可选 AgentSpec ID。为空时使用默认 Agent。
         """
         spec = self.storage.get_agent(agent_id or None)
         if not spec.enabled:
-            return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用，或选择另一个 AgentSpec。"
+            return "当前方案未启用。请先在任务模式网页控制台启用，或选择另一个方案。"
         if spec.trigger_mode in ("manual", "confirm") and not user_confirmed:
             return (
-                "需要先向用户确认：是否进入 Agent Mode？请说明将创建任务状态、"
+                "需要先向用户确认：是否进入任务模式？请说明将创建任务状态、"
                 "按任务规则管理上下文，并在危险操作前请求审批。"
             )
         return await self._start_task(
@@ -585,7 +585,7 @@ class AgentLabPlugin(Star):
 
     @filter.llm_tool(name="agent_lab_read_state")
     async def agent_lab_read_state(self, event: AstrMessageEvent, format: str = "summary") -> str:
-        """读取当前 Agent Mode 任务状态。心跳或长任务继续前必须先读状态。
+        """读取当前任务模式的任务状态。心跳或长任务继续前必须先读状态。
 
         Args:
             format(string): summary 或 markdown。summary 返回短摘要，markdown 返回完整任务存档。
@@ -765,7 +765,7 @@ class AgentLabPlugin(Star):
 
     @filter.llm_tool(name="agent_lab_tick")
     async def agent_lab_tick(self, event: AstrMessageEvent, reason: str = "tool") -> str:
-        """推进当前 Agent Mode 任务一轮。执行前必须确认没有待审批危险操作。"""
+        """推进当前任务模式任务一轮。执行前必须确认没有待审批危险操作。"""
         return await self._tick(event, reason=reason)
 
     @filter.llm_tool(name="agent_lab_request_approval")
@@ -840,7 +840,7 @@ class AgentLabPlugin(Star):
         final_summary: str,
         memory_candidates: str = "",
     ) -> str:
-        """任务达到完成条件后归档并退出 Agent Mode。"""
+        """任务达到完成条件后归档并退出任务模式。"""
         return await self._finish_task(
             event,
             status="completed",
@@ -1329,7 +1329,7 @@ class AgentLabPlugin(Star):
 
         spec = self.storage.get_agent(agent_id or None)
         if not spec.enabled:
-            return "当前 AgentSpec 未启用。请先在 Agent Lab WebUI 启用后再进入 Agent Mode。"
+            return "当前方案未启用。请先在任务模式网页控制台启用后再进入任务模式。"
         self._normalize_agent_workflow(spec)
         allowed, reason = self._workflow_scope_allows_event(spec, event)
         if not allowed:
@@ -1439,9 +1439,9 @@ class AgentLabPlugin(Star):
             if runtime_run.changed:
                 runtime_text = f"\n- workflow_runtime: {self._compact_text(runtime_run.summary(), 500)}"
         return (
-            f"已进入 Agent Mode。\n"
+            f"已进入任务模式。\n"
             f"- task_id: {task.task_id}\n"
-            f"- agent: {effective_agent_name}\n"
+            f"- 方案: {effective_agent_name}\n"
             f"- 状态文件: {self.storage.task_markdown_path(umo, task.task_id)}\n"
             f"- 下一步: /agentlab tick\n"
             f"{runtime_text}"
@@ -1597,7 +1597,7 @@ class AgentLabPlugin(Star):
             task.add_log("memory_orchestrator_error", str(error))
         archive_path = self.storage.archive_task(task)
         return (
-            f"Agent Mode 已结束并归档。\n"
+            f"任务模式已结束并归档。\n"
             f"- status: {status}\n"
             f"- archive: {archive_path}\n\n"
             f"{self._compact_text(exit_summary, 1800)}"
@@ -6028,7 +6028,7 @@ class AgentLabPlugin(Star):
         content = str((rule or {}).get("content") or "").strip()
         if not content:
             return ""
-        return "[Agent Mode Custom Skill Rules]\n" + content
+        return "[任务模式自定义技能规则]\n" + content
 
     def _build_custom_api_prompt(self, spec: AgentSpec) -> str:
         if spec.enabled_tools and CUSTOM_API_TOOL_NAME not in spec.enabled_tools:
@@ -6063,7 +6063,7 @@ class AgentLabPlugin(Star):
             chosen = [by_name[name] for name in selected if name in by_name]
             missing = [name for name in selected if name not in by_name]
             parts = [
-                "[AgentSpec Selected Skills]",
+                "[方案启用技能]",
                 "以下 skills 是当前 AgentSpec 为任务模式选择的行为协议。使用前仍需按 Skill 规则读取 SKILL.md；未选择的 skill 不应作为本任务的主要依据。",
             ]
             if chosen:
@@ -6074,7 +6074,7 @@ class AgentLabPlugin(Star):
         except Exception as exc:
             logger.warning("[AgentLab] selected skills prompt failed: %s", exc)
             return (
-                "[AgentSpec Selected Skills]\n"
+                "[方案启用技能]\n"
                 f"当前 AgentSpec 选择了 skills：{', '.join(selected)}，但运行时读取失败：{exc}。"
             )
 
@@ -6135,21 +6135,20 @@ class AgentLabPlugin(Star):
             return
         host = str(_cfg(self.config, "standalone_webui_host", "127.0.0.1") or "127.0.0.1").strip()
         port = int(_cfg(self.config, "standalone_webui_port", 8788) or 8788)
-        token = str(_cfg(self.config, "standalone_webui_token", "") or "").strip()
         static_dir = Path(__file__).resolve().parent / "webui"
         self.webui_server = StandaloneWebUIServer(
             owner=self,
             static_dir=static_dir,
             host=host,
             port=port,
-            token=token,
+            token="",
         )
         try:
             await self.webui_server.start()
             logger.info("[AgentLab] standalone WebUI listening on %s", self.webui_server.url)
-            if host not in {"127.0.0.1", "localhost", "::1"} and not token:
+            if host not in {"127.0.0.1", "localhost", "::1"}:
                 logger.warning(
-                    "[AgentLab] standalone WebUI is not local-only and has no token configured."
+                    "[AgentLab] standalone WebUI is not local-only; bind to 127.0.0.1 unless you trust the network."
                 )
         except Exception as exc:
             logger.warning("[AgentLab] standalone WebUI failed to start: %s", exc)
@@ -7064,8 +7063,7 @@ class AgentLabPlugin(Star):
     def _webui_text(self) -> str:
         if not self.webui_server:
             return "Agent Lab 独立控制台未启动。请检查 standalone_webui_enabled 和端口配置。"
-        suffix = "（需要 token）" if self.webui_server.token else ""
-        return f"Agent Lab 独立控制台：{self.webui_server.url} {suffix}".strip()
+        return f"Agent Lab 独立控制台：{self.webui_server.url}".strip()
 
     def _plugin_by_module_path(self, module_path: str | None) -> Any:
         if not module_path:
@@ -7186,7 +7184,7 @@ class AgentLabPlugin(Star):
         )
         spec.entry_policy.trigger_phrases = AgentLabPlugin._clean_string_list(
             spec.entry_policy.trigger_phrases
-        ) or ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"]
+        ) or ["进入任务模式", "开启任务模式", "/agentlab start"]
         spec.entry_policy.trigger_keywords = AgentLabPlugin._clean_string_list(
             spec.entry_policy.trigger_keywords
         )
@@ -7195,7 +7193,7 @@ class AgentLabPlugin(Star):
         ) or ["用户验收通过"]
         spec.entry_policy.exit_phrases = AgentLabPlugin._clean_string_list(
             spec.entry_policy.exit_phrases
-        ) or ["完成任务", "结束任务模式", "退出 Agent Mode", "/agentlab finish"]
+        ) or ["完成任务", "结束任务模式", "/agentlab finish"]
         spec.entry_policy.confirmation_text = str(
             spec.entry_policy.confirmation_text or ""
         ).strip()

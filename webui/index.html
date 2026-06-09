@@ -3,32 +3,17 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Agent Lab 控制台</title>
+    <title>任务模式控制台</title>
     <link rel="stylesheet" href="./style.css?v=20260607-clean-workflow-ui" />
   </head>
   <body>
-    <!-- 访问密码验证（未验证时显示） -->
-    <div id="auth-screen" class="auth-screen" style="display:none;">
-      <div class="auth-card">
-        <h1>Agent Lab 控制台</h1>
-        <p class="auth-hint">输入访问密码后进入控制台</p>
-        <div class="auth-form">
-          <input id="auth-token-input" type="password" class="auth-input" placeholder="访问密码" autocomplete="current-password" />
-          <button id="auth-submit-btn" type="button" class="auth-button">进入控制台</button>
-        </div>
-        <p class="auth-note">
-          访问密码由插件配置项 <code>standalone_webui_token</code> 提供。
-        </p>
-      </div>
-    </div>
-
-    <div class="shell" id="main-app" style="display:none;">
+    <div class="shell" id="main-app">
       <!-- 全局状态栏 -->
       <div id="global-status-bar" class="global-status-bar">
         <div class="status-left">
           <span class="status-agent">
             <strong id="current-agent-name">加载中...</strong>
-            <button id="agent-switcher" class="agent-switcher-btn" title="切换 Agent">▼</button>
+            <button id="agent-switcher" class="agent-switcher-btn" title="切换方案">▼</button>
           </span>
           <span class="status-indicator">
             <span id="status-dot" class="status-dot idle"></span>
@@ -51,7 +36,7 @@
 
       <aside class="rail">
         <div class="brand">
-          <strong>Agent Lab</strong>
+          <strong>任务模式</strong>
           <span>AstrBot 任务模式框架</span>
         </div>
         <nav id="nav" class="nav"></nav>

@@ -51,7 +51,7 @@ const WORKFLOW_MINIMAP_MIN_WIDTH = 104;
 const WORKFLOW_MINIMAP_MIN_HEIGHT = 84;
 const WORKFLOW_MINIMAP_MAX_WIDTH = 360;
 const WORKFLOW_MINIMAP_MAX_HEIGHT = 260;
-const WORKFLOW_FIELD_SELECTOR = ".workflow-inspector-drawer input, .workflow-inspector-drawer select, .workflow-inspector-drawer textarea, .workflow-tool-drawer input";
+const WORKFLOW_FIELD_SELECTOR = ".workflow-page input, .workflow-page select, .workflow-page textarea";
 const WORKFLOW_CANVAS_BLOCKER_SELECTOR = ".workflow-tool-drawer, .workflow-inspector-drawer, .workflow-page-top, .workflow-context-menu, .workflow-report-panel, .workflow-minimap, .workflow-nav-toggle, .workflow-right-dock";
 const WORKFLOW_KINDS = [
   "state",
@@ -443,7 +443,8 @@ const WORKFLOW_NODE_TEMPLATES = [
     kind: "loop",
     stage: "checkpoint",
     action: "retry",
-    instruction: "失败时只重试有限次数，并把原因、调整点和阻塞计数写回任务状态。",
+    instruction: "只在失败/出错时进入：还有次数就从『重试』出口绕回上一步重试；用尽后从『失败』出口交人工。成功不该走这里。",
+    max_retries: 3,
   },
   {
     id: "checkpoint",
@@ -815,7 +816,7 @@ const WORKFLOW_NODE_TEMPLATES = [
     stage: "guard",
     action: "credential_ref",
     library_group: "安全",
-    instruction: "引用一个已保存的账号/凭证（GitHub Token、API Key 等），只引用不显示密钥。",
+    instruction: "引用一个已保存的账号/凭证（GitHub 令牌、接口密钥等），只引用不显示密钥。",
   },
   {
     id: "account_login_check",
@@ -867,10 +868,9 @@ const WORKFLOW_NODE_TEMPLATES = [
 
 const sections = [
   ["dashboard", "仪表盘", "总览"],
-  ["canvas", "任务模式设置", "定规则"],
   ["workflow", "工作流画布", "拼流程"],
+  ["canvas", "方案管理", "管方案"],
   ["memory", "任务记忆", "查记忆"],
-  ["tasks", "任务控制台", "看进度"],
   ["integrations", "插件与集成", "管工具"],
 ];
 
@@ -1224,9 +1224,8 @@ function fieldVal(id) { const el = document.getElementById(id); return el ? el.v
 
 function token() {
   return (
-    sessionStorage.getItem("agent_lab_token")
-    || $("token")?.value.trim()
-    || $("auth-token-input")?.value.trim()
+    new URLSearchParams(location.search).get("token")
+    || sessionStorage.getItem("agent_lab_token")
     || ""
   );
 }
@@ -1787,12 +1786,12 @@ function ensureAgent(agent) {
   agent.workflow_scope.user_denylist ||= [];
   agent.workflow_scope.admin_only ??= false;
   agent.entry_policy ||= {};
-  agent.entry_policy.trigger_phrases ||= ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"];
+  agent.entry_policy.trigger_phrases ||= ["进入任务模式", "开启任务模式", "/agentlab start"];
   agent.entry_policy.trigger_keywords ||= ["持续推进", "长任务", "排查", "部署", "写插件", "改代码", "整理资料"];
   agent.entry_policy.require_confirmation ??= true;
   agent.entry_policy.confirmation_text ||= "我会进入任务模式：隔离当前会话插件、压缩上文、创建 task_state，并在高风险动作前请求审批。是否开启？";
   agent.entry_policy.default_completion_conditions ||= ["用户验收通过", "任务成果已归档", "关键改动和风险已总结"];
-  agent.entry_policy.exit_phrases ||= ["完成任务", "结束任务模式", "退出任务模式", "退出 Agent Mode", "/agentlab finish"];
+  agent.entry_policy.exit_phrases ||= ["完成任务", "结束任务模式", "退出任务模式", "/agentlab finish"];
   agent.isolation_policy ||= {};
   agent.isolation_policy.mode ||= "strict";
   agent.isolation_policy.tool_mode ||= "whitelist";
@@ -1861,12 +1860,12 @@ function defaultAgentDraft() {
       admin_only: false,
     },
     entry_policy: {
-      trigger_phrases: ["进入任务模式", "开启任务模式", "进入 Agent Mode", "/agentlab start"],
+      trigger_phrases: ["进入任务模式", "开启任务模式", "/agentlab start"],
       trigger_keywords: ["持续推进", "长任务", "排查", "部署", "写插件", "改代码", "整理资料"],
       require_confirmation: true,
       confirmation_text: "我会进入任务模式：隔离当前会话插件、压缩上文、创建 task_state，并在高风险动作前请求审批。是否开启？",
       default_completion_conditions: ["用户验收通过", "任务成果已归档", "关键改动和风险已总结"],
-      exit_phrases: ["完成任务", "结束任务模式", "退出任务模式", "退出 Agent Mode", "/agentlab finish"],
+      exit_phrases: ["完成任务", "结束任务模式", "退出任务模式", "/agentlab finish"],
     },
     isolation_policy: {
       mode: "strict",
@@ -1876,8 +1875,8 @@ function defaultAgentDraft() {
       hide_disabled_plugin_tools: true,
       notes: "严格隔离会在当前会话默认关闭普通插件，只保留 Agent Lab、AstrBot 保留插件和用户显式允许的插件；不改 AstrBot 全局插件开关，退出时恢复会话快照。",
     },
-    system_prompt: "你仍然是当前 AstrBot 里的原本角色，但进入 Agent Mode 后必须以任务推进为中心。",
-    task_prompt: "你在 Agent Mode 中工作。先读取任务状态，再执行一个有限步骤，随后总结并写回状态。",
+    system_prompt: "你仍然是当前 AstrBot 里的原本角色，但进入任务模式后必须以任务推进为中心。",
+    task_prompt: "你在任务模式中工作。先读取任务状态，再执行一个有限步骤，随后总结并写回状态。",
     plugin_overrides: {},
     enabled_tools: [...DEFAULT_ENABLED_TOOLS],
     tool_risk_overrides: {},
@@ -1972,7 +1971,7 @@ function eventKindLabel(kind) {
     custom_api: "自定义 API",
     tool_start: "工具开始",
     tool_end: "工具结束",
-    agent_done: "Agent 完成",
+    agent_done: "模型完成",
     state: "状态",
   }[kind] || kind || "-";
 }
@@ -2202,8 +2201,9 @@ function defaultWorkflowNodes() {
       kind: "loop",
       stage: "checkpoint",
       action: "retry",
-      description: "失败后有限重试。",
-      instruction: "每次重试都写清调整点和观察结果；同一阻塞重复三次后停止并请求用户介入。",
+      description: "失败/出错时有限次重试，用尽后交人工。",
+      instruction: "只在执行失败或校验不通过时进入。还有次数就从『重试』出口绕回执行重试；用尽后从『失败』出口交人工，不要在成功后继续循环。",
+      max_retries: 3,
       x: 2320,
       y: 460,
     },
@@ -2267,35 +2267,42 @@ function defaultWorkflowNodes() {
 
 function defaultWorkflowEdges() {
   return [
-    { from: "entry", to: "entry_gate" },
-    { from: "entry_gate", to: "context_bridge" },
-    { from: "context_bridge", to: "isolation_gate" },
-    { from: "isolation_gate", to: "memory_recall" },
-    { from: "memory_recall", to: "plan" },
-    { from: "plan", to: "risk_router" },
-    { from: "plan", to: "parallel_branch" },
-    { from: "parallel_branch", to: "parallel_research" },
-    { from: "parallel_branch", to: "parallel_verify" },
-    { from: "parallel_branch", to: "execute" },
-    { from: "risk_router", to: "execute" },
-    { from: "risk_router", to: "api_call" },
-    { from: "risk_router", to: "approval" },
-    { from: "approval", to: "human_handoff" },
-    { from: "approval", to: "execute" },
-    { from: "human_handoff", to: "plan" },
-    { from: "execute", to: "transform" },
-    { from: "api_call", to: "transform" },
-    { from: "parallel_research", to: "transform" },
-    { from: "parallel_verify", to: "transform" },
-    { from: "transform", to: "validation" },
-    { from: "validation", to: "checkpoint" },
-    { from: "validation", to: "retry_loop" },
-    { from: "retry_loop", to: "execute" },
-    { from: "checkpoint", to: "task_memory" },
-    { from: "checkpoint", to: "heartbeat" },
-    { from: "heartbeat", to: "plan" },
-    { from: "task_memory", to: "notify" },
-    { from: "notify", to: "archive" },
+    { from: "entry", to: "entry_gate", edge_type: "success" },
+    { from: "entry_gate", to: "context_bridge", edge_type: "success" },
+    { from: "context_bridge", to: "isolation_gate", edge_type: "success" },
+    { from: "isolation_gate", to: "memory_recall", edge_type: "success" },
+    { from: "memory_recall", to: "plan", edge_type: "success" },
+    { from: "plan", to: "risk_router", edge_type: "success" },
+    // 并行分支：把互不依赖的检索/复核拆出去并行，再统一汇总
+    { from: "plan", to: "parallel_branch", edge_type: "uncertain" },
+    { from: "parallel_branch", to: "parallel_research", edge_type: "always" },
+    { from: "parallel_branch", to: "parallel_verify", edge_type: "always" },
+    { from: "parallel_research", to: "transform", edge_type: "success" },
+    { from: "parallel_verify", to: "transform", edge_type: "success" },
+    // 风险分流：低风险直接执行；需要外部系统走 API；高风险先审批
+    { from: "risk_router", to: "execute", edge_type: "success" },
+    { from: "risk_router", to: "api_call", edge_type: "uncertain" },
+    { from: "risk_router", to: "approval", edge_type: "failed" },
+    // 审批闸门：批准放行执行；拒绝交人工
+    { from: "approval", to: "execute", edge_type: "approved" },
+    { from: "approval", to: "human_handoff", edge_type: "rejected" },
+    { from: "human_handoff", to: "plan", edge_type: "success" },
+    { from: "execute", to: "transform", edge_type: "success" },
+    { from: "execute", to: "retry_loop", edge_type: "error" },
+    { from: "api_call", to: "transform", edge_type: "success" },
+    { from: "api_call", to: "retry_loop", edge_type: "error" },
+    { from: "transform", to: "validation", edge_type: "success" },
+    // 校验：通过→存档；不通过→重试
+    { from: "validation", to: "checkpoint", edge_type: "success" },
+    { from: "validation", to: "retry_loop", edge_type: "failed" },
+    // 重试循环：还能重试→绕回执行；重试用尽→交人工
+    { from: "retry_loop", to: "execute", edge_type: "retry" },
+    { from: "retry_loop", to: "human_handoff", edge_type: "failed" },
+    { from: "checkpoint", to: "task_memory", edge_type: "success" },
+    { from: "checkpoint", to: "heartbeat", edge_type: "uncertain" },
+    { from: "heartbeat", to: "plan", edge_type: "success" },
+    { from: "task_memory", to: "notify", edge_type: "success" },
+    { from: "notify", to: "archive", edge_type: "success" },
   ];
 }
 
@@ -2505,7 +2512,7 @@ function workflowNodeDropPosition(point, fallbackStage, index = 0) {
   };
 }
 
-function addWorkflowTemplateNode(templateId, point = null) {
+function addWorkflowTemplateNode(templateId, point = null, options = {}) {
   readAgentForm();
   ensureWorkflow();
   const template = WORKFLOW_NODE_TEMPLATES.find((item) => item.id === templateId) || WORKFLOW_NODE_TEMPLATES[0];
@@ -2520,13 +2527,13 @@ function addWorkflowTemplateNode(templateId, point = null) {
     y: pos.y,
   });
   selectedWorkflowNodeId = id;
-  workflowInspectorOpen = true;
+  workflowInspectorOpen = options.openInspector !== false;
   workflowDryRunReport = null;
   workflowCheckReport = null;
   setFeedback(`已添加节点：${template.title}。拖动画布上的节点即可调整位置。`);
 }
 
-function addRuntimeWorkflowNode(refType, refId, point = null) {
+function addRuntimeWorkflowNode(refType, refId, point = null, options = {}) {
   readAgentForm();
   ensureWorkflow();
   const ref = String(refType || "").trim();
@@ -2590,7 +2597,7 @@ function addRuntimeWorkflowNode(refType, refId, point = null) {
   node.y = pos.y;
   currentAgent.workflow_nodes.push(node);
   selectedWorkflowNodeId = node.id;
-  workflowInspectorOpen = true;
+  workflowInspectorOpen = options.openInspector !== false;
   workflowCheckReport = null;
   workflowDryRunReport = null;
   setFeedback(`已添加模块节点：${node.title}。`);
@@ -2757,7 +2764,7 @@ function render() {
   if (route === "canvas") renderCanvas();
   if (route === "workflow") renderWorkflowPage();
   if (route === "memory") renderMemoryPage();
-  if (route === "tasks") renderTasks();
+  if (route === "tasks") renderCanvas();
   if (route === "monitor") renderMonitor();
   if (route === "integrations") renderIntegrations();
   if (route === "settings") renderSettingsPage();
@@ -2785,7 +2792,7 @@ function renderLocked() {
   $("view").innerHTML = `
     <section class="panel">
       <h2>需要连接独立控制台</h2>
-      <p class="row-meta">如果你配置了访问密码，请回到登录页输入密码后刷新。</p>
+      <p class="row-meta">请确认插件的独立控制台已经启动，然后刷新页面。</p>
     </section>
   `;
 }
@@ -2915,8 +2922,8 @@ function systemStatusPanel() {
       <div class="status-grid">
         ${statusTile("心跳正常", m.heartbeat_online || 0, "ok", `${m.heartbeat_stale || 0} 异常 / ${m.heartbeat_offline || 0} 未开启`)}
         ${statusTile("记忆条目", state.memories?.length || 0, "", `${formatBytes(memoryEstimatedBytes())} 估算`)}
-        ${statusTile("插件/工具", `${pluginCount}/${toolCount}`, "ok", `${apiCount} 个自定义 API`)}
-        ${statusTile("WebUI", webui.standalone ? "在线" : "未启动", webui.standalone ? "ok" : "warn", webui.auth ? "密码验证已启用" : "未启用密码验证")}
+        ${statusTile("插件/工具", `${pluginCount}/${toolCount}`, "ok", `${apiCount} 个自定义接口`)}
+        ${statusTile("网页控制台", webui.standalone ? "在线" : "未启动", webui.standalone ? "ok" : "warn", webui.url || "等待启动")}
       </div>
     </section>
   `;
@@ -3086,14 +3093,13 @@ function renderSettingsPage() {
     <section class="settings-page">
       <div class="panel-head">
         <div><p class="card-kicker">设置</p><h2>插件配置、模块状态、导入导出</h2></div>
-        <button class="button" data-action="save-agent" type="button">保存当前 Agent</button>
+        <button class="button" data-action="save-agent" type="button">保存当前配置</button>
       </div>
       <section class="grid three">
         <div class="panel">
-          <div class="panel-head"><div><p class="card-kicker">插件配置</p><h3>WebUI</h3></div></div>
+          <div class="panel-head"><div><p class="card-kicker">插件配置</p><h3>网页控制台</h3></div></div>
           <div class="state-fields single">
             ${stateField("控制台地址", webui.url || "-")}
-            ${stateField("访问密码", webui.auth ? "已启用" : "未启用")}
             ${stateField("运行状态", webui.standalone ? "独立控制台在线" : "独立控制台未启动")}
           </div>
         </div>
@@ -3102,7 +3108,7 @@ function renderSettingsPage() {
           <div class="state-fields single">
             ${stateField("工具目录", `${state.tools?.length || 0} 个工具`)}
             ${stateField("多视角/验证", `${(state.integrations || state.modules || []).length} 个蓝图模块`)}
-            ${stateField("沙箱/外部 API", `${state.custom_apis?.length || 0} API / ${state.credentials?.length || 0} 凭证`)}
+            ${stateField("沙箱/外部接口", `${state.custom_apis?.length || 0} 个接口 / ${state.credentials?.length || 0} 个凭证`)}
           </div>
         </div>
         <div class="panel">
@@ -3360,109 +3366,92 @@ function taskRows(tasks, archive = false) {
 function renderCanvas() {
   currentAgent = ensureAgent(currentAgent || {});
   ensureWorkflow();
-  const currentName = agentDisplayName(currentAgent);
-  const stats = agentStats(currentAgent);
+  const a = currentAgent;
+  const agents = state.agents || [];
+  const task = selectedTask();
+  const runnableTask = activeTask();
+  const liveTask = runnableTask || (state.tasks || [])[0] || null;
+  const activeRows = state.tasks || [];
+  const archivedRows = state.archives || [];
+  const longTask = workflowHeartbeatOn(a);
   $("view").innerHTML = `
-    <section class="panel canvas-hero task-mode-hero">
-      <div class="canvas-hero-main">
-        <div>
-          <p class="card-kicker">当前任务模式配置</p>
-          <h2>${esc(currentName)}</h2>
-          <div class="module-meta">
-            ${badge(scopeLabel(currentAgent.application_scope), currentAgent.application_scope === "global" ? "ok" : "warn")}
-            ${badge(entryChannelLabel(currentAgent.entry_channel))}
-            ${badge(triggerLabel(currentAgent.trigger_mode || "confirm"))}
-            ${badge(currentAgent.enabled === false ? "已停用" : "已启用", currentAgent.enabled === false ? "bad" : "ok")}
+    <section class="scheme-page">
+      <aside class="scheme-sidebar">
+        <div class="panel scheme-list-panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">方案管理</p><h2>流程方案</h2></div>
           </div>
-          <div class="row-meta">${esc(currentAgent.agent_id || "新配置尚未保存")} · 运行 ${stats.active} · 触发 ${stats.triggers} · 消耗 ${formatTokens(stats.tokens)} · 待审批 ${stats.approvals}</div>
+          <div class="button-row scheme-actions">
+            <button class="button" data-action="new-agent" type="button">新建方案</button>
+            <button class="button secondary" data-action="duplicate-agent" type="button">复制</button>
+          </div>
+          <div class="list scheme-list">${agentRows()}</div>
+          <div class="scheme-current-actions">
+            <button class="button secondary" data-action="make-default" type="button" ${a.agent_id ? "" : "disabled"}>设为默认</button>
+            <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
+            <button class="button" data-action="save-agent" type="button">保存</button>
+          </div>
         </div>
-        <div class="inline-actions">
-          <button class="button secondary" data-action="new-agent" type="button">新建配置</button>
-          <button class="button secondary" data-action="duplicate-agent" type="button">复制配置</button>
-          <button class="button danger" data-action="delete-agent" type="button" ${((state.agents || []).length <= 1 || !currentAgent.agent_id) ? "disabled" : ""}>删除配置</button>
-          <button class="button secondary" data-action="make-default" type="button">设为默认</button>
-          <button class="button secondary" data-route="workflow" type="button">打开画布</button>
-          <button class="button" data-action="save-agent" type="button">保存配置</button>
-        </div>
-      </div>
-      ${agentPolicyOverview()}
-    </section>
+      </aside>
 
-    ${workflowAutomationPanel()}
+      <main class="scheme-main">
+        <section class="panel scheme-hero">
+          <div class="panel-head">
+            <div>
+              <p class="card-kicker">当前方案</p>
+              <h2>${esc(agentDisplayName(a))}</h2>
+            </div>
+            <button class="button" data-route="workflow" type="button">在画布编辑这个方案</button>
+          </div>
+          <div class="module-meta">
+            ${badge(a.enabled === false ? "已停用" : "已启用", a.enabled === false ? "bad" : "ok")}
+            ${badge(longTask ? "长任务·可续跑" : "事件/静态自动化", "info")}
+            ${badge(triggerLabel(a.trigger_mode || "confirm"))}
+            ${badge(`${a.workflow_nodes?.length || 0} 节点 / ${a.workflow_edges?.length || 0} 连线`)}
+          </div>
+          <p class="setting-hint-line">是否全局应用、入口方式、生效范围（群聊/私聊、黑白名单）等，现在都在<a data-route="workflow" class="inline-link">工作流画布</a>里用节点设置。这里只管方案的新建、切换和运行情况。</p>
+        </section>
 
-    <section class="panel task-mode-basic">
-      <div class="panel-head">
-        <div><p class="card-kicker">基础设置</p><h2>先决定何时进入任务模式</h2></div>
-        <button class="button secondary" data-route="tasks" type="button">查看任务状态</button>
-      </div>
-      <div class="form-grid task-mode-form">
-        <label>配置名称<input id="agent-name" value="${esc(currentAgent.name || "")}" placeholder="${esc(runtimeAgentName())}" /></label>
-        <label>底层模型供应商 ID<input id="provider-id" value="${esc(currentAgent.provider_id || "")}" placeholder="为空则使用当前会话模型" /></label>
-        <label>配置状态<select id="agent-enabled">${labeledOptions(["true", "false"], String(currentAgent.enabled !== false), (value) => value === "true" ? "启用" : "停用")}</select></label>
-        <label>触发模式<select id="trigger-mode">${labeledOptions(["manual", "confirm", "smart", "always"], currentAgent.trigger_mode || "confirm", triggerLabel)}</select></label>
-        <label>开启确认<select id="entry-require-confirmation">${labeledOptions(["true", "false"], String(currentAgent.entry_policy.require_confirmation !== false), (value) => value === "true" ? "需要确认" : "直接开启")}</select></label>
-        <label>隔离模式<select id="isolation-mode">${labeledOptions(["strict", "session", "off"], currentAgent.isolation_policy.mode || "strict", isolationModeLabel)}</select></label>
-        <label>工具模式<select id="tool-mode">${labeledOptions(["whitelist", "no_external", "full"], currentAgent.isolation_policy.tool_mode || "whitelist", toolModeLabel)}</select></label>
-        <label>审批模式<select id="approval-mode">${labeledOptions(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
-      </div>
-      <div class="choice-grid two-choice compact-choice">
-        ${["entry", "global"].map((scope) => `
-          <button class="choice-card ${currentAgent.application_scope === scope ? "active" : ""}" data-action="set-agent-scope" data-id="${scope}" type="button">
-            <strong>${esc(scopeLabel(scope))}</strong>
-            <span>${esc(scopeHint(scope))}</span>
-          </button>
-        `).join("")}
-      </div>
-      <div class="choice-grid three-choice compact-choice">
-        ${["command", "natural", "webui"].map((channel) => `
-          <button class="choice-card ${currentAgent.entry_channel === channel ? "active" : ""}" data-action="set-entry-channel" data-id="${channel}" type="button">
-            <strong>${esc(entryChannelLabel(channel))}</strong>
-            <span>${esc(entryChannelHint(channel))}</span>
-          </button>
-        `).join("")}
-      </div>
-    </section>
+        <section class="panel task-entry-panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">手动入口</p><h2>用这个方案进入任务模式</h2></div>
+          </div>
+          <div class="form-grid task-entry-grid">
+            <label>会话 UMO<input id="umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
+            <label>风险级别<select id="task-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
+            <label class="span-2">任务目标<textarea id="goal" rows="2">请把当前任务作为任务模式管理起来。</textarea></label>
+            <label class="span-2">完成条件<input id="completion" value="${esc((a.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
+            <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
+            <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
+          </div>
+          <div class="button-row"><button class="button" data-action="start-task" type="button">进入任务模式</button></div>
+        </section>
 
-    <section class="grid two setup-grid">
-      <div class="panel">
-        <div class="panel-head">
-          <div><p class="card-kicker">手动入口</p><h2>从 WebUI 创建任务</h2></div>
-        </div>
-        <div class="form-grid">
-          <label>会话 UMO<input id="canvas-umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
-          <label>风险级别<select id="canvas-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
-          <label class="span-2">任务目标<textarea id="canvas-goal" rows="3">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
-          <label class="span-2">完成条件<input id="canvas-completion" value="${esc((currentAgent.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
-          <label class="span-2">入口补充<textarea id="canvas-brief" rows="3" placeholder="可写入刚刚确认过的计划、约束、授权范围。"></textarea></label>
-          <label class="check-line span-2"><input id="canvas-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
-        </div>
-        <div class="button-row">
-          <button class="button" data-action="canvas-start-task" type="button">进入任务模式</button>
-          <button class="button secondary" data-route="workflow" type="button">先调整工作流</button>
-        </div>
-      </div>
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">资产列表</p><h2>选择任务模式配置</h2></div></div>
-        <div class="list">${agentRows()}</div>
-      </div>
-    </section>
+        ${liveConsolePanel(liveTask, Boolean(runnableTask))}
 
-    <section class="panel">
-      <details class="advanced-json task-advanced">
-        <summary>高级策略与提示词</summary>
-        <div class="form-grid task-mode-form">
-          <label>退出后恢复<select id="restore-on-exit">${labeledOptions(["true", "false"], String(currentAgent.isolation_policy.restore_on_exit !== false), (value) => value === "true" ? "恢复会话隔离快照" : "保留当前会话状态")}</select></label>
-          <label>记忆模式<select id="memory-mode">${labeledOptions(["inherit", "task_filtered", "strict"], currentAgent.memory_policy.mode || "task_filtered", memoryModeLabel)}</select></label>
-          <label>心跳模式<select id="heartbeat-mode">${labeledOptions(["off", "manual", "auto"], currentAgent.heartbeat_policy.mode || "manual", heartbeatModeLabel)}</select></label>
-          <label>允许心跳<select id="heartbeat-allowed">${labeledOptions(["true", "false"], String(currentAgent.heartbeat_policy.allowed !== false), (value) => value === "true" ? "允许" : "禁止")}</select></label>
-          <label>上下文摘要轮数<input id="entry-summary-turns" type="number" min="1" value="${esc(currentAgent.memory_policy.entry_summary_turns || 24)}" /></label>
-          <label>心跳 Cron<input id="heartbeat-cron" value="${esc(currentAgent.heartbeat_policy.cron_expression || "*/5 * * * *")}" /></label>
-          <label class="span-2">隔离说明<textarea id="isolation-notes" rows="3">${esc(currentAgent.isolation_policy.notes || "")}</textarea></label>
-          <label class="span-2">任务模式补充提示词<textarea id="system-prompt" rows="5">${esc(currentAgent.system_prompt || "")}</textarea></label>
-          <label class="span-2">每轮执行协议<textarea id="task-prompt" rows="5">${esc(currentAgent.task_prompt || "")}</textarea></label>
-        </div>
-        <div class="note-line">入口暗号、任务关键词、确认话术、默认完成条件、结束暗号和工作流 JSON 已放到工作流画布中维护。</div>
-      </details>
+        <section class="panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">运行中的任务</p><h2>活跃 ${activeRows.length} · 归档 ${archivedRows.length}</h2></div>
+          </div>
+          <div class="task-list scheme-task-list">
+            ${taskConsoleRows(activeRows)}
+            ${archivedRows.length ? `<p class="card-kicker console-archive-title">归档任务</p>${taskConsoleRows(archivedRows.slice(0, 18), true)}` : ""}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <div><p class="card-kicker">任务详情</p><h2>${task ? esc(task.root_goal || task.task_id) : "请选择或创建任务"}</h2></div>
+            <div class="inline-actions">
+              <button class="button secondary" data-action="tick-task" ${runnableTask ? "" : "disabled"} type="button">Tick</button>
+              <button class="button secondary" data-action="toggle-heartbeat" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开启心跳"}</button>
+              <button class="button secondary" data-action="finish-task" ${runnableTask ? "" : "disabled"} type="button">完成</button>
+              <button class="button danger" data-action="cancel-task" ${runnableTask ? "" : "disabled"} type="button">取消</button>
+            </div>
+          </div>
+          ${task ? taskDetail(task) : `<div class="empty">请选择或创建任务。</div>`}
+        </section>
+      </main>
     </section>
   `;
 }
@@ -3521,24 +3510,12 @@ function workflowRightDock(report) {
         <button class="workflow-dock-button" data-action="workflow-redo" title="重做" aria-label="重做" ${workflowHistoryFuture.length ? "" : "disabled"} type="button">${iconImg("redo", "重做")}</button>
       </div>
       <div class="workflow-dock-group">
-        <button class="workflow-dock-button text" data-action="check-workflow" title="静态检查" aria-label="静态检查" type="button">${valid ? "OK" : "CHK"}</button>
-        <button class="workflow-dock-button text" data-action="dry-run-workflow" title="预跑诊断" aria-label="预跑诊断" type="button">RUN</button>
-        <button class="workflow-dock-button text" data-action="auto-layout-workflow" title="自动整理" aria-label="自动整理" type="button">LAY</button>
-        <button class="workflow-dock-button text" data-action="reset-workflow" title="恢复默认工作流" aria-label="恢复默认工作流" type="button">RST</button>
-      </div>
-      <div class="workflow-dock-group">
-        <button class="workflow-dock-button text ${workflowGlobalOpen ? "active" : ""}" data-action="open-workflow-global" title="全局规则：整套工作流的安全准则 / 参考 / Skills" aria-label="全局规则" type="button">全局</button>
+        <button class="workflow-dock-button text ${workflowGlobalOpen ? "active" : ""}" data-action="open-workflow-global" title="全局规则：整套工作流的安全准则 / 参考 / 技能" aria-label="全局规则" type="button">全局</button>
       </div>
       <div class="workflow-dock-group">
         <button class="workflow-dock-button text" data-action="workflow-zoom-in" title="放大" aria-label="放大" type="button">+</button>
         <button class="workflow-dock-button text" data-action="workflow-focus-content" title="聚焦到内容(快捷键 F)" aria-label="聚焦内容" type="button">FOC</button>
-        <button class="workflow-dock-button text" data-action="workflow-fit" title="适配画布" aria-label="适配画布" type="button">FIT</button>
-        <button class="workflow-dock-button text" data-action="workflow-zoom-reset" title="100%" aria-label="100%" type="button">1:1</button>
         <button class="workflow-dock-button text" data-action="workflow-zoom-out" title="缩小" aria-label="缩小" type="button">-</button>
-      </div>
-      <div class="workflow-dock-group">
-        <button class="workflow-dock-button" data-action="toggle-workflow-toolbox" title="${workflowToolboxOpen ? "收起素材" : "打开素材"}" aria-label="${workflowToolboxOpen ? "收起素材" : "打开素材"}" type="button">${iconImg("menu", "素材")}</button>
-        <button class="workflow-dock-button text primary" data-action="save-agent" title="保存方案" aria-label="保存方案" type="button">SAVE</button>
       </div>
     </aside>
   `;
@@ -3654,6 +3631,17 @@ function applyWorkflowNodeFromInspector() {
   if (document.getElementById("workflow-entry-trigger-keywords")) currentAgent.entry_policy.trigger_keywords = linesToList($("workflow-entry-trigger-keywords").value);
   if (document.getElementById("workflow-entry-confirmation-text")) currentAgent.entry_policy.confirmation_text = $("workflow-entry-confirmation-text").value.trim();
   if (document.getElementById("workflow-exit-phrases")) currentAgent.entry_policy.exit_phrases = linesToList($("workflow-exit-phrases").value);
+  if (document.getElementById("scope-global")) {
+    currentAgent.application_scope = document.getElementById("scope-global").checked ? "global" : "entry";
+    currentAgent.workflow_scope ||= {};
+    currentAgent.workflow_scope.chat_types = checkedValues("scope-chat-type");
+    if (!currentAgent.workflow_scope.chat_types.length) currentAgent.workflow_scope.chat_types = ["private"];
+    currentAgent.workflow_scope.admin_only = document.getElementById("scope-admin-only")?.checked || false;
+    currentAgent.workflow_scope.group_allowlist = linesToList($("scope-group-allow")?.value || "");
+    currentAgent.workflow_scope.group_denylist = linesToList($("scope-group-deny")?.value || "");
+    currentAgent.workflow_scope.user_allowlist = linesToList($("scope-user-allow")?.value || "");
+    currentAgent.workflow_scope.user_denylist = linesToList($("scope-user-deny")?.value || "");
+  }
   if (document.getElementById("workflow-default-completion-conditions")) currentAgent.entry_policy.default_completion_conditions = linesToList($("workflow-default-completion-conditions").value);
 
   currentAgent.workflow_edges = currentAgent.workflow_edges.map((edge) => ({
@@ -3683,11 +3671,8 @@ function renderWorkflowPage() {
         ${workflowCanvas()}
         ${workflowContextMenuHtml()}
       </main>
+      <div class="workflow-top-hotzone" aria-hidden="true"></div>
       <header class="workflow-page-top">
-        <div class="workflow-page-title">
-          <span>工作流方案</span>
-          <strong>${esc(agentDisplayName(currentAgent))}</strong>
-        </div>
         <label class="workflow-agent-picker">
           <span>当前方案</span>
           <select data-action="workflow-agent-select">
@@ -3695,23 +3680,16 @@ function renderWorkflowPage() {
           </select>
         </label>
         <div class="workflow-page-status">
-          ${badge(`${currentAgent.workflow_nodes.length} 节点`)}
-          ${badge(`${currentAgent.workflow_edges.length} 连线`)}
+          ${badge(`${currentAgent.workflow_nodes.length} 节点 / ${currentAgent.workflow_edges.length} 连线`)}
           ${badge(workflowKindSummary(currentAgent), "info")}
-          ${badge(workflowHeartbeatSummary(currentAgent), workflowHeartbeatOn(currentAgent) ? "ok" : "")}
           ${badge(report.valid ? "检查通过" : `${report.errors || 0} 错误 / ${report.warnings || 0} 提醒`, report.valid ? "ok" : "warn")}
         </div>
-        <div class="workflow-scheme-actions">
-          <button class="button tiny secondary" data-action="new-agent" type="button">新建</button>
-          <button class="button tiny secondary" data-action="duplicate-agent" type="button">复制</button>
-          <button class="button tiny secondary" data-action="make-default" type="button">默认</button>
-          <button class="button tiny danger" data-action="delete-agent" ${((state.agents || []).length <= 1 || !currentAgent.agent_id) ? "disabled" : ""} type="button">删除</button>
-        </div>
-        <div class="workflow-template-bar">
-          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="code_task" type="button">代码</button>
-          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="research_task" type="button">研究</button>
-          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="plugin_call" type="button">插件</button>
-          <button class="button tiny secondary" data-action="apply-workflow-template" data-id="long_heartbeat" type="button">心跳</button>
+        <div class="workflow-top-tools">
+          <button class="button tiny secondary" data-action="check-workflow" type="button">静态检查</button>
+          <button class="button tiny secondary" data-action="dry-run-workflow" type="button">预跑诊断</button>
+          <button class="button tiny secondary" data-action="auto-layout-workflow" type="button">自动整理</button>
+          <button class="button tiny secondary" data-action="toggle-workflow-toolbox" type="button">${workflowToolboxOpen ? "收起素材" : "打开素材"}</button>
+          <button class="button tiny" data-action="save-agent" type="button">保存</button>
         </div>
       </header>
       ${workflowRightDock(report)}
@@ -3736,7 +3714,7 @@ function renderWorkflowPage() {
         <div class="workflow-modal-backdrop" data-action="close-workflow-global"></div>
         <section class="workflow-inspector-drawer workflow-global-drawer" role="dialog" aria-modal="true">
           <div class="drawer-head">
-            <div><p class="card-kicker">全局规则</p><h3>整套工作流的准则 / 参考 / Skills</h3></div>
+            <div><p class="card-kicker">全局规则</p><h3>整套工作流的准则 / 参考 / 技能</h3></div>
           </div>
           <div class="drawer-scroll">
             ${workflowGlobalEditor()}
@@ -3761,7 +3739,7 @@ function workflowGlobalEditor() {
         const name = String(sk.name || sk.id || "").trim();
         return `<label class="check-line"><input type="checkbox" data-global-skill="${esc(name)}" ${enabledSkills.has(name) ? "checked" : ""} /> <span>${esc(name)}</span><small>${esc(sk.path || sk.description || "")}</small></label>`;
       }).join("")
-    : `<div class="empty">还没有可用的 Skills。可在『插件与集成 → Skills 规则』里管理。</div>`;
+    : `<div class="empty">还没有可用的技能。可在『插件与集成 → 技能规则』里管理。</div>`;
   const requireList = Array.isArray(a.approval_policy.require_approval) ? a.approval_policy.require_approval.join("\n") : "";
   const preList = Array.isArray(a.approval_policy.preapproved_scopes) ? a.approval_policy.preapproved_scopes.join("\n") : "";
   return `
@@ -3789,7 +3767,7 @@ function workflowGlobalEditor() {
         </label>
       </section>
       <section class="workflow-editor-section simple-editor">
-        <h4>整条流程启用的 Skills（参考规则）</h4>
+        <h4>整条流程启用的技能（参考规则）</h4>
         ${skillRows}
       </section>
       <section class="workflow-editor-section simple-editor">
@@ -4134,8 +4112,6 @@ function workflowCanvas() {
       </div>
       <div class="workflow-zoom-controls">
         <button class="button tiny secondary" data-action="workflow-zoom-out" type="button">缩小</button>
-        <button class="button tiny secondary" data-action="workflow-fit" type="button">适配</button>
-        <button class="button tiny secondary" data-action="workflow-zoom-reset" type="button">100%</button>
         <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
       </div>
     </div>
@@ -4174,7 +4150,7 @@ function workflowMaterialChip(item, options = {}) {
       data-title="${esc(item.title || item.id || "")}"
       data-instruction="${esc(hint)}"
       data-runtime-type="${esc(workflowRuntimeType(item))}"
-      draggable="true"
+      draggable="false"
       data-drag-kind="${esc(dragKind)}"
       title="拖到画布添加：${esc(hint)}"
       type="button">
@@ -4481,17 +4457,24 @@ function workflowNodeOutAnchor(node, port, offsetX = 0, offsetY = 0) {
   const leftX = Number(node.x || 0) + offsetX;
   const baseX = leftX + WORKFLOW_NODE_WIDTH;
   const top = Number(node.y || 0) + offsetY;
-  // retry 出口从左侧离开，形成回环视觉
-  if (port === "retry" && ports.includes("retry")) {
-    return { x: leftX, y: top + WORKFLOW_NODE_HEIGHT / 2, loop: true };
+  const isLoopNode = ports.includes("retry");
+  if (isLoopNode) {
+    // 重试出口从右侧离开并回环；其余出口从左侧离开
+    if (port === "retry") {
+      return { x: baseX, y: top + WORKFLOW_NODE_HEIGHT / 2, loop: true };
+    }
+    const leftOuts = ports.filter((t) => t !== "retry");
+    let li = leftOuts.indexOf(port);
+    if (li < 0) li = 0;
+    const lspan = WORKFLOW_NODE_HEIGHT / (leftOuts.length + 1);
+    return { x: leftX, y: top + lspan * (li + 1), leftExit: true };
   }
   if (!workflowNodeHasMultiOut(node) || ports.length <= 1) {
     return { x: baseX, y: top + WORKFLOW_NODE_HEIGHT / 2 };
   }
-  const fwd = ports.filter((t) => t !== "retry");
-  let idx = fwd.indexOf(port);
+  let idx = ports.indexOf(port);
   if (idx < 0) idx = 0;
-  const span = WORKFLOW_NODE_HEIGHT / (fwd.length + 1);
+  const span = WORKFLOW_NODE_HEIGHT / (ports.length + 1);
   return { x: baseX, y: top + span * (idx + 1) };
 }
 
@@ -4614,10 +4597,15 @@ function workflowLinkPath(from, to) {
   const y1 = Number(from.y || 0);
   const x2 = Number(to.x || 0);
   const y2 = Number(to.y || 0);
-  // 回环连线（retry 从左侧出发）：先往左甩出去再绕回目标，形成明显的"环"。
+  // retry 回环连线（从右侧出发，往右甩出去再绕回目标），形成明显的"环"。
   if (from.loop) {
+    const out = 90;
+    return `M ${x1} ${y1} C ${x1 + out} ${y1}, ${x2 + out} ${y2}, ${x2} ${y2}`;
+  }
+  // 左侧出口（重试节点的成功/失败/错误）：从左边出发走向目标。
+  if (from.leftExit) {
     const out = 80;
-    return `M ${x1} ${y1} C ${x1 - out} ${y1}, ${x2 - out} ${y2}, ${x2} ${y2}`;
+    return `M ${x1} ${y1} C ${x1 - out} ${y1}, ${x2 + out} ${y2}, ${x2} ${y2}`;
   }
   const distance = Math.abs(x2 - x1);
   const bend = clamp(distance * 0.48, 90, 260);
@@ -4744,22 +4732,29 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
     : "";
   // 输出端口：多出口节点按类型分别画带标签的端口；其余单出口
   let outPortsHtml = "";
-  if (workflowNodeHasMultiOut(item)) {
+  const isLoopNode = (ports.outputs || []).includes("retry");
+  if (isLoopNode) {
+    // 重试循环：重试(回环)出口放右侧，其余出口(成功/失败/错误)放左侧。视觉上"往右绕回去重试，正常结果往左走下一步"。
     const outs = ports.outputs || ["success"];
-    // retry 出口画在左侧（回环），其余出口在右侧均匀分布；这样"重试"在视觉上是往回绕的环。
-    const loopOuts = outs.filter((t) => t === "retry");
-    const fwdOuts = outs.filter((t) => t !== "retry");
-    const fwdHtml = fwdOuts.map((type, idx) => {
-      const span = 100 / (fwdOuts.length + 1);
+    const leftOuts = outs.filter((t) => t !== "retry");
+    const leftHtml = leftOuts.map((type, idx) => {
+      const span = 100 / (leftOuts.length + 1);
+      const topPct = span * (idx + 1);
+      const pend = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === type;
+      return `<span class="node-port node-port-out node-port-typed node-port-left ${pend ? "pending" : ""}" data-port="${esc(type)}" data-edge-type="${esc(type)}" data-node-id="${esc(item.id)}" style="top:${topPct}%;--port-color:${workflowEdgeColor(type)}" title="${esc(workflowPortShortLabel(type))}出口"><i class="port-tag port-tag-left" style="--port-color:${workflowEdgeColor(type)}">${esc(workflowPortShortLabel(type))}</i></span>`;
+    }).join("");
+    const pendR = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "retry";
+    const retryHtml = `<span class="node-port node-port-out node-port-typed node-port-loop ${pendR ? "pending" : ""}" data-port="retry" data-edge-type="retry" data-node-id="${esc(item.id)}" style="--port-color:${workflowEdgeColor("retry")}" title="重试（绕回去再试一次）"><i class="port-tag" style="--port-color:${workflowEdgeColor("retry")}">↺ 重试</i></span>`;
+    outPortsHtml = leftHtml + retryHtml;
+  } else if (workflowNodeHasMultiOut(item)) {
+    const outs = ports.outputs || ["success"];
+    const fwdHtml = outs.map((type, idx) => {
+      const span = 100 / (outs.length + 1);
       const topPct = span * (idx + 1);
       const pend = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === type;
       return `<span class="node-port node-port-out node-port-typed ${pend ? "pending" : ""}" data-port="${esc(type)}" data-edge-type="${esc(type)}" data-node-id="${esc(item.id)}" style="top:${topPct}%;--port-color:${workflowEdgeColor(type)}" title="${esc(workflowPortShortLabel(type))}出口"><i class="port-tag" style="--port-color:${workflowEdgeColor(type)}">${esc(workflowPortShortLabel(type))}</i></span>`;
     }).join("");
-    const loopHtml = loopOuts.map((type) => {
-      const pend = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === type;
-      return `<span class="node-port node-port-out node-port-typed node-port-loop ${pend ? "pending" : ""}" data-port="${esc(type)}" data-edge-type="${esc(type)}" data-node-id="${esc(item.id)}" style="--port-color:${workflowEdgeColor(type)}" title="${esc(workflowPortShortLabel(type))}（回到上一步重试）"><i class="port-tag port-tag-left" style="--port-color:${workflowEdgeColor(type)}">↺ ${esc(workflowPortShortLabel(type))}</i></span>`;
-    }).join("");
-    outPortsHtml = fwdHtml + loopHtml;
+    outPortsHtml = fwdHtml;
   } else {
     const pendingOut = workflowPendingPort?.nodeId === item.id && (workflowPendingPort?.port === "out" || workflowPendingPort?.port === "success");
     outPortsHtml = `<span class="node-port node-port-out ${pendingOut ? "pending" : ""}" data-port="out" data-edge-type="success" data-node-id="${esc(item.id)}" title="输出连接点"></span>`;
@@ -4823,8 +4818,8 @@ const WORKFLOW_SIMPLE_FIELDS = {
       placeholder: "填了就先按关键词判断，省一次模型调用" },
   ],
   scope_filter: [
-    { field: "_scope", label: "范围由整条工作流的『触发范围』决定", type: "note",
-      text: "私聊/群聊、白名单、管理员限制在工作流设置里配置；通过走 success，不通过走 failed。" },
+    { field: "_scope", label: "在下方『生效范围』里填写", type: "note",
+      text: "选全局或填群聊/私聊、群和用户的黑白名单；命中走『成功』出口，不命中走『失败』出口。" },
   ],
   schedule_trigger: [
     { field: "_cron", label: "定时规则在工作流『触发』里配置 cron", type: "note",
@@ -4922,7 +4917,7 @@ const WORKFLOW_SIMPLE_FIELDS = {
   ],
   credential_ref: [
     { field: "credential_id", label: "用哪个账号/凭证？", type: "credPick", required: true,
-      hint: "在『插件与集成 → 凭证库』里先保存 GitHub Token、B站 Cookie 等；这里只引用，不显示密钥。" },
+      hint: "在『插件与集成 → 凭证库』里先保存 GitHub 令牌、B站 Cookie 等；这里只引用，不显示密钥。" },
     { field: "provider", label: "用于哪个网站/平台？", type: "text", placeholder: "如：github.com / bilibili.com" },
     { field: "account", label: "账号名（可选）", type: "text", placeholder: "如：你的用户名" },
   ],
@@ -5129,6 +5124,7 @@ function workflowInspector() {
   const stage = workflowStage(item);
   const isEntryNode = stage === "entry" || ["summarize_entry", "confirm_entry"].includes(item.action);
   const isExitNode = stage === "archive" || ["archive", "exit_summary"].includes(item.action);
+  const isScopeNode = item.action === "scope_filter";
   const mode = workflowEditorMode === "advanced" ? "advanced" : "simple";
   const body = mode === "advanced" ? workflowInspectorAdvanced(item) : workflowSimpleEditor(item);
   const entryRule = isEntryNode ? `
@@ -5143,6 +5139,21 @@ function workflowInspector() {
       <div class="panel-head"><div><p class="card-kicker">出口规则</p><h3>结束回流</h3></div></div>
       <label>结束暗号/命令<textarea id="workflow-exit-phrases" rows="3" placeholder="每行一个，例如：完成任务">${esc(listToLines(currentAgent.entry_policy.exit_phrases))}</textarea></label>
       <label>默认验收条件<textarea id="workflow-default-completion-conditions" rows="3">${esc(listToLines(currentAgent.entry_policy.default_completion_conditions))}</textarea></label>
+    </div>` : "";
+  const sc = currentAgent.workflow_scope || {};
+  const scopeRule = isScopeNode ? `
+    <div class="workflow-node-rule-box">
+      <div class="panel-head"><div><p class="card-kicker">生效范围</p><h3>这个方案在哪里生效</h3></div></div>
+      <label class="check-line"><input type="checkbox" id="scope-global" ${currentAgent.application_scope === "global" ? "checked" : ""} /> 全局应用（所有会话都参与，不只入口命中时）</label>
+      <label>生效会话类型<div class="choice-grid compact-choice">${checkboxGroupHtml("scope-chat-type", WORKFLOW_CHAT_TYPES, sc.chat_types || ["private"], workflowChatTypeLabel)}</div></label>
+      <label class="check-line"><input type="checkbox" id="scope-admin-only" ${sc.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
+      <div class="form-grid compact">
+        <label>群聊白名单（填群号，每行一个）<textarea id="scope-group-allow" rows="2" placeholder="只允许这些群；留空＝不限">${esc(listToLines(sc.group_allowlist || []))}</textarea></label>
+        <label>群聊黑名单<textarea id="scope-group-deny" rows="2" placeholder="这些群不触发">${esc(listToLines(sc.group_denylist || []))}</textarea></label>
+        <label>用户白名单（填 QQ/用户号）<textarea id="scope-user-allow" rows="2" placeholder="只允许这些人；留空＝不限">${esc(listToLines(sc.user_allowlist || []))}</textarea></label>
+        <label>用户黑名单<textarea id="scope-user-deny" rows="2" placeholder="这些人不触发">${esc(listToLines(sc.user_denylist || []))}</textarea></label>
+      </div>
+      <small class="field-hint">命中范围走『成功』出口，不命中走『失败』出口。</small>
     </div>` : "";
   const idField = mode === "simple" ? `<input type="hidden" id="workflow-node-id" value="${esc(item.id)}" />` : "";
   return `
@@ -5163,6 +5174,7 @@ function workflowInspector() {
       ${body}
       ${entryRule}
       ${exitRule}
+      ${scopeRule}
       <div class="button-row">
         <button class="button" data-action="apply-workflow-node" type="button">应用节点</button>
         <button class="button danger" data-action="delete-workflow-node" type="button">删除节点</button>
@@ -5247,11 +5259,11 @@ function readAgentForm() {
   } else if (isAutoIdentitySource(currentAgent.identity_label_source)) {
     currentAgent.identity_label_source = "manual";
   }
-  currentAgent.provider_id = $("provider-id").value.trim();
-  currentAgent.enabled = $("agent-enabled").value === "true";
+  if ($("provider-id")) currentAgent.provider_id = $("provider-id").value.trim();
+  if ($("agent-enabled")) currentAgent.enabled = $("agent-enabled").value === "true";
   currentAgent.application_scope = ["entry", "global"].includes(currentAgent.application_scope) ? currentAgent.application_scope : "entry";
   currentAgent.entry_channel = ["command", "natural", "webui"].includes(currentAgent.entry_channel) ? currentAgent.entry_channel : "command";
-  currentAgent.trigger_mode = $("trigger-mode").value;
+  if ($("trigger-mode")) currentAgent.trigger_mode = $("trigger-mode").value;
   if ($("workflow-trigger-enabled")) {
     currentAgent.workflow_trigger = {
       enabled: $("workflow-trigger-enabled").value === "true",
@@ -5282,22 +5294,22 @@ function readAgentForm() {
   }
   if ($("entry-trigger-phrases")) currentAgent.entry_policy.trigger_phrases = linesToList($("entry-trigger-phrases").value);
   if ($("entry-trigger-keywords")) currentAgent.entry_policy.trigger_keywords = linesToList($("entry-trigger-keywords").value);
-  currentAgent.entry_policy.require_confirmation = $("entry-require-confirmation").value === "true";
+  if ($("entry-require-confirmation")) currentAgent.entry_policy.require_confirmation = $("entry-require-confirmation").value === "true";
   if ($("entry-confirmation-text")) currentAgent.entry_policy.confirmation_text = $("entry-confirmation-text").value.trim();
   if ($("default-completion-conditions")) currentAgent.entry_policy.default_completion_conditions = linesToList($("default-completion-conditions").value);
   if ($("exit-phrases")) currentAgent.entry_policy.exit_phrases = linesToList($("exit-phrases").value);
-  currentAgent.isolation_policy.mode = $("isolation-mode").value;
-  currentAgent.isolation_policy.tool_mode = $("tool-mode").value;
-  currentAgent.isolation_policy.restore_on_exit = $("restore-on-exit").value === "true";
-  currentAgent.isolation_policy.notes = $("isolation-notes").value.trim();
-  currentAgent.memory_policy.mode = $("memory-mode").value;
-  currentAgent.memory_policy.entry_summary_turns = Number($("entry-summary-turns").value || 24);
-  currentAgent.approval_policy.mode = $("approval-mode").value;
-  currentAgent.heartbeat_policy.mode = $("heartbeat-mode").value;
-  currentAgent.heartbeat_policy.allowed = $("heartbeat-allowed").value === "true";
-  currentAgent.heartbeat_policy.cron_expression = $("heartbeat-cron").value.trim() || "*/5 * * * *";
-  currentAgent.system_prompt = $("system-prompt").value;
-  currentAgent.task_prompt = $("task-prompt").value;
+  if ($("isolation-mode")) currentAgent.isolation_policy.mode = $("isolation-mode").value;
+  if ($("tool-mode")) currentAgent.isolation_policy.tool_mode = $("tool-mode").value;
+  if ($("restore-on-exit")) currentAgent.isolation_policy.restore_on_exit = $("restore-on-exit").value === "true";
+  if ($("isolation-notes")) currentAgent.isolation_policy.notes = $("isolation-notes").value.trim();
+  if ($("memory-mode")) currentAgent.memory_policy.mode = $("memory-mode").value;
+  if ($("entry-summary-turns")) currentAgent.memory_policy.entry_summary_turns = Number($("entry-summary-turns").value || 24);
+  if ($("approval-mode")) currentAgent.approval_policy.mode = $("approval-mode").value;
+  if ($("heartbeat-mode")) currentAgent.heartbeat_policy.mode = $("heartbeat-mode").value;
+  if ($("heartbeat-allowed")) currentAgent.heartbeat_policy.allowed = $("heartbeat-allowed").value === "true";
+  if ($("heartbeat-cron")) currentAgent.heartbeat_policy.cron_expression = $("heartbeat-cron").value.trim() || "*/5 * * * *";
+  if ($("system-prompt")) currentAgent.system_prompt = $("system-prompt").value;
+  if ($("task-prompt")) currentAgent.task_prompt = $("task-prompt").value;
   readWorkflowJsonDraft();
 }
 
@@ -5335,7 +5347,7 @@ function renderTasks() {
           <div class="form-grid task-entry-grid">
             <label>会话 UMO<input id="umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
             <label>风险级别<select id="task-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
-            <label class="span-2">任务目标<textarea id="goal" rows="2">请把当前任务作为 Agent Mode 管理起来。</textarea></label>
+            <label class="span-2">任务目标<textarea id="goal" rows="2">请把当前任务作为任务模式管理起来。</textarea></label>
             <label class="span-2">完成条件<input id="completion" value="${esc((currentAgent.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
             <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
             <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
@@ -5647,17 +5659,17 @@ function instanceRow(task) {
 
 function renderIntegrations() {
   const tabs = [
-    ["plugins", "AstrBot 插件隔离", "禁用会注入上下文的插件", (state.plugins || []).length],
+    ["plugins", "插件管理", "控制任务模式可见的插件", (state.plugins || []).length],
     ["tools", "注册工具", "按来源插件折叠工具白名单", (state.tools || []).length],
-    ["apis", "自定义 API", "把外部服务注册为受管工具", (state.custom_apis || []).length],
-    ["credentials", "凭证库", "统一加密保存 API Key", (state.credentials || []).length],
-    ["skills", "Skills 规则", "编辑任务模式补充约束", (state.skills || []).length],
-    ["blueprints", "外部方案蓝图", "接入外部 agent 方法论", (state.integrations || state.modules || []).length],
+    ["apis", "自定义接口", "把外部服务注册为受管工具", (state.custom_apis || []).length],
+    ["credentials", "凭证库", "统一加密保存接口密钥", (state.credentials || []).length],
+    ["skills", "技能规则", "编辑任务模式补充约束", (state.skills || []).length],
+    ["blueprints", "外部方案蓝图", "接入外部任务方案", (state.integrations || state.modules || []).length],
   ];
   $("view").innerHTML = `
     <section class="integration-shell">
       <div class="panel-head">
-        <div><p class="card-kicker">能力边界</p><h2>插件与集成页</h2></div>
+        <div><p class="card-kicker">能力边界</p><h2>插件与集成</h2></div>
         <button class="button" data-action="save-agent" type="button">保存当前配置</button>
       </div>
       <div class="integration-layout">
@@ -5716,11 +5728,11 @@ function pluginPanel() {
   };
   return `
     <div class="section-note">
-      这里管理 AstrBot 内部插件在 Agent Mode 里的可见性。AstrBot 全局停用的插件会固定关闭；Agent Mode 只能进一步关闭插件，不能绕过 AstrBot 原生插件管理把它复活。
+      这里管理 AstrBot 插件在任务模式里的可见性。AstrBot 全局停用的插件会固定关闭；任务模式只能进一步关闭插件，不能绕过 AstrBot 原生插件管理把它重新启用。
     </div>
     <input class="filter-input" data-action="filter-plugins" value="${esc(pluginFilter)}" placeholder="筛选插件名、目录或说明" />
     <details class="collapse-group" open>
-      <summary>可用于 Agent Mode 的插件 <span>${activeRows.length}</span></summary>
+      <summary>可用于任务模式的插件 <span>${activeRows.length}</span></summary>
       <div class="capability-list">${activeRows.map(renderPlugin).join("") || `<div class="empty">没有匹配的启用插件。</div>`}</div>
     </details>
     <details class="collapse-group">
@@ -5820,9 +5832,9 @@ function skillsPanel() {
   return `
     <section class="grid two">
       <div class="panel-lite">
-        <div class="panel-head"><div><p class="card-kicker">规则</p><h3>任务模式 Skills 规则</h3></div></div>
+        <div class="panel-head"><div><p class="card-kicker">规则</p><h3>任务模式技能规则</h3></div></div>
         <div class="section-note">规则会影响进入、执行与归档。</div>
-        <label>agent-mode 行为规则<textarea id="skill-rule-content" rows="8" placeholder="写入任务模式的触发、审批、记忆过滤、工具边界等补充规则。">${esc(agentModeRule.content || "")}</textarea></label>
+        <label>任务模式行为规则<textarea id="skill-rule-content" rows="8" placeholder="写入任务模式的触发、审批、记忆过滤、工具边界等补充规则。">${esc(agentModeRule.content || "")}</textarea></label>
         <label>入口摘要规则<textarea id="entry-summary-rule-content" rows="7" placeholder="定义进入任务模式时如何把当前上下文压缩成 task_brief。">${esc(entryRule.content || "")}</textarea></label>
         <label>出口归档规则<textarea id="exit-summary-rule-content" rows="7" placeholder="定义退出任务模式时如何归档总结，以及哪些记忆候选可以回流。">${esc(exitRule.content || "")}</textarea></label>
         <div class="button-row"><button class="button" data-action="save-skill-rules" type="button">保存并同步规则</button></div>
@@ -5830,10 +5842,10 @@ function skillsPanel() {
       <div class="capability-list">${(state.skills || []).map((skill) => `
         <label class="toggle-row">
           <input type="checkbox" data-action="toggle-skill" data-id="${esc(skill.name)}" ${selected.has(skill.name) ? "checked" : ""} />
-          <span><strong>${esc(skill.name)}</strong><br /><small>${esc(skill.path || "AstrBot Skill")}</small></span>
+          <span><strong>${esc(skill.name)}</strong><br /><small>${esc(skill.path || "AstrBot 技能")}</small></span>
           ${badge(skill.active ? "已安装" : "未激活", skill.active ? "ok" : "warn")}
         </label>
-      `).join("") || `<div class="empty">未读取到 Skills。</div>`}</div>
+      `).join("") || `<div class="empty">未读取到技能。</div>`}</div>
     </section>
   `;
 }
@@ -5869,22 +5881,14 @@ function apisPanel() {
 
 function credentialsPanel() {
   return `
-    <section class="grid two">
-      <div>
-        <div class="form-grid">
-          <label>凭证标签<input id="cred-label" placeholder="Grok Search Key" /></label>
-          <label>服务商<input id="cred-provider" placeholder="xai / openai / tavily" /></label>
-          <label>作用域<input id="cred-scope" value="tool" /></label>
-          <label>Secret Value<input id="cred-value" type="password" placeholder="保存后只显示掩码" /></label>
-        </div>
-        <div class="button-row"><button class="button" data-action="save-credential" type="button">保存加密凭证</button></div>
-      </div>
+    <section>
+      <div class="section-note">凭证由后端统一管理；这里仅展示已登记的引用，避免在插件管理页直接输入密钥。</div>
       <div class="capability-list">${(state.credentials || []).map((item) => `
         <div class="list-row">
           <div class="row-title"><span>${esc(item.label || item.credential_id)}</span>${badge(item.has_value ? "已加密" : "空值", item.has_value ? "ok" : "warn")}</div>
           <div class="row-meta">${esc(item.credential_id)} · ${esc(item.provider || "-")} · ${esc(item.scope || "tool")}</div>
         </div>
-      `).join("") || `<div class="empty">暂无凭证。密钥会加密写入 plugin_data/registry。</div>`}</div>
+      `).join("") || `<div class="empty">暂无凭证。</div>`}</div>
     </section>
   `;
 }
@@ -6597,8 +6601,8 @@ document.addEventListener("pointerup", (event) => {
     const overWrap = event.target.closest?.(".workflow-canvas-wrap");
     if (drag.moved && overWrap) {
       const point = workflowCanvasPoint(event);
-      if (drag.kind === "template") addWorkflowTemplateNode(drag.id || "plan", point);
-      else addRuntimeWorkflowNode(drag.refType, drag.refId, point);
+      if (drag.kind === "template") addWorkflowTemplateNode(drag.id || "plan", point, { openInspector: false });
+      else addRuntimeWorkflowNode(drag.refType, drag.refId, point, { openInspector: false });
       renderWorkflowStable();
       setFeedback("已在松手处添加节点，单击节点即可编辑。");
       return;
@@ -6764,8 +6768,8 @@ document.addEventListener("drop", (event) => {
   }
   if (!material) return;
   const point = workflowCanvasPoint(event);
-  if (material.kind === "template") addWorkflowTemplateNode(material.id || "plan", point);
-  else addRuntimeWorkflowNode(material.refType, material.refId, point);
+  if (material.kind === "template") addWorkflowTemplateNode(material.id || "plan", point, { openInspector: false });
+  else addRuntimeWorkflowNode(material.refType, material.refId, point, { openInspector: false });
   workflowDraggedMaterial = null;
   removeWorkflowDragGhost();
   renderWorkflowStable();
@@ -7162,23 +7166,6 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "save-agent") await saveAgent(false);
     if (action === "make-default") await saveAgent(true);
-    if (action === "canvas-start-task") {
-      readAgentForm();
-      const payload = {
-        umo: $("canvas-umo").value.trim(),
-        goal: $("canvas-goal").value,
-        completion_conditions: $("canvas-completion").value,
-        brief: $("canvas-brief").value,
-        heartbeat: $("canvas-start-heartbeat")?.checked || false,
-        risk_level: $("canvas-risk-level")?.value || "work",
-      };
-      const savedAgent = await saveAgent(false);
-      payload.agent_id = savedAgent?.agent_id || selectedAgentId;
-      await api("/api/task/start", { method: "POST", body: payload });
-      setFeedback("已进入任务模式。");
-      route = "tasks";
-      await load();
-    }
     if (action === "start-task") {
       await api("/api/task/start", {
         method: "POST",
@@ -7491,16 +7478,12 @@ document.addEventListener("input", (event) => {
 });
 
 function showAuthScreen() {
-  const authScreen = $("auth-screen");
   const mainApp = $("main-app");
-  if (authScreen) authScreen.style.display = "";
-  if (mainApp) mainApp.style.display = "none";
+  if (mainApp) mainApp.style.display = "";
 }
 
 function showMainApp() {
-  const authScreen = $("auth-screen");
   const mainApp = $("main-app");
-  if (authScreen) authScreen.style.display = "none";
   if (mainApp) mainApp.style.display = "";
 }
 
@@ -7512,52 +7495,17 @@ function isAuthError(error) {
 async function bootWithCurrentToken() {
   showMainApp();
   renderNav();
-  try {
-    await load();
-  } catch (error) {
-    if (isAuthError(error)) showAuthScreen();
-    throw error;
-  }
+  await load();
 }
 
 function initAuth() {
-  const authTokenInput = $("auth-token-input") || $("token");
-  const authSubmitBtn = $("auth-submit-btn") || $("save-token");
   const initialToken = new URLSearchParams(location.search).get("token")
     || sessionStorage.getItem("agent_lab_token")
     || "";
-  if (authTokenInput) authTokenInput.value = initialToken;
   if (initialToken) sessionStorage.setItem("agent_lab_token", initialToken);
-
-  authSubmitBtn?.addEventListener("click", async () => {
-    const inputToken = authTokenInput?.value.trim() || "";
-    if (!inputToken) {
-      if (authTokenInput) authTokenInput.style.borderColor = "var(--red)";
-      return;
-    }
-    try {
-      authSubmitBtn.textContent = "验证中...";
-      authSubmitBtn.disabled = true;
-      sessionStorage.setItem("agent_lab_token", inputToken);
-      await bootWithCurrentToken();
-    } catch (error) {
-      sessionStorage.removeItem("agent_lab_token");
-      if (authTokenInput) {
-        authTokenInput.value = "";
-        authTokenInput.style.borderColor = "var(--red)";
-      }
-      authSubmitBtn.textContent = "进入控制台";
-      authSubmitBtn.disabled = false;
-      showAuthScreen();
-      setFeedback(isAuthError(error) ? "密码验证失败，请检查配置。" : `连接失败：${error.message}`, "error");
-    }
+  bootWithCurrentToken().catch((error) => {
+    setFeedback(isAuthError(error) ? "接口拒绝访问，请检查后端访问配置。" : `连接失败：${error.message}`, "error");
   });
-
-  authTokenInput?.addEventListener("keypress", (event) => {
-    if (event.key === "Enter") authSubmitBtn?.click();
-  });
-
-  bootWithCurrentToken().catch(() => {});
 }
 
 document.addEventListener("DOMContentLoaded", () => {

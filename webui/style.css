@@ -35,102 +35,6 @@ textarea {
   font: inherit;
 }
 
-/* 访问密码验证页面 */
-.auth-screen {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--bg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 9999;
-}
-
-.auth-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: 16px;
-  padding: 48px 40px;
-  box-shadow: var(--shadow);
-  text-align: center;
-  max-width: 420px;
-  width: 90%;
-}
-
-.auth-icon {
-  font-size: 64px;
-  margin-bottom: 16px;
-}
-
-.auth-card h1 {
-  font-size: 28px;
-  margin-bottom: 8px;
-  color: var(--ink);
-}
-
-.auth-hint {
-  color: var(--muted);
-  margin-bottom: 32px;
-  font-size: 15px;
-}
-
-.auth-form {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  margin-bottom: 24px;
-}
-
-.auth-input {
-  width: 100%;
-  padding: 14px 16px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  font-size: 15px;
-  transition: border-color 0.2s;
-}
-
-.auth-input:focus {
-  outline: none;
-  border-color: var(--blue);
-}
-
-.auth-button {
-  width: 100%;
-  padding: 14px;
-  background: var(--blue);
-  color: white;
-  border: none;
-  border-radius: 8px;
-  font-size: 15px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s;
-}
-
-.auth-button:hover {
-  background: var(--ink);
-  transform: translateY(-1px);
-}
-
-.auth-note {
-  font-size: 13px;
-  color: var(--muted);
-  line-height: 1.6;
-}
-
-.auth-note code {
-  background: var(--panel-2);
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-family: 'SF Mono', 'Consolas', monospace;
-  font-size: 12px;
-  color: var(--blue);
-}
-
 /* 全局状态栏 */
 .global-status-bar {
   position: sticky;
@@ -432,6 +336,51 @@ textarea {
 
 textarea {
   resize: vertical;
+}
+
+/* 任务模式设置页：分步设置块 */
+.setting-block {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+.setting-block .panel-head {
+  margin-bottom: 2px;
+}
+.setting-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.setting-field {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 13px;
+}
+.setting-field .setting-label {
+  font-weight: 600;
+  color: var(--ink);
+  font-size: 13px;
+}
+.setting-field small {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.setting-hint-line {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.inline-link {
+  color: var(--blue, #315f8f);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (max-width: 720px) {
+  .setting-row { grid-template-columns: minmax(0, 1fr); }
 }
 
 label {
@@ -1714,6 +1663,10 @@ button.list-row {
 }
 /* retry 回环出口：画在节点左侧，标签朝左，表示"绕回上一步" */
 .node-port-loop {
+  right: -20px;
+  left: auto;
+}
+.node-port-left {
   left: -20px;
   right: auto;
 }
@@ -1762,7 +1715,7 @@ button.list-row {
   right: 78px;
   z-index: 34;
   display: grid;
-  grid-template-columns: minmax(140px, 220px) minmax(190px, 300px) auto auto auto;
+  grid-template-columns: minmax(190px, 300px) auto minmax(0, 1fr);
   gap: 8px;
   align-items: center;
   min-height: 48px;
@@ -1774,8 +1727,52 @@ button.list-row {
   backdrop-filter: blur(16px);
   opacity: 1;
   pointer-events: auto;
+  /* 默认收起：上移藏起来，只露一条窄边；鼠标靠近顶部或聚焦时滑出 */
+  transform: translateY(calc(-100% + 10px));
+  transition: transform 180ms ease, box-shadow 160ms ease, opacity 160ms ease;
+}
+
+/* 收起状态下露出的"小横杠"提示 */
+.workflow-page-top::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -7px;
+  width: 54px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line-strong);
+  transform: translateX(-50%);
+  opacity: 0.9;
+  transition: opacity 160ms ease;
+}
+
+/* 顶部热区：鼠标移到画布最上沿就触发顶栏滑出 */
+.workflow-top-hotzone {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 22px;
+  z-index: 33;
+}
+
+.workflow-top-hotzone:hover ~ .workflow-page-top,
+.workflow-page-top:hover,
+.workflow-page-top:focus-within {
   transform: translateY(0);
-  transition: box-shadow 160ms ease;
+  box-shadow: 0 16px 34px rgba(30, 45, 41, 0.16);
+}
+.workflow-page-top:hover::after,
+.workflow-page-top:focus-within::after {
+  opacity: 0;
+}
+
+.workflow-top-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .workflow-page-top:focus-within {
@@ -3082,6 +3079,50 @@ pre {
   height: calc(100vh - 100px);
 }
 
+/* 方案管理页：左侧方案列表 + 右侧当前方案与运行情况 */
+.scheme-page {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+.scheme-sidebar {
+  position: sticky;
+  top: 12px;
+}
+.scheme-list-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.scheme-actions {
+  margin: 0;
+}
+.scheme-list {
+  max-height: 52vh;
+  overflow: auto;
+}
+.scheme-current-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+.scheme-main {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.scheme-task-list {
+  display: grid;
+  gap: 8px;
+}
+@media (max-width: 880px) {
+  .scheme-page { grid-template-columns: minmax(0, 1fr); }
+  .scheme-sidebar { position: static; }
+}
+
 .console-sidebar {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -3965,29 +4006,6 @@ pre {
 }
 
 /* Corrective clean layout pass */
-.auth-screen {
-  background: var(--panel);
-}
-
-.auth-card {
-  width: min(420px, calc(100vw - 32px));
-  padding: 28px;
-  border-radius: 8px;
-  box-shadow: none;
-}
-
-.auth-card h1 {
-  margin: 0 0 8px;
-}
-
-.auth-hint {
-  margin-bottom: 20px;
-}
-
-.auth-note {
-  margin: 0;
-}
-
 .shell {
   grid-template-columns: 216px minmax(0, 1fr);
 }
