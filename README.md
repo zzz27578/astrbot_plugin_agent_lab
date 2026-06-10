@@ -1,8 +1,6 @@
 # astrbot_plugin_agent_lab
 
-Runtime executor audit: [docs/RUNTIME_EXECUTOR.md](docs/RUNTIME_EXECUTOR.md)
-
-Workflow automation positioning: [docs/WORKFLOW_AUTOMATION.md](docs/WORKFLOW_AUTOMATION.md)
+画布重构总计划与路线图：[docs/CANVAS_MASTER_PLAN.md](docs/CANVAS_MASTER_PLAN.md)
 
 Agent Lab is being repositioned as an AstrBot visual automation workflow layer. Long-task Agent Mode, heartbeat, task memory and memory isolation remain important, but they are now optional workflow modules. The same canvas can also build event-driven/static monitoring workflows such as message moderation, plugin/tool orchestration, scheduled reports, detector routes, retry/error handling and per-workflow scope control.
 
@@ -386,8 +384,6 @@ data/plugin_data/astrbot_plugin_agent_lab/modules/*.json
 - 对接外部 memory store。
 - 对接 LangGraph/CrewAI/OpenAI Agents SDK 作为可选 runner adapter。
 
-外部方案接入规范见 [docs/ADAPTER_GUIDE.md](docs/ADAPTER_GUIDE.md)。
-
 ## 本地自检
 
 ```bash
@@ -402,4 +398,3 @@ python scripts/runtime_smoke_test.py
 PYTHONPATH=/path/to/AstrBot/.. python -c "import astrbot_plugin_agent_lab.main"
 ```
 
-明早验收步骤见 [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md)。

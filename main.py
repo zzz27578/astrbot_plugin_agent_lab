@@ -15,6 +15,12 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.core.message.message_event_result import MessageChain
+
+try:
+    import astrbot.core.message.components as Comp
+except Exception:  # pragma: no cover - optional AstrBot component surface.
+    Comp = None
 
 try:
     from quart import jsonify, request
@@ -41,7 +47,7 @@ from .agent_lab.conditions import (
     schema_validation_errors,
 )
 from .agent_lab.hooks import AgentLabRunHooks
-from .agent_lab.models import new_id, now_iso
+from .agent_lab.models import TaskBudget, new_id, now_iso
 from .agent_lab.models import WorkflowScope, WorkflowTrigger
 from .agent_lab.modules import ModuleRegistry
 from .agent_lab.prompts import (
@@ -113,6 +119,7 @@ WORKFLOW_ACTIONS = {
     "text_template",
     "llm_prompt",
     "prompt_transform",
+    "plugin_prompt",
     "json_transform",
     "merge",
     "iterator",
@@ -142,6 +149,7 @@ WORKFLOW_ACTIONS = {
     "export_task_memory",
     "promote_memory_candidate",
     "forget_task_memory",
+    "archive_memory_folder",
     "request_approval",
     "wait_user",
     "handoff",
@@ -158,6 +166,8 @@ WORKFLOW_ACTIONS = {
     "send_private_message",
     "send_email",
     "deliver_outbox",
+    "global_control",
+    "skill_evolution",
     "heartbeat",
     "notify",
     "archive_task",
@@ -365,6 +375,13 @@ BUILTIN_WORKFLOW_MODULE_CATALOG: dict[str, dict[str, Any]] = {
         "risk": "work",
         "description": "Transform input with a bounded prompt and routeable result.",
     },
+    "plugin_prompt": {
+        "kind": "state",
+        "stage": "execute",
+        "special_module": "prompt",
+        "risk": "work",
+        "description": "Prepare a bounded prompt for an explicitly selected AstrBot plugin.",
+    },
     "json_transform": {"kind": "transform", "stage": "plan", "risk": "safe", "description": "Map or reshape JSON data between nodes."},
     "merge": {"kind": "state", "stage": "plan", "risk": "safe", "description": "Merge variables or branch outputs."},
     "iterator": {"kind": "loop", "stage": "plan", "special_module": "loop", "risk": "safe", "description": "Iterate over a list and expose item state."},
@@ -394,6 +411,7 @@ BUILTIN_WORKFLOW_MODULE_CATALOG: dict[str, dict[str, Any]] = {
     "export_task_memory": {"kind": "memory", "stage": "archive", "special_module": "memory", "risk": "safe", "description": "Export selected task memory from workflow state."},
     "promote_memory_candidate": {"kind": "memory", "stage": "archive", "special_module": "memory", "risk": "work", "description": "Promote a memory candidate into durable memory."},
     "forget_task_memory": {"kind": "memory", "stage": "archive", "special_module": "memory", "risk": "work", "description": "Remove or ignore selected task memory entries."},
+    "archive_memory_folder": {"kind": "memory", "stage": "archive", "special_module": "memory", "risk": "work", "description": "Archive workflow memory into a scheme-level memory folder."},
     "request_approval": {"kind": "human", "stage": "guard", "risk": "work", "description": "Create an explicit approval gate before risky work."},
     "wait_user": {"kind": "human", "stage": "guard", "risk": "safe", "description": "Pause until the user provides input."},
     "handoff": {"kind": "human", "stage": "guard", "risk": "safe", "description": "Hand a workflow step to a human/operator."},
@@ -410,6 +428,8 @@ BUILTIN_WORKFLOW_MODULE_CATALOG: dict[str, dict[str, Any]] = {
     "send_private_message": {"kind": "notification", "stage": "archive", "risk": "work", "description": "Send a private message notification."},
     "send_email": {"kind": "notification", "stage": "archive", "risk": "high", "description": "Send an email notification through configured tools/APIs."},
     "deliver_outbox": {"kind": "notification", "stage": "archive", "special_module": "control", "risk": "work", "description": "Deliver queued workflow outbox items."},
+    "global_control": {"kind": "guard", "stage": "guard", "special_module": "control", "risk": "safe", "description": "Apply workflow-level isolation, progress, budget and error-control settings."},
+    "skill_evolution": {"kind": "guard", "stage": "archive", "special_module": "control", "risk": "work", "description": "Generate a safe draft skill-rule evolution from accepted task memory."},
     "heartbeat": {"kind": "state", "stage": "checkpoint", "special_module": "control", "risk": "safe", "description": "Pulse or check heartbeat state for long-running agent tasks."},
     "notify": {"kind": "notification", "stage": "archive", "risk": "work", "description": "Create a generic workflow notification."},
     "archive_task": {"kind": "memory", "stage": "archive", "special_module": "terminal", "risk": "safe", "description": "Archive or complete a workflow-managed task."},
@@ -1375,6 +1395,7 @@ class AgentLabPlugin(Star):
                 "restore_session_plugins": bool(spec.isolation_policy.restore_on_exit),
             },
             heartbeat=spec.heartbeat_policy,
+            budget=TaskBudget.from_dict(getattr(spec.default_task_budget, "__dict__", None)),
         )
         self._initialize_task_workflow(task, spec, source=source)
         if trigger_payload:
@@ -1479,20 +1500,32 @@ class AgentLabPlugin(Star):
         if not event or self.storage.load_active_task(event.unified_msg_origin):
             return
         text = str(getattr(event, "message_str", "") or "").strip()
-        if not text:
+        event_kind = self._workflow_monitor_event_kind(event, text)
+        if not text and event_kind not in {"poke", "notice"}:
             return
         mode = str(mode or "native").strip().lower()
         if mode == "native" and not _bool_cfg(self.config, "workflow_silent_global_monitor_enabled", True):
             return
         if mode != "native" and not _bool_cfg(self.config, "workflow_message_monitor_on_llm_request_enabled", False):
             return
-        sources = (
-            ("silent_global", "message_monitor", "keyword", "regex", "natural")
-            if mode == "native"
-            else ("message_monitor", "keyword", "regex", "natural")
-        )
+        if text:
+            sources = (
+                ("silent_global", "message_monitor", "keyword", "regex", "natural")
+                if mode == "native"
+                else ("message_monitor", "keyword", "regex", "natural")
+            )
+        elif event_kind == "poke":
+            sources = ("poke",)
+        else:
+            sources = ("notice",)
+        monitor_text = text or f"[{event_kind} event]"
         for source in sources:
-            payload = self._build_trigger_payload(source=source, event=event, text=text)
+            payload = self._build_trigger_payload(
+                source=source,
+                event=event,
+                text=monitor_text,
+                data=self._workflow_monitor_event_payload(event, event_kind),
+            )
             if self._workflow_trigger_recently_seen(payload):
                 return
             candidates = self._candidate_workflows_for_trigger(event, source=source, payload=payload)
@@ -1509,6 +1542,59 @@ class AgentLabPlugin(Star):
             except Exception as exc:
                 logger.warning("[AgentLab] message monitor trigger failed: %s", exc)
             return
+
+    def _workflow_monitor_event_kind(self, event: AstrMessageEvent, text: str = "") -> str:
+        if str(text or "").strip():
+            return "message"
+        haystack_parts: list[str] = []
+        for name in (
+            "type",
+            "event_type",
+            "message_type",
+            "notice_type",
+            "sub_type",
+            "post_type",
+        ):
+            value = getattr(event, name, "")
+            if value:
+                haystack_parts.append(str(value))
+        for name in ("raw_message", "raw_event", "message_obj"):
+            value = getattr(event, name, None)
+            if value is not None:
+                haystack_parts.append(str(value))
+        message_obj = getattr(event, "message_obj", None)
+        chain = getattr(message_obj, "message", None) or getattr(message_obj, "chain", None)
+        if isinstance(chain, list):
+            for comp in chain[:12]:
+                haystack_parts.append(str(getattr(comp, "type", "")))
+                haystack_parts.append(comp.__class__.__name__)
+        haystack = " ".join(haystack_parts).lower()
+        if "poke" in haystack or "shake" in haystack or "戳" in haystack or "拍" in haystack:
+            return "poke"
+        if haystack:
+            return "notice"
+        return "notice"
+
+    def _workflow_monitor_event_payload(self, event: AstrMessageEvent, event_kind: str) -> dict[str, Any]:
+        data: dict[str, Any] = {"event_kind": event_kind}
+        for name in (
+            "type",
+            "event_type",
+            "message_type",
+            "notice_type",
+            "sub_type",
+            "post_type",
+        ):
+            value = getattr(event, name, None)
+            if value not in (None, ""):
+                data[name] = str(value)
+        message_obj = getattr(event, "message_obj", None)
+        if message_obj is not None:
+            for name in ("type", "message_type", "raw_message"):
+                value = getattr(message_obj, name, None)
+                if value not in (None, ""):
+                    data[f"message_obj_{name}"] = str(value)
+        return data
 
     async def _tick(self, event: AstrMessageEvent, reason: str) -> str:
         return (await self.service.run_tick(event, reason=reason)).message
@@ -1969,6 +2055,7 @@ class AgentLabPlugin(Star):
             "text_template",
             "llm_prompt",
             "prompt_transform",
+            "plugin_prompt",
             "json_transform",
             "merge",
             "iterator",
@@ -1990,8 +2077,10 @@ class AgentLabPlugin(Star):
             self.node_executors.register(action, self._execute_identity_session_node)
         self.node_executors.register("retrieve_memory", self._execute_retrieve_memory_node)
         self.node_executors.register("save_memory", self._execute_save_memory_node)
-        for action in ("summarize_memory", "export_task_memory", "promote_memory_candidate", "forget_task_memory"):
+        for action in ("summarize_memory", "export_task_memory", "promote_memory_candidate", "forget_task_memory", "archive_memory_folder"):
             self.node_executors.register(action, self._execute_memory_action_node)
+        self.node_executors.register("global_control", self._execute_global_control_node)
+        self.node_executors.register("skill_evolution", self._execute_skill_evolution_node)
         self.node_executors.register("parallel_branch", self._execute_parallel_branch_node)
         self.node_executors.register("call_api", self._execute_api_node)
         self.node_executors.register("http_request", self._execute_http_request_node)
@@ -2704,6 +2793,7 @@ class AgentLabPlugin(Star):
         data.setdefault("observations", [])
         data.setdefault("loop_guard", {})
         data.setdefault("resume", {})
+        data.setdefault("global_control", {})
         task.workflow_data = data
         if hasattr(self, "agent_runtime"):
             self.agent_runtime.ensure(task)
@@ -3809,6 +3899,85 @@ class AgentLabPlugin(Star):
                 blocked=route == "error",
                 note="node_executor_llm_prompt",
             )
+        elif action == "plugin_prompt":
+            plugin_name = str(
+                ctx.node.get("plugin_name")
+                or ctx.node.get("plugin")
+                or ctx.node.get("target_plugin")
+                or ctx.node.get("ref_id")
+                or ""
+            ).strip()
+            if not plugin_name:
+                return NodeExecutionResult(
+                    ok=False,
+                    status="blocked",
+                    outcome="plugin_prompt requires plugin_name.",
+                    blocked=True,
+                    advance=False,
+                    note="node_executor_plugin_prompt_missing_plugin",
+                )
+            wants_admin = bool(ctx.node.get("impersonate_admin") or ctx.node.get("as_admin"))
+            admin_user_id = str(ctx.node.get("admin_user_id") or ctx.node.get("operator_user_id") or "").strip()
+            try:
+                sender_id = str(ctx.event.get_sender_id() or "").strip()
+            except Exception:
+                sender_id = ""
+            admin_ids = set(self._workflow_admin_ids())
+            if wants_admin and sender_id not in admin_ids and (not admin_user_id or sender_id != admin_user_id):
+                ctx.task.status = "paused"
+                ctx.task.set_wait(
+                    wait_reason="need_admin_operator",
+                    message=(
+                        f"Plugin prompt {plugin_name} requested administrator impersonation, "
+                        "but the current sender is not allowed. Adapter sender override may be unsupported."
+                    ),
+                    source="workflow_plugin_prompt",
+                    required_input=[plugin_name],
+                )
+                return NodeExecutionResult(
+                    ok=False,
+                    status="running",
+                    outcome="Plugin prompt needs an allowed administrator/operator before continuing.",
+                    advance=False,
+                    blocked=False,
+                    data={
+                        "route": "failed",
+                        "plugin_name": plugin_name,
+                        "impersonate_admin": True,
+                        "admin_user_id": admin_user_id,
+                        "sender_id": sender_id,
+                        "adapter_boundary": "sender-role override depends on the AstrBot adapter",
+                    },
+                    note="node_executor_plugin_prompt_admin_boundary",
+                )
+            prompt = self._workflow_node_text(ctx, "plugin_prompt", "prompt", "message", "instruction")
+            if not prompt:
+                prompt = "Use the selected AstrBot plugin to complete this workflow step."
+            handoff = {
+                "time": now_iso(),
+                "node_id": str(ctx.node.get("id") or ""),
+                "plugin_name": plugin_name,
+                "prompt": self._compact_text(prompt, 4000),
+                "input": self._node_payload_from_variable(ctx.task, ctx.node),
+                "impersonate_admin": wants_admin,
+                "admin_user_id": admin_user_id,
+                "adapter_boundary": "No direct plugin adapter is executed here; ReAct/tool routing must call the plugin if available.",
+            }
+            data_root = self._ensure_workflow_data(ctx.task)
+            plugin_prompts = data_root.setdefault("plugin_prompts", [])
+            if not isinstance(plugin_prompts, list):
+                plugin_prompts = []
+            plugin_prompts.append(handoff)
+            data_root["plugin_prompts"] = plugin_prompts[-80:]
+            self._set_workflow_variable(ctx.task, str(ctx.node.get("output_variable") or "plugin_prompt"), handoff)
+            return NodeExecutionResult(
+                outcome=f"Plugin prompt prepared for {plugin_name}.",
+                next_node_id=self._single_next(ctx.outgoing) if len(ctx.outgoing) <= 1 else "",
+                data={"route": "success", **handoff},
+                needs_react=True,
+                advance=len(ctx.outgoing) <= 1,
+                note="node_executor_plugin_prompt",
+            )
         elif action == "json_transform":
             source = self._node_payload_from_variable(ctx.task, ctx.node)
             if source is None:
@@ -4412,6 +4581,7 @@ class AgentLabPlugin(Star):
             ctx.node.get("query")
             or ctx.node.get("memory_query")
             or ctx.node.get("condition")
+            or " ".join(self._node_string_list(ctx.task, ctx.node, "tags", "memory_tags"))
             or ctx.task.root_goal
             or ""
         ).strip()
@@ -4419,13 +4589,27 @@ class AgentLabPlugin(Star):
             limit = max(1, min(int(ctx.node.get("limit") or 5), 12))
         except Exception:
             limit = 5
+        tag_filter = set(self._node_string_list(ctx.task, ctx.node, "tags", "memory_tags"))
+        folder_filter = str(ctx.node.get("folder_id") or ctx.node.get("memory_folder") or "").strip()
+        agent_filter = str(ctx.node.get("agent_id") or ctx.spec.agent_id or "").strip()
+        allow_cross_agent = bool(ctx.node.get("allow_cross_agent"))
         scored_rows: list[tuple[int, dict[str, Any]]] = []
         for item in reversed(self.storage.list_memory_entries()):
+            if folder_filter and str(item.get("folder_id") or "") != folder_filter:
+                continue
+            item_agent = str(item.get("agent_id") or "").strip()
+            if item_agent and agent_filter and item_agent != agent_filter and not allow_cross_agent:
+                continue
+            if tag_filter:
+                item_tags = set(str(tag).strip() for tag in (item.get("tags") or []) if str(tag).strip())
+                if not tag_filter.intersection(item_tags):
+                    continue
             text = str(item.get("text") or "")
             haystack = "\n".join(
                 [
                     text,
                     str(item.get("source_task_id") or ""),
+                    str(item.get("folder_name") or ""),
                     " ".join(str(tag) for tag in item.get("tags") or []),
                 ]
             )
@@ -4462,6 +4646,10 @@ class AgentLabPlugin(Star):
         outcome += "."
 
         data = {"query": query.lower(), "rows": rows}
+        if folder_filter:
+            data["folder_id"] = folder_filter
+        if agent_filter:
+            data["agent_id"] = agent_filter
         if pattern_rows:
             data["pattern_recommendations"] = pattern_rows
 
@@ -4547,6 +4735,8 @@ class AgentLabPlugin(Star):
                         "text": candidate_text,
                         "source_task_id": ctx.task.task_id,
                         "source_umo": ctx.task.umo,
+                        "agent_id": ctx.spec.agent_id,
+                        "folder_id": str(ctx.node.get("folder_id") or ctx.node.get("memory_folder") or ""),
                         "status": "accepted",
                         "kind": "workflow_promoted_memory",
                         "layer": "accepted_memory",
@@ -4563,6 +4753,45 @@ class AgentLabPlugin(Star):
                 data={"route": route, "memory": item or {}},
                 blocked=not bool(item),
                 note="node_executor_promote_memory_candidate",
+            )
+        if action == "archive_memory_folder":
+            folder_payload = {
+                "folder_id": str(ctx.node.get("folder_id") or ctx.node.get("memory_folder") or "").strip(),
+                "name": str(ctx.node.get("folder_name") or ctx.node.get("name") or ctx.spec.name or "方案记忆夹").strip(),
+                "agent_id": str(ctx.node.get("agent_id") or ctx.spec.agent_id or "").strip(),
+                "description": str(ctx.node.get("description") or ctx.node.get("instruction") or "").strip(),
+                "expose_to_normal": bool(ctx.node.get("expose_to_normal", False)),
+                "detail_level": str(ctx.node.get("detail_level") or "summary").strip(),
+                "retention_days": int(ctx.node.get("retention_days") or 0),
+            }
+            folder = self.storage.save_memory_folder(folder_payload)
+            export = self._task_memory_export(ctx.task)
+            text = self._compact_text(
+                str(ctx.node.get("text") or "")
+                or json.dumps(export, ensure_ascii=False, default=str, indent=2),
+                8000,
+            )
+            entry = self.storage.save_memory_entry(
+                {
+                    "text": text,
+                    "source_task_id": ctx.task.task_id,
+                    "source_umo": ctx.task.umo,
+                    "agent_id": ctx.spec.agent_id,
+                    "folder_id": folder.get("folder_id") or "default",
+                    "folder_name": folder.get("name") or "",
+                    "status": str(ctx.node.get("status") or "candidate"),
+                    "kind": "workflow_folder_archive",
+                    "layer": "candidate_memory",
+                    "tags": ["task", "workflow", "folder_archive", ctx.spec.agent_id, *(self._node_string_list(ctx.task, ctx.node, "tags", "memory_tags") or [])],
+                    "expose_to_normal": bool(folder.get("expose_to_normal")),
+                    "evidence": {"action": "archive_memory_folder", "folder_id": folder.get("folder_id"), "agent_id": ctx.spec.agent_id},
+                }
+            )
+            return NodeExecutionResult(
+                outcome=f"Task memory archived into folder {folder.get('name') or folder.get('folder_id')}.",
+                next_node_id=self._single_next(ctx.outgoing),
+                data={"route": "success", "folder": folder, "memory": entry},
+                note="node_executor_archive_memory_folder",
             )
         if action == "forget_task_memory":
             memory_id = str(ctx.node.get("memory_id") or "").strip()
@@ -4589,6 +4818,194 @@ class AgentLabPlugin(Star):
             blocked=True,
             advance=False,
             note="node_executor_memory_action_unknown",
+        )
+
+    async def _execute_global_control_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        data = self._ensure_workflow_data(ctx.task)
+        control = data.get("global_control") if isinstance(data.get("global_control"), dict) else {}
+
+        def node_int(key: str, current: int = 0, *, minimum: int = 0, maximum: int = 10_000_000) -> int:
+            raw = ctx.node.get(key)
+            if raw in (None, ""):
+                return current
+            try:
+                return max(minimum, min(int(raw), maximum))
+            except Exception:
+                return current
+
+        budget_fields = {
+            "max_nodes_per_tick": (1, 200),
+            "max_tools_per_tick": (0, 200),
+            "max_seconds_per_tick": (1, 3600),
+            "max_tokens_per_tick": (0, 1_000_000),
+            "max_total_ticks": (0, 100_000),
+            "max_total_tool_calls": (0, 100_000),
+            "max_total_tokens": (0, 50_000_000),
+        }
+        updated_budget: dict[str, int] = {}
+        for field, (minimum, maximum) in budget_fields.items():
+            current = int(getattr(ctx.task.budget, field, 0) or 0)
+            value = node_int(field, current, minimum=minimum, maximum=maximum)
+            if value != current or field in ctx.node:
+                setattr(ctx.task.budget, field, value)
+                updated_budget[field] = value
+
+        repeated = node_int(
+            "max_repeated_failures",
+            int(ctx.task.heartbeat.max_repeated_failures or 3),
+            minimum=1,
+            maximum=100,
+        )
+        ctx.task.heartbeat.max_repeated_failures = repeated
+
+        for key in (
+            "progress_notice_mode",
+            "pause_commands",
+            "conversation_mode",
+            "risk_level",
+            "isolation_mode",
+            "tool_mode",
+            "report_frequency",
+        ):
+            if key in ctx.node:
+                control[key] = self._resolve_workflow_template(ctx.task, ctx.node.get(key))
+        for key in ("show_tool_use", "silent_tools", "allow_midtask_chat", "pause_on_error"):
+            if key in ctx.node:
+                control[key] = bool(ctx.node.get(key))
+        control["max_repeated_failures"] = repeated
+        control["budget"] = ctx.task.budget.to_dict() if hasattr(ctx.task.budget, "to_dict") else dict(ctx.task.budget.__dict__)
+        control["updated_at"] = now_iso()
+        control["node_id"] = str(ctx.node.get("id") or "")
+        data["global_control"] = control
+        ctx.task.add_log("workflow_control", f"Global control updated at {ctx.node.get('id') or '-'}")
+
+        return NodeExecutionResult(
+            outcome="Global workflow control applied.",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "control": control, "updated_budget": updated_budget},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_global_control",
+        )
+
+    async def _execute_skill_evolution_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        data = self._ensure_workflow_data(ctx.task)
+        tag_filter = set(self._node_string_list(ctx.task, ctx.node, "tags", "memory_tags"))
+        folder_filter = str(ctx.node.get("folder_id") or ctx.node.get("memory_folder") or "").strip()
+        allow_candidates = bool(ctx.node.get("include_candidates", False))
+        agent_id = str(ctx.node.get("agent_id") or ctx.spec.agent_id or "").strip()
+        rows: list[dict[str, Any]] = []
+        for item in reversed(self.storage.list_memory_entries()):
+            if agent_id and str(item.get("agent_id") or "").strip() not in {"", agent_id}:
+                continue
+            if folder_filter and str(item.get("folder_id") or "") != folder_filter:
+                continue
+            status = str(item.get("status") or "candidate").strip().lower()
+            if status != "accepted" and not (allow_candidates and status == "candidate"):
+                continue
+            if tag_filter:
+                tags = set(str(tag).strip() for tag in item.get("tags") or [] if str(tag).strip())
+                if not tags.intersection(tag_filter):
+                    continue
+            if not str(item.get("text") or "").strip():
+                continue
+            rows.append(item)
+            if len(rows) >= 12:
+                break
+
+        if not rows:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="No accepted memory is available for skill evolution.",
+                blocked=True,
+                advance=False,
+                data={"route": "failed", "agent_id": agent_id, "folder_id": folder_filter},
+                note="node_executor_skill_evolution_no_memory",
+            )
+
+        rule_name = str(ctx.node.get("skill_name") or ctx.node.get("rule_name") or SKILL_NAME).strip() or SKILL_NAME
+        existing = self.storage.get_skill_rule(rule_name) or {}
+        memory_lines = []
+        for item in rows:
+            tags = ", ".join(str(tag) for tag in item.get("tags") or [])
+            memory_lines.append(
+                f"- {item.get('memory_id')}: tags=[{tags or '-'}] "
+                f"folder={item.get('folder_name') or item.get('folder_id') or '-'}; "
+                f"{self._compact_text(str(item.get('text') or ''), 700)}"
+            )
+        custom_instruction = self._workflow_node_text(ctx, "instruction", "prompt", "evolution_prompt")
+        draft = "\n".join(
+            part
+            for part in (
+                str(existing.get("content") or "").strip(),
+                "\n[Agent Lab skill evolution draft]",
+                f"Updated at: {now_iso()}",
+                f"Task: {ctx.task.task_id}",
+                f"Agent: {agent_id or '-'}",
+                f"Instruction: {custom_instruction or 'Preserve stable operating lessons from accepted task memory.'}",
+                "Accepted memory evidence:",
+                "\n".join(memory_lines),
+                "Suggested rule:",
+                self._compact_text(str(ctx.node.get("draft") or ""), 4000)
+                or "- Prefer these accepted lessons when future tasks match the same tags, folder, or agent scope.",
+            )
+            if str(part or "").strip()
+        )
+        draft = self._compact_text(draft, max(2000, min(int(ctx.node.get("max_tokens") or 8000), 24000)))
+        draft_row = {
+            "time": now_iso(),
+            "node_id": str(ctx.node.get("id") or ""),
+            "skill_name": rule_name,
+            "agent_id": agent_id,
+            "folder_id": folder_filter,
+            "memory_ids": [str(item.get("memory_id") or "") for item in rows],
+            "draft": draft,
+        }
+        drafts = data.setdefault("skill_evolution_drafts", [])
+        if not isinstance(drafts, list):
+            drafts = []
+        drafts.append(draft_row)
+        data["skill_evolution_drafts"] = drafts[-40:]
+
+        approval_mode = str(ctx.node.get("approval_mode") or ctx.node.get("risk") or "review").strip().lower()
+        auto_apply = bool(ctx.node.get("auto_apply") or approval_mode in {"low", "auto", "apply"})
+        require_approval = bool(ctx.node.get("require_approval")) or approval_mode in {"high", "review", "manual", "approval"}
+        if require_approval and not auto_apply:
+            approval = ApprovalRequest(
+                operation=f"Apply skill evolution: {rule_name}",
+                reason=custom_instruction or "Workflow generated a skill evolution draft from accepted memory.",
+                impact="Agent Lab will update skill_rules and sync the Agent Mode skill prompt after approval.",
+                rollback="Edit or delete the skill rule in Agent Lab WebUI registry if the draft is not desired.",
+            )
+            ctx.task.approvals.append(approval.to_dict())
+            ctx.task.status = "paused"
+            ctx.task.set_wait(
+                wait_reason="need_approval",
+                message=f"Skill evolution draft is ready for review: {approval.approval_id}",
+                source="workflow_skill_evolution",
+                resume_command=f"/agentlab approve {approval.approval_id}",
+                required_input=[rule_name],
+            )
+            return NodeExecutionResult(
+                ok=False,
+                status="running",
+                outcome=f"Skill evolution draft prepared and waiting for approval: {approval.approval_id}",
+                advance=False,
+                data={"route": "approved", "draft": draft_row, "approval": approval.to_dict()},
+                note="node_executor_skill_evolution_review",
+            )
+
+        saved = self.storage.save_skill_rule({"skill_name": rule_name, "content": draft})
+        self._sync_agent_mode_skill()
+        ctx.task.add_log("skill_evolution", f"Saved skill rule {rule_name} from {len(rows)} memory item(s)")
+        return NodeExecutionResult(
+            outcome=f"Skill rule {rule_name} updated from accepted memory.",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "skill_rule": saved, "draft": draft_row},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_skill_evolution",
         )
 
     def _task_memory_export(self, task: TaskState) -> dict[str, Any]:
@@ -4963,38 +5380,57 @@ class AgentLabPlugin(Star):
         action = str(ctx.node.get("action") or "notify").strip()
         if action == "deliver_outbox":
             return await self._execute_deliver_outbox_node(ctx)
-        outcome = self._compact_text(
-            str(ctx.node.get("message") or ctx.task.current_summary or ctx.task.last_confirmed_progress or "Notification checkpoint."),
-            1000,
-        )
-        channel = {
-            "send_message": "message",
-            "send_private_message": "private_message",
-            "send_email": "email",
-        }.get(action, "notify")
-        target = str(ctx.node.get("target") or ctx.node.get("to") or ctx.node.get("recipient") or "").strip()
-        item = {
-            "time": now_iso(),
-            "node_id": str(ctx.node.get("id") or ""),
-            "action": action,
-            "channel": channel,
-            "target": target,
-            "message": outcome,
-            "delivery": "outbox",
-        }
+        item, build_error = await self._workflow_outbox_item_from_node(ctx, action)
+        if build_error:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=build_error,
+                blocked=True,
+                advance=False,
+                data={"route": "error", "error": build_error},
+                note="node_executor_notify_build_error",
+            )
         data = self._ensure_workflow_data(ctx.task)
-        outbox = data.setdefault("outbox", [])
-        if not isinstance(outbox, list):
-            outbox = []
-        outbox.append(item)
-        data["outbox"] = outbox[-120:]
+        delivered = False
+        queued = False
+        route = "success"
+        if item.get("delivery") == "plugin_handoff":
+            queued = True
+            self._append_workflow_outbox_item(data, item)
+        elif self._workflow_outbox_item_current_session(ctx, item):
+            delivered, error = await self._send_workflow_outbox_item(ctx.event, item)
+            if delivered:
+                item["delivery"] = "sent"
+                item["delivered_at"] = now_iso()
+                self._append_workflow_outbox_history(data, item)
+            else:
+                item["delivery"] = "error"
+                item["delivery_error"] = error
+                self._append_workflow_outbox_history(data, item)
+                route = "error"
+        else:
+            item["delivery"] = item.get("delivery") or "outbox"
+            item["delivery_note"] = item.get("delivery_note") or "target is not the current event session; adapter delivery required"
+            self._append_workflow_outbox_item(data, item)
+            queued = True
+        outcome = self._workflow_outbox_item_summary(item)
         ctx.task.add_log("notify", outcome)
         return NodeExecutionResult(
+            ok=route == "success",
+            status="completed" if route == "success" else "blocked",
             outcome=outcome,
             next_node_id=self._single_next(ctx.outgoing),
-            data={"route": "success", "message": outcome, "outbox": item},
-            needs_react=len(ctx.outgoing) > 1,
-            advance=len(ctx.outgoing) <= 1,
+            data={
+                "route": route,
+                "message": item.get("message") or "",
+                "outbox": item,
+                "delivered": delivered,
+                "queued": queued,
+            },
+            needs_react=item.get("delivery") == "plugin_handoff" or len(ctx.outgoing) > 1,
+            blocked=route != "success",
+            advance=route == "success" and item.get("delivery") != "plugin_handoff" and len(ctx.outgoing) <= 1,
             note="node_executor_notify",
         )
 
@@ -5002,34 +5438,285 @@ class AgentLabPlugin(Star):
         data = self._ensure_workflow_data(ctx.task)
         outbox = data.get("outbox") if isinstance(data.get("outbox"), list) else []
         delivered = []
+        failed = []
         pending = []
         for item in outbox:
             row = dict(item) if isinstance(item, dict) else {"message": str(item)}
-            target = str(row.get("target") or "").strip()
-            same_session = not target or target == str(ctx.task.umo or "")
-            if same_session:
-                row["delivery"] = "ready_for_current_session"
+            if row.get("delivery") == "plugin_handoff":
+                pending.append(row)
+                continue
+            if self._workflow_outbox_item_current_session(ctx, row):
+                sent, error = await self._send_workflow_outbox_item(ctx.event, row)
+                if not sent:
+                    row["delivery"] = "error"
+                    row["delivery_error"] = error
+                    row["attempted_at"] = now_iso()
+                    failed.append(row)
+                    continue
+                row["delivery"] = "sent"
                 row["delivered_at"] = now_iso()
                 delivered.append(row)
             else:
                 row["delivery"] = row.get("delivery") or "outbox"
+                row["delivery_note"] = row.get("delivery_note") or "target is not the current event session; adapter delivery required"
                 pending.append(row)
         data["outbox"] = pending[-120:]
         history = data.setdefault("outbox_delivery_history", [])
         if not isinstance(history, list):
             history = []
-        history.extend(delivered)
+        history.extend(delivered + failed)
         data["outbox_delivery_history"] = history[-120:]
-        route = "success" if delivered or not outbox else "failed"
+        route = "success" if (delivered or not outbox) and not failed and not pending else "failed"
         return NodeExecutionResult(
             ok=route == "success",
             status="completed" if route == "success" else "blocked",
-            outcome=f"Outbox delivery prepared: delivered={len(delivered)}, pending={len(pending)}.",
+            outcome=f"Outbox delivery: sent={len(delivered)}, failed={len(failed)}, pending={len(pending)}.",
             next_node_id=self._single_next(ctx.outgoing) if route == "success" else "",
-            data={"route": route, "delivered": delivered, "pending": pending},
+            data={"route": route, "delivered": delivered, "failed": failed, "pending": pending},
             blocked=route != "success",
             note="node_executor_deliver_outbox",
         )
+
+    async def _workflow_outbox_item_from_node(
+        self,
+        ctx: NodeExecutionContext,
+        action: str,
+    ) -> tuple[dict[str, Any], str]:
+        channel = {
+            "send_message": "message",
+            "send_private_message": "private_message",
+            "send_email": "email",
+        }.get(action, "notify")
+        target = str(
+            ctx.node.get("target")
+            or ctx.node.get("to")
+            or ctx.node.get("recipient")
+            or ctx.node.get("conversation")
+            or ctx.node.get("umo")
+            or ""
+        ).strip()
+        image = self._workflow_node_text(ctx, "image", "image_source", "image_url", "image_path", "image_base64")
+        face = self._workflow_node_text(ctx, "face", "face_id", "emoji", "emoji_id")
+        plugin_name = self._workflow_node_text(ctx, "plugin_name", "plugin", "target_plugin")
+        send_type = str(
+            ctx.node.get("send_type")
+            or ctx.node.get("message_type")
+            or ctx.node.get("content_type")
+            or ""
+        ).strip().lower()
+        send_type = {
+            "fixed": "text",
+            "plain": "text",
+            "prompt_reply": "prompt",
+            "llm": "prompt",
+            "face": "emoji",
+            "emote": "emoji",
+            "plugin_prompt": "plugin",
+        }.get(send_type, send_type)
+        if not send_type:
+            if plugin_name:
+                send_type = "plugin"
+            elif image:
+                send_type = "image"
+            elif face:
+                send_type = "emoji"
+            else:
+                send_type = "text"
+        reply_mode = str(ctx.node.get("reply_mode") or ("prompt" if send_type == "prompt" else "fixed")).strip().lower()
+        message = self._workflow_node_text(ctx, "message", "content", "text")
+        if send_type == "prompt" or reply_mode == "prompt":
+            prompt = self._workflow_node_text(ctx, "prompt", "user_prompt", "message", "content", "instruction")
+            if not prompt:
+                prompt = "Generate a concise workflow reply for the current conversation."
+            generated, error = await self._generate_workflow_reply(ctx, prompt)
+            if error:
+                return {}, error
+            message = generated
+            reply_mode = "prompt"
+            send_type = "prompt"
+        elif send_type == "plugin":
+            message = self._workflow_node_text(ctx, "plugin_prompt", "prompt", "message", "instruction")
+            if not plugin_name:
+                return {}, "send_message plugin mode requires plugin_name."
+        elif not message and send_type not in {"image", "emoji"}:
+            message = str(
+                ctx.task.current_summary
+                or ctx.task.last_confirmed_progress
+                or ctx.task.last_observation
+                or "Notification checkpoint."
+            ).strip()
+        message = self._compact_text(str(message or ""), 2000)
+        item = {
+            "time": now_iso(),
+            "node_id": str(ctx.node.get("id") or ""),
+            "action": action,
+            "channel": channel,
+            "target": target,
+            "send_type": send_type,
+            "reply_mode": reply_mode,
+            "message": message,
+            "image": image,
+            "face": face,
+            "emoji": face,
+            "plugin_name": plugin_name,
+            "delivery": "plugin_handoff" if send_type == "plugin" else "outbox",
+        }
+        for key in ("image_mime", "image_name", "emoji_md5", "emoji_cdnurl"):
+            value = self._workflow_node_text(ctx, key)
+            if value:
+                item[key] = value
+        return item, ""
+
+    def _workflow_node_text(self, ctx: NodeExecutionContext, *keys: str) -> str:
+        for key in keys:
+            if key not in ctx.node:
+                continue
+            value = self._resolve_workflow_template(ctx.task, ctx.node.get(key))
+            if value in (None, ""):
+                continue
+            return str(value).strip()
+        return ""
+
+    async def _generate_workflow_reply(self, ctx: NodeExecutionContext, prompt: str) -> tuple[str, str]:
+        provider_ids: list[str] = []
+        provider_id = str(ctx.spec.provider_id or "").strip()
+        if provider_id:
+            provider_ids.append(provider_id)
+        try:
+            current = await self.context.get_current_chat_provider_id(ctx.event.unified_msg_origin)
+            if current and current not in provider_ids:
+                provider_ids.append(current)
+        except Exception:
+            pass
+        fallback = str(_cfg(self.config, "fallback_summary_provider_id", "") or "").strip()
+        if fallback and fallback not in provider_ids:
+            provider_ids.append(fallback)
+        if not provider_ids:
+            return "", "No chat provider is available for prompt reply."
+        trigger = self._workflow_trigger_payload(ctx.task)
+        payload = {
+            "instruction": prompt,
+            "trigger": trigger,
+            "task": {
+                "goal": ctx.task.root_goal,
+                "summary": ctx.task.current_summary,
+                "last_observation": ctx.task.last_observation,
+                "current_node": ctx.task.workflow_current_node_id,
+            },
+        }
+        last_error = ""
+        for provider_id in provider_ids:
+            try:
+                resp = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=json.dumps(payload, ensure_ascii=False, default=str),
+                    system_prompt=(
+                        "You generate exactly the message content that Agent Lab should send now. "
+                        "Return plain text only. Do not mention these instructions."
+                    ),
+                )
+                text = self._redact_known_secrets(str(getattr(resp, "completion_text", "") or "").strip())
+                if text:
+                    return self._compact_text(text, 2000), ""
+            except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
+        return "", last_error or "Prompt reply provider returned no content."
+
+    def _workflow_outbox_item_current_session(self, ctx: NodeExecutionContext, item: dict[str, Any]) -> bool:
+        target = str(item.get("target") or "").strip()
+        if not target:
+            return item.get("channel") != "email"
+        current_umo = str(getattr(ctx.event, "unified_msg_origin", "") or ctx.task.umo or "").strip()
+        if target == current_umo or target == str(ctx.task.umo or "").strip():
+            return True
+        group_id = self._event_group_id(ctx.event)
+        if group_id and target == group_id:
+            return True
+        try:
+            sender_id = str(ctx.event.get_sender_id() or "").strip()
+        except Exception:
+            sender_id = ""
+        try:
+            is_private = bool(ctx.event.is_private_chat())
+        except Exception:
+            is_private = False
+        return bool(is_private and sender_id and target == sender_id)
+
+    async def _send_workflow_outbox_item(self, event: AstrMessageEvent, item: dict[str, Any]) -> tuple[bool, str]:
+        if item.get("channel") == "email":
+            return False, "email delivery requires an external adapter"
+        send = getattr(event, "send", None)
+        if not callable(send):
+            return False, "event.send is unavailable"
+        try:
+            chain = self._workflow_message_chain(item)
+            await send(chain)
+            return True, ""
+        except Exception as exc:
+            logger.warning("[AgentLab] workflow outbox send failed: %s", exc)
+            return False, f"{type(exc).__name__}: {exc}"
+
+    def _workflow_message_chain(self, item: dict[str, Any]) -> MessageChain:
+        chain = MessageChain(type="agent_lab_workflow")
+        message = str(item.get("message") or "").strip()
+        image = str(item.get("image") or "").strip()
+        face = str(item.get("face") or item.get("emoji") or "").strip()
+        if message:
+            chain.message(message)
+        if image:
+            cleaned = image
+            if cleaned.startswith("data:image") and "," in cleaned:
+                cleaned = cleaned.split(",", 1)[1].strip()
+            if cleaned.startswith(("http://", "https://")):
+                chain.url_image(cleaned)
+            elif cleaned.startswith("base64://"):
+                chain.base64_image(cleaned.removeprefix("base64://"))
+            elif re.fullmatch(r"[A-Za-z0-9+/=\r\n]+", cleaned) and len(cleaned) > 80:
+                chain.base64_image(cleaned)
+            else:
+                chain.file_image(cleaned)
+        if face:
+            if Comp is not None and hasattr(Comp, "Face"):
+                try:
+                    chain.chain.append(Comp.Face(id=int(face)))
+                except Exception:
+                    chain.message(f"[emoji:{face}]")
+            else:
+                chain.message(f"[emoji:{face}]")
+        if not chain.chain:
+            raise ValueError("outbox item has no message, image, or emoji content")
+        return chain
+
+    def _append_workflow_outbox_item(self, data: dict[str, Any], item: dict[str, Any]) -> None:
+        outbox = data.setdefault("outbox", [])
+        if not isinstance(outbox, list):
+            outbox = []
+        outbox.append(item)
+        data["outbox"] = outbox[-120:]
+
+    def _append_workflow_outbox_history(self, data: dict[str, Any], item: dict[str, Any]) -> None:
+        history = data.setdefault("outbox_delivery_history", [])
+        if not isinstance(history, list):
+            history = []
+        history.append(dict(item))
+        data["outbox_delivery_history"] = history[-120:]
+
+    def _workflow_outbox_item_summary(self, item: dict[str, Any]) -> str:
+        parts = [
+            f"delivery={item.get('delivery') or 'outbox'}",
+            f"channel={item.get('channel') or '-'}",
+            f"type={item.get('send_type') or '-'}",
+        ]
+        if item.get("target"):
+            parts.append(f"target={item.get('target')}")
+        if item.get("plugin_name"):
+            parts.append(f"plugin={item.get('plugin_name')}")
+        if item.get("delivery_error"):
+            parts.append(f"error={item.get('delivery_error')}")
+        message = str(item.get("message") or item.get("image") or item.get("emoji") or "").strip()
+        if message:
+            parts.append(self._compact_text(message, 240))
+        return "Workflow outbox " + "; ".join(parts)
 
     async def _execute_archive_task_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         final_summary = str(
@@ -5345,6 +6032,9 @@ class AgentLabPlugin(Star):
             tags = [part.strip() for part in tags.replace("，", ",").split(",")]
         tags = [str(tag).strip() for tag in tags if str(tag).strip()]
         tags = ["task", "workflow", "private", *(tags or ["checkpoint"])]
+        agent_id = str(node.get("agent_id") or task.agent_id or "").strip()
+        folder_id = str(node.get("folder_id") or node.get("memory_folder") or "").strip()
+        folder = self.storage.get_memory_folder(folder_id, agent_id=agent_id)
         text = "\n".join(
             part
             for part in (
@@ -5363,10 +6053,19 @@ class AgentLabPlugin(Star):
                 "text": text,
                 "source_task_id": task.task_id,
                 "source_umo": task.umo,
+                "agent_id": agent_id,
+                "folder_id": folder.get("folder_id") or "default",
+                "folder_name": folder.get("name") or "默认记忆夹",
                 "status": "candidate",
                 "kind": "workflow_private_memory",
                 "tags": tags,
                 "expose_to_normal": False,
+                "evidence": {
+                    "action": "save_memory",
+                    "node_id": str(node.get("id") or ""),
+                    "agent_id": agent_id,
+                    "folder_id": folder.get("folder_id") or "default",
+                },
             }
         )
         task.add_log("task_memory", f"workflow_private_memory saved at {node.get('id') or '-'}")
@@ -6202,6 +6901,12 @@ class AgentLabPlugin(Star):
                 "credentials": self.storage.list_credentials(),
                 "skill_rules": self.storage.list_skill_rules(),
                 "memories": self.storage.list_memory_entries(),
+                "memory_folders": self.storage.list_memory_folders(),
+                "workflow_runs": [
+                    self._workflow_run_row(item)
+                    for item in [*self.storage.list_tasks(), *self.storage.list_archives(None)]
+                ][:120],
+                "schedule_jobs": dict(self._workflow_schedule_jobs),
                 "metrics": self._metrics_payload(),
                 "webui": {
                     "standalone": bool(self.webui_server),
@@ -6383,6 +7088,11 @@ class AgentLabPlugin(Star):
         reports = data.get("reports") if isinstance(data.get("reports"), list) else []
         records = data.get("records") if isinstance(data.get("records"), list) else []
         outbox = data.get("outbox") if isinstance(data.get("outbox"), list) else []
+        outbox_history = (
+            data.get("outbox_delivery_history")
+            if isinstance(data.get("outbox_delivery_history"), list)
+            else []
+        )
         return {
             "task_id": task.task_id,
             "agent_id": task.agent_id,
@@ -6398,11 +7108,23 @@ class AgentLabPlugin(Star):
             "trigger": trigger_payload,
             "workflow_current_node_id": task.workflow_current_node_id,
             "workflow_path": list(task.workflow_path or []),
+            "workflow_events": list(task.workflow_events or [])[-20:],
             "last_event": (task.workflow_events or [])[-1] if task.workflow_events else {},
             "reports": reports[-5:],
             "records": records[-8:],
             "outbox_pending": len(outbox),
+            "outbox": outbox[-12:],
+            "outbox_delivery_history": outbox_history[-12:],
             "blockers": list(task.blockers or [])[-5:],
+            "watchdog": task.watchdog.__dict__,
+            "budget": task.budget.__dict__,
+            "wait": task.wait.__dict__,
+            "pending_approvals": [item.to_dict() for item in task.pending_approvals()],
+            "agent_runtime": data.get("agent_runtime") if isinstance(data.get("agent_runtime"), dict) else {},
+            "node_outputs": data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {},
+            "global_control": data.get("global_control") if isinstance(data.get("global_control"), dict) else {},
+            "plugin_prompts": data.get("plugin_prompts")[-8:] if isinstance(data.get("plugin_prompts"), list) else [],
+            "skill_evolution_drafts": data.get("skill_evolution_drafts")[-5:] if isinstance(data.get("skill_evolution_drafts"), list) else [],
             "heartbeat": self._heartbeat_health(task),
             "archive_path": task.archive_path,
         }
@@ -6451,6 +7173,13 @@ class AgentLabPlugin(Star):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
             action = str(payload.get("action") or "").strip().lower()
+            if action in {"save_folder", "create_folder", "update_folder"}:
+                folder = self.storage.save_memory_folder(payload.get("folder") if isinstance(payload.get("folder"), dict) else payload)
+                return jsonify({"ok": True, "folder": folder, "memory_folders": self.storage.list_memory_folders()})
+            if action in {"delete_folder", "remove_folder"}:
+                folder_id = str(payload.get("folder_id") or payload.get("memory_folder") or "")
+                ok = self.storage.delete_memory_folder(folder_id)
+                return jsonify({"ok": ok, "memory_folders": self.storage.list_memory_folders(), "memories": self.storage.list_memory_entries()})
             if action in {"accept", "approve"}:
                 memory_id = str(payload.get("memory_id") or "")
                 item = self.memory_manager.accept(
@@ -6470,14 +7199,26 @@ class AgentLabPlugin(Star):
             return jsonify({"ok": True, "memory": self.storage.save_memory_entry(payload)})
         if request.method == "DELETE":
             payload = await request.get_json(force=True, silent=True) or {}
+            folder_id = str(payload.get("folder_id") or request.args.get("folder_id") or "")
+            if folder_id:
+                ok = self.storage.delete_memory_folder(folder_id)
+                return jsonify({"ok": ok, "memory_folders": self.storage.list_memory_folders(), "memories": self.storage.list_memory_entries()})
             memory_id = str(payload.get("memory_id") or request.args.get("memory_id") or "")
             return jsonify({"ok": self.storage.delete_memory_entry(memory_id)})
-        return jsonify({"ok": True, "memories": self.storage.list_memory_entries()})
+        return jsonify(
+            {
+                "ok": True,
+                "memories": self.storage.list_memory_entries(),
+                "memory_folders": self.storage.list_memory_folders(),
+            }
+        )
 
     async def api_task_logs(self):
         umo = str(request.args.get("umo") or "")
         task_id = str(request.args.get("task_id") or "")
         task = self.storage.load_active_task(umo)
+        if not task and task_id:
+            task = next((item for item in self.storage.list_tasks() if item.task_id == task_id), None)
         if not task:
             task = next(
                 (
@@ -6492,10 +7233,45 @@ class AgentLabPlugin(Star):
         return jsonify(
             {
                 "ok": True,
+                "task": self._task_payload(task),
                 "logs": task.progress_log[-200:],
                 "snapshots": task.state_snapshots[-80:],
                 "token_usage": task.token_usage,
+                "blockers": list(task.blockers or [])[-80:],
+                "watchdog": task.watchdog.__dict__,
+                "wait": task.wait.__dict__,
+                "budget": task.budget.__dict__,
+                "approvals": list(task.approvals or [])[-80:],
+                "workflow_events": list(task.workflow_events or [])[-120:],
+                "workflow_path": list(task.workflow_path or []),
+                "agent_runtime": (task.workflow_data or {}).get("agent_runtime", {})
+                if isinstance((task.workflow_data or {}).get("agent_runtime"), dict)
+                else {},
+                "reports": (task.workflow_data or {}).get("reports", [])[-80:]
+                if isinstance((task.workflow_data or {}).get("reports"), list)
+                else [],
+                "records": (task.workflow_data or {}).get("records", [])[-80:]
+                if isinstance((task.workflow_data or {}).get("records"), list)
+                else [],
+                "node_outputs": (task.workflow_data or {}).get("node_outputs", {})
+                if isinstance((task.workflow_data or {}).get("node_outputs"), dict)
+                else {},
+                "global_control": (task.workflow_data or {}).get("global_control", {})
+                if isinstance((task.workflow_data or {}).get("global_control"), dict)
+                else {},
+                "plugin_prompts": (task.workflow_data or {}).get("plugin_prompts", [])[-80:]
+                if isinstance((task.workflow_data or {}).get("plugin_prompts"), list)
+                else [],
+                "skill_evolution_drafts": (task.workflow_data or {}).get("skill_evolution_drafts", [])[-80:]
+                if isinstance((task.workflow_data or {}).get("skill_evolution_drafts"), list)
+                else [],
                 "heartbeat_health": self._heartbeat_health(task),
+                "outbox": (task.workflow_data or {}).get("outbox", [])[-80:]
+                if isinstance((task.workflow_data or {}).get("outbox"), list)
+                else [],
+                "outbox_delivery_history": (task.workflow_data or {}).get("outbox_delivery_history", [])[-80:]
+                if isinstance((task.workflow_data or {}).get("outbox_delivery_history"), list)
+                else [],
             }
         )
 
@@ -6962,6 +7738,16 @@ class AgentLabPlugin(Star):
         payload = task.to_dict()
         payload["heartbeat_health"] = self._heartbeat_health(task)
         payload["agent_runtime_summary"] = self.agent_runtime.summary(task)
+        data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
+        outbox = data.get("outbox") if isinstance(data.get("outbox"), list) else []
+        outbox_history = (
+            data.get("outbox_delivery_history")
+            if isinstance(data.get("outbox_delivery_history"), list)
+            else []
+        )
+        payload["outbox_pending"] = len(outbox)
+        payload["outbox"] = outbox[-20:]
+        payload["outbox_delivery_history"] = outbox_history[-20:]
         return payload
 
     def _heartbeat_health(self, task: TaskState) -> dict[str, Any]:
@@ -7335,6 +8121,8 @@ class AgentLabPlugin(Star):
             "natural": "natural",
             "keyword": "keyword",
             "regex": "regex",
+            "poke": "poke",
+            "notice": "notice",
             "schedule": "schedule",
             "plugin_event": "plugin_event",
             "webhook": "webhook",

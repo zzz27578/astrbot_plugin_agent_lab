@@ -221,7 +221,7 @@ async def main() -> None:
         plugin.guard = FakeGuard()
         event = FakeEvent()
         assert any(route.endswith("/workflow/check") for route, _, _ in plugin.context.web_apis)
-        assert plugin.storage.get_agent().name == "测试人格 Agent Mode"
+        assert plugin.storage.get_agent().name == "测试人格任务模式"
         assert plugin._runtime_identity_payload()["bot_label_source"] == "astrbot_persona"
         spec = plugin.storage.get_agent()
         assert spec.application_scope == "entry"
@@ -240,7 +240,7 @@ async def main() -> None:
             identity_label_source="astrbot_runtime",
         )
         plugin._prepare_agent_spec_for_save(blank_auto_spec)
-        assert blank_auto_spec.name == "测试人格 Agent Mode"
+        assert blank_auto_spec.name == "测试人格任务模式"
         assert blank_auto_spec.identity_label_source == "astrbot_runtime"
         custom_named_spec = plugin_main.AgentSpec(
             name="自定义任务模板",
@@ -364,11 +364,11 @@ async def main() -> None:
             risk_level="work",
         )
         debug("task started")
-        assert "已进入 Agent Mode" in start
+        assert "已进入任务模式" in start
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         assert task.root_goal == "runtime smoke goal"
-        assert task.profile_snapshot["agent"]["name"] == "测试人格 Agent Mode"
+        assert task.profile_snapshot["agent"]["name"] == "测试人格任务模式"
         assert task.profile_snapshot["agent"]["workflow_nodes"][0]["stage"] == "entry"
         assert "工作流：" in task.current_summary
         assert task.workflow_current_node_id == "entry"
@@ -1335,7 +1335,7 @@ async def main() -> None:
             memory_candidates="- Agent Lab runtime smoke passed",
         )
         debug("first task finished")
-        assert "Agent Mode 已结束并归档" in finish
+        assert "任务模式已结束并归档" in finish
         assert plugin.storage.load_active_task(event.unified_msg_origin) is None
         archives = plugin.storage.list_archives(event.unified_msg_origin)
         assert len(archives) == 1
@@ -1493,7 +1493,7 @@ async def main() -> None:
             final_summary="special artifact generated",
             memory_candidates="",
         )
-        assert "Agent Mode" in completed_finish
+        assert "任务模式" in completed_finish
         assert plugin.storage.load_active_task(event.unified_msg_origin) is None
         archives = plugin.storage.list_archives(event.unified_msg_origin)
         assert len(archives) == 1
@@ -1849,7 +1849,7 @@ async def main() -> None:
             FakeContext(config={"bot_name": "配置机器人"}, persona_name=None),
             config={"private_only": True},
         )
-        assert plugin.storage.get_agent().name == "配置机器人 Agent Mode"
+        assert plugin.storage.get_agent().name == "配置机器人任务模式"
         runtime_identity = plugin._runtime_identity_payload()
         assert runtime_identity["bot_label"] == "配置机器人"
         assert runtime_identity["bot_label_source"] == "astrbot_config"

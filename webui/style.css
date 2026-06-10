@@ -186,7 +186,7 @@ textarea {
 
 .shell {
   display: grid;
-  grid-template-columns: 260px minmax(0, 1fr);
+  grid-template-columns: 236px minmax(0, 1fr);
   min-height: 100vh;
 }
 
@@ -196,19 +196,21 @@ textarea {
   display: flex;
   flex-direction: column;
   height: calc(100vh - 56px);
-  padding: 22px 16px;
+  min-height: 0;
+  padding: 18px 12px;
   border-right: 1px solid var(--line);
   background: rgba(255, 254, 250, 0.88);
   backdrop-filter: blur(18px);
 }
 
 .brand {
-  padding: 8px 8px 22px;
+  flex: 0 0 auto;
+  padding: 7px 8px 16px;
 }
 
 .brand strong {
   display: block;
-  font-size: 24px;
+  font-size: 22px;
   letter-spacing: 0;
 }
 
@@ -222,7 +224,12 @@ textarea {
 
 .nav {
   display: grid;
+  flex: 1 1 auto;
   gap: 8px;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+  align-content: start;
 }
 
 .nav button {
@@ -249,8 +256,11 @@ textarea {
 }
 
 .rail-note {
+  flex: 0 0 auto;
   margin-top: auto;
-  padding: 14px;
+  max-height: 96px;
+  overflow: hidden;
+  padding: 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--panel-2);
@@ -1422,7 +1432,6 @@ button.list-row {
 }
 
 .toolbox-chip-badges em,
-.workflow-material-preview-meta span,
 .node-runtime em {
   display: inline-flex;
   min-height: 20px;
@@ -1596,12 +1605,9 @@ button.list-row {
 .node-port {
   position: absolute;
   top: 50%;
-  z-index: 4;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 44px;
+  z-index: 8;
+  width: 54px;
+  height: 64px;
   margin: 0;
   border: 0;
   border-radius: 999px;
@@ -1612,29 +1618,40 @@ button.list-row {
 }
 
 .node-port::after {
-  width: 14px;
-  height: 14px;
+  position: absolute;
+  top: 50%;
+  width: 16px;
+  height: 16px;
   border: 2px solid var(--panel);
   border-radius: 999px;
   background: var(--node-color, var(--blue));
   box-shadow: 0 0 0 1px rgba(23, 32, 29, 0.2), 0 4px 10px rgba(30, 45, 41, 0.22);
   content: "";
+  transform: translateY(-50%);
 }
 
 .node-port-in {
-  left: -20px;
+  left: -28px;
+}
+
+.node-port-in::after {
+  right: 19px;
 }
 
 .node-port-out {
-  right: -20px;
+  right: -28px;
+}
+
+.node-port-out::after {
+  left: 19px;
 }
 
 .node-port:hover::after,
 .node-port.pending::after,
-.workflow-canvas.is-connecting .node-port::after {
+.node-port.near::after {
   background: var(--amber);
-  box-shadow: 0 0 0 5px rgba(167, 111, 25, 0.14), 0 6px 16px rgba(30, 45, 41, 0.24);
-  transform: scale(1.24);
+  box-shadow: 0 0 0 9px rgba(167, 111, 25, 0.16), 0 6px 16px rgba(30, 45, 41, 0.24);
+  transform: translateY(-50%) scale(1.32);
 }
 
 /* 类型化出口端口：按 edge_type 上色，并在端口右侧显示中文小标签 */
@@ -1663,11 +1680,11 @@ button.list-row {
 }
 /* retry 回环出口：画在节点左侧，标签朝左，表示"绕回上一步" */
 .node-port-loop {
-  right: -20px;
+  right: -28px;
   left: auto;
 }
 .node-port-left {
-  left: -20px;
+  left: -28px;
   right: auto;
 }
 .node-port-typed .port-tag.port-tag-left {
@@ -1710,7 +1727,7 @@ button.list-row {
 
 .workflow-page-top {
   position: absolute;
-  top: 12px;
+  top: 6px;
   left: 64px;
   right: 78px;
   z-index: 34;
@@ -1726,9 +1743,9 @@ button.list-row {
   box-shadow: 0 12px 28px rgba(30, 45, 41, 0.1);
   backdrop-filter: blur(16px);
   opacity: 1;
-  pointer-events: auto;
+  pointer-events: none;
   /* 默认收起：上移藏起来，只露一条窄边；鼠标靠近顶部或聚焦时滑出 */
-  transform: translateY(calc(-100% + 10px));
+  transform: translateY(calc(-100% - 8px));
   transition: transform 180ms ease, box-shadow 160ms ease, opacity 160ms ease;
 }
 
@@ -1737,11 +1754,16 @@ button.list-row {
   content: "";
   position: absolute;
   left: 50%;
-  bottom: -7px;
-  width: 54px;
-  height: 4px;
-  border-radius: 999px;
-  background: var(--line-strong);
+  bottom: -11px;
+  width: 76px;
+  height: 8px;
+  border-radius: 0;
+  border: 2px solid #fff;
+  background: rgba(30, 45, 41, 0.56);
+  box-shadow:
+    0 0 0 1px rgba(212, 221, 218, 0.95),
+    0 4px 12px rgba(30, 45, 41, 0.2);
+  clip-path: polygon(8px 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
   transform: translateX(-50%);
   opacity: 0.9;
   transition: opacity 160ms ease;
@@ -1753,7 +1775,7 @@ button.list-row {
   top: 0;
   left: 0;
   right: 0;
-  height: 22px;
+  height: 18px;
   z-index: 33;
 }
 
@@ -1762,6 +1784,7 @@ button.list-row {
 .workflow-page-top:focus-within {
   transform: translateY(0);
   box-shadow: 0 16px 34px rgba(30, 45, 41, 0.16);
+  pointer-events: auto;
 }
 .workflow-page-top:hover::after,
 .workflow-page-top:focus-within::after {
@@ -1895,9 +1918,10 @@ button.list-row {
 }
 
 .workflow-tool-drawer {
-  top: 76px;
+  top: 54px;
   right: 74px;
   bottom: 18px;
+  z-index: 32;
   width: min(390px, calc(100vw - 120px));
   background: rgba(255, 255, 255, 0.94);
   transform: translateX(0);
@@ -1915,7 +1939,7 @@ button.list-row {
 }
 
 .workflow-page.toolbox-open .workflow-minimap {
-  right: calc(min(390px, calc(100vw - 120px)) + 92px);
+  right: 74px;
 }
 
 .workflow-right-dock {
@@ -2067,13 +2091,39 @@ button.list-row {
 }
 
 .workflow-context-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding: 9px 10px;
-  border: 0;
+  border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
   color: var(--ink);
   text-align: left;
   cursor: pointer;
+}
+
+.workflow-context-menu button span {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+}
+
+.workflow-context-menu .copy-action {
+  border-color: rgba(47, 125, 91, 0.44);
+}
+
+.workflow-context-menu .copy-action span {
+  border: 2px solid var(--green);
+}
+
+.workflow-context-menu .delete-action {
+  border-color: rgba(180, 67, 58, 0.44);
+}
+
+.workflow-context-menu .delete-action span {
+  border: 2px solid var(--red);
 }
 
 .workflow-context-menu button:hover {
@@ -2131,48 +2181,12 @@ button.list-row {
   height: 21px;
 }
 
-.workflow-material-preview {
-  display: grid;
-  gap: 8px;
-  position: sticky;
-  bottom: 0;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
-  box-shadow: 0 -10px 20px rgba(30, 45, 41, 0.06);
-}
-
-.workflow-material-preview-head,
-.workflow-material-preview-meta,
 .node-runtime {
   display: flex;
   min-width: 0;
   align-items: center;
   flex-wrap: wrap;
   gap: 7px;
-}
-
-.workflow-material-preview-head strong {
-  overflow: hidden;
-  margin: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflow-material-preview p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.workflow-material-preview small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .workflow-selection-box {
@@ -2187,33 +2201,19 @@ button.list-row {
 .workflow-canvas-wrap.is-dropping::after {
   position: absolute;
   z-index: 2;
-  inset: 18px;
+  inset: 0;
   display: grid;
   place-items: center;
-  border: 2px dashed rgba(47, 125, 91, 0.68);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.66);
-  color: var(--green);
-  font-weight: 700;
-  content: "松开鼠标，添加节点";
+  border: 0;
+  border-radius: 0;
+  background: rgba(245, 247, 246, 0.46);
+  content: "";
   pointer-events: none;
   animation: workflow-drop-pulse 760ms ease-in-out infinite alternate;
 }
 
 .workflow-canvas-wrap.is-dropping::before {
-  position: absolute;
-  z-index: 1;
-  right: 50%;
-  bottom: 50%;
-  width: 78px;
-  height: 78px;
-  border: 1px solid rgba(47, 125, 91, 0.34);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 18px 34px rgba(30, 45, 41, 0.16);
-  content: "";
-  pointer-events: none;
-  transform: translate(50%, 50%) rotate(3deg);
+  content: none;
 }
 
 .workflow-drag-ghost {
@@ -2303,19 +2303,22 @@ button.list-row {
   font-size: 18px;
 }
 
-body[data-route="workflow"] .shell {
-  grid-template-columns: 260px minmax(0, 1fr);
-}
-
-body[data-route="workflow"] .rail {
-  padding: 22px 16px;
-}
-
 body[data-route="workflow"] .nav button span,
 body[data-route="workflow"] .nav button strong {
   display: block;
   overflow: hidden;
+  line-height: 1.35;
   white-space: nowrap;
+}
+
+body[data-route="workflow"] .nav {
+  gap: 8px;
+}
+
+body[data-route="workflow"] .nav button {
+  padding: 11px 12px;
+  font-size: 14px;
+  line-height: 1.35;
 }
 
 body[data-route="workflow"].workflow-nav-collapsed .shell {
@@ -2938,12 +2941,12 @@ pre {
   }
 
   .workflow-tool-drawer {
-    top: auto;
+    top: 48px;
     left: 10px;
     right: 10px;
     bottom: 68px;
     width: auto;
-    max-height: 48vh;
+    max-height: none;
   }
 
   .workflow-inspector-drawer {
@@ -3097,6 +3100,9 @@ pre {
 }
 .scheme-actions {
   margin: 0;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 .scheme-list {
   max-height: 52vh;
@@ -3114,13 +3120,69 @@ pre {
   gap: 16px;
   min-width: 0;
 }
+.scheme-name-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+}
+.scheme-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 14px;
+}
+.scheme-jump-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.scheme-ops-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+.scheme-live-box {
+  min-width: 0;
+  padding: 12px;
+  box-shadow: none;
+}
+.scheme-live-box .list-row {
+  padding: 10px;
+}
+.scheme-live-box .list-row.compact .row-title {
+  align-items: flex-start;
+}
+.scheme-live-box .row-title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.scheme-inline-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
 .scheme-task-list {
   display: grid;
   gap: 8px;
+  margin-top: 10px;
 }
 @media (max-width: 880px) {
   .scheme-page { grid-template-columns: minmax(0, 1fr); }
   .scheme-sidebar { position: static; }
+  .scheme-name-row,
+  .scheme-metrics,
+  .scheme-ops-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
 .console-sidebar {
@@ -4007,33 +4069,51 @@ pre {
 
 /* Corrective clean layout pass */
 .shell {
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: 236px minmax(0, 1fr);
 }
 
 .rail {
-  top: 0;
-  height: 100vh;
-  padding: 14px 10px;
+  top: 56px;
+  height: calc(100vh - 56px);
+  min-height: 0;
+  padding: 18px 12px;
 }
 
 .brand {
-  padding: 6px 8px 16px;
+  padding: 7px 8px 16px;
 }
 
 .brand strong {
-  font-size: 21px;
+  font-size: 22px;
 }
 
 .nav {
-  gap: 5px;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding-right: 2px;
+  align-content: start;
 }
 
 .nav button {
-  padding: 9px 10px;
+  padding: 11px 12px;
+  font-size: 14px;
+  line-height: 1.35;
 }
 
 .rail-note {
+  flex: 0 0 auto;
+  max-height: 96px;
+  overflow: hidden;
   padding: 10px;
+}
+
+.rail-note strong,
+.rail-note small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .main {
@@ -4139,15 +4219,17 @@ body[data-route="workflow"] .global-status-bar {
 }
 
 body[data-route="workflow"] .shell {
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: 236px minmax(0, 1fr);
 }
 
 body[data-route="workflow"] .rail {
-  padding: 14px 10px;
+  top: 0;
+  height: 100vh;
+  padding: 18px 12px;
 }
 
 body[data-route="workflow"] .workflow-page {
-  left: 216px;
+  left: 236px;
 }
 
 body[data-route="workflow"].workflow-nav-collapsed .workflow-page {

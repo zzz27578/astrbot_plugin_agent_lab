@@ -8,7 +8,7 @@ from typing import Any
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from .models import AgentSpec, TaskState, new_id, now_iso
+from .models import AgentSpec, MemoryFolder, TaskState, new_id, now_iso
 
 
 def _safe_hash(text: str) -> str:
@@ -33,6 +33,7 @@ class AgentLabStorage:
         self.secrets_key_path = self.registry_dir / "secrets.key"
         self.skill_rules_path = self.registry_dir / "skill_rules.json"
         self.memory_entries_path = self.memories_dir / "entries.json"
+        self.memory_folders_path = self.memories_dir / "folders.json"
         self.root.mkdir(parents=True, exist_ok=True)
         self.agents_dir.mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
@@ -614,6 +615,62 @@ class AgentLabStorage:
     def list_memory_entries(self) -> list[dict[str, Any]]:
         return self._read_list(self.memory_entries_path)
 
+    def list_memory_folders(self) -> list[dict[str, Any]]:
+        folders = [MemoryFolder.from_dict(item).to_dict() for item in self._read_list(self.memory_folders_path)]
+        if folders:
+            return folders
+        folder = MemoryFolder(folder_id="default", name="默认记忆夹").to_dict()
+        self._write_json(self.memory_folders_path, [folder])
+        return [folder]
+
+    def save_memory_folder(self, payload: dict[str, Any]) -> dict[str, Any]:
+        folders = self.list_memory_folders()
+        item = MemoryFolder.from_dict(payload).to_dict()
+        item["updated_at"] = now_iso()
+        item["created_at"] = item.get("created_at") or item["updated_at"]
+        folders = [folder for folder in folders if folder.get("folder_id") != item["folder_id"]]
+        folders.append(item)
+        folders.sort(key=lambda row: (str(row.get("agent_id") or ""), str(row.get("name") or "")))
+        self._write_json(self.memory_folders_path, folders)
+        return item
+
+    def delete_memory_folder(self, folder_id: str) -> bool:
+        folder_id = str(folder_id or "").strip()
+        if not folder_id or folder_id == "default":
+            return False
+        folders = self.list_memory_folders()
+        kept = [folder for folder in folders if folder.get("folder_id") != folder_id]
+        if len(kept) == len(folders):
+            return False
+        self._write_json(self.memory_folders_path, kept)
+        items = self.list_memory_entries()
+        changed = False
+        for item in items:
+            if str(item.get("folder_id") or "") == folder_id:
+                item["folder_id"] = "default"
+                item["folder_name"] = "默认记忆夹"
+                changed = True
+        if changed:
+            self._write_json(self.memory_entries_path, items)
+        return True
+
+    def get_memory_folder(self, folder_id: str = "", *, agent_id: str = "") -> dict[str, Any]:
+        folders = self.list_memory_folders()
+        needle = str(folder_id or "").strip()
+        if needle:
+            for folder in folders:
+                if str(folder.get("folder_id") or "") == needle:
+                    return dict(folder)
+        agent_id = str(agent_id or "").strip()
+        if agent_id:
+            for folder in folders:
+                if str(folder.get("agent_id") or "") == agent_id:
+                    return dict(folder)
+            folder = MemoryFolder(name=f"{agent_id} 记忆夹", agent_id=agent_id).to_dict()
+            self._write_json(self.memory_folders_path, [*folders, folder])
+            return dict(folder)
+        return dict(folders[0] if folders else MemoryFolder(folder_id="default", name="默认记忆夹").to_dict())
+
     def save_memory_entry(self, payload: dict[str, Any]) -> dict[str, Any]:
         items = self.list_memory_entries()
         item = dict(payload or {})
@@ -625,6 +682,10 @@ class AgentLabStorage:
         item["kind"] = str(item.get("kind") or "task_memory").strip()
         item["source_task_id"] = str(item.get("source_task_id") or "").strip()
         item["source_umo"] = str(item.get("source_umo") or "").strip()
+        item["agent_id"] = str(item.get("agent_id") or "").strip()
+        folder = self.get_memory_folder(str(item.get("folder_id") or ""), agent_id=item["agent_id"])
+        item["folder_id"] = str(item.get("folder_id") or folder.get("folder_id") or "default").strip() or "default"
+        item["folder_name"] = str(item.get("folder_name") or folder.get("name") or "默认记忆夹").strip()[:80]
         tags = item.get("tags") or []
         if isinstance(tags, str):
             tags = [part.strip() for part in tags.replace("，", ",").split(",")]
@@ -689,6 +750,8 @@ class AgentLabStorage:
         evidence.setdefault("source_umo", item.get("source_umo") or "")
         evidence.setdefault("kind", item.get("kind") or "")
         evidence.setdefault("layer", item.get("layer") or "")
+        evidence.setdefault("folder_id", item.get("folder_id") or "")
+        evidence.setdefault("agent_id", item.get("agent_id") or "")
         return evidence
 
     def delete_memory_entry(self, memory_id: str) -> bool:

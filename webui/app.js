@@ -316,12 +316,12 @@ const WORKFLOW_LIBRARY_GROUP_ALIASES = {
 const WORKFLOW_NODE_TEMPLATES = [
   {
     id: "entry",
-    title: "入口识别",
-    kind: "state",
+    title: "消息监听入口",
+    kind: "trigger",
     stage: "entry",
-    action: "summarize_entry",
-    instruction: "识别暗号、命令、关键词或 WebUI 入口，决定是否准备进入任务模式。",
-    prompt: "只判断是否进入任务模式：命中暗号、命令、关键词或 WebUI 手动入口时继续；普通聊天不进入。",
+    action: "listen_message",
+    instruction: "统一承接命令、关键词、自然语言、拍一拍、notice、WebUI、插件事件和 webhook 触发。",
+    output_variable: "event.message",
   },
   {
     id: "entry_gate",
@@ -487,33 +487,9 @@ const WORKFLOW_NODE_TEMPLATES = [
     instruction: "任务完成或取消时归档成果、改动、风险和可回流记忆候选。",
     prompt: "退出时必须输出：完成结果、关键改动、验证证据、遗留风险、恢复状态、可沉淀任务记忆和下次续写入口。",
   },
-  {
-    id: "command_entry",
-    title: "命令/暗号入口",
-    kind: "state",
-    stage: "entry",
-    action: "summarize_entry",
-    library_group: "入口",
-    instruction: "匹配 /agentlab start、暗号或自定义命令，只产出是否准备进入任务模式的判断。",
-  },
-  {
-    id: "keyword_entry",
-    title: "关键词入口",
-    kind: "branch",
-    stage: "entry",
-    action: "route_condition",
-    library_group: "入口",
-    instruction: "按排查、部署、写插件、整理资料等关键词判断是否进入任务模式，避免普通聊天误触发。",
-  },
-  {
-    id: "manual_webui_entry",
-    title: "WebUI 手动入口",
-    kind: "human",
-    stage: "entry",
-    action: "confirm_entry",
-    library_group: "入口",
-    instruction: "从控制台创建任务时锁定目标、完成条件、风险等级和是否立即开心跳。",
-  },
+
+
+
   {
     id: "document_source",
     title: "文档/路径输入",
@@ -575,6 +551,69 @@ const WORKFLOW_NODE_TEMPLATES = [
     instruction: "根据归档任务、任务记忆或外部文档地址生成续写 brief，并要求先确认新旧目标差异。",
     input_variable: "archive.task_id",
     output_variable: "resume.brief",
+  },
+  {
+    id: "variable_set",
+    title: "设置变量",
+    kind: "transform",
+    stage: "execute",
+    action: "variable_set",
+    library_group: "变量",
+    instruction: "将数据存入工作流变量，供后续节点读取或作为最终输出。",
+  },
+  {
+    id: "variable_get",
+    title: "读取变量",
+    kind: "transform",
+    stage: "execute",
+    action: "variable_get",
+    library_group: "变量",
+    instruction: "从工作流变量中读取之前存储的数据。",
+  },
+  {
+    id: "text_template",
+    title: "文本模板",
+    kind: "transform",
+    stage: "execute",
+    action: "text_template",
+    library_group: "变量",
+    instruction: "使用模板语法将变量插入文本，生成动态内容。",
+  },
+  {
+    id: "json_transform",
+    title: "JSON转换",
+    kind: "transform",
+    stage: "execute",
+    action: "json_transform",
+    library_group: "变量",
+    instruction: "解析、提取、转换或重组 JSON 数据结构。",
+  },
+  {
+    id: "merge",
+    title: "合并数据",
+    kind: "transform",
+    stage: "execute",
+    action: "merge",
+    library_group: "变量",
+    instruction: "将多个数据源或上游节点输出合并为单一数据结构。",
+  },
+  {
+    id: "iterator",
+    title: "迭代器",
+    kind: "branch",
+    stage: "execute",
+    action: "iterator",
+    library_group: "变量",
+    instruction: "对数组或列表中的每个元素执行相同的处理流程。",
+  },
+  {
+    id: "debate_validation",
+    title: "辩论验证",
+    kind: "validation",
+    stage: "execute",
+    action: "debate_validation",
+    library_group: "变量",
+    instruction: "通过多角度辩论验证结果的正确性和完整性。",
   },
   {
     id: "todo_split",
@@ -863,6 +902,69 @@ const WORKFLOW_NODE_TEMPLATES = [
     action: "revoke_session",
     library_group: "安全",
     instruction: "任务做完后注销/解绑这个账号会话，避免登录态长期挂着。",
+  },
+  {
+    id: "refresh_session",
+    title: "刷新会话",
+    kind: "guard",
+    stage: "guard",
+    action: "refresh_session",
+    library_group: "安全",
+    instruction: "主动刷新账号会话/令牌，避免过期失效；适合长任务开始前预防性刷新。",
+  },
+  {
+    id: "browser_profile",
+    title: "浏览器配置",
+    kind: "guard",
+    stage: "guard",
+    action: "browser_profile",
+    library_group: "安全",
+    instruction: "为浏览器自动化指定 profile（指纹、UA、代理），隔离不同账号或模拟真实用户。",
+  },
+  {
+    id: "credential_scope",
+    title: "凭证范围",
+    kind: "guard",
+    stage: "guard",
+    action: "credential_scope",
+    library_group: "安全",
+    instruction: "限定凭证的作用域（只读、只写、特定资源），防止误操作或权限滥用。",
+  },
+  {
+    id: "summarize_memory",
+    title: "总结记忆",
+    kind: "memory",
+    stage: "checkpoint",
+    action: "summarize_memory",
+    library_group: "记忆",
+    instruction: "对任务执行过程的关键信息进行提炼总结，生成可复用的结构化记忆。",
+  },
+  {
+    id: "forget_task_memory",
+    title: "遗忘记忆",
+    kind: "memory",
+    stage: "checkpoint",
+    action: "forget_task_memory",
+    library_group: "记忆",
+    instruction: "标记并清除已过期、错误或不再需要的任务记忆，保持记忆库整洁。",
+  },
+  {
+    id: "promote_memory_candidate",
+    title: "提升候选记忆",
+    kind: "memory",
+    stage: "checkpoint",
+    action: "promote_memory_candidate",
+    library_group: "记忆",
+    instruction: "将候选记忆（candidate_memory）验证后提升为正式记忆（accepted_memory）。",
+  },
+  {
+    id: "export_task_memory",
+    title: "导出记忆",
+    kind: "memory",
+    stage: "archive",
+    action: "export_task_memory",
+    library_group: "记忆",
+    instruction: "导出任务记忆为外部文档或结构化数据，用于归档、分享或迁移。",
   },
 ];
 
@@ -3050,6 +3152,114 @@ function liveConsolePanel(task, canControl = Boolean(task)) {
   `;
 }
 
+function taskRuntimeMonitorPanel(task) {
+  if (!task) return "";
+  const health = task.heartbeat_health || {};
+  const currentNode = task.workflow_current_node_id || "-";
+  const outbox = task.outbox || [];
+  const history = task.outbox_delivery_history || [];
+  const blockers = task.blockers || [];
+  return `
+    <section class="panel">
+      <div class="panel-head">
+        <div><p class="card-kicker">运行监控</p><h2>实时状态</h2></div>
+      </div>
+      <div class="detail-box">
+        <div class="mini-stats">
+          <span>节点 ${esc(currentNode)}</span>
+          <span>待发 ${outbox.length}</span>
+          <span>已发 ${history.length}</span>
+          <span>阻塞 ${blockers.length}</span>
+        </div>
+        <div class="state-fields">
+          ${stateField("心跳状态", healthLabel(health))}
+          ${stateField("心跳距离", ageText(health.seconds_since_pulse || 0))}
+        </div>
+      </div>
+      ${outbox.length ? `
+        <div class="panel-head"><div><p class="card-kicker">Outbox</p><h3>待发消息</h3></div></div>
+        <div class="list">
+          ${outbox.map((item) => `
+            <div class="list-row">
+              <div class="row-title"><span>${esc(item.message || "-")}</span>${badge(item.delivery || "pending", "warn")}</div>
+              <div class="row-meta">目标：${esc(item.target || "-")} ${item.image ? "· 含图片" : ""} ${item.face ? `· 表情 ${item.face}` : ""}</div>
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+      ${history.length ? `
+        <div class="panel-head"><div><p class="card-kicker">已发历史</p><h3>最近 ${Math.min(history.length, 10)} 条</h3></div></div>
+        <div class="list">
+          ${history.slice(-10).reverse().map((item) => `
+            <div class="list-row">
+              <div class="row-title"><span>${esc(item.message || "-")}</span>${badge("已发送", "ok")}</div>
+              <div class="row-meta">${esc(item.delivered_at || "-")} · ${esc(item.target || "-")}</div>
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
+      ${blockers.length ? `
+        <div class="panel-head"><div><p class="card-kicker">阻塞器</p><h3>${blockers.length} 项</h3></div></div>
+        <div class="list">
+          ${blockers.map((item) => {
+            const isResolved = item.resolved_at;
+            return `
+            <div class="list-row">
+              <div class="row-title"><span>${esc(item.reason || item)}</span>${badge(isResolved ? "已解除" : "阻塞中", isResolved ? "ok" : "bad")}</div>
+              <div class="row-meta">节点：${esc(item.node_id || "-")} · 创建：${esc(item.created_at || "-")}${isResolved ? ` · 解除：${esc(item.resolved_at)}` : ""}</div>
+            </div>
+          `}).join("")}
+        </div>
+      ` : ""}
+      ${(() => {
+        const wd = task.watchdog || {};
+        if (!Object.keys(wd).length) return "";
+        const healthStatus = wd.health_status || "unknown";
+        const statusColor = healthStatus === "healthy" ? "ok" : healthStatus === "warning" ? "warn" : "bad";
+        return `
+          <div class="panel-head"><div><p class="card-kicker">Watchdog</p><h3>状态监控</h3></div></div>
+          <div class="detail-box">
+            <div class="state-fields">
+              ${stateField("健康状态", badge(healthStatus, statusColor))}
+              ${stateField("需要用户", wd.needs_user ? badge("是", "warn") : badge("否", "ok"))}
+              ${stateField("连续失败", `${wd.consecutive_failures || 0} 次`)}
+              ${stateField("上次成功", ageText((Date.now() / 1000) - (new Date(wd.last_success_at || 0).getTime() / 1000)))}
+            </div>
+          </div>
+        `;
+      })()}
+      ${(() => {
+        const reports = task.workflow_data?.reports || [];
+        return reports.length ? `
+          <div class="panel-head"><div><p class="card-kicker">Reports</p><h3>最近 ${Math.min(reports.length, 10)} 条</h3></div></div>
+          <div class="list">
+            ${reports.slice(-10).reverse().map((r) => `
+              <div class="list-row">
+                <div class="row-title"><span>${esc(r.report_type || "report")}</span></div>
+                <div class="row-meta">${esc(r.content || "-")} · ${esc(r.timestamp || "-")}</div>
+              </div>
+            `).join("")}
+          </div>
+        ` : "";
+      })()}
+      ${(() => {
+        const records = task.workflow_data?.records || [];
+        return records.length ? `
+          <div class="panel-head"><div><p class="card-kicker">Records</p><h3>最近 ${Math.min(records.length, 10)} 条</h3></div></div>
+          <div class="list">
+            ${records.slice(-10).reverse().map((rec) => `
+              <div class="list-row">
+                <div class="row-title"><span>${esc(rec.record_type || "record")}</span></div>
+                <div class="row-meta">${esc(JSON.stringify(rec.data || {}))}&nbsp;· ${esc(rec.timestamp || "-")}</div>
+              </div>
+            `).join("")}
+          </div>
+        ` : "";
+      })()}
+    </section>
+  `;
+}
+
 function settingsExportPayload() {
   return {
     agent: currentAgent || {},
@@ -3424,10 +3634,15 @@ function renderCanvas() {
             <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
             <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
           </div>
-          <div class="button-row"><button class="button" data-action="start-task" type="button">进入任务模式</button></div>
+          <div class="button-row">
+            <button class="button" data-action="start-task" type="button">进入任务模式</button>
+            <button class="button secondary" data-action="simulate-trigger" type="button">模拟触发</button>
+          </div>
         </section>
 
         ${liveConsolePanel(liveTask, Boolean(runnableTask))}
+
+        ${taskRuntimeMonitorPanel(runnableTask)}
 
         <section class="panel">
           <div class="panel-head">
@@ -5352,7 +5567,10 @@ function renderTasks() {
             <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
             <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
           </div>
-          <div class="button-row"><button class="button" data-action="start-task" type="button">进入任务模式</button></div>
+          <div class="button-row">
+            <button class="button" data-action="start-task" type="button">进入任务模式</button>
+            <button class="button secondary" data-action="simulate-trigger" type="button">模拟触发</button>
+          </div>
         </section>
 
         ${liveConsolePanel(liveTask, Boolean(runnableTask))}
@@ -5426,12 +5644,102 @@ function taskDetail(task) {
       ${stateField("下一步", task.next_step)}
       ${stateField("最近观察", task.last_observation)}
     </div>
+    ${taskBudgetDetail(task)}
     ${taskWorkflowDetail(task)}
     ${taskParallelRunsDetail(task)}
+    ${taskRuntimeTraceDetail(task)}
     <div class="panel-head"><div><p class="card-kicker">审批</p><h3>待审批</h3></div></div>
     <div class="list">${approvalRows(pendingApprovals)}</div>
     <div class="panel-head"><div><p class="card-kicker">记录</p><h3>状态变化时间线</h3></div></div>
     <div class="list">${snapshotRows(task.state_snapshots || [])}</div>
+    <div class="panel-head"><div><p class="card-kicker">日志</p><h3>任务日志</h3></div></div>
+    <div class="button-row"><button class="button secondary" data-action="load-task-logs" data-task-id="${esc(task.task_id)}" type="button">加载日志</button></div>
+    <div id="task-logs-container" class="log-content" style="max-height: 400px; overflow-y: auto; display: none;"></div>
+  `;
+}
+
+function taskBudgetDetail(task) {
+  const budget = task.budget || {};
+  const maxTokens = budget.max_total_tokens;
+  const maxTicks = budget.max_total_ticks;
+  const maxToolsPerTick = budget.max_tools_per_tick;
+  const maxSecondsPerTick = budget.max_seconds_per_tick;
+  const tokenCount = task.token_count || 0;
+  const tickCount = task.tick_count || 0;
+  const repeatedCounts = task.repeated_issue_counts || {};
+  const maxRepeatedFailures = budget.max_repeated_failures;
+  if (!maxTokens && !maxTicks && !maxToolsPerTick && !maxSecondsPerTick && !maxRepeatedFailures) return "";
+  const progress = (current, max) => max ? `${current} / ${max}` : `${current}`;
+  const percentage = (current, max) => max ? Math.min(100, (current / max) * 100).toFixed(0) : 0;
+  return `
+    <div class="detail-box workflow-runtime-card">
+      <div class="panel-head"><div><p class="card-kicker">预算与限制</p><h3>资源使用情况</h3></div></div>
+      <div class="mini-stats">
+        ${maxTokens ? `<span>Token ${progress(tokenCount, maxTokens)}</span>` : ""}
+        ${maxTicks ? `<span>Tick ${progress(tickCount, maxTicks)}</span>` : ""}
+        ${maxToolsPerTick ? `<span>工具/tick ≤${maxToolsPerTick}</span>` : ""}
+        ${maxSecondsPerTick ? `<span>秒/tick ≤${maxSecondsPerTick}</span>` : ""}
+      </div>
+      ${maxTokens || maxTicks ? `
+        <div class="edge-list">
+          ${maxTokens ? `<div class="edge-row"><span>Token 使用</span><div class="progress-bar"><div class="progress-fill" style="width:${percentage(tokenCount, maxTokens)}%"></div></div></div>` : ""}
+          ${maxTicks ? `<div class="edge-row"><span>Tick 使用</span><div class="progress-bar"><div class="progress-fill" style="width:${percentage(tickCount, maxTicks)}%"></div></div></div>` : ""}
+        </div>
+      ` : ""}
+      ${maxRepeatedFailures && Object.keys(repeatedCounts).length ? `
+        <div class="workflow-events">
+          <div class="log-row">
+            <span>重复失败</span>
+            <strong>上限 ${maxRepeatedFailures}</strong>
+            <p>${Object.entries(repeatedCounts).map(([k, v]) => `${k}: ${v}`).join(" · ")}</p>
+          </div>
+        </div>
+      ` : ""}
+    </div>
+  `;
+}
+
+
+function taskRuntimeTraceDetail(task) {
+  const rt = task.agent_runtime || task.runtime_trace || {};
+  const catalog = rt.capability_catalog || [];
+  const plan = rt.task_plan || [];
+  const decisions = rt.decisions || [];
+  const observations = rt.observations || [];
+  const verdicts = rt.verdicts || [];
+  const resume = rt.resume || [];
+  const patterns = rt.pattern_recommendations || [];
+  const hasData = catalog.length || plan.length || decisions.length || observations.length || verdicts.length || resume.length || patterns.length;
+  if (!hasData) return "";
+  return `
+    <div class="detail-box workflow-runtime-card">
+      <div class="panel-head"><div><p class="card-kicker">运行轨迹</p><h3>Agent Runtime 审计</h3></div></div>
+      ${traceSection("能力目录", catalog)}
+      ${traceSection("任务计划", plan)}
+      ${traceSection("决策记录", decisions)}
+      ${traceSection("观察记录", observations)}
+      ${traceSection("判定结果", verdicts)}
+      ${traceSection("恢复信息", resume)}
+      ${traceSection("模式推荐", patterns)}
+    </div>
+  `;
+}
+
+function traceSection(title, items) {
+  if (!items.length) return "";
+  return `
+    <details class="trace-section">
+      <summary>${esc(title)} (${items.length})</summary>
+      <div class="workflow-events">
+        ${items.map((item) => `
+          <div class="log-row">
+            <span>${esc(item.timestamp || item.time || "")}</span>
+            <strong>${esc(item.summary || item.title || item.content || "-")}</strong>
+            <p>${esc(item.details || item.description || item.note || "")}</p>
+          </div>
+        `).join("")}
+      </div>
+    </details>
   `;
 }
 
@@ -7182,6 +7490,20 @@ document.addEventListener("click", async (event) => {
       setFeedback("任务已创建。");
       await load();
     }
+    if (action === "simulate-trigger") {
+      if (!currentAgent.agent_id) throw new Error("请先保存当前方案。");
+      const result = await api("/api/workflow/trigger", {
+        method: "POST",
+        body: {
+          agent_id: currentAgent.agent_id,
+          source: "manual",
+          text: "测试触发",
+        },
+      });
+      if (result.ok === false) throw new Error(result.error || "触发失败。");
+      setFeedback(result.triggered ? "触发成功。" : "未触发（可能不满足触发条件）。");
+      await load();
+    }
     if (action === "tick-task") {
       const task = runnableTask();
       if (!task) throw new Error("请选择一个正在运行的任务。");
@@ -7219,6 +7541,27 @@ document.addEventListener("click", async (event) => {
       await api("/api/task/cancel", { method: "POST", body: { umo: task.umo, reason: "WebUI 强制停止任务。" } });
       setFeedback("任务已停止并归档。");
       await load();
+    }
+    if (action === "load-task-logs") {
+      const taskId = target.dataset.taskId;
+      if (!taskId) throw new Error("缺少任务 ID。");
+      const container = document.getElementById("task-logs-container");
+      if (!container) throw new Error("日志容器未找到。");
+      container.style.display = "block";
+      container.innerHTML = "<div>加载中...</div>";
+      try {
+        const logs = await api(`/api/task/logs?task_id=${encodeURIComponent(taskId)}`);
+        if (!logs || !Array.isArray(logs)) {
+          container.innerHTML = "<div class='empty'>无日志数据。</div>";
+          return;
+        }
+        const recentLogs = logs.slice(-100);
+        container.innerHTML = recentLogs.map(log => 
+          `<div class="log-line"><span class="log-time">${esc(log.timestamp || "")}</span><span class="log-level">${esc(log.level || "INFO")}</span><span class="log-message">${esc(log.message || "")}</span></div>`
+        ).join("") || "<div class='empty'>暂无日志。</div>";
+      } catch (err) {
+        container.innerHTML = `<div class='empty'>加载失败：${esc(err.message)}</div>`;
+      }
     }
     if (action === "resolve-approval") {
       const task = selectedTask();
@@ -7430,7 +7773,7 @@ document.addEventListener("click", async (event) => {
 document.addEventListener("change", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
-    if (target.dataset.action === "workflow-agent-select") {
+  if (target.dataset.action === "workflow-agent-select") {
     readAgentForm();
     selectedAgentId = target.value;
     currentAgent = ensureAgent(clone((state.agents || []).find((item) => item.agent_id === selectedAgentId) || currentAgent));

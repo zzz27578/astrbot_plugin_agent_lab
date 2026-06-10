@@ -234,6 +234,43 @@ class MemoryPolicy:
 
 
 @dataclass
+class MemoryFolder:
+    folder_id: str = field(default_factory=lambda: new_id("mf"))
+    name: str = "默认记忆夹"
+    agent_id: str = ""
+    description: str = ""
+    expose_to_normal: bool = False
+    detail_level: str = "summary"  # summary | full
+    retention_days: int = 0
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "MemoryFolder":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        base.folder_id = str(base.folder_id or "").strip() or new_id("mf")
+        base.name = str(base.name or "默认记忆夹").strip()[:80] or "默认记忆夹"
+        base.agent_id = str(base.agent_id or "").strip()[:120]
+        base.description = str(base.description or "").strip()[:500]
+        base.expose_to_normal = bool(base.expose_to_normal)
+        if base.detail_level not in {"summary", "full"}:
+            base.detail_level = "summary"
+        try:
+            base.retention_days = max(0, min(int(base.retention_days or 0), 3650))
+        except Exception:
+            base.retention_days = 0
+        return base
+
+
+@dataclass
 class EntryPolicy:
     trigger_phrases: list[str] = field(
         default_factory=lambda: [
@@ -336,6 +373,8 @@ class WorkflowTrigger:
             "message_monitor",
             "keyword",
             "regex",
+            "poke",
+            "notice",
             "schedule",
             "plugin_event",
             "webhook",
@@ -477,6 +516,7 @@ class AgentSpec:
         ]
     )
     module_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    default_task_budget: TaskBudget = field(default_factory=TaskBudget)
     workflow_nodes: list[dict[str, Any]] = field(
         default_factory=lambda: [
             {
@@ -758,6 +798,9 @@ class AgentSpec:
         )
         payload["heartbeat_policy"] = HeartbeatPolicy.from_dict(
             payload.get("heartbeat_policy")
+        )
+        payload["default_task_budget"] = TaskBudget.from_dict(
+            payload.get("default_task_budget")
         )
         payload["workflow_trigger"] = WorkflowTrigger.from_dict(
             payload.get("workflow_trigger")
