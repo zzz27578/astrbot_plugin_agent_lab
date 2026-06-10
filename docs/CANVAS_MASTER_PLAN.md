@@ -51,6 +51,8 @@ Agent Lab = AstrBot 的**可视化自动化工作流层**。两种形态：①�
 | Skill 进化节点 | ✅ 安全版完成 | 节点与表单已接入，默认生成 skill_rules 草稿并走人工审批 |
 | 全局控制节点 | ✅ 已完成 | 默认工作流包含 global_control；全局抽屉可配置隔离、技能、预算、工具范围和重复失败阈值 |
 
+> 2026-06-11 实际代码核对补记：核心后端能力已落地；本轮补齐前端节点库的剩余收口，隐藏/合并旧素材（entry_gate、scope_lock、memory_expose、memory_rollback 等），为旧方案增加自动迁移，并把 document_source / file_patch / shell_test 对齐到 variable_set / file_operation / code_exec，同时补齐限流、错误捕获、分支、并行、记忆夹和上下文压缩的职责化表单。
+
 ---
 
 ## 3. 第一批 · 让核心场景真能跑（最高优先）

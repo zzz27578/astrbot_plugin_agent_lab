@@ -348,6 +348,41 @@ const WORKFLOW_LIBRARY_GROUP_ALIASES = {
   "并行": "parallel_pack",
 };
 
+const WORKFLOW_MERGED_TEMPLATE_IDS = new Set([
+  "entry_gate",
+  "isolation_gate",
+  "scope_lock",
+  "memory_read",
+  "memory_expose",
+  "memory_rollback",
+  "todo_split",
+  "api_payload_builder",
+  "api_write_guard",
+  "rollback_plan",
+  "acceptance_check",
+  "message_listener",
+]);
+
+const WORKFLOW_LEGACY_NODE_MIGRATIONS = {
+  command_entry: { title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", library_group: "trigger_monitor" },
+  keyword_entry: { title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", library_group: "trigger_monitor" },
+  manual_webui_entry: { title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", library_group: "trigger_monitor" },
+  entry_gate: { title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", library_group: "trigger_monitor", require_confirmation: true },
+  isolation_gate: { title: "全局控制", kind: "guard", stage: "guard", action: "global_control", library_group: "控制", isolation_mode: "strict" },
+  scope_lock: { title: "全局控制", kind: "guard", stage: "guard", action: "global_control", library_group: "控制", tool_mode: "whitelist" },
+  memory_read: { title: "任务记忆读取", kind: "retrieval", stage: "plan", action: "retrieve_memory", library_group: "记忆" },
+  memory_expose: { title: "保存任务记忆", kind: "memory", stage: "checkpoint", action: "save_memory", library_group: "记忆", expose_to_normal: true },
+  memory_rollback: { title: "任务记忆读取", kind: "retrieval", stage: "plan", action: "retrieve_memory", library_group: "记忆" },
+  document_source: { title: "文档/路径输入", kind: "transform", stage: "plan", action: "variable_set", library_group: "变量", variable_name: "document.source" },
+  todo_split: { title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", library_group: "计划" },
+  api_payload_builder: { title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", library_group: "API" },
+  api_write_guard: { title: "审批闸门", kind: "guard", stage: "guard", action: "request_approval", library_group: "安全" },
+  rollback_plan: { title: "审批闸门", kind: "guard", stage: "guard", action: "request_approval", library_group: "安全" },
+  acceptance_check: { title: "结果校验", kind: "validation", stage: "checkpoint", action: "validate_output", library_group: "验证" },
+  file_patch: { title: "文件操作", kind: "tool", stage: "execute", action: "file_operation", library_group: "工具" },
+  shell_test: { title: "命令验证", kind: "tool", stage: "checkpoint", action: "code_exec", library_group: "验证", language: "shell" },
+};
+
 const WORKFLOW_NODE_TEMPLATES = [
   {
     id: "entry",
@@ -355,6 +390,7 @@ const WORKFLOW_NODE_TEMPLATES = [
     kind: "trigger",
     stage: "entry",
     action: "listen_message",
+    library_group: "trigger_monitor",
     instruction: "统一承接命令、关键词、自然语言、拍一拍、notice、WebUI、插件事件和 webhook 触发。",
     output_variable: "event.message",
   },
@@ -528,12 +564,12 @@ const WORKFLOW_NODE_TEMPLATES = [
   {
     id: "document_source",
     title: "文档/路径输入",
-    kind: "retrieval",
+    kind: "transform",
     stage: "plan",
-    action: "retrieve_memory",
-    library_group: "输入",
-    instruction: "把文件路径、文档 URL 或上游变量作为工作流输入，供后续工具、API 或记忆节点读取。",
-    input_variable: "task.input",
+    action: "variable_set",
+    library_group: "变量",
+    instruction: "把文件路径、文档 URL 或上游变量写入工作流变量，供后续工具、API 或记忆节点读取。",
+    variable_name: "document.source",
     output_variable: "document.context",
   },
   {
@@ -692,21 +728,22 @@ const WORKFLOW_NODE_TEMPLATES = [
   },
   {
     id: "file_patch",
-    title: "文件改动单元",
+    title: "文件操作",
     kind: "tool",
     stage: "execute",
-    action: "run_tools",
+    action: "file_operation",
     library_group: "工具",
-    instruction: "只改一个边界清晰的代码或文档单元，改动前后记录关键文件、风险和验证方式。",
+    instruction: "按受控路径执行读、写、替换或追加，并把结果写回任务状态。",
   },
   {
     id: "shell_test",
     title: "命令验证",
     kind: "tool",
     stage: "checkpoint",
-    action: "run_tools",
+    action: "code_exec",
     library_group: "验证",
     instruction: "运行格式检查、单测、烟测或项目命令，把命令、结果和失败原因写回任务状态。",
+    language: "shell",
   },
   {
     id: "api_payload_builder",
@@ -2765,13 +2802,14 @@ function addWorkflowTemplateNode(templateId, point = null, options = {}) {
   readAgentForm();
   ensureWorkflow();
   const template = WORKFLOW_NODE_TEMPLATES.find((item) => item.id === templateId) || WORKFLOW_NODE_TEMPLATES[0];
+  const nodeTemplate = migrateWorkflowNodeShape(clone(template));
   pushWorkflowHistory();
-  const id = uniqueWorkflowNodeId(template.id);
-  const pos = workflowNodeDropPosition(point, template.stage, currentAgent.workflow_nodes.length);
+  const id = uniqueWorkflowNodeId(nodeTemplate.id);
+  const pos = workflowNodeDropPosition(point, nodeTemplate.stage, currentAgent.workflow_nodes.length);
   currentAgent.workflow_nodes.push({
-    ...clone(template),
+    ...nodeTemplate,
     id,
-    description: template.description || template.title,
+    description: nodeTemplate.description || nodeTemplate.title,
     x: pos.x,
     y: pos.y,
   });
@@ -2779,7 +2817,7 @@ function addWorkflowTemplateNode(templateId, point = null, options = {}) {
   workflowInspectorOpen = options.openInspector !== false;
   workflowDryRunReport = null;
   workflowCheckReport = null;
-  setFeedback(`已添加节点：${template.title}。拖动画布上的节点即可调整位置。`);
+  setFeedback(`已添加节点：${nodeTemplate.title}。拖动画布上的节点即可调整位置。`);
 }
 
 function addRuntimeWorkflowNode(refType, refId, point = null, options = {}) {
@@ -2886,6 +2924,23 @@ function defaultWorkflowAction(node) {
   return "plan";
 }
 
+function migrateWorkflowNodeShape(node = {}) {
+  const id = String(node.id || "").trim();
+  const action = String(node.action || "").trim();
+  const patch = { ...(WORKFLOW_LEGACY_NODE_MIGRATIONS[id] || {}) };
+  if (!Object.keys(patch).length && ["command_entry", "keyword_entry", "manual_webui_entry"].includes(action)) {
+    Object.assign(patch, WORKFLOW_LEGACY_NODE_MIGRATIONS[action]);
+  }
+  if (!Object.keys(patch).length) return node;
+  const migrated = { ...node, ...patch };
+  if (id === "keyword_entry" && !migrated.keywords && node.params?.keywords) migrated.keywords = node.params.keywords;
+  if (id === "memory_rollback" && !migrated.source_task_id && node.input_variable) migrated.source_task_id = node.input_variable;
+  if (id === "document_source" && !migrated.value) migrated.value = node.input_variable || node.path || node.url || "";
+  if (id === "file_patch" && !migrated.operation) migrated.operation = node.operation || "write";
+  if (id === "shell_test" && !migrated.command) migrated.command = node.command || node.instruction || "";
+  return migrated;
+}
+
 function ensureWorkflow() {
   currentAgent = ensureAgent(currentAgent || {});
   if (!Array.isArray(currentAgent.workflow_nodes) || !currentAgent.workflow_nodes.length) {
@@ -2903,21 +2958,25 @@ function ensureWorkflow() {
     currentAgent.workflow_nodes = defaultWorkflowNodes();
     currentAgent.workflow_edges = defaultWorkflowEdges();
   }
-  currentAgent.workflow_nodes = currentAgent.workflow_nodes.map((node, index) => ({
-    ...node,
-    id: String(node.id || `node_${index + 1}`).trim(),
-    title: String(node.title || node.id || `节点 ${index + 1}`).trim(),
-    kind: WORKFLOW_KINDS.includes(String(node.kind || "").trim()) ? String(node.kind).trim() : "state",
-    stage: workflowStage(node),
-    action: String(node.action || defaultWorkflowAction(node)).trim() || "manual",
-    description: String(node.description || "").trim(),
-    instruction: String(node.instruction || node.prompt || node.description || "").trim(),
-    condition: String(node.condition || "").trim(),
-    parallel_group: String(node.parallel_group || "").trim(),
-    prompt: String(node.prompt || "").trim(),
-    x: clamp(Number(node.x ?? defaultWorkflowPosition(workflowStage(node), index).x), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X),
-    y: clamp(Number(node.y ?? defaultWorkflowPosition(workflowStage(node), index).y), WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y),
-  }));
+  currentAgent.workflow_nodes = currentAgent.workflow_nodes.map((rawNode, index) => {
+    const node = migrateWorkflowNodeShape(rawNode);
+    const stage = workflowStage(node);
+    return {
+      ...node,
+      id: String(node.id || `node_${index + 1}`).trim(),
+      title: String(node.title || node.id || `节点 ${index + 1}`).trim(),
+      kind: WORKFLOW_KINDS.includes(String(node.kind || "").trim()) ? String(node.kind).trim() : "state",
+      stage,
+      action: String(node.action || defaultWorkflowAction(node)).trim() || "manual",
+      description: String(node.description || "").trim(),
+      instruction: String(node.instruction || node.prompt || node.description || "").trim(),
+      condition: String(node.condition || "").trim(),
+      parallel_group: String(node.parallel_group || "").trim(),
+      prompt: String(node.prompt || "").trim(),
+      x: clamp(Number(node.x ?? defaultWorkflowPosition(stage, index).x), WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X),
+      y: clamp(Number(node.y ?? defaultWorkflowPosition(stage, index).y), WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y),
+    };
+  });
   const ids = new Set(currentAgent.workflow_nodes.map((node) => node.id));
   currentAgent.workflow_edges = currentAgent.workflow_edges
     .map((edge) => ({
@@ -4747,10 +4806,12 @@ function workflowToolbox() {
   const activePlugins = (state.plugins || []).filter((item) => item.activated !== false);
   const apis = state.custom_apis || [];
   const filter = workflowMaterialFilter.trim();
-  const basicGroupIds = new Set(["entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
-  const templates = WORKFLOW_NODE_TEMPLATES.filter((item) =>
-    includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
-  );
+  const basicGroupIds = new Set(["trigger_monitor", "entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
+  const templates = WORKFLOW_NODE_TEMPLATES
+    .filter((item) => !WORKFLOW_MERGED_TEMPLATE_IDS.has(item.id))
+    .filter((item) =>
+      includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
+    );
   const libraryGroups = WORKFLOW_NODE_GROUPS.filter((group) =>
     workflowLibraryMode === "advanced" || filter || basicGroupIds.has(group.id)
   );
@@ -5323,8 +5384,11 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "monitor_scope", label: "什么时候监听？", type: "select", default: "mentioned",
       options: [["mentioned","只有 Bot 被 @ 或对话时"],["global","全局监听所有消息"]],
       hint: "全局监听适合群管/刷屏检测；被对话时监听更省资源。" },
+    { field: "require_confirmation", label: "进入流程前需要确认", type: "checkbox" },
     { field: "keywords", label: "只关心包含这些词的消息（可留空＝全部）", type: "lines",
       placeholder: "每行一个关键词，如：广告\n加群" },
+    { field: "_trigger_note", label: "触发类型和谁能触发在画布上方『触发 / 生效范围』统一配置", type: "note",
+      text: "命令、关键词、正则、自然语言、拍一拍、notice、定时、插件事件、Webhook 和黑白名单都会保存到 workflow_trigger / workflow_scope。" },
   ],
   match_keyword: [
     { field: "keywords", label: "命中哪些关键词？", type: "lines", required: true,
@@ -5402,12 +5466,15 @@ const WORKFLOW_SIMPLE_FIELDS = {
   save_memory: [
     { field: "tags", label: "记忆标签", type: "lines", required: true,
       placeholder: "每行一个，如：部署记录\n踩坑" },
+    { field: "folder_id", label: "归入记忆夹", type: "folderPick" },
+    { field: "expose_to_normal", label: "普通聊天可按标签看到", type: "checkbox" },
     { field: "instruction", label: "要记住什么？", type: "textarea" },
   ],
   retrieve_memory: [
     { field: "tags", label: "按哪些标签找回记忆？", type: "lines",
       placeholder: "每行一个标签；留空则按任务关键词。" },
     { field: "folder_id", label: "限定记忆夹", type: "folderPick" },
+    { field: "source_task_id", label: "限定来源任务 ID", type: "text", placeholder: "可选，用于回档续写" },
   ],
   summarize_memory: [
     { field: "summary", label: "总结模板 / 摘要重点", type: "textarea",
@@ -5442,12 +5509,40 @@ const WORKFLOW_SIMPLE_FIELDS = {
       placeholder: "如：每次重试前换一种参数，并记录失败原因。" },
   ],
   route_condition: [
-    { field: "instruction", label: "怎么分流？", type: "textarea", required: true,
-      placeholder: "如：低风险直接执行，高风险走审批。出口在画布上分别连好。" },
+    { field: "route_variable", label: "读取哪个变量来分流", type: "text", placeholder: "如：risk.level 或 detector.route" },
+    { field: "routes", label: "路由表 JSON", type: "textarea",
+      placeholder: "{\n  \"low\": \"execute\",\n  \"high\": \"approval\"\n}" },
+    { field: "instruction", label: "分流说明", type: "textarea", required: true,
+      placeholder: "也可以直接在连线上填写 condition；default/else 作为兜底出口。" },
   ],
   parallel_branch: [
+    { field: "parallel_group", label: "并行分组", type: "text", placeholder: "default" },
+    { field: "branches", label: "分支清单", type: "lines",
+      placeholder: "资料检索 | 只读查证\n代码阅读 | 找入口和风险\n验收复核 | 对照完成条件" },
     { field: "instruction", label: "拆成哪几个并行子任务？", type: "textarea", required: true,
       placeholder: "如：一路查资料、一路读代码，互不依赖，最后汇总。" },
+  ],
+  limit_rate: [
+    { field: "window_seconds", label: "时间窗（秒）", type: "number", default: 60, min: 1, max: 86400 },
+    { field: "max_hits", label: "窗口内最多触发次数", type: "number", default: 5, min: 1, max: 10000 },
+    { field: "bucket", label: "限流桶（可选）", type: "text", placeholder: "如：group_moderation" },
+  ],
+  catch_error: [
+    { field: "instruction", label: "捕获错误后怎么处理", type: "textarea",
+      placeholder: "例如：先走重试；仍失败则通知管理员并暂停。" },
+  ],
+  file_operation: [
+    { field: "operation", label: "文件动作", type: "select", default: "read",
+      options: [["read","读取"],["write","写入"],["replace","替换"],["append","追加"]] },
+    { field: "path", label: "文件路径", type: "text", required: true, placeholder: "相对工作区或沙箱允许路径" },
+    { field: "content", label: "写入/追加内容", type: "textarea", placeholder: "读取时可留空" },
+  ],
+  code_exec: [
+    { field: "language", label: "执行语言", type: "select", default: "python",
+      options: [["python","Python"],["shell","Shell / 命令"]] },
+    { field: "command", label: "代码或命令", type: "textarea", required: true,
+      placeholder: "例如：pytest -q 或一段 Python 脚本" },
+    { field: "timeout_seconds", label: "超时秒数", type: "number", default: 10, min: 1, max: 60 },
   ],
   variable_set: [
     { field: "variable_name", label: "变量名", type: "text", required: true, placeholder: "variables.input.path" },
@@ -5482,6 +5577,11 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "instruction", label: "怎么算做完 / 验收标准？", type: "textarea", required: true },
   ],
   summarize_entry: [
+    { field: "entry_summary_turns", label: "最近保留轮数", type: "number", default: 24, min: 1, max: 200 },
+    { field: "compression_strategy", label: "压缩策略", type: "select", default: "smart_extract",
+      options: [["recent_turns","只取最近轮次"],["smart_extract","智能抽取"],["full_preserve","尽量完整保留"]] },
+    { field: "compression_max_tokens", label: "最大 token", type: "number", default: 4000, min: 256, max: 200000 },
+    { field: "preserve_keywords", label: "必须保留关键词", type: "lines", placeholder: "每行一个关键词" },
     { field: "instruction", label: "进入任务时保留哪些上下文？", type: "textarea",
       placeholder: "只保留目标、约束、授权、风险和接续语气。" },
   ],
