@@ -6902,6 +6902,10 @@ class AgentLabPlugin(Star):
                 "skill_rules": self.storage.list_skill_rules(),
                 "memories": self.storage.list_memory_entries(),
                 "memory_folders": self.storage.list_memory_folders(),
+                "task_patterns": [
+                    self.pattern_library.compact_for_runtime(item)
+                    for item in self.pattern_library.list_patterns(status="active")[:40]
+                ],
                 "workflow_runs": [
                     self._workflow_run_row(item)
                     for item in [*self.storage.list_tasks(), *self.storage.list_archives(None)]

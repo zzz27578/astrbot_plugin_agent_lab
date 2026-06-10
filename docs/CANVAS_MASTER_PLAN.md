@@ -30,7 +30,7 @@ Agent Lab = AstrBot 的**可视化自动化工作流层**。两种形态：①�
 |---|---|---|
 | 恢复可运行基线（废弃半成品 app.js，用 HEAD 6906 行版） | ✅ 已完成 | 备份在 `_webui_wip_backup/` |
 | 输入框/下拉失焦 bug | ✅ | 根因是半成品；已修 + 加 liveRefresh 编辑保护 |
-| 节点编辑器"填空题"框架（WORKFLOW_SIMPLE_FIELDS + 简易/高级切换） | ✅ 基础已建 | 但**字段不全/部分名实不符**，第三批要逐个精修 |
+| 节点编辑器"填空题"框架（WORKFLOW_SIMPLE_FIELDS + 简易/高级切换） | ✅ 已扩展 | 已覆盖发送、记忆运营、变量/转换、账号补全、插件提示词、全局控制、Skill 进化等后端 action |
 | 拖拽落点 + 单击编辑 | ✅ | |
 | 类型化端口 + 按 edge_type 上色 | ✅ | workflowNodePorts / workflowEdgeColor 已建 |
 | 重试端口（重试口在右、其余在左）+ 文案修正 | ✅ | |
@@ -44,12 +44,12 @@ Agent Lab = AstrBot 的**可视化自动化工作流层**。两种形态：①�
 | **监听放开拍一拍/notice 非文字事件** | ✅ 已完成 | _maybe_trigger_message_monitor 已放开 poke/notice（1504行判断） |
 | **消息监听入口合并节点 + 谁能触发命令** | ✅ 已完成 | listenerRule 已实现；旧 command_entry/keyword_entry/manual_webui_entry 素材已删除 |
 | **outbox/deliver 可视化 + 真投递** | ✅ 已完成 | 真投递已实现；方案管理/任务详情展示 outbox + delivery history |
-| 后端未暴露能力全部补前端 | ⬜ | 第二批（清单见第 4 节） |
-| 节点编辑页逐个按职责精修 | ⬜ | 第三批 |
-| 记忆夹体系 + 方案级记忆隔离 | ⬜ | 第三批（动 storage） |
-| 插件接管/伪装管理员/插件嵌入提示词节点 | ⬜ | 第三批 |
-| Skill 进化节点 | ⬜ | 第三批 |
-| 全局控制节点 | ⬜ | 第三批 |
+| 后端未暴露能力全部补前端 | ✅ 已完成 | 运行监控、预算/限制、runtime 审计、模拟触发、任务日志、blockers/watchdog、reports/records、记忆/变量/账号素材、task_patterns、蓝图 schema 设置均已接入 |
+| 节点编辑页逐个按职责精修 | ✅ 阶段完成 | 主要后端 action 已进入定制 simple-fields；控制流/记忆/发送/插件/全局控制/Skill 节点已有职责化表单 |
+| 记忆夹体系 + 方案级记忆隔离 | ✅ 已完成 | storage/API 已支持 memory_folders；前端可新建/编辑/删除记忆夹，保存记忆会写入 folder_id + agent_id |
+| 插件接管/伪装管理员/插件嵌入提示词节点 | ✅ 阶段完成 | 插件隔离、插件提示词节点、发送交给插件、静态冲突提示已接入；伪装管理员仍受适配器能力边界限制 |
+| Skill 进化节点 | ✅ 安全版完成 | 节点与表单已接入，默认生成 skill_rules 草稿并走人工审批 |
+| 全局控制节点 | ✅ 已完成 | 默认工作流包含 global_control；全局抽屉可配置隔离、技能、预算、工具范围和重复失败阈值 |
 
 ---
 

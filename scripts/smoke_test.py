@@ -145,7 +145,9 @@ def main() -> None:
             spec.workflow_nodes[0]
         )
         assert any(node.get("id") == "parallel_research" and node.get("prompt") for node in spec.workflow_nodes)
-        assert {"from": "parallel_branch", "to": "parallel_research"} in spec.workflow_edges
+        assert any(edge.get("from") == "parallel_branch" and edge.get("to") == "parallel_research" for edge in spec.workflow_edges)
+        assert any(edge.get("from") == "entry" and edge.get("to") == "global_control" for edge in spec.workflow_edges)
+        assert any(node.get("id") == "memory_archive" and node.get("action") == "archive_memory_folder" for node in spec.workflow_nodes)
         assert store.default_agent_id() == spec.agent_id
         credential = store.save_credential(
             {"label": "Smoke Key", "provider": "test", "value": "secret-value"}

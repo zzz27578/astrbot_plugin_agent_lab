@@ -2374,6 +2374,76 @@ body[data-route="workflow"] {
   gap: 14px;
 }
 
+.task-pattern-suggestions {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.compact-head {
+  margin-bottom: 0;
+}
+
+.pattern-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.pattern-card {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.pattern-card p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.pattern-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.pattern-steps span {
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.memory-folder-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.memory-folder-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.2fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.memory-folder-list {
+  max-height: 260px;
+  overflow: auto;
+}
+
+.memory-folder-form .span-2 {
+  grid-column: span 2;
+}
+
 .memory-detail textarea[readonly] {
   background: var(--panel-2);
 }

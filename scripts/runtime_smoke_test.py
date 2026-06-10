@@ -478,14 +478,14 @@ async def main() -> None:
             event,
             node_id="entry",
             outcome="入口摘要已完成。",
-            next_node_id="entry_gate",
+            next_node_id="global_control",
             note="runtime smoke",
         )
-        assert "entry -> entry_gate" in advanced
+        assert "entry -> global_control" in advanced
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
-        assert task.workflow_current_node_id == "entry_gate"
-        assert task.workflow_path[-1] == "entry_gate"
+        assert task.workflow_current_node_id == "global_control"
+        assert task.workflow_path[-1] == "global_control"
         assert "## Workflow Cursor" in plugin.storage.render_markdown(task)
         assert "## Agent Runtime" in plugin.storage.render_markdown(task)
         task_payload = plugin._task_payload(task)
@@ -521,7 +521,8 @@ async def main() -> None:
         assert task is not None
         assert task.workflow_current_node_id == "plan"
         assert task.workflow_path[-1] == "plan"
-        assert "entry_gate" in task.workflow_path
+        assert "global_control" in task.workflow_path
+        assert "memory_recall" in task.workflow_path
         assert any(item.get("kind") == "workflow_runtime" for item in task.progress_log)
         assert task.workflow_data["react_traces"]
         assert task.workflow_data["react_traces"][-1]["node_id"] == "plan"
