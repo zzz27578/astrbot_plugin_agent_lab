@@ -3071,40 +3071,12 @@ function renderNav() {
   if ($("section-kicker")) $("section-kicker").textContent = found[2];
 }
 
-// 全局焦点/光标保留：任何 render() 重建 DOM 后，把焦点和光标还回原来的输入框，
-// 这样无论哪条路径触发了 render，用户都不会掉焦、丢字或被“复原”。
-function activeFieldSnapshotGlobal() {
-  const el = document.activeElement;
-  if (!el || typeof el.matches !== "function" || !el.matches("input, textarea, select")) return null;
-  let key = "";
-  if (el.id) key = `#${(window.CSS && CSS.escape) ? CSS.escape(el.id) : el.id}`;
-  else if (el.dataset && el.dataset.action) key = `[data-action="${el.dataset.action}"]`;
-  else if (el.dataset && el.dataset.field) key = `[data-field="${el.dataset.field}"]`;
-  if (!key) return null;
-  const snap = { key };
-  try {
-    if (typeof el.selectionStart === "number") { snap.start = el.selectionStart; snap.end = el.selectionEnd; }
-  } catch (err) {}
-  return snap;
-}
-function restoreFieldFocusGlobal(snap) {
-  if (!snap || !snap.key) return;
-  let el = null;
-  try { el = document.querySelector(snap.key); } catch (err) { return; }
-  if (!el || typeof el.matches !== "function" || !el.matches("input, textarea, select")) return;
-  if (document.activeElement === el) return;
-  try { el.focus({ preventScroll: true }); } catch (err) { try { el.focus(); } catch (err2) {} }
-  if (typeof snap.start === "number" && typeof el.setSelectionRange === "function") {
-    try { el.setSelectionRange(snap.start, typeof snap.end === "number" ? snap.end : snap.start); } catch (err) {}
-  }
-}
 function render() {
-  const __focusSnap = activeFieldSnapshotGlobal();
   const viewport = route === "workflow" && workflowViewportInitialized ? workflowViewportSnapshot() : null;
   document.body.dataset.route = route;
   document.body.classList.toggle("workflow-nav-collapsed", route === "workflow" && workflowNavCollapsed);
   renderNav();
-  if (!state) { restoreFieldFocusGlobal(__focusSnap); return; }
+  if (!state) return;
   syncLiveRefresh();
   if (route === "dashboard") renderDashboard();
   if (route === "canvas") renderCanvas();
@@ -3116,7 +3088,6 @@ function render() {
   if (route === "settings") renderSettingsPage();
   restoreWorkflowViewport(viewport);
   if (route === "workflow") refreshWorkflowCanvasDom();
-  restoreFieldFocusGlobal(__focusSnap);
 }
 
 function syncLiveRefresh() {
@@ -3891,10 +3862,14 @@ function renderCanvas() {
           </div>
           <div class="button-row scheme-actions">
             <button class="button" data-action="new-agent" type="button">新建方案</button>
-            <button class="button secondary" data-action="duplicate-agent" type="button" ${a.agent_id ? "" : "disabled"}>复制</button>
-            <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
+            <button class="button secondary" data-action="duplicate-agent" type="button">复制</button>
           </div>
           <div class="list scheme-list">${agentRows()}</div>
+          <div class="scheme-current-actions">
+            <button class="button secondary" data-action="make-default" type="button" ${a.agent_id ? "" : "disabled"}>设为默认</button>
+            <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
+            <button class="button" data-action="save-agent" type="button">保存</button>
+          </div>
         </div>
       </aside>
 
@@ -3905,10 +3880,7 @@ function renderCanvas() {
               <p class="card-kicker">当前方案</p>
               <h2>${esc(agentDisplayName(a))}</h2>
             </div>
-            <div class="inline-actions">
-              <button class="button secondary" data-action="rename-agent" type="button" ${a.agent_id ? "" : "disabled"}>重命名</button>
-              <button class="button" data-route="workflow" type="button">在画布编辑这个方案</button>
-            </div>
+            <button class="button" data-route="workflow" type="button">在画布编辑这个方案</button>
           </div>
           <div class="module-meta">
             ${badge(a.enabled === false ? "已停用" : "已启用", a.enabled === false ? "bad" : "ok")}
@@ -7352,11 +7324,6 @@ document.addEventListener("pointerdown", (event) => {
     workflowContextMenu = null;
     removeWorkflowContextMenuDom();
   }
-  // 表单控件（输入框/多行文本/下拉）一律走浏览器原生行为：聚焦、选词、展开下拉。
-  // 绝不在这里 preventDefault 或启动拖拽/平移/指针捕获，否则会“点不进输入框、下拉一开就收起”。
-  if (event.target.closest && event.target.closest("input, textarea, select, option, [contenteditable]")) {
-    return;
-  }
   const workflowField = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
   if (workflowField && route === "workflow") {
     const scroller = workflowField.closest(".drawer-scroll");
@@ -7837,45 +7804,22 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "new-agent") {
-      const inputName = prompt("给新方案起个名字", "新方案");
-      if (inputName === null) return;
-      const draft = defaultAgentDraft();
-      delete draft.agent_id;
-      draft.name = (inputName || "").trim() || "新方案";
-      draft.identity_label_source = "manual";
-      const result = await api("/api/agents", { method: "POST", body: draft });
-      selectedAgentId = result.agent?.agent_id || selectedAgentId;
-      selectedWorkflowNodeId = "";
-      setFeedback("已创建新方案，可在工作流画布里继续配置。");
-      await load();
+      readAgentForm();
+      currentAgent = defaultAgentDraft();
+      selectedAgentId = "";
+      selectedWorkflowNodeId = currentAgent.workflow_nodes?.[0]?.id || "";
+      render();
     }
     if (action === "duplicate-agent") {
-      if (!currentAgent.agent_id) throw new Error("请先选择一个已保存的方案再复制。");
       readAgentForm();
-      const copy = ensureAgent(clone(currentAgent));
-      delete copy.agent_id;
-      delete copy.created_at;
-      delete copy.updated_at;
-      copy.name = `${copy.name || "方案"} 副本`;
-      copy.identity_label_source = "manual";
-      const result = await api("/api/agents", { method: "POST", body: copy });
-      selectedAgentId = result.agent?.agent_id || "";
-      setFeedback("已复制方案。");
-      await load();
-    }
-    if (action === "rename-agent") {
-      if (!currentAgent.agent_id) throw new Error("请先选择一个已保存的方案。");
-      const newName = prompt("重命名方案", agentDisplayName(currentAgent));
-      if (newName === null) return;
-      const trimmed = (newName || "").trim();
-      if (!trimmed) throw new Error("方案名称不能为空。");
-      readAgentForm();
-      currentAgent.name = trimmed;
+      currentAgent = ensureAgent(clone(currentAgent));
+      delete currentAgent.agent_id;
+      delete currentAgent.created_at;
+      delete currentAgent.updated_at;
+      selectedAgentId = "";
+      currentAgent.name = `${currentAgent.name || "Agent"} 副本`;
       currentAgent.identity_label_source = "manual";
-      const result = await api("/api/agents", { method: "POST", body: clone(currentAgent) });
-      selectedAgentId = result.agent?.agent_id || selectedAgentId;
-      setFeedback("方案已重命名。");
-      await load();
+      render();
     }
     if (action === "delete-agent") {
       if (!currentAgent.agent_id) throw new Error("当前配置还没有保存，直接新建或切换即可。 ");
@@ -8401,21 +8345,8 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "new-memory-folder") {
-      const folderName = prompt("给新记忆夹起个名字", "新记忆夹");
-      if (folderName === null) return;
-      const folder = {
-        folder_id: "",
-        name: (folderName || "").trim() || "新记忆夹",
-        agent_id: currentAgent.agent_id || "",
-        description: "",
-        detail_level: "summary",
-        retention_days: 0,
-        expose_to_normal: false,
-      };
-      const result = await api("/api/memory", { method: "POST", body: { action: "save_folder", folder } });
-      selectedMemoryFolderId = result.folder?.folder_id || selectedMemoryFolderId || "default";
-      setFeedback("已创建新记忆夹。");
-      await load();
+      selectedMemoryFolderId = "__new__";
+      render();
     }
     if (action === "save-memory-folder") {
       const folder = {
@@ -8587,13 +8518,30 @@ document.addEventListener("change", (event) => {
 document.addEventListener("input", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
-  const action = target.dataset.action;
-  // 这些筛选框过去每敲一下就整页 render()+rAF 重新聚焦，会掉焦/丢字（尤其非工作流页根本没还焦点）。
-  // 现在统一依赖 render() 内置的同步全局焦点保留，直接 render 即可，焦点和光标都会被保住。
-  if (action === "filter-plugins") { pluginFilter = target.value; render(); return; }
-  if (action === "filter-tools") { toolFilter = target.value; render(); return; }
-  if (action === "filter-blueprints") { blueprintFilter = target.value; render(); return; }
-  if (action === "filter-workflow-materials") { workflowMaterialFilter = target.value; render(); return; }
+  if (target.dataset.action === "filter-plugins") {
+    pluginFilter = target.value;
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
+  }
+  if (target.dataset.action === "filter-tools") {
+    toolFilter = target.value;
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
+  }
+  if (target.dataset.action === "filter-blueprints") {
+    blueprintFilter = target.value;
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
+  }
+  if (target.dataset.action === "filter-workflow-materials") {
+    workflowMaterialFilter = target.value;
+    const snapshot = workflowUiSnapshot();
+    render();
+    restoreWorkflowUiSnapshot(snapshot);
+  }
 });
 
 function showAuthScreen() {
