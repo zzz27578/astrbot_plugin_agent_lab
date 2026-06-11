@@ -1,3 +1,4 @@
+// Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -111,6 +112,7 @@ const WORKFLOW_ACTIONS = [
   "code_exec",
   "transform_context",
   "retrieve_memory",
+  "memory_filter",
   "summarize_memory",
   "export_task_memory",
   "promote_memory_candidate",
@@ -144,7 +146,7 @@ const WORKFLOW_ACTIONS = [
 const WORKFLOW_PERMISSION_PROFILES = ["ordinary", "work", "code", "web", "danger"];
 const WORKFLOW_REF_TYPES = ["", "tool", "api", "plugin", "skill", "module", "workflow"];
 const WORKFLOW_WORKER_TYPES = ["", "GenericWorker", "ResearchWorker", "CodeReaderWorker", "PatchWorker", "TestWorker", "ApiWorker", "ToolWorker"];
-const WORKFLOW_TRIGGER_TYPES = ["command", "natural", "message_monitor", "keyword", "regex", "schedule", "plugin_event", "webhook", "manual_webui"];
+const WORKFLOW_TRIGGER_TYPES = ["command", "natural", "silent_global", "message_monitor", "keyword", "regex", "poke", "notice", "schedule", "plugin_event", "webhook", "manual_webui"];
 const WORKFLOW_CHAT_TYPES = ["private", "group"];
 const WORKFLOW_EDGE_TYPES = ["success", "failed", "uncertain", "error", "retry", "timeout", "approved", "rejected", "always"];
 
@@ -176,6 +178,7 @@ const WORKFLOW_ACTION_RUNTIME_TYPES = {
   iterator: "state",
   subflow_call: "state",
   retrieve_memory: "memory",
+  memory_filter: "memory",
   summarize_memory: "memory",
   export_task_memory: "memory",
   promote_memory_candidate: "memory",
@@ -266,6 +269,7 @@ const WORKFLOW_EXECUTABLE_ACTIONS = new Set([
   "iterator",
   "subflow_call",
   "retrieve_memory",
+  "memory_filter",
   "summarize_memory",
   "export_task_memory",
   "promote_memory_candidate",
@@ -373,6 +377,7 @@ const WORKFLOW_LEGACY_NODE_MIGRATIONS = {
   memory_read: { title: "任务记忆读取", kind: "retrieval", stage: "plan", action: "retrieve_memory", library_group: "记忆" },
   memory_expose: { title: "保存任务记忆", kind: "memory", stage: "checkpoint", action: "save_memory", library_group: "记忆", expose_to_normal: true },
   memory_rollback: { title: "任务记忆读取", kind: "retrieval", stage: "plan", action: "retrieve_memory", library_group: "记忆" },
+  memory_filter: { title: "记忆过滤器", kind: "memory", stage: "entry", action: "memory_filter", library_group: "记忆" },
   document_source: { title: "文档/路径输入", kind: "transform", stage: "plan", action: "variable_set", library_group: "变量", variable_name: "document.source" },
   todo_split: { title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", library_group: "计划" },
   api_payload_builder: { title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", library_group: "API" },
@@ -586,9 +591,9 @@ const WORKFLOW_NODE_TEMPLATES = [
     title: "记忆过滤器",
     kind: "memory",
     stage: "entry",
-    action: "summarize_entry",
+    action: "memory_filter",
     library_group: "记忆",
-    instruction: "把普通会话记忆压缩成任务 brief，只带入稳定事实、约束、已授权内容和用户偏好。",
+    instruction: "设定进入任务的记忆准入白/黑名单，决定任务中是否屏蔽日常记忆，并限定成果回流的暴露范围（防止记忆串联）。",
   },
   {
     id: "memory_read",
@@ -1615,9 +1620,12 @@ function workflowTriggerTypeLabel(type) {
   return {
     command: "命令",
     natural: "自然语言",
+    silent_global: "全局静默",
     message_monitor: "消息监听",
     keyword: "关键词",
     regex: "正则",
+    poke: "拍一拍",
+    notice: "Notice",
     schedule: "定时",
     plugin_event: "插件事件",
     webhook: "Webhook",
@@ -1874,6 +1882,7 @@ function workflowActionLabel(action) {
     code_exec: "代码执行",
     transform_context: "上下文整理",
     retrieve_memory: "记忆检索",
+    memory_filter: "记忆过滤器",
     summarize_memory: "总结记忆",
     export_task_memory: "导出记忆",
     promote_memory_candidate: "提升候选记忆",
@@ -5384,7 +5393,8 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "monitor_scope", label: "什么时候监听？", type: "select", default: "mentioned",
       options: [["mentioned","只有 Bot 被 @ 或对话时"],["global","全局监听所有消息"]],
       hint: "全局监听适合群管/刷屏检测；被对话时监听更省资源。" },
-    { field: "require_confirmation", label: "进入流程前需要确认", type: "checkbox" },
+    { field: "require_confirmation", label: "进入流程前需要确认", type: "checkbox", syncPath: "entry_policy.require_confirmation",
+      hint: "与上方『触发 / 生效范围』里的确认开关是同一设置，两处任意修改都会同步写回 entry_policy。" },
     { field: "keywords", label: "只关心包含这些词的消息（可留空＝全部）", type: "lines",
       placeholder: "每行一个关键词，如：广告\n加群" },
     { field: "_trigger_note", label: "触发类型和谁能触发在画布上方『触发 / 生效范围』统一配置", type: "note",
@@ -5457,7 +5467,9 @@ const WORKFLOW_SIMPLE_FIELDS = {
       placeholder: "说清影响范围，如：将删除 3 个文件，不可恢复。" },
   ],
   handoff: [
-    { field: "instruction", label: "什么情况下要交给人？", type: "textarea", required: true,
+    { field: "handoff_mode", label: "怎么交接？", type: "select", default: "wait_reply",
+      options: [["wait_reply","等用户回复"],["dm_admin","私信管理员处理"],["group_prompt","当前群提示并等待"],["external_callback","等外部回调/回写"]] },
+    { field: "instruction", label: "交接说明 / 等用户提供什么？", type: "textarea", required: true,
       placeholder: "如：需要登录 / 验证码 / 业务判断时，停下等用户。" },
   ],
   wait_user: [
@@ -5475,6 +5487,17 @@ const WORKFLOW_SIMPLE_FIELDS = {
       placeholder: "每行一个标签；留空则按任务关键词。" },
     { field: "folder_id", label: "限定记忆夹", type: "folderPick" },
     { field: "source_task_id", label: "限定来源任务 ID", type: "text", placeholder: "可选，用于回档续写" },
+  ],
+  memory_filter: [
+    { field: "admission_allow", label: "记忆准入白名单（标签）", type: "lines",
+      placeholder: "每行一个标签；填了则只允许带这些标签的记忆进入任务。" },
+    { field: "admission_deny", label: "记忆准入黑名单（标签）", type: "lines",
+      placeholder: "每行一个标签；带这些标签的记忆一律不进入任务。" },
+    { field: "block_daily_memory", label: "任务中屏蔽日常记忆", type: "checkbox",
+      hint: "开启后任务检索只看任务沉淀记忆，不带入普通聊天的日常记忆。" },
+    { field: "reflow_scope", label: "成果回流暴露范围", type: "select", default: "tags_only",
+      options: [["none","不回流（任务内私有）"],["tags_only","仅暴露标签索引"],["full","完整回流"]],
+      hint: "控制本任务记忆对普通模式/其它任务的暴露程度，防止记忆串联。" },
   ],
   summarize_memory: [
     { field: "summary", label: "总结模板 / 摘要重点", type: "textarea",
@@ -5528,7 +5551,10 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "bucket", label: "限流桶（可选）", type: "text", placeholder: "如：group_moderation" },
   ],
   catch_error: [
-    { field: "instruction", label: "捕获错误后怎么处理", type: "textarea",
+    { field: "disposition", label: "捕获错误后怎么处置", type: "select", default: "route",
+      options: [["route","只按出口分流"],["retry","走重试出口"],["notify","走错误出口并通知"],["report","走错误出口并生成报告"],["pause","暂停等人工"]],
+      hint: "retry 会从『重试』出口绕回；pause 会直接暂停任务等你处理；其余都走『错误』出口，按你连的下游节点处理。" },
+    { field: "instruction", label: "处置说明", type: "textarea",
       placeholder: "例如：先走重试；仍失败则通知管理员并暂停。" },
   ],
   file_operation: [
@@ -5577,11 +5603,11 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "instruction", label: "怎么算做完 / 验收标准？", type: "textarea", required: true },
   ],
   summarize_entry: [
-    { field: "entry_summary_turns", label: "最近保留轮数", type: "number", default: 24, min: 1, max: 200 },
-    { field: "compression_strategy", label: "压缩策略", type: "select", default: "smart_extract",
+    { field: "entry_summary_turns", label: "最近保留轮数", type: "number", default: 24, min: 1, max: 200, syncPath: "memory_policy.entry_summary_turns" },
+    { field: "compression_strategy", label: "压缩策略", type: "select", default: "smart_extract", syncPath: "memory_policy.compression_strategy",
       options: [["recent_turns","只取最近轮次"],["smart_extract","智能抽取"],["full_preserve","尽量完整保留"]] },
-    { field: "compression_max_tokens", label: "最大 token", type: "number", default: 4000, min: 256, max: 200000 },
-    { field: "preserve_keywords", label: "必须保留关键词", type: "lines", placeholder: "每行一个关键词" },
+    { field: "compression_max_tokens", label: "最大 token", type: "number", default: 4000, min: 256, max: 200000, syncPath: "memory_policy.compression_max_tokens" },
+    { field: "preserve_keywords", label: "必须保留关键词", type: "lines", placeholder: "每行一个关键词", syncPath: "memory_policy.preserve_keywords" },
     { field: "instruction", label: "进入任务时保留哪些上下文？", type: "textarea",
       placeholder: "只保留目标、约束、授权、风险和接续语气。" },
   ],
@@ -5671,10 +5697,16 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "credential_id", label: "用完后注销哪个账号会话？", type: "credPick" },
   ],
   heartbeat: [
+    { field: "heartbeat_mode", label: "心跳模式", type: "select", default: "manual", syncPath: "heartbeat_policy.mode",
+      options: [["off","关闭"],["manual","手动唤醒"],["auto","按计划自动唤醒"]] },
+    { field: "heartbeat_cron", label: "唤醒间隔（cron）", type: "text", syncPath: "heartbeat_policy.cron_expression",
+      placeholder: "如：*/15 * * * * 表示每 15 分钟唤醒一次" },
+    { field: "heartbeat_max_failures", label: "连续失败上限（失败保护）", type: "number", default: 3, min: 1, max: 100, syncPath: "heartbeat_policy.max_repeated_failures",
+      hint: "连续失败达到此次数会停下等人工，避免空转烧预算。" },
     { field: "instruction", label: "心跳醒来后做什么？", type: "textarea",
       placeholder: "如：先读任务状态，再推进一小步，重复阻塞就暂停。" },
-    { field: "_hb", label: "心跳开关与频率在『全局规则』或任务设置里配置", type: "note",
-      text: "心跳让长任务定时自己醒来续跑；不需要长任务的工作流可以不放这个节点。" },
+    { field: "_hb", label: "心跳让长任务定时自己醒来续跑", type: "note",
+      text: "模式选『自动』并填 cron 即可定时唤醒；不需要长任务的工作流可以不放这个节点。这里的设置会写回方案级 heartbeat_policy。" },
   ],
   manual: [
     { field: "prompt", label: "这个节点交给 AI 时的提示词", type: "textarea",
@@ -5686,22 +5718,23 @@ function workflowSimpleFieldsFor(action) {
   return WORKFLOW_SIMPLE_FIELDS[action] || WORKFLOW_SIMPLE_FIELDS.manual;
 }
 function workflowSimpleFieldHtml(item, f) {
-  const val = (key) => { const v = item[key]; if (Array.isArray(v)) return listToLines(v); return v === undefined || v === null ? "" : String(v); };
+  // syncPath 字段以 AgentSpec 上的路径为准（如 memory_policy.* / heartbeat_policy.*），否则读节点本身。
+  const fieldVal = (ff) => { const v = ff.syncPath ? agentFieldByPath(ff.syncPath) : item[ff.field]; if (Array.isArray(v)) return listToLines(v); return v === undefined || v === null ? "" : String(v); };
   const req = f.required ? ` <em class="req">必填</em>` : "";
   const hint = f.hint ? `<small class="field-hint">${esc(f.hint)}</small>` : "";
   const id = `sf-${esc(f.field)}`;
   if (f.type === "note") return `<div class="simple-note"><b>${esc(f.label)}</b><span>${esc(f.text || "")}</span></div>`;
-  if (f.type === "lines") return `<label class="simple-field">${esc(f.label)}${req}<textarea id="${id}" rows="3" placeholder="${esc(f.placeholder || "")}">${esc(val(f.field))}</textarea>${hint}</label>`;
-  if (f.type === "textarea") return `<label class="simple-field">${esc(f.label)}${req}<textarea id="${id}" rows="4" placeholder="${esc(f.placeholder || "")}">${esc(val(f.field))}</textarea>${hint}</label>`;
-  if (f.type === "number") { const cur = val(f.field) || (f.default ?? ""); return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" type="number" min="${esc(f.min ?? 0)}" max="${esc(f.max ?? 1000000)}" value="${esc(cur)}" />${hint}</label>`; }
-  if (f.type === "checkbox") return `<label class="check-line simple-field"><input id="${id}" type="checkbox" ${item[f.field] === true ? "checked" : ""} />${esc(f.label)}${req}${hint}</label>`;
-  if (f.type === "select") { const cur = val(f.field) || f.default || (f.options?.[0]?.[0] ?? ""); const opts = (f.options || []).map(([v,l]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`).join(""); return `<label class="simple-field">${esc(f.label)}${req}<select id="${id}">${opts}</select>${hint}</label>`; }
-  if (f.type === "toolPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-tool-list" value="${esc(val(f.field))}" placeholder="选择 AstrBot 工具" />${hint}</label>`;
-  if (f.type === "apiPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-api-list" value="${esc(val(f.field))}" placeholder="选择已注册 API" />${hint}</label>`;
-  if (f.type === "credPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-cred-list" value="${esc(val(f.field))}" placeholder="选择已保存的账号/凭证" />${hint}</label>`;
-  if (f.type === "pluginPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-plugin-list" value="${esc(val(f.field))}" placeholder="选择已启用插件" />${hint}</label>`;
-  if (f.type === "folderPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-folder-list" value="${esc(val(f.field))}" placeholder="选择记忆夹 ID" />${hint}</label>`;
-  return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" value="${esc(val(f.field))}" placeholder="${esc(f.placeholder || "")}" />${hint}</label>`;
+  if (f.type === "lines") return `<label class="simple-field">${esc(f.label)}${req}<textarea id="${id}" rows="3" placeholder="${esc(f.placeholder || "")}">${esc(fieldVal(f))}</textarea>${hint}</label>`;
+  if (f.type === "textarea") return `<label class="simple-field">${esc(f.label)}${req}<textarea id="${id}" rows="4" placeholder="${esc(f.placeholder || "")}">${esc(fieldVal(f))}</textarea>${hint}</label>`;
+  if (f.type === "number") { const cur = fieldVal(f) || (f.default ?? ""); return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" type="number" min="${esc(f.min ?? 0)}" max="${esc(f.max ?? 1000000)}" value="${esc(cur)}" />${hint}</label>`; }
+  if (f.type === "checkbox") { const checked = f.syncPath ? agentFieldByPath(f.syncPath) === true : item[f.field] === true; return `<label class="check-line simple-field"><input id="${id}" type="checkbox" ${checked ? "checked" : ""} />${esc(f.label)}${req}${hint}</label>`; }
+  if (f.type === "select") { const cur = fieldVal(f) || f.default || (f.options?.[0]?.[0] ?? ""); const opts = (f.options || []).map(([v,l]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`).join(""); return `<label class="simple-field">${esc(f.label)}${req}<select id="${id}">${opts}</select>${hint}</label>`; }
+  if (f.type === "toolPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-tool-list" value="${esc(fieldVal(f))}" placeholder="选择 AstrBot 工具" />${hint}</label>`;
+  if (f.type === "apiPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-api-list" value="${esc(fieldVal(f))}" placeholder="选择已注册 API" />${hint}</label>`;
+  if (f.type === "credPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-cred-list" value="${esc(fieldVal(f))}" placeholder="选择已保存的账号/凭证" />${hint}</label>`;
+  if (f.type === "pluginPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-plugin-list" value="${esc(fieldVal(f))}" placeholder="选择已启用插件" />${hint}</label>`;
+  if (f.type === "folderPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-folder-list" value="${esc(fieldVal(f))}" placeholder="选择记忆夹 ID" />${hint}</label>`;
+  return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" value="${esc(fieldVal(f))}" placeholder="${esc(f.placeholder || "")}" />${hint}</label>`;
 }
 function workflowSimpleEditor(item) {
   const action = item.action || "manual";
@@ -5720,7 +5753,22 @@ function workflowSimpleEditor(item) {
     </section>
   `;
 }
-// 简易模式保存：把 sf-* 字段写回节点，只动该 action 暴露的字段。
+// 把 simple-field 的值同步到 AgentSpec 上的指定路径（确认开关并入监听入口后仍写回 entry_policy，保持后端校验一致）。
+function agentFieldByPath(path) {
+  if (!currentAgent || !path) return undefined;
+  return String(path).split(".").reduce((obj, key) => (obj == null ? undefined : obj[key]), currentAgent);
+}
+function setAgentFieldByPath(path, value) {
+  if (!currentAgent || !path) return;
+  const keys = String(path).split(".");
+  let obj = currentAgent;
+  for (let i = 0; i < keys.length - 1; i++) {
+    if (obj[keys[i]] == null || typeof obj[keys[i]] !== "object") obj[keys[i]] = {};
+    obj = obj[keys[i]];
+  }
+  obj[keys[keys.length - 1]] = value;
+}
+// 简易模式保存：把 sf-* 字段写回节点，只动该 action 暴露的字段；带 syncPath 的字段同时写回 AgentSpec 路径。
 function applySimpleEditorFields(node) {
   const fields = workflowSimpleFieldsFor(node.action || "manual");
   for (const f of fields) {
@@ -5731,14 +5779,19 @@ function applySimpleEditorFields(node) {
     if (f.type === "lines") {
       const arr = linesToList(raw || "");
       if (arr.length) node[f.field] = arr; else delete node[f.field];
+      if (f.syncPath) setAgentFieldByPath(f.syncPath, arr);
     } else if (f.type === "number") {
+      const hasVal = String(raw || "").trim() !== "";
       const n = Number(raw || 0);
-      if (Number.isFinite(n) && String(raw || "").trim() !== "") node[f.field] = Math.max(0, Math.round(n)); else delete node[f.field];
+      if (Number.isFinite(n) && hasVal) node[f.field] = Math.max(0, Math.round(n)); else delete node[f.field];
+      if (f.syncPath && hasVal && Number.isFinite(n)) setAgentFieldByPath(f.syncPath, Math.max(0, Math.round(n)));
     } else if (f.type === "checkbox") {
       node[f.field] = Boolean(el.checked);
+      if (f.syncPath) setAgentFieldByPath(f.syncPath, Boolean(el.checked));
     } else {
       const t = String(raw || "").trim();
       if (t) node[f.field] = t; else delete node[f.field];
+      if (f.syncPath) setAgentFieldByPath(f.syncPath, t);
     }
   }
 }

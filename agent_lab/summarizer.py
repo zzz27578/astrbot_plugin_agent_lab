@@ -32,12 +32,34 @@ class AgentSummarizer:
         self.context = context
         self.config = config or {}
 
-    async def summarize_entry(self, event, goal: str, provided_brief: str = "") -> str:
-        history = await self._load_history(event)
+    async def summarize_entry(self, event, goal: str, provided_brief: str = "", policy: dict[str, Any] | None = None) -> str:
+        policy = policy if isinstance(policy, dict) else {}
+        turns = policy.get("entry_summary_turns")
+        history = await self._load_history(event, turns)
+        strategy = str(policy.get("compression_strategy") or "smart_extract")
+        max_tokens = policy.get("compression_max_tokens")
+        preserve = policy.get("preserve_keywords") or []
+        if isinstance(preserve, str):
+            preserve = [preserve] if preserve.strip() else []
+        strategy_hint = {
+            "recent_turns": "压缩策略：以最近若干轮对话为主，较早内容可大幅省略。",
+            "smart_extract": "压缩策略：智能抽取目标、约束、授权、风险和接续要点，去掉寒暄与无关内容。",
+            "full_preserve": "压缩策略：尽量完整保留计划细节，仅去除明显无关的闲聊。",
+        }.get(strategy, "压缩策略：智能抽取关键信息。")
+        directives = [strategy_hint]
+        keep = [str(k).strip() for k in preserve if str(k).strip()]
+        if keep:
+            directives.append("必须保留与以下关键词相关的内容：" + "、".join(keep))
+        try:
+            if max_tokens and int(max_tokens) > 0:
+                directives.append(f"task_brief 目标长度控制在约 {int(max_tokens)} tokens 以内。")
+        except Exception:
+            pass
         prompt = (
             "请将下面会话压缩成 Agent Mode 入口 task_brief。\n\n"
             f"用户当前目标：{goal}\n\n"
-            f"会话内容：\n{history_to_text(history)}"
+            + "\n".join(directives)
+            + f"\n\n会话内容：\n{history_to_text(history)}"
         )
         if provided_brief.strip():
             prompt += f"\n\n用户补充：\n{provided_brief.strip()}"
@@ -59,7 +81,7 @@ class AgentSummarizer:
         system_prompt = str(self.config.get("exit_summary_system_prompt") or EXIT_SUMMARY_SYSTEM)
         return await self._summarize(event, prompt, system_prompt, provided)
 
-    async def _load_history(self, event) -> list[dict[str, Any]]:
+    async def _load_history(self, event, turns: int | None = None) -> list[dict[str, Any]]:
         conv_mgr = getattr(self.context, "conversation_manager", None)
         if conv_mgr is None:
             return []
@@ -72,8 +94,12 @@ class AgentSummarizer:
                 return []
             history = json.loads(conv.history or "[]")
             if isinstance(history, list):
-                turns = int(self.config.get("entry_summary_turns", 24))
-                return history[-turns * 2 :]
+                try:
+                    turns_val = int(turns) if turns else int(self.config.get("entry_summary_turns", 24))
+                except Exception:
+                    turns_val = int(self.config.get("entry_summary_turns", 24))
+                turns_val = max(1, min(turns_val, 200))
+                return history[-turns_val * 2 :]
         except Exception:
             return []
         return []

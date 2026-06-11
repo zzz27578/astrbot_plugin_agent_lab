@@ -4337,3 +4337,77 @@ body[data-route="workflow"] .feedback {
     left: 0;
   }
 }
+
+/* ========== 节点编辑器「填空题」表单美化（焦点态 / 提示卡 / 必填标） ========== */
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(47, 125, 91, 0.14);
+}
+input:hover:not(:focus),
+select:hover:not(:focus),
+textarea:hover:not(:focus) {
+  border-color: var(--line-strong);
+}
+input[type="checkbox"] {
+  accent-color: var(--green);
+}
+
+.simple-editor {
+  gap: 13px;
+}
+.simple-editor-lead {
+  margin: 0 0 2px;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.simple-field {
+  gap: 7px;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.simple-field > input,
+.simple-field > select,
+.simple-field > textarea {
+  font-weight: 400;
+}
+.simple-field .field-hint {
+  font-weight: 400;
+}
+.simple-note {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: 8px;
+  font-size: 12px;
+}
+.simple-note b {
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.simple-note span {
+  color: var(--muted);
+  line-height: 1.5;
+}
+.req {
+  font-style: normal;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--red);
+  background: rgba(180, 67, 58, 0.1);
+  padding: 1px 6px;
+  border-radius: 999px;
+  margin-left: 4px;
+  letter-spacing: 0.3px;
+}

@@ -145,6 +145,7 @@ WORKFLOW_ACTIONS = {
     "human_login_handoff",
     "revoke_session",
     "retrieve_memory",
+    "memory_filter",
     "summarize_memory",
     "export_task_memory",
     "promote_memory_candidate",
@@ -407,6 +408,7 @@ BUILTIN_WORKFLOW_MODULE_CATALOG: dict[str, dict[str, Any]] = {
     "human_login_handoff": {"kind": "guard", "stage": "guard", "special_module": "identity", "risk": "work", "description": "Pause for a human to complete MFA, captcha or browser login."},
     "revoke_session": {"kind": "guard", "stage": "archive", "special_module": "identity", "risk": "high", "description": "Revoke or detach workflow session references."},
     "retrieve_memory": {"kind": "memory", "stage": "plan", "special_module": "memory", "risk": "safe", "description": "Retrieve task memory entries for the current workflow."},
+    "memory_filter": {"kind": "memory", "stage": "entry", "special_module": "memory", "risk": "safe", "description": "Set task memory admission allow/deny lists, block daily memory and limit reflow exposure."},
     "summarize_memory": {"kind": "memory", "stage": "archive", "special_module": "memory", "risk": "work", "description": "Summarize task memory before archive or handoff."},
     "export_task_memory": {"kind": "memory", "stage": "archive", "special_module": "memory", "risk": "safe", "description": "Export selected task memory from workflow state."},
     "promote_memory_candidate": {"kind": "memory", "stage": "archive", "special_module": "memory", "risk": "work", "description": "Promote a memory candidate into durable memory."},
@@ -1370,7 +1372,9 @@ class AgentLabPlugin(Star):
                 umo, self._effective_session_plugin_overrides(spec)
             )
         self._refresh_summarizer_rules()
-        entry_summary = await self.summarizer.summarize_entry(event, goal, brief)
+        entry_summary = await self.summarizer.summarize_entry(
+            event, goal, brief, policy=self._as_plain_dict(spec.memory_policy)
+        )
         task = TaskState(
             agent_id=spec.agent_id,
             agent_name=effective_agent_name,
@@ -2076,6 +2080,7 @@ class AgentLabPlugin(Star):
         ):
             self.node_executors.register(action, self._execute_identity_session_node)
         self.node_executors.register("retrieve_memory", self._execute_retrieve_memory_node)
+        self.node_executors.register("memory_filter", self._execute_memory_filter_node)
         self.node_executors.register("save_memory", self._execute_save_memory_node)
         for action in ("summarize_memory", "export_task_memory", "promote_memory_candidate", "forget_task_memory", "archive_memory_folder"):
             self.node_executors.register(action, self._execute_memory_action_node)
@@ -3716,12 +3721,33 @@ class AgentLabPlugin(Star):
             ctx.task.blockers
             or (isinstance(latest, dict) and (latest.get("blocked") or latest.get("ok") is False))
         )
-        route = "error" if has_error else "success"
+        disposition = str(ctx.node.get("disposition") or "route").strip().lower()
+        if disposition not in {"route", "retry", "notify", "report", "pause"}:
+            disposition = "route"
+        if has_error and disposition == "pause":
+            ctx.task.set_wait(
+                wait_reason="blocked_by_error",
+                message=str(ctx.node.get("instruction") or "捕获到错误，已暂停等待人工处理。"),
+                source="workflow_catch_error_node",
+            )
+            ctx.task.status = "paused"
+            return NodeExecutionResult(
+                ok=False,
+                status="running",
+                outcome="捕获到错误，已暂停等待人工处理。",
+                advance=False,
+                data={"route": "error", "disposition": disposition, "wait": True, "latest": latest},
+                note="node_executor_catch_error",
+            )
+        if has_error:
+            route = "retry" if disposition == "retry" else "error"
+        else:
+            route = "success"
         return NodeExecutionResult(
             ok=True,
             status="completed",
-            outcome=f"Catch error route={route}.",
-            data={"route": route, "latest": latest, "blockers": list(ctx.task.blockers or [])[-8:]},
+            outcome=f"Catch error route={route}; disposition={disposition}.",
+            data={"route": route, "disposition": disposition, "latest": latest, "blockers": list(ctx.task.blockers or [])[-8:]},
             note="node_executor_catch_error",
         )
 
@@ -4576,6 +4602,36 @@ class AgentLabPlugin(Star):
             note="node_executor_code",
         )
 
+    async def _execute_memory_filter_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        data = self._ensure_workflow_data(ctx.task)
+        allow = self._node_string_list(ctx.task, ctx.node, "admission_allow", "allow_tags", "whitelist")
+        deny = self._node_string_list(ctx.task, ctx.node, "admission_deny", "deny_tags", "blacklist")
+        block_daily = bool(ctx.node.get("block_daily_memory"))
+        reflow_scope = str(ctx.node.get("reflow_scope") or "tags_only").strip().lower()
+        if reflow_scope not in {"none", "tags_only", "full"}:
+            reflow_scope = "tags_only"
+        memory_filter = {
+            "admission_allow": allow,
+            "admission_deny": deny,
+            "block_daily_memory": block_daily,
+            "reflow_scope": reflow_scope,
+            "node_id": str(ctx.node.get("id") or ""),
+            "updated_at": now_iso(),
+        }
+        data["memory_filter"] = memory_filter
+        ctx.task.add_log(
+            "workflow_memory_filter",
+            f"admission allow={allow} deny={deny} block_daily={block_daily} reflow={reflow_scope}",
+        )
+        return NodeExecutionResult(
+            outcome=f"Memory admission set: allow={len(allow)} deny={len(deny)} block_daily={block_daily} reflow={reflow_scope}.",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "memory_filter": memory_filter},
+            needs_react=len(ctx.outgoing) > 1,
+            advance=len(ctx.outgoing) <= 1,
+            note="node_executor_memory_filter",
+        )
+
     async def _execute_retrieve_memory_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         query = str(
             ctx.node.get("query")
@@ -4593,6 +4649,11 @@ class AgentLabPlugin(Star):
         folder_filter = str(ctx.node.get("folder_id") or ctx.node.get("memory_folder") or "").strip()
         agent_filter = str(ctx.node.get("agent_id") or ctx.spec.agent_id or "").strip()
         allow_cross_agent = bool(ctx.node.get("allow_cross_agent"))
+        mem_filter = self._ensure_workflow_data(ctx.task).get("memory_filter")
+        mem_filter = mem_filter if isinstance(mem_filter, dict) else {}
+        admit_allow = set(str(t).strip() for t in (mem_filter.get("admission_allow") or []) if str(t).strip())
+        admit_deny = set(str(t).strip() for t in (mem_filter.get("admission_deny") or []) if str(t).strip())
+        block_daily = bool(mem_filter.get("block_daily_memory"))
         scored_rows: list[tuple[int, dict[str, Any]]] = []
         for item in reversed(self.storage.list_memory_entries()):
             if folder_filter and str(item.get("folder_id") or "") != folder_filter:
@@ -4600,10 +4661,15 @@ class AgentLabPlugin(Star):
             item_agent = str(item.get("agent_id") or "").strip()
             if item_agent and agent_filter and item_agent != agent_filter and not allow_cross_agent:
                 continue
-            if tag_filter:
-                item_tags = set(str(tag).strip() for tag in (item.get("tags") or []) if str(tag).strip())
-                if not tag_filter.intersection(item_tags):
-                    continue
+            item_tags = set(str(tag).strip() for tag in (item.get("tags") or []) if str(tag).strip())
+            if tag_filter and not tag_filter.intersection(item_tags):
+                continue
+            if admit_deny and admit_deny.intersection(item_tags):
+                continue
+            if admit_allow and not admit_allow.intersection(item_tags):
+                continue
+            if block_daily and not str(item.get("source_task_id") or "").strip():
+                continue
             text = str(item.get("text") or "")
             haystack = "\n".join(
                 [
@@ -5035,13 +5101,17 @@ class AgentLabPlugin(Star):
         }
 
     async def _execute_parallel_branch_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        branches = self._node_string_list(ctx.task, ctx.node, "branches", "branch_list")
+        shared_instruction = f"tick_reason={ctx.reason}"
+        if branches:
+            shared_instruction += "\n并行分支清单（名称 | 角色/提示）：\n" + "\n".join(f"- {b}" for b in branches)
         parallel = await self._run_parallel_workflow(
             event=ctx.event,
             task=ctx.task,
             spec=ctx.spec,
             branch_node_id=str(ctx.node.get("id") or ""),
             parallel_group=str(ctx.node.get("parallel_group") or ""),
-            shared_instruction=f"tick_reason={ctx.reason}",
+            shared_instruction=shared_instruction,
             max_concurrency=max(
                 1,
                 min(int(_cfg(self.config, "workflow_parallel_concurrency", 3) or 3), 6),
@@ -5347,11 +5417,18 @@ class AgentLabPlugin(Star):
         ctx.task.status = "paused"
         action = str(ctx.node.get("action") or "").strip()
         instruction = str(ctx.node.get("instruction") or "Waiting for user input.").strip()
+        handoff_mode = str(ctx.node.get("handoff_mode") or "").strip().lower()
+        mode_reason = {
+            "wait_reply": "waiting_user",
+            "dm_admin": "need_admin_operator",
+            "group_prompt": "waiting_user",
+            "external_callback": "waiting_external_result",
+        }.get(handoff_mode, "")
         lowered = " ".join(
             str(ctx.node.get(key) or "")
             for key in ("wait_reason", "reason", "title", "instruction", "prompt")
         ).lower()
-        wait_reason = str(ctx.node.get("wait_reason") or "").strip()
+        wait_reason = str(ctx.node.get("wait_reason") or "").strip() or mode_reason
         if not wait_reason:
             if "credential" in lowered or "secret" in lowered or "api key" in lowered:
                 wait_reason = "need_credential"
@@ -5361,10 +5438,13 @@ class AgentLabPlugin(Star):
                 wait_reason = "waiting_external_result"
             else:
                 wait_reason = "need_user_decision" if action == "handoff" else "waiting_user"
+        source = f"workflow_{action or 'wait'}_node"
+        if handoff_mode:
+            source = f"{source}:{handoff_mode}"
         ctx.task.set_wait(
             wait_reason=wait_reason,
             message=instruction,
-            source=f"workflow_{action or 'wait'}_node",
+            source=source,
             required_input=[instruction],
         )
         return NodeExecutionResult(
@@ -5372,7 +5452,7 @@ class AgentLabPlugin(Star):
             status="running",
             outcome=instruction,
             advance=False,
-            data={"wait": True, "wait_reason": wait_reason},
+            data={"wait": True, "wait_reason": wait_reason, "handoff_mode": handoff_mode or None},
             note="node_executor_wait",
         )
 
@@ -8652,10 +8732,16 @@ class AgentLabPlugin(Star):
             action in action_ids for action in detector_actions
         ):
             add_issue("warn", "trigger_without_detector", "监听、定时或事件触发工作流建议接入检测器、范围过滤或条件分支。")
-        if spec.entry_policy.require_confirmation and "confirm_entry" not in action_ids:
-            add_issue("warn", "missing_entry_confirmation", "当前 AgentSpec 要求开启确认，但工作流没有 confirm_entry 节点。")
-        if spec.isolation_policy.mode != "off" and "restore_isolation" not in action_ids:
-            add_issue("warn", "missing_isolation_snapshot", "隔离模式已开启，但工作流没有隔离快照/恢复节点。")
+        confirmation_actions = {"confirm_entry", "listen_message"}
+        if spec.entry_policy.require_confirmation and not any(
+            action in action_ids for action in confirmation_actions
+        ):
+            add_issue("warn", "missing_entry_confirmation", "当前 AgentSpec 要求开启确认，但工作流没有消息监听入口或确认节点来承接确认。")
+        isolation_actions = {"restore_isolation", "global_control"}
+        if spec.isolation_policy.mode != "off" and not any(
+            action in action_ids for action in isolation_actions
+        ):
+            add_issue("warn", "missing_isolation_snapshot", "隔离模式已开启，但工作流没有全局控制或隔离快照/恢复节点。")
         if not any(action in action_ids for action in {"save_memory", "summarize_memory", "export_task_memory", "promote_memory_candidate"}):
             add_issue("warn", "missing_task_memory", "工作流没有任务记忆节点，续写信息可能只停留在 task_state。")
         if "exit_summary" not in action_ids:
