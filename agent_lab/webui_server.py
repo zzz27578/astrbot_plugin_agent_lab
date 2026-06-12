@@ -64,15 +64,21 @@ class StandaloneWebUIServer:
 
         @app.get("/")
         async def index():
-            return await send_from_directory(self.static_dir, "index.html")
+            resp = await send_from_directory(self.static_dir, "index.html")
+            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+            return resp
 
         @app.get("/app.js")
         async def app_js():
-            return await send_from_directory(self.static_dir, "app.js")
+            resp = await send_from_directory(self.static_dir, "app.js")
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
 
         @app.get("/style.css")
         async def style_css():
-            return await send_from_directory(self.static_dir, "style.css")
+            resp = await send_from_directory(self.static_dir, "style.css")
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
 
         @app.get("/api/health")
         async def health():

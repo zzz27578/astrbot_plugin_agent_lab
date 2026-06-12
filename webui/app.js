@@ -1,5 +1,7 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
+const AGENT_LAB_WEBUI_BUILD = "20260612-fix3";
+try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
   "astrbot_file_read_tool",
@@ -3191,6 +3193,7 @@ function restoreFieldFocusGlobal(snap) {
   let el = null;
   try { el = document.querySelector(f.key); } catch (err) { return; }
   if (!el || typeof el.matches !== "function" || !el.matches("input, textarea, select")) return;
+  if (el.tagName === "SELECT") return; // 不重新聚焦原生下拉：重焦会把刚展开的 <select> 关掉
   if (document.activeElement === el) return;
   try { el.focus({ preventScroll: true }); } catch (err) { try { el.focus(); } catch (err2) {} }
   if (typeof f.start === "number" && typeof el.setSelectionRange === "function") {
@@ -5994,6 +5997,21 @@ function setAgentFieldByPath(path, value) {
   obj[keys[keys.length - 1]] = value;
 }
 // 简易模式保存：把 sf-* 字段写回节点，只动该 action 暴露的字段；带 syncPath 的字段同时写回 AgentSpec 路径。
+// 节点编辑器实时存草稿：把当前输入写回选中节点（不触发重绘），这样切换输入框/任何重绘都不丢字。
+function liveSaveInspector() {
+  const node = selectedWorkflowNode();
+  if (!node) return;
+  const titleEl = document.getElementById("workflow-node-title");
+  if (titleEl && titleEl.value.trim()) node.title = titleEl.value.trim();
+  if (workflowEditorMode === "advanced") {
+    [["workflow-node-description", "description"], ["workflow-node-instruction", "instruction"], ["workflow-node-prompt", "prompt"]].forEach(([id, key]) => {
+      const el = document.getElementById(id);
+      if (el) node[key] = el.value;
+    });
+  } else {
+    applySimpleEditorFields(node);
+  }
+}
 function applySimpleEditorFields(node) {
   const fields = workflowSimpleFieldsFor(node.action || "manual");
   for (const f of fields) {
@@ -8769,6 +8787,9 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
+  if (event.target && event.target.closest && event.target.closest(".workflow-inspector-drawer") && event.target.matches && event.target.matches("input, textarea, select")) {
+    liveSaveInspector();
+  }
   const target = event.target.closest("[data-action]");
   if (!target) return;
   if (target.dataset.action === "workflow-agent-select") {
@@ -8790,6 +8811,10 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("input", (event) => {
+  // 节点编辑器：每次输入实时写回当前节点草稿，切换输入框或任何重绘都不会弄丢未保存的文字。
+  if (event.target && event.target.closest && event.target.closest(".workflow-inspector-drawer") && event.target.matches && event.target.matches("input, textarea, select")) {
+    liveSaveInspector();
+  }
   const target = event.target.closest("[data-action]");
   if (!target) return;
   const action = target.dataset.action;
