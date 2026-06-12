@@ -37,15 +37,15 @@ const WORKFLOW_STAGES = [
   ["archive", "出口", "归档回流"],
 ];
 
-const WORKFLOW_NODE_WIDTH = 300;
-const WORKFLOW_NODE_HEIGHT = 168;
-const WORKFLOW_LANE_WIDTH = 560;
-const WORKFLOW_CANVAS_MIN_WIDTH = 7200;
-const WORKFLOW_CANVAS_MIN_HEIGHT = 2800;
-const WORKFLOW_CANVAS_MIN_X = -8000;
-const WORKFLOW_CANVAS_MAX_X = 24000;
-const WORKFLOW_CANVAS_MIN_Y = -6000;
-const WORKFLOW_CANVAS_MAX_Y = 16000;
+const WORKFLOW_NODE_WIDTH = 340;
+const WORKFLOW_NODE_HEIGHT = 208;
+const WORKFLOW_LANE_WIDTH = 640;
+const WORKFLOW_CANVAS_MIN_WIDTH = 12000;
+const WORKFLOW_CANVAS_MIN_HEIGHT = 5200;
+const WORKFLOW_CANVAS_MIN_X = -16000;
+const WORKFLOW_CANVAS_MAX_X = 48000;
+const WORKFLOW_CANVAS_MIN_Y = -12000;
+const WORKFLOW_CANVAS_MAX_Y = 32000;
 const WORKFLOW_WORLD_WIDTH = WORKFLOW_CANVAS_MAX_X - WORKFLOW_CANVAS_MIN_X;
 const WORKFLOW_WORLD_HEIGHT = WORKFLOW_CANVAS_MAX_Y - WORKFLOW_CANVAS_MIN_Y;
 const WORKFLOW_MINIMAP_MIN_WIDTH = 104;
@@ -148,7 +148,7 @@ const WORKFLOW_REF_TYPES = ["", "tool", "api", "plugin", "skill", "module", "wor
 const WORKFLOW_WORKER_TYPES = ["", "GenericWorker", "ResearchWorker", "CodeReaderWorker", "PatchWorker", "TestWorker", "ApiWorker", "ToolWorker"];
 const WORKFLOW_TRIGGER_TYPES = ["command", "natural", "silent_global", "message_monitor", "keyword", "regex", "poke", "notice", "schedule", "plugin_event", "webhook", "manual_webui"];
 const WORKFLOW_CHAT_TYPES = ["private", "group"];
-const WORKFLOW_EDGE_TYPES = ["success", "failed", "uncertain", "error", "retry", "timeout", "approved", "rejected", "always"];
+const WORKFLOW_EDGE_TYPES = ["success", "failed", "uncertain", "retry", "approved", "rejected", "always"];
 
 const WORKFLOW_ACTION_RUNTIME_TYPES = {
   listen_message: "trigger",
@@ -1200,11 +1200,13 @@ let blueprintFilter = "";
 let memoryFilter = "all";
 let selectedMemoryId = "";
 let selectedMemoryFolderId = "";
+let memoryDetailOpen = false;
 let workflowDrag = null;
 let workflowPan = null;
 let workflowConnection = null;
 let workflowPendingPort = null;
 let workflowZoom = 1;
+let workflowFocusCursor = -1; // 聚焦内容快捷键的循环游标：-1/0=主体内容，1.. 依次聚焦离群节点
 let workflowPanX = 0;
 let workflowPanY = 0;
 let workflowCheckReport = null;
@@ -1439,6 +1441,57 @@ function showToast(message, tone = "normal") {
   }, 2600);
 }
 
+// ---- 插件内通用弹窗：替代浏览器 prompt/confirm/alert，统一风格、可校验、防误删 ----
+function showAppModal(opts = {}) {
+  return new Promise((resolve) => {
+    const { title = "", message = "", fields = [], confirmText = "确定", cancelText = "取消", danger = false } = opts;
+    document.querySelector(".app-modal-overlay")?.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "app-modal-overlay";
+    const fieldsHtml = fields.map((f, i) => `
+      <label class="app-modal-field">
+        <span>${esc(f.label || "")}</span>
+        <input type="text" data-modal-field="${i}" value="${esc(f.value == null ? "" : f.value)}" placeholder="${esc(f.placeholder || "")}" />
+      </label>
+    `).join("");
+    overlay.innerHTML = `
+      <div class="app-modal ${danger ? "is-danger" : ""}" role="dialog" aria-modal="true">
+        ${title ? `<div class="app-modal-title">${esc(title)}</div>` : ""}
+        ${message ? `<div class="app-modal-message">${esc(message)}</div>` : ""}
+        ${fieldsHtml}
+        <div class="app-modal-actions">
+          <button class="button secondary" data-modal-cancel type="button">${esc(cancelText)}</button>
+          <button class="button ${danger ? "danger" : ""}" data-modal-confirm type="button">${esc(confirmText)}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    const inputs = Array.from(overlay.querySelectorAll("[data-modal-field]"));
+    if (inputs[0]) { try { inputs[0].focus(); inputs[0].select(); } catch (e) {} }
+    let done = false;
+    const cleanup = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
+    const finish = (val) => { if (done) return; done = true; cleanup(); resolve(val); };
+    const onConfirm = () => finish(fields.length ? inputs.map((el) => el.value.trim()) : true);
+    const onCancel = () => finish(null);
+    overlay.querySelector("[data-modal-confirm]").addEventListener("click", onConfirm);
+    overlay.querySelector("[data-modal-cancel]").addEventListener("click", onCancel);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) onCancel(); });
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onCancel(); }
+      else if (e.key === "Enter" && e.target && e.target.tagName !== "TEXTAREA") { e.preventDefault(); e.stopPropagation(); onConfirm(); }
+    }
+    document.addEventListener("keydown", onKey, true);
+  });
+}
+async function promptModal(title, label, defaultValue = "", opts = {}) {
+  const res = await showAppModal({ title, fields: [{ label, value: defaultValue, placeholder: opts.placeholder || "" }], confirmText: opts.confirmText || "确定" });
+  return res === null ? null : res[0];
+}
+async function confirmModal(title, message, opts = {}) {
+  const res = await showAppModal({ title, message, confirmText: opts.confirmText || "确定", cancelText: opts.cancelText || "取消", danger: opts.danger !== false });
+  return res === true;
+}
+
 function workflowSnapshot() {
   ensureWorkflow();
   return clone({
@@ -1554,9 +1607,8 @@ function restoreWorkflowUiSnapshot(snapshot = null) {
 }
 
 function renderWorkflowStable() {
-  const snapshot = workflowUiSnapshot();
+  // render() 现在已全局保持焦点与滚动位置，直接复用即可（不再需要单独的 rAF 兜底）。
   render();
-  restoreWorkflowUiSnapshot(snapshot);
 }
 
 function workflowCurrentViewCenter() {
@@ -1667,51 +1719,57 @@ const WORKFLOW_EDGE_COLORS = {
 function workflowEdgeColor(type) {
   return WORKFLOW_EDGE_COLORS[String(type || "success")] || WORKFLOW_EDGE_COLORS.success;
 }
+// 把旧的冗余出口类型归并到精简集合：错误/超时都并入“失败”。
+function workflowNormalizeEdgeType(type) {
+  const t = String(type || "success").trim();
+  if (t === "error" || t === "timeout") return "failed";
+  return t || "success";
+}
 
 // 按节点类型给出的出口端口集合（与后端 NODE_PORT_SCHEMAS 对齐）。
 const WORKFLOW_RUNTIME_PORTS = {
-  trigger: { inputs: [], outputs: ["success", "error"] },
-  entry: { inputs: ["in"], outputs: ["success", "failed", "error"] },
-  detector: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "error"] },
-  decision: { inputs: ["in"], outputs: ["success", "failed", "error", "always"] },
-  parallel: { inputs: ["in"], outputs: ["success", "failed", "error", "always"] },
-  guard: { inputs: ["in"], outputs: ["success", "failed", "approved", "rejected", "error", "timeout"] },
-  validation: { inputs: ["in"], outputs: ["success", "failed", "retry", "error"] },
-  notification: { inputs: ["in"], outputs: ["success", "failed", "error"] },
-  report: { inputs: ["in"], outputs: ["success", "failed", "error"] },
+  trigger: { inputs: [], outputs: ["success"] },
+  entry: { inputs: ["in"], outputs: ["success", "failed"] },
+  detector: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
+  decision: { inputs: ["in"], outputs: ["success", "failed", "always"] },
+  parallel: { inputs: ["in"], outputs: ["success", "failed", "always"] },
+  guard: { inputs: ["in"], outputs: ["approved", "rejected"] },
+  validation: { inputs: ["in"], outputs: ["success", "failed", "retry"] },
+  notification: { inputs: ["in"], outputs: ["success", "failed"] },
+  report: { inputs: ["in"], outputs: ["success", "failed"] },
   terminal: { inputs: ["in"], outputs: [] },
-  state: { inputs: ["in"], outputs: ["success", "error"] },
-  tool: { inputs: ["in"], outputs: ["success", "failed", "error"] },
-  api: { inputs: ["in"], outputs: ["success", "failed", "error"] },
-  memory: { inputs: ["in"], outputs: ["success", "error"] },
-  react: { inputs: ["in"], outputs: ["success", "error"] },
+  state: { inputs: ["in"], outputs: ["success"] },
+  tool: { inputs: ["in"], outputs: ["success", "failed"] },
+  api: { inputs: ["in"], outputs: ["success", "failed"] },
+  memory: { inputs: ["in"], outputs: ["success"] },
+  react: { inputs: ["in"], outputs: ["success"] },
 };
-// 个别 action 的端口覆盖（与后端 ACTION_PORT_SCHEMAS 对齐的关键项）。
+// 个别 action 的端口覆盖（精简版：错误/超时并入失败，审批只留 批准/拒绝）。
 const WORKFLOW_ACTION_PORTS = {
-  listen_message: { inputs: [], outputs: ["success", "failed", "error"] },
-  schedule_trigger: { inputs: [], outputs: ["success", "error"] },
-  plugin_event_trigger: { inputs: [], outputs: ["success", "failed", "error"] },
-  webhook_trigger: { inputs: [], outputs: ["success", "failed", "error"] },
-  match_keyword: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "error"] },
-  match_regex: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "error"] },
-  llm_detect: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "error"] },
-  scope_filter: { inputs: ["in"], outputs: ["success", "failed", "error"] },
-  retry: { inputs: ["in", "retry", "error"], outputs: ["retry", "success", "failed", "error"] },
-  catch_error: { inputs: ["in", "error"], outputs: ["success", "error", "failed"] },
-  request_approval: { inputs: ["in"], outputs: ["approved", "rejected", "timeout", "error"] },
-  route_condition: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "error", "always"] },
-  conditional_router: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "error", "always"] },
-  parallel_branch: { inputs: ["in"], outputs: ["success", "failed", "error", "always"] },
-  handoff: { inputs: ["in"], outputs: ["success", "timeout", "error"] },
-  wait_user: { inputs: ["in"], outputs: ["success", "timeout", "error"] },
-  validate_output: { inputs: ["in"], outputs: ["success", "failed", "retry", "error"] },
+  listen_message: { inputs: [], outputs: ["success", "failed"] },
+  schedule_trigger: { inputs: [], outputs: ["success"] },
+  plugin_event_trigger: { inputs: [], outputs: ["success", "failed"] },
+  webhook_trigger: { inputs: [], outputs: ["success", "failed"] },
+  match_keyword: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
+  match_regex: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
+  llm_detect: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
+  scope_filter: { inputs: ["in"], outputs: ["success", "failed"] },
+  retry: { inputs: ["in", "retry"], outputs: ["retry", "success", "failed"] },
+  catch_error: { inputs: ["in"], outputs: ["success", "failed"] },
+  request_approval: { inputs: ["in"], outputs: ["approved", "rejected"] },
+  route_condition: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "always"] },
+  conditional_router: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "always"] },
+  parallel_branch: { inputs: ["in"], outputs: ["success", "failed", "always"] },
+  handoff: { inputs: ["in"], outputs: ["success", "failed"] },
+  wait_user: { inputs: ["in"], outputs: ["success", "failed"] },
+  validate_output: { inputs: ["in"], outputs: ["success", "failed", "retry"] },
 };
 // 取某节点的端口集合：先看 action 覆盖，再看 runtime_type。
 function workflowNodePorts(node) {
   const action = String(node?.action || "").trim();
   if (WORKFLOW_ACTION_PORTS[action]) return WORKFLOW_ACTION_PORTS[action];
   const rt = workflowRuntimeType(node);
-  return WORKFLOW_RUNTIME_PORTS[rt] || { inputs: ["in"], outputs: ["success", "error"] };
+  return WORKFLOW_RUNTIME_PORTS[rt] || { inputs: ["in"], outputs: ["success", "failed"] };
 }
 // 该节点是否需要展示多个具名出口（>1 个出口才值得拆分显示）。
 function workflowNodeHasMultiOut(node) {
@@ -2240,30 +2298,32 @@ function renderWorkflowFilterInput(action, value) {
 }
 
 function modernDefaultWorkflowNodes() {
+  // 默认「长任务」工作流：入口→全局控制→读记忆→计划→分流→执行/并行→整理→校验→快照→任务记忆→方案记忆隔离→Skill进化→通知→归档。
+  // 主干在中间一行，并行/进化在上排，审批/人工/重试/心跳在下排；节点 340×208，列距 480、行距 380，互不重叠、连线清晰。
   return [
-    { id: "entry", title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", description: "统一承接命令、关键词、自然语言、拍一拍、notice、WebUI、插件事件和 webhook。", instruction: "只把命中工作流触发策略和范围规则的事件送入后续节点。", output_variable: "event.message", x: 70, y: 240 },
-    { id: "global_control", title: "全局控制", kind: "guard", stage: "guard", action: "global_control", description: "方案级隔离、汇报、预算和错误阈值。", instruction: "统一应用隔离、工具范围、汇报频率、预算、暂停策略和错误累积阈值。", x: 390, y: 240 },
-    { id: "memory_recall", title: "任务记忆读取", kind: "retrieval", stage: "plan", action: "retrieve_memory", description: "按标签或记忆夹读取任务记忆。", instruction: "按标签、记忆夹或 source_task_id 读取与当前方案相关的任务记忆。", x: 710, y: 80 },
-    { id: "plan", title: "计划确认", kind: "state", stage: "plan", action: "plan", description: "把目标拆成可验证步骤。", instruction: "明确完成条件、风险等级、工具范围、验收方式，并约束每轮只推进一个有限工作单元。", x: 710, y: 320 },
-    { id: "risk_router", title: "风险分流", kind: "branch", stage: "plan", action: "route_condition", description: "按风险和任务性质分支。", instruction: "低风险直接执行；高风险进入审批；需要外部系统时走 API；需要用户判断时交给人工接管。", x: 1040, y: 320 },
-    { id: "parallel_branch", title: "并行分支", kind: "branch", stage: "plan", action: "parallel_branch", description: "拆分互不依赖的小任务。", instruction: "把资料检索、代码阅读、测试准备等互不依赖的小任务拆成并行工作包。", x: 1040, y: 80 },
-    { id: "parallel_research", title: "并行检索包", kind: "subflow", stage: "execute", action: "manual", description: "只读检索或代码阅读工作包。", instruction: "只读检索资料、接口或代码，输出证据摘要、风险和建议下一步。", prompt: "你是并行只读检索工作包。只收集证据和结论，不做写入动作；输出：发现、证据来源、风险、建议下一步。", parallel_group: "default", x: 1360, y: 0 },
-    { id: "parallel_verify", title: "并行验证包", kind: "subflow", stage: "execute", action: "manual", description: "验收条件和测试准备工作包。", instruction: "独立检查完成条件、测试证据、边界情况和可能遗漏。", prompt: "你是并行验证工作包。只围绕完成条件检查证据强度；输出：已验证、未验证、阻塞、需要主 Agent 决策的点。", parallel_group: "default", x: 1360, y: 580 },
-    { id: "execute", title: "工具执行", kind: "tool", stage: "execute", action: "run_tools", description: "调用白名单工具。", instruction: "只调用 AgentSpec 允许的工具，并保留关键输出。", x: 1360, y: 180 },
-    { id: "api_call", title: "API 调用", kind: "api", stage: "execute", action: "call_api", description: "调用注册 API 或外部服务。", instruction: "使用已登记 API，凭证由 Agent Lab 注入，不写入任务记忆。", x: 1360, y: 420 },
-    { id: "plugin_prompt", title: "插件嵌入提示词", kind: "subflow", stage: "execute", action: "plugin_prompt", description: "把目标插件作为中间能力调用。", instruction: "把目标 AstrBot 插件作为中间能力调用提示词，必要时转人工管理员执行。", x: 1680, y: 580 },
-    { id: "transform", title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", description: "清洗工具/API/插件输出。", instruction: "把工具/API/插件输出整理成结构化观察，压缩噪声并保留证据。", x: 1680, y: 300 },
-    { id: "approval", title: "审批闸门", kind: "guard", stage: "guard", action: "request_approval", description: "危险动作前请求用户确认。", instruction: "删除、部署、密钥、重启、全局配置和破坏性数据库操作前必须先说明影响并等待审批。", x: 1360, y: 760 },
-    { id: "human_handoff", title: "人工接管", kind: "human", stage: "guard", action: "handoff", description: "等待用户选择或授权。", instruction: "遇到登录、验证码、业务判断、未授权范围或连续阻塞时暂停，给出清晰选项等待用户输入。", x: 1680, y: 760 },
-    { id: "validation", title: "结果校验", kind: "validation", stage: "checkpoint", action: "validate_output", description: "检查是否满足完成条件。", instruction: "对照完成条件、测试结果和副作用判断是否完成；失败时说明原因并进入有限重试。", x: 2000, y: 260 },
-    { id: "retry_loop", title: "重试循环", kind: "loop", stage: "checkpoint", action: "retry", description: "失败/出错时有限次重试。", instruction: "只在执行失败或校验不通过时进入；还有次数就绕回执行，用尽后交人工。", max_retries: 3, x: 2000, y: 540 },
-    { id: "checkpoint", title: "状态快照", kind: "state", stage: "checkpoint", action: "save_state", description: "把本轮结果写入 task_state。", instruction: "每轮结束写回 current_summary、progress、next_step、observation 和阻塞点。", x: 2320, y: 260 },
-    { id: "task_memory", title: "任务记忆", kind: "memory", stage: "checkpoint", action: "save_memory", description: "独立记录任务时间线和关键成果。", instruction: "把时间点、关键修改、成果、风险和下次续写提示写入任务记忆。", x: 2640, y: 160 },
-    { id: "heartbeat", title: "心跳续跑", kind: "guard", stage: "guard", action: "heartbeat", description: "长任务定时唤醒。", instruction: "心跳醒来先读 task_state，再推进一小步；同一阻塞重复三次则暂停求助。", x: 2640, y: 460 },
-    { id: "memory_archive", title: "方案记忆存档", kind: "memory", stage: "archive", action: "archive_memory_folder", description: "归档到方案级记忆夹。", instruction: "把本次任务导出到方案级记忆夹，隔离到当前 agent_id 和 folder_id。", x: 2960, y: 160 },
-    { id: "skill_evolution", title: "Skill 进化", kind: "guard", stage: "archive", action: "skill_evolution", description: "从已接受记忆生成技能规则草稿。", instruction: "从已接受任务记忆生成 skill_rules 草稿，默认走人工审批。", approval_mode: "review", x: 2960, y: 460 },
-    { id: "notify", title: "完成通知", kind: "notification", stage: "archive", action: "notify", description: "向当前会话反馈成果。", instruction: "在退出前向用户说明完成情况、验证结果、遗留风险和下次续写入口。", x: 3280, y: 260 },
-    { id: "archive", title: "结束回流", kind: "memory", stage: "archive", action: "exit_summary", description: "完成或取消后归档。", instruction: "输出成果、关键改动、遗留问题和可回流记忆候选，然后恢复会话插件隔离。", x: 3600, y: 260 },
+    { id: "entry", title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", description: "统一承接命令、关键词、自然语言、拍一拍、notice、WebUI、插件事件和 webhook。", instruction: "只把命中工作流触发策略和范围规则的事件送入后续节点。", output_variable: "event.message", x: 100, y: 900 },
+    { id: "global_control", title: "全局控制", kind: "guard", stage: "guard", action: "global_control", description: "方案级隔离、汇报、预算和错误阈值。", instruction: "统一应用隔离、工具范围、汇报频率、预算、暂停策略和错误累积阈值。", x: 580, y: 900 },
+    { id: "memory_recall", title: "任务记忆读取", kind: "retrieval", stage: "plan", action: "retrieve_memory", description: "按标签或记忆夹读取任务记忆。", instruction: "按标签、记忆夹或 source_task_id 读取与当前方案相关的任务记忆。", x: 1060, y: 520 },
+    { id: "plan", title: "计划确认", kind: "state", stage: "plan", action: "plan", description: "把目标拆成可验证步骤。", instruction: "明确完成条件、风险等级、工具范围、验收方式，并约束每轮只推进一个有限工作单元。", x: 1060, y: 900 },
+    { id: "parallel_branch", title: "并行分支", kind: "branch", stage: "plan", action: "parallel_branch", description: "拆分互不依赖的小任务。", instruction: "把资料检索、代码阅读、测试准备等互不依赖的小任务拆成并行工作包。", x: 1540, y: 520 },
+    { id: "risk_router", title: "风险分流", kind: "branch", stage: "plan", action: "route_condition", description: "按风险和任务性质分支。", instruction: "低风险直接执行；高风险进入审批；需要外部系统时走 API；需要用户判断时交给人工接管。", x: 1540, y: 900 },
+    { id: "parallel_research", title: "并行检索包", kind: "subflow", stage: "execute", action: "manual", description: "只读检索或代码阅读工作包。", instruction: "只读检索资料、接口或代码，输出证据摘要、风险和建议下一步。", prompt: "你是并行只读检索工作包。只收集证据和结论，不做写入动作；输出：发现、证据来源、风险、建议下一步。", parallel_group: "default", x: 2020, y: 520 },
+    { id: "execute", title: "工具执行", kind: "tool", stage: "execute", action: "run_tools", description: "调用白名单工具。", instruction: "只调用 AgentSpec 允许的工具，并保留关键输出。", x: 2020, y: 900 },
+    { id: "approval", title: "审批闸门", kind: "guard", stage: "guard", action: "request_approval", description: "危险动作前请求用户确认。", instruction: "删除、部署、密钥、重启、全局配置和破坏性数据库操作前必须先说明影响并等待审批。", x: 2020, y: 1280 },
+    { id: "parallel_verify", title: "并行验证包", kind: "subflow", stage: "execute", action: "manual", description: "验收条件和测试准备工作包。", instruction: "独立检查完成条件、测试证据、边界情况和可能遗漏。", prompt: "你是并行验证工作包。只围绕完成条件检查证据强度；输出：已验证、未验证、阻塞、需要主 Agent 决策的点。", parallel_group: "default", x: 2500, y: 520 },
+    { id: "api_call", title: "API 调用", kind: "api", stage: "execute", action: "call_api", description: "调用注册 API 或外部服务。", instruction: "使用已登记 API，凭证由 Agent Lab 注入，不写入任务记忆。", x: 2500, y: 900 },
+    { id: "human_handoff", title: "人工接管", kind: "human", stage: "guard", action: "handoff", description: "等待用户选择或授权。", instruction: "遇到登录、验证码、业务判断、未授权范围或连续阻塞时暂停，给出清晰选项等待用户输入。", x: 2500, y: 1280 },
+    { id: "plugin_prompt", title: "插件嵌入提示词", kind: "subflow", stage: "execute", action: "plugin_prompt", description: "把目标插件作为中间能力调用。", instruction: "把目标 AstrBot 插件作为中间能力调用提示词，必要时转人工管理员执行。", x: 2980, y: 520 },
+    { id: "transform", title: "上下文整理", kind: "transform", stage: "execute", action: "transform_context", description: "清洗工具/API/插件输出。", instruction: "把工具/API/插件输出整理成结构化观察，压缩噪声并保留证据。", x: 2980, y: 900 },
+    { id: "validation", title: "结果校验", kind: "validation", stage: "checkpoint", action: "validate_output", description: "检查是否满足完成条件。", instruction: "对照完成条件、测试结果和副作用判断是否完成；失败时说明原因并进入有限重试。", x: 3460, y: 900 },
+    { id: "retry_loop", title: "重试循环", kind: "loop", stage: "checkpoint", action: "retry", description: "失败时有限次重试。", instruction: "只在执行失败或校验不通过时进入；还有次数就绕回执行，用尽后交人工。", max_retries: 3, x: 3460, y: 1280 },
+    { id: "checkpoint", title: "状态快照", kind: "state", stage: "checkpoint", action: "save_state", description: "把本轮结果写入 task_state。", instruction: "每轮结束写回 current_summary、progress、next_step、observation 和阻塞点。", x: 3940, y: 900 },
+    { id: "heartbeat", title: "心跳续跑", kind: "guard", stage: "guard", action: "heartbeat", description: "长任务定时唤醒、续跑。", instruction: "心跳醒来先读 task_state，再推进一小步；同一阻塞重复三次则暂停求助。", x: 3940, y: 1280 },
+    { id: "task_memory", title: "任务记忆", kind: "memory", stage: "checkpoint", action: "save_memory", description: "独立记录任务时间线和关键成果。", instruction: "把时间点、关键修改、成果、风险和下次续写提示写入任务记忆。", x: 4420, y: 900 },
+    { id: "skill_evolution", title: "Skill 进化", kind: "guard", stage: "archive", action: "skill_evolution", description: "从已接受记忆生成技能规则草稿。", instruction: "从已接受任务记忆生成 skill_rules 草稿，默认走人工审批。", approval_mode: "review", x: 4900, y: 520 },
+    { id: "memory_archive", title: "方案记忆存档", kind: "memory", stage: "archive", action: "archive_memory_folder", description: "归档到方案级记忆夹（按 agent_id + folder_id 隔离，不串记忆）。", instruction: "把本次任务导出到方案级记忆夹，隔离到当前 agent_id 和 folder_id，避免不同方案之间串记忆。", x: 4900, y: 900 },
+    { id: "notify", title: "完成通知", kind: "notification", stage: "archive", action: "notify", description: "向当前会话反馈成果。", instruction: "在退出前向用户说明完成情况、验证结果、遗留风险和下次续写入口。", x: 5380, y: 900 },
+    { id: "archive", title: "结束回流", kind: "memory", stage: "archive", action: "exit_summary", description: "完成或取消后归档。", instruction: "输出成果、关键改动、遗留问题和可回流记忆候选，然后恢复会话插件隔离。", x: 5860, y: 900 },
   ];
 }
 
@@ -2285,9 +2345,9 @@ function modernDefaultWorkflowEdges() {
     { from: "approval", to: "human_handoff", edge_type: "rejected" },
     { from: "human_handoff", to: "plan", edge_type: "success" },
     { from: "execute", to: "transform", edge_type: "success" },
-    { from: "execute", to: "retry_loop", edge_type: "error" },
+    { from: "execute", to: "retry_loop", edge_type: "failed" },
     { from: "api_call", to: "transform", edge_type: "success" },
-    { from: "api_call", to: "retry_loop", edge_type: "error" },
+    { from: "api_call", to: "retry_loop", edge_type: "failed" },
     { from: "plugin_prompt", to: "transform", edge_type: "success" },
     { from: "plugin_prompt", to: "human_handoff", edge_type: "failed" },
     { from: "transform", to: "validation", edge_type: "success" },
@@ -2301,7 +2361,6 @@ function modernDefaultWorkflowEdges() {
     { from: "task_memory", to: "memory_archive", edge_type: "success" },
     { from: "memory_archive", to: "skill_evolution", edge_type: "success" },
     { from: "skill_evolution", to: "notify", edge_type: "success" },
-    { from: "skill_evolution", to: "human_handoff", edge_type: "approved" },
     { from: "notify", to: "archive", edge_type: "success" },
   ];
 }
@@ -2992,7 +3051,7 @@ function ensureWorkflow() {
       ...edge,
       from: String(edge.from || "").trim(),
       to: String(edge.to || "").trim(),
-      edge_type: String(edge.edge_type || edge.type || "success").trim() || "success",
+      edge_type: workflowNormalizeEdgeType(String(edge.edge_type || edge.type || "success").trim() || "success"),
       condition: String(edge.condition || edge.when || "").trim(),
     }))
     .filter((edge) => ids.has(edge.from) && ids.has(edge.to));
@@ -3017,6 +3076,23 @@ async function api(path, options = {}) {
   return data;
 }
 
+// 本插件自带工具（agent_lab_* / 本插件注册）默认开启；仅当方案里一个都没启用时才补齐，尊重用户后续的手动取舍。
+function ensureOwnPluginToolsEnabled() {
+  if (!currentAgent || !state) return;
+  const mode = currentAgent.isolation_policy && currentAgent.isolation_policy.tool_mode;
+  const enabled = currentAgent.enabled_tools || [];
+  if (enabled.includes(EMPTY_TOOLS_SENTINEL) || mode === "no_external") return;
+  const own = (state.tools || [])
+    .filter((t) => t && (t.plugin_name === "astrbot_plugin_agent_lab" || String(t.name || "").startsWith("agent_lab_")))
+    .map((t) => t.name)
+    .filter(Boolean);
+  if (!own.length) return;
+  const set = new Set(enabled.filter((x) => x !== EMPTY_TOOLS_SENTINEL));
+  if (own.some((n) => set.has(n))) return;
+  own.forEach((n) => set.add(n));
+  currentAgent.enabled_tools = Array.from(set).sort();
+}
+
 async function load(options = {}) {
   try {
     state = await api("/api/state");
@@ -3025,6 +3101,7 @@ async function load(options = {}) {
       selectedAgentId = state.default_agent_id || agents[0]?.agent_id || "";
     }
     currentAgent = ensureAgent(clone(agents.find((item) => item.agent_id === selectedAgentId) || agents[0] || defaultAgentDraft()));
+    ensureOwnPluginToolsEnabled();
     const tasks = [...(state.tasks || []), ...(state.archives || [])];
     if (!selectedTaskId || !tasks.some((item) => item.task_id === selectedTaskId)) {
       selectedTaskId = tasks[0]?.task_id || "";
@@ -3073,29 +3150,51 @@ function renderNav() {
 
 // 全局焦点/光标保留：任何 render() 重建 DOM 后，把焦点和光标还回原来的输入框，
 // 这样无论哪条路径触发了 render，用户都不会掉焦、丢字或被“复原”。
+// 统一“重绘保焦/保滚动”：render() 在重建 DOM 前记录当前聚焦的表单控件和关键滚动容器位置，
+// 重建后同步恢复。任何重绘都不再丢焦、不再让抽屉滚动条跳回顶端。
+const FOCUS_SCROLL_KEYS = [
+  ".workflow-inspector-drawer .drawer-scroll",
+  ".workflow-tool-drawer .drawer-scroll",
+  ".workflow-global-drawer .drawer-scroll",
+  ".workflow-report-panel .drawer-scroll",
+  ".memory-detail-drawer .drawer-content",
+];
 function activeFieldSnapshotGlobal() {
+  const snap = { scrolls: [], field: null };
+  FOCUS_SCROLL_KEYS.forEach((key) => {
+    const el = document.querySelector(key);
+    if (el && el.scrollTop > 0) snap.scrolls.push({ key, top: el.scrollTop });
+  });
   const el = document.activeElement;
-  if (!el || typeof el.matches !== "function" || !el.matches("input, textarea, select")) return null;
-  let key = "";
-  if (el.id) key = `#${(window.CSS && CSS.escape) ? CSS.escape(el.id) : el.id}`;
-  else if (el.dataset && el.dataset.action) key = `[data-action="${el.dataset.action}"]`;
-  else if (el.dataset && el.dataset.field) key = `[data-field="${el.dataset.field}"]`;
-  if (!key) return null;
-  const snap = { key };
-  try {
-    if (typeof el.selectionStart === "number") { snap.start = el.selectionStart; snap.end = el.selectionEnd; }
-  } catch (err) {}
-  return snap;
+  if (el && typeof el.matches === "function" && el.matches("input, textarea, select")) {
+    let key = "";
+    if (el.id) key = `#${(window.CSS && CSS.escape) ? CSS.escape(el.id) : el.id}`;
+    else if (el.dataset && el.dataset.action) key = `[data-action="${el.dataset.action}"]`;
+    else if (el.dataset && el.dataset.field) key = `[data-field="${el.dataset.field}"]`;
+    if (key) {
+      snap.field = { key };
+      try {
+        if (typeof el.selectionStart === "number") { snap.field.start = el.selectionStart; snap.field.end = el.selectionEnd; }
+      } catch (err) {}
+    }
+  }
+  return (snap.field || snap.scrolls.length) ? snap : null;
 }
 function restoreFieldFocusGlobal(snap) {
-  if (!snap || !snap.key) return;
+  if (!snap) return;
+  (snap.scrolls || []).forEach((s) => {
+    const el = document.querySelector(s.key);
+    if (el) el.scrollTop = s.top;
+  });
+  const f = snap.field;
+  if (!f || !f.key) return;
   let el = null;
-  try { el = document.querySelector(snap.key); } catch (err) { return; }
+  try { el = document.querySelector(f.key); } catch (err) { return; }
   if (!el || typeof el.matches !== "function" || !el.matches("input, textarea, select")) return;
   if (document.activeElement === el) return;
   try { el.focus({ preventScroll: true }); } catch (err) { try { el.focus(); } catch (err2) {} }
-  if (typeof snap.start === "number" && typeof el.setSelectionRange === "function") {
-    try { el.setSelectionRange(snap.start, typeof snap.end === "number" ? snap.end : snap.start); } catch (err) {}
+  if (typeof f.start === "number" && typeof el.setSelectionRange === "function") {
+    try { el.setSelectionRange(f.start, typeof f.end === "number" ? f.end : f.start); } catch (err) {}
   }
 }
 function render() {
@@ -3103,6 +3202,7 @@ function render() {
   const viewport = route === "workflow" && workflowViewportInitialized ? workflowViewportSnapshot() : null;
   document.body.dataset.route = route;
   document.body.classList.toggle("workflow-nav-collapsed", route === "workflow" && workflowNavCollapsed);
+  if (!workflowMaterialChipDrag) { document.querySelectorAll(".workflow-drag-ghost").forEach((el) => el.remove()); workflowDragGhostEl = null; }
   renderNav();
   if (!state) { restoreFieldFocusGlobal(__focusSnap); return; }
   syncLiveRefresh();
@@ -4023,6 +4123,7 @@ function workflowRightDock(report) {
         <button class="workflow-dock-button" data-action="workflow-redo" title="重做" aria-label="重做" ${workflowHistoryFuture.length ? "" : "disabled"} type="button">${iconImg("redo", "重做")}</button>
       </div>
       <div class="workflow-dock-group">
+        <button class="workflow-dock-button text ${workflowToolboxOpen ? "active" : ""}" data-action="toggle-workflow-toolbox" title="打开 / 收起节点素材库" aria-label="素材库" type="button">素材</button>
         <button class="workflow-dock-button text ${workflowGlobalOpen ? "active" : ""}" data-action="open-workflow-global" title="全局规则：整套工作流的安全准则 / 参考 / 技能" aria-label="全局规则" type="button">全局</button>
       </div>
       <div class="workflow-dock-group">
@@ -4201,7 +4302,6 @@ function renderWorkflowPage() {
           <button class="button tiny secondary" data-action="check-workflow" type="button">静态检查</button>
           <button class="button tiny secondary" data-action="dry-run-workflow" type="button">预跑诊断</button>
           <button class="button tiny secondary" data-action="auto-layout-workflow" type="button">自动整理</button>
-          <button class="button tiny secondary" data-action="toggle-workflow-toolbox" type="button">${workflowToolboxOpen ? "收起素材" : "打开素材"}</button>
           <button class="button tiny" data-action="save-agent" type="button">保存</button>
         </div>
       </header>
@@ -4247,6 +4347,8 @@ function workflowGlobalEditor() {
   a.heartbeat_policy ||= {};
   a.default_task_budget ||= {};
   a.enabled_skills ||= [];
+  a.entry_policy ||= {};
+  a.workflow_scope ||= {};
   const skills = state.skills || [];
   const enabledSkills = new Set(a.enabled_skills || []);
   const skillRows = skills.length
@@ -4254,7 +4356,7 @@ function workflowGlobalEditor() {
         const name = String(sk.name || sk.id || "").trim();
         return `<label class="check-line"><input type="checkbox" data-global-skill="${esc(name)}" ${enabledSkills.has(name) ? "checked" : ""} /> <span>${esc(name)}</span><small>${esc(sk.path || sk.description || "")}</small></label>`;
       }).join("")
-    : `<div class="empty">还没有可用的技能。可在『插件与集成 → 技能规则』里管理。</div>`;
+    : `<div class="empty">还没有可用的技能。请确认 AstrBot 已加载技能后刷新。</div>`;
   const requireList = Array.isArray(a.approval_policy.require_approval) ? a.approval_policy.require_approval.join("\n") : "";
   const preList = Array.isArray(a.approval_policy.preapproved_scopes) ? a.approval_policy.preapproved_scopes.join("\n") : "";
   const budget = a.default_task_budget || {};
@@ -4308,6 +4410,39 @@ function workflowGlobalEditor() {
           <label>重复失败阈值<input id="global-max-repeated-failures" type="number" min="1" max="100" value="${esc(a.heartbeat_policy.max_repeated_failures ?? 3)}" /></label>
         </div>
       </section>
+      <section class="workflow-editor-section simple-editor">
+        <h4>入口规则（什么时候进入任务模式）</h4>
+        <label class="simple-field">开启暗号 / 命令（每行一个）
+          <textarea id="global-entry-trigger-phrases" rows="2" placeholder="进入任务模式">${esc(listToLines(a.entry_policy.trigger_phrases))}</textarea>
+        </label>
+        <label class="simple-field">任务关键词（每行一个）
+          <textarea id="global-entry-trigger-keywords" rows="2" placeholder="排查 / 部署 / 持续推进">${esc(listToLines(a.entry_policy.trigger_keywords))}</textarea>
+        </label>
+        <label class="simple-field">开启确认话术
+          <textarea id="global-entry-confirmation-text" rows="2">${esc(a.entry_policy.confirmation_text || "")}</textarea>
+        </label>
+      </section>
+      <section class="workflow-editor-section simple-editor">
+        <h4>出口规则（怎么结束、怎么验收）</h4>
+        <label class="simple-field">结束暗号 / 命令（每行一个）
+          <textarea id="global-exit-phrases" rows="2" placeholder="完成任务">${esc(listToLines(a.entry_policy.exit_phrases))}</textarea>
+        </label>
+        <label class="simple-field">默认验收条件（每行一个）
+          <textarea id="global-default-completion" rows="2" placeholder="用户验收通过">${esc(listToLines(a.entry_policy.default_completion_conditions))}</textarea>
+        </label>
+      </section>
+      <section class="workflow-editor-section simple-editor">
+        <h4>生效范围（这个方案在哪里生效）</h4>
+        <label class="check-line"><input type="checkbox" id="global-scope-global" ${a.application_scope === "global" ? "checked" : ""} /> 全局应用（所有会话都参与，不只入口命中时）</label>
+        <label>生效会话类型<div class="choice-grid compact-choice">${checkboxGroupHtml("global-scope-chat-type", WORKFLOW_CHAT_TYPES, (a.workflow_scope.chat_types) || ["private"], workflowChatTypeLabel)}</div></label>
+        <label class="check-line"><input type="checkbox" id="global-scope-admin-only" ${a.workflow_scope.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
+        <div class="form-grid compact">
+          <label>群聊白名单（每行一个群号）<textarea id="global-scope-group-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(a.workflow_scope.group_allowlist || []))}</textarea></label>
+          <label>群聊黑名单<textarea id="global-scope-group-deny" rows="2">${esc(listToLines(a.workflow_scope.group_denylist || []))}</textarea></label>
+          <label>用户白名单（每行一个）<textarea id="global-scope-user-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(a.workflow_scope.user_allowlist || []))}</textarea></label>
+          <label>用户黑名单<textarea id="global-scope-user-deny" rows="2">${esc(listToLines(a.workflow_scope.user_denylist || []))}</textarea></label>
+        </div>
+      </section>
       <div class="button-row">
         <button class="button" data-action="apply-workflow-global" type="button">应用全局规则</button>
         <button class="button secondary" data-action="close-workflow-global" type="button">关闭</button>
@@ -4357,6 +4492,25 @@ function applyWorkflowGlobalRules() {
   if (skillBoxes.length) {
     a.enabled_skills = Array.from(skillBoxes).filter((b) => b.checked).map((b) => b.dataset.globalSkill);
   }
+  // 入口 / 出口 / 生效范围规则（原先散落在各节点编辑器，现统一在全局规则里）
+  a.entry_policy ||= {};
+  const gv = (id) => document.getElementById(id);
+  if (gv("global-entry-trigger-phrases")) a.entry_policy.trigger_phrases = linesToList(gv("global-entry-trigger-phrases").value);
+  if (gv("global-entry-trigger-keywords")) a.entry_policy.trigger_keywords = linesToList(gv("global-entry-trigger-keywords").value);
+  if (gv("global-entry-confirmation-text")) a.entry_policy.confirmation_text = gv("global-entry-confirmation-text").value.trim();
+  if (gv("global-exit-phrases")) a.entry_policy.exit_phrases = linesToList(gv("global-exit-phrases").value);
+  if (gv("global-default-completion")) a.entry_policy.default_completion_conditions = linesToList(gv("global-default-completion").value);
+  if (gv("global-scope-global")) {
+    a.application_scope = gv("global-scope-global").checked ? "global" : "entry";
+    a.workflow_scope ||= {};
+    a.workflow_scope.chat_types = checkedValues("global-scope-chat-type");
+    if (!a.workflow_scope.chat_types.length) a.workflow_scope.chat_types = ["private"];
+    a.workflow_scope.admin_only = gv("global-scope-admin-only")?.checked || false;
+    a.workflow_scope.group_allowlist = linesToList(gv("global-scope-group-allow")?.value || "");
+    a.workflow_scope.group_denylist = linesToList(gv("global-scope-group-deny")?.value || "");
+    a.workflow_scope.user_allowlist = linesToList(gv("global-scope-user-allow")?.value || "");
+    a.workflow_scope.user_denylist = linesToList(gv("global-scope-user-deny")?.value || "");
+  }
 }
 
 function renderMemoryPage() {
@@ -4402,6 +4556,7 @@ function renderMemoryPage() {
           ${memoryRollbackPanel(selected)}
         </div>
       </section>
+      ${memoryDetailOpen && selected ? memoryDetailDrawer(selected) : ""}
     </section>
   `;
 }
@@ -4446,6 +4601,7 @@ function memoryFolderPanel() {
         <div><p class="card-kicker">记忆夹</p><h3>方案级记忆隔离</h3></div>
         <div class="inline-actions">
           <button class="button secondary" data-action="new-memory-folder" type="button">新建夹</button>
+          <button class="button secondary" data-action="rename-memory-folder" data-id="${esc(currentId)}" ${!currentId || currentId === "default" ? "disabled" : ""} type="button">重命名</button>
           <button class="button danger" data-action="delete-memory-folder" data-id="${esc(currentId)}" ${!currentId || currentId === "default" ? "disabled" : ""} type="button">删除夹</button>
         </div>
       </div>
@@ -4473,28 +4629,75 @@ function memoryFolderPanel() {
   `;
 }
 
+function memoryMetaItem(label, value, isHtml = false) {
+  return `<div class="memory-meta-item"><span>${esc(label)}</span><strong>${isHtml ? value : esc(value)}</strong></div>`;
+}
 function memoryDetail(item) {
+  const tags = item.tags || [];
+  const tagHtml = tags.length ? tags.map((t) => `<span class="memory-tag">${esc(t)}</span>`).join("") : "-";
   return `
     <div class="panel-head">
       <div><p class="card-kicker">${esc(item.memory_id)}</p><h3>${esc(item.text || "任务记忆")}</h3></div>
-      ${badge(memoryFilterLabel(item.status || "candidate"), item.status === "accepted" ? "ok" : "warn")}
+      <div class="inline-actions">
+        ${badge(memoryFilterLabel(item.status || "candidate"), item.status === "accepted" ? "ok" : "warn")}
+        <button class="button secondary" data-action="open-memory-detail" data-id="${esc(item.memory_id)}" type="button">展开细看</button>
+      </div>
     </div>
-    <div class="state-fields">
-      ${stateField("来源任务", item.source_task_id || "-")}
-      ${stateField("记忆夹", `${item.folder_name || memoryFolderLabel(item.folder_id)} (${item.folder_id || "default"})`)}
-      ${stateField("归属 Agent", item.agent_id || "-")}
-      ${stateField("标签", (item.tags || []).join(", ") || "-")}
-      ${stateField("普通模式可读", item.expose_to_normal === false ? "否，仅任务模式" : "是，可按标签读取")}
-      ${stateField("来源会话", item.source_umo || "-")}
+    <div class="memory-meta-grid">
+      ${memoryMetaItem("来源任务", item.source_task_id || "-")}
+      ${memoryMetaItem("记忆夹", `${item.folder_name || memoryFolderLabel(item.folder_id)} (${item.folder_id || "default"})`)}
+      ${memoryMetaItem("归属 Agent", item.agent_id || "-")}
+      ${memoryMetaItem("来源会话", item.source_umo || "-")}
+      ${memoryMetaItem("普通模式可读", item.expose_to_normal === false ? "否，仅任务模式" : "是，可按标签读取")}
+      ${memoryMetaItem("标签", tagHtml, true)}
     </div>
-    <label>记忆内容<textarea rows="7" readonly>${esc(item.text || "")}</textarea></label>
-    <label>续写入口草稿<textarea rows="7" readonly>${esc(memoryContextText(item))}</textarea></label>
+    <div class="memory-content-block">
+      <div class="memory-content-head"><span>记忆内容</span><button class="button tiny secondary" data-action="copy-memory" data-id="${esc(item.memory_id)}" type="button">复制</button></div>
+      <div class="memory-content-text">${esc(item.text || "")}</div>
+    </div>
     <div class="button-row">
       <button class="button secondary" data-action="use-memory-context" data-id="${esc(item.memory_id)}" type="button">带入新任务</button>
       <button class="button secondary" data-action="accept-memory" data-id="${esc(item.memory_id)}" type="button">保留</button>
       <button class="button secondary" data-action="reject-memory" data-id="${esc(item.memory_id)}" type="button">标记不用</button>
       <button class="button danger" data-action="delete-memory" data-id="${esc(item.memory_id)}" type="button">删除</button>
     </div>
+  `;
+}
+function memoryDetailDrawer(item) {
+  const tags = item.tags || [];
+  const tagHtml = tags.length ? tags.map((t) => `<span class="memory-tag">${esc(t)}</span>`).join("") : "-";
+  return `
+    <div class="memory-detail-backdrop" data-action="close-memory-detail"></div>
+    <aside class="memory-detail-drawer" role="dialog" aria-modal="true">
+      <div class="drawer-header">
+        <div><p class="card-kicker">${esc(item.memory_id)}</p><h3 class="memory-drawer-title">${esc(item.text || "任务记忆")}</h3></div>
+        <button class="button secondary" data-action="close-memory-detail" type="button">关闭</button>
+      </div>
+      <div class="drawer-content">
+        <div class="memory-meta-grid">
+          ${memoryMetaItem("状态", memoryFilterLabel(item.status || "candidate"))}
+          ${memoryMetaItem("来源任务", item.source_task_id || "-")}
+          ${memoryMetaItem("记忆夹", `${item.folder_name || memoryFolderLabel(item.folder_id)} (${item.folder_id || "default"})`)}
+          ${memoryMetaItem("归属 Agent", item.agent_id || "-")}
+          ${memoryMetaItem("来源会话", item.source_umo || "-")}
+          ${memoryMetaItem("普通模式可读", item.expose_to_normal === false ? "否，仅任务模式" : "是，可按标签读取")}
+          ${memoryMetaItem("标签", tagHtml, true)}
+        </div>
+        <div class="memory-content-block">
+          <div class="memory-content-head"><span>记忆内容</span><button class="button tiny secondary" data-action="copy-memory" data-id="${esc(item.memory_id)}" type="button">复制</button></div>
+          <div class="memory-content-text large">${esc(item.text || "")}</div>
+        </div>
+        <div class="memory-content-block">
+          <div class="memory-content-head"><span>续写入口草稿</span></div>
+          <div class="memory-content-text">${esc(memoryContextText(item))}</div>
+        </div>
+      </div>
+      <div class="drawer-actions">
+        <button class="button secondary" data-action="use-memory-context" data-id="${esc(item.memory_id)}" type="button">带入新任务</button>
+        <button class="button secondary" data-action="accept-memory" data-id="${esc(item.memory_id)}" type="button">保留</button>
+        <button class="button danger" data-action="delete-memory" data-id="${esc(item.memory_id)}" type="button">删除</button>
+      </div>
+    </aside>
   `;
 }
 
@@ -4849,9 +5052,7 @@ function workflowToolbox() {
     .filter((item) =>
       includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
     );
-  const libraryGroups = WORKFLOW_NODE_GROUPS.filter((group) =>
-    workflowLibraryMode === "advanced" || filter || basicGroupIds.has(group.id)
-  );
+  const libraryGroups = WORKFLOW_NODE_GROUPS;
   const groupedTemplates = libraryGroups
     .map((group) => ({ group, items: templates.filter((item) => workflowNodeGroupKey(item) === group.id) }))
     .filter(({ items }) => items.length || !filter);
@@ -4887,16 +5088,12 @@ function workflowToolbox() {
         .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
       empty: "暂无可用插件",
     },
-  ].filter((section) => workflowLibraryMode === "advanced" || filter || !section.advancedOnly);
+  ];
   return `
     <div class="workflow-toolbox">
       <div class="workflow-toolbox-intro">
         <strong>节点素材</strong>
-        <span>${workflowLibraryMode === "advanced" ? "显示完整节点规范、插件、API 和工具模块。" : "先显示常用流程，新手按入口到出口拼起来即可。"}</span>
-      </div>
-      <div class="segmented workflow-library-mode">
-        <button class="${workflowLibraryMode === "basic" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="basic" type="button">新手</button>
-        <button class="${workflowLibraryMode === "advanced" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="advanced" type="button">高级</button>
+        <span>所有可用节点、工具、API 和插件模块；拖到画布即可拼接流程。</span>
       </div>
       <input class="filter-input workflow-material-filter" data-action="filter-workflow-materials" value="${esc(workflowMaterialFilter)}" placeholder="搜索节点、工具、API 或插件" />
       <div class="workflow-template-groups">
@@ -5930,34 +6127,7 @@ function workflowInspector() {
   const isScopeNode = item.action === "scope_filter";
   const mode = workflowEditorMode === "advanced" ? "advanced" : "simple";
   const body = mode === "advanced" ? workflowInspectorAdvanced(item) : workflowSimpleEditor(item);
-  const entryRule = isEntryNode ? `
-    <div class="workflow-node-rule-box">
-      <div class="panel-head"><div><p class="card-kicker">入口规则</p><h3>进入任务模式</h3></div></div>
-      <label>开启暗号/命令<textarea id="workflow-entry-trigger-phrases" rows="3" placeholder="每行一个，例如：进入任务模式">${esc(listToLines(currentAgent.entry_policy.trigger_phrases))}</textarea></label>
-      <label>任务关键词<textarea id="workflow-entry-trigger-keywords" rows="3" placeholder="每行一个，例如：排查、部署、持续推进">${esc(listToLines(currentAgent.entry_policy.trigger_keywords))}</textarea></label>
-      <label>开启确认话术<textarea id="workflow-entry-confirmation-text" rows="3">${esc(currentAgent.entry_policy.confirmation_text || "")}</textarea></label>
-    </div>` : "";
-  const exitRule = isExitNode ? `
-    <div class="workflow-node-rule-box">
-      <div class="panel-head"><div><p class="card-kicker">出口规则</p><h3>结束回流</h3></div></div>
-      <label>结束暗号/命令<textarea id="workflow-exit-phrases" rows="3" placeholder="每行一个，例如：完成任务">${esc(listToLines(currentAgent.entry_policy.exit_phrases))}</textarea></label>
-      <label>默认验收条件<textarea id="workflow-default-completion-conditions" rows="3">${esc(listToLines(currentAgent.entry_policy.default_completion_conditions))}</textarea></label>
-    </div>` : "";
-  const sc = currentAgent.workflow_scope || {};
-  const scopeRule = isScopeNode ? `
-    <div class="workflow-node-rule-box">
-      <div class="panel-head"><div><p class="card-kicker">生效范围</p><h3>这个方案在哪里生效</h3></div></div>
-      <label class="check-line"><input type="checkbox" id="scope-global" ${currentAgent.application_scope === "global" ? "checked" : ""} /> 全局应用（所有会话都参与，不只入口命中时）</label>
-      <label>生效会话类型<div class="choice-grid compact-choice">${checkboxGroupHtml("scope-chat-type", WORKFLOW_CHAT_TYPES, sc.chat_types || ["private"], workflowChatTypeLabel)}</div></label>
-      <label class="check-line"><input type="checkbox" id="scope-admin-only" ${sc.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
-      <div class="form-grid compact">
-        <label>群聊白名单（填群号，每行一个）<textarea id="scope-group-allow" rows="2" placeholder="只允许这些群；留空＝不限">${esc(listToLines(sc.group_allowlist || []))}</textarea></label>
-        <label>群聊黑名单<textarea id="scope-group-deny" rows="2" placeholder="这些群不触发">${esc(listToLines(sc.group_denylist || []))}</textarea></label>
-        <label>用户白名单（填 QQ/用户号）<textarea id="scope-user-allow" rows="2" placeholder="只允许这些人；留空＝不限">${esc(listToLines(sc.user_allowlist || []))}</textarea></label>
-        <label>用户黑名单<textarea id="scope-user-deny" rows="2" placeholder="这些人不触发">${esc(listToLines(sc.user_denylist || []))}</textarea></label>
-      </div>
-      <small class="field-hint">命中范围走『成功』出口，不命中走『失败』出口。</small>
-    </div>` : "";
+  // 入口/出口/生效范围规则已上移到「全局规则」抽屉，不再每个节点重复显示。
   const idField = mode === "simple" ? `<input type="hidden" id="workflow-node-id" value="${esc(item.id)}" />` : "";
   return `
     <div class="detail-box workflow-editor">
@@ -5975,9 +6145,6 @@ function workflowInspector() {
       </div>
       ${idField}
       ${body}
-      ${entryRule}
-      ${exitRule}
-      ${scopeRule}
       <div class="button-row">
         <button class="button" data-action="apply-workflow-node" type="button">应用节点</button>
         <button class="button danger" data-action="delete-workflow-node" type="button">删除节点</button>
@@ -6682,7 +6849,6 @@ function renderIntegrations() {
     ["tools", "注册工具", "按来源插件折叠工具白名单", (state.tools || []).length],
     ["apis", "自定义接口", "把外部服务注册为受管工具", (state.custom_apis || []).length],
     ["credentials", "凭证库", "统一加密保存接口密钥", (state.credentials || []).length],
-    ["skills", "技能规则", "编辑任务模式补充约束", (state.skills || []).length],
     ["blueprints", "外部方案蓝图", "接入外部任务方案", (state.integrations || state.modules || []).length],
   ];
   $("view").innerHTML = `
@@ -7044,7 +7210,7 @@ function blueprintsPanel() {
   `).join("");
   return `
     <div class="section-note">
-      蓝图是可开关的运行规则；真正调用能力在注册工具和自定义 API 里管理。
+      外部方案蓝图＝别人写好的一整套任务规则模板，可一键「加入当前方案」后再按需微调；真正调用能力仍在注册工具和自定义 API 里管理。<strong>选中某个蓝图后，右侧标题下会明确显示它是否已加入当前方案。</strong>
     </div>
     <section class="grid two">
       <div>
@@ -7062,7 +7228,12 @@ function blueprintsPanel() {
         ${selected ? `
           <div class="panel-head">
             <div><p class="card-kicker">${esc(blueprintGroup(selected))}</p><h2>${esc(selected.name)}</h2></div>
-            <button class="button secondary" data-action="toggle-integration" data-id="${esc(selected.module_id)}" type="button">${enabled.has(selected.module_id) ? "从 Agent 移除" : "加入 Agent"}</button>
+            <button class="button ${enabled.has(selected.module_id) ? "danger" : ""}" data-action="toggle-integration" data-id="${esc(selected.module_id)}" type="button">${enabled.has(selected.module_id) ? "从当前方案移除" : "加入当前方案"}</button>
+          </div>
+          <div class="blueprint-attach-banner ${enabled.has(selected.module_id) ? "on" : "off"}">
+            ${enabled.has(selected.module_id)
+              ? `✓ 已加入当前方案「${esc(agentDisplayName(currentAgent))}」，保存配置后随该方案一起生效。`
+              : `○ 尚未加入当前方案「${esc(agentDisplayName(currentAgent))}」。点右上角「加入当前方案」即可启用。`}
           </div>
           <div class="module-meta">
             ${badge(selected.module_id)}
@@ -7258,7 +7429,7 @@ function autoLayoutWorkflow() {
       const row = rows.get(stage) || 0;
       node.stage = stage;
       node.x = 70 + stageOrder.indexOf(stage) * WORKFLOW_LANE_WIDTH;
-      node.y = 110 + row * 215;
+      node.y = 110 + row * 280;
       rows.set(stage, row + 1);
     }
   }
@@ -7329,6 +7500,9 @@ function removeWorkflowContextMenuDom() {
 function removeWorkflowDragGhost() {
   workflowDragGhostEl?.remove();
   workflowDragGhostEl = null;
+  // 兜底：清掉任何遗留的拖拽残影和落点高亮，避免切页后残框永久留在页面上。
+  document.querySelectorAll(".workflow-drag-ghost").forEach((el) => el.remove());
+  document.querySelectorAll(".workflow-canvas-wrap.is-dropping").forEach((el) => el.classList.remove("is-dropping"));
 }
 
 function createWorkflowDragGhost(chip) {
@@ -7500,30 +7674,10 @@ document.addEventListener("pointerdown", (event) => {
   wrapEl.setPointerCapture?.(event.pointerId);
 });
 
-document.addEventListener("focusin", (event) => {
-  const field = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
-  if (!field || route !== "workflow") return;
-  const scroller = field.closest(".drawer-scroll");
-  if (!scroller) return;
-  const before = scroller.scrollTop;
-  const expected = Math.max(before, workflowInspectorFocusScrollTop || 0);
-  if (field.closest(".workflow-inspector-drawer")) workflowInspectorScrollTop = before;
-  if (field.closest(".workflow-tool-drawer")) workflowToolboxScrollTop = before;
-  requestAnimationFrame(() => {
-    const current = scroller.scrollTop;
-    if (field.closest(".workflow-inspector-drawer") && document.activeElement === field && expected > 80 && current < expected - 80) {
-      scroller.scrollTop = expected;
-    }
-  });
-});
-
-document.addEventListener("input", (event) => {
-  const field = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
-  if (!field || route !== "workflow") return;
-  const scrollTop = field.closest(".drawer-scroll")?.scrollTop || 0;
-  if (field.closest(".workflow-inspector-drawer")) workflowInspectorScrollTop = scrollTop || workflowInspectorScrollTop;
-  if (field.closest(".workflow-tool-drawer")) workflowToolboxScrollTop = scrollTop || workflowToolboxScrollTop;
-}, true);
+// [已移除] focusin / input(capture) 里的 rAF 滚动兜底。
+// 原逻辑会在原生 <select> 展开后用 requestAnimationFrame 改写抽屉 scrollTop，
+// 在 Chromium 下会把刚展开的下拉框立刻关掉（“闪一下就收起”）。
+// 滚动与焦点的保持现在统一由 render() 中的 activeFieldSnapshotGlobal/restoreFieldFocusGlobal 完成。
 
 document.addEventListener("pointermove", (event) => {
   if (workflowMaterialChipDrag && workflowMaterialChipDrag.pointerId === event.pointerId) {
@@ -7805,6 +7959,12 @@ document.addEventListener("dragend", () => {
   removeWorkflowDragGhost();
 });
 
+// 指针拖拽被系统中断（切窗口、触摸取消等）时，也要清理素材拖拽状态与残影。
+document.addEventListener("pointercancel", (event) => {
+  if (workflowMaterialChipDrag && workflowMaterialChipDrag.pointerId === event.pointerId) workflowMaterialChipDrag = null;
+  removeWorkflowDragGhost();
+});
+
 document.addEventListener("click", async (event) => {
   if (event.target.closest(".node-port")) {
     event.preventDefault();
@@ -7822,6 +7982,7 @@ document.addEventListener("click", async (event) => {
   workflowSuppressClick = false;
   if (target.dataset.route) {
     if (target.dataset.route === "workflow") workflowNavCollapsed = true;
+    memoryDetailOpen = false;
     route = target.dataset.route;
     render();
     return;
@@ -7837,7 +7998,7 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "new-agent") {
-      const inputName = prompt("给新方案起个名字", "新方案");
+      const inputName = await promptModal("新建方案", "方案名称", "新方案", { placeholder: "给这套流程起个名字" });
       if (inputName === null) return;
       const draft = defaultAgentDraft();
       delete draft.agent_id;
@@ -7865,7 +8026,7 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "rename-agent") {
       if (!currentAgent.agent_id) throw new Error("请先选择一个已保存的方案。");
-      const newName = prompt("重命名方案", agentDisplayName(currentAgent));
+      const newName = await promptModal("重命名方案", "新名称", agentDisplayName(currentAgent));
       if (newName === null) return;
       const trimmed = (newName || "").trim();
       if (!trimmed) throw new Error("方案名称不能为空。");
@@ -7881,7 +8042,7 @@ document.addEventListener("click", async (event) => {
       if (!currentAgent.agent_id) throw new Error("当前配置还没有保存，直接新建或切换即可。 ");
       if ((state.agents || []).length <= 1) throw new Error("至少需要保留一个任务模式配置。");
       const name = agentDisplayName(currentAgent);
-      if (!confirm(`删除任务模式配置“${name}”？此操作不会删除归档任务和任务记忆。`)) return;
+      if (!(await confirmModal("删除方案", `确定删除方案“${name}”？此操作不会删除归档任务和任务记忆。`, { danger: true, confirmText: "删除" }))) return;
       const result = await api("/api/agents", { method: "DELETE", body: { agent_id: currentAgent.agent_id } });
       if (result.ok === false) throw new Error(result.error || "删除配置失败。");
       selectedAgentId = result.default_agent_id || "";
@@ -8000,26 +8161,34 @@ document.addEventListener("click", async (event) => {
           setFeedback("画布中没有节点。", "warn");
           return;
         }
-        const xs = nodes.flatMap(n => [n.x, n.x + WORKFLOW_NODE_WIDTH]);
-        const ys = nodes.flatMap(n => [n.y, n.y + WORKFLOW_NODE_HEIGHT]);
-        const minX = Math.min(...xs);
-        const maxX = Math.max(...xs);
-        const minY = Math.min(...ys);
-        const maxY = Math.max(...ys);
-        const contentWidth = maxX - minX;
-        const contentHeight = maxY - minY;
+        const edges = currentAgent.workflow_edges || [];
+        const connected = new Set();
+        edges.forEach((e) => { connected.add(e.from); connected.add(e.to); });
+        const orphans = nodes.filter((n) => !connected.has(n.id));
+        const mainNodes = nodes.filter((n) => connected.has(n.id));
+        // 聚焦目标序列：主体内容 → 依次每个离群节点 → 循环回主体
+        const targets = [{ kind: "main", nodes: mainNodes.length ? mainNodes : nodes, label: "主体内容" }];
+        orphans.forEach((n) => targets.push({ kind: "orphan", nodes: [n], label: `离群节点「${n.title || n.id}」` }));
+        workflowFocusCursor = ((Number.isInteger(workflowFocusCursor) ? workflowFocusCursor : -1) + 1) % targets.length;
+        const target = targets[workflowFocusCursor];
+        const xs = target.nodes.flatMap((n) => [Number(n.x || 0), Number(n.x || 0) + WORKFLOW_NODE_WIDTH]);
+        const ys = target.nodes.flatMap((n) => [Number(n.y || 0), Number(n.y || 0) + WORKFLOW_NODE_HEIGHT]);
+        const minX = Math.min(...xs), maxX = Math.max(...xs);
+        const minY = Math.min(...ys), maxY = Math.max(...ys);
+        const contentWidth = Math.max(1, maxX - minX);
+        const contentHeight = Math.max(1, maxY - minY);
         const contentCenterX = (minX + maxX) / 2;
         const contentCenterY = (minY + maxY) / 2;
         const wrap = document.querySelector(".workflow-canvas-wrap");
         const viewportWidth = wrap?.clientWidth || 1200;
         const viewportHeight = wrap?.clientHeight || 760;
-        const paddingRatio = 0.9;
+        const paddingRatio = target.kind === "orphan" ? 0.7 : 0.9;
         const fitZoom = Math.min(
           (viewportWidth * paddingRatio) / contentWidth,
           (viewportHeight * paddingRatio) / contentHeight,
           1.0
         );
-        workflowZoom = clamp(fitZoom, 0.35, 1.0);
+        workflowZoom = clamp(fitZoom, target.kind === "orphan" ? 0.5 : 0.35, 1.0);
         const size = workflowCanvasSize();
         const offsetX = workflowWorldOffsetX(size);
         const offsetY = workflowWorldOffsetY(size);
@@ -8027,13 +8196,12 @@ document.addEventListener("click", async (event) => {
         workflowPanY = viewportHeight / 2 - (contentCenterY + offsetY) * workflowZoom;
         const worldRenderWidth = WORKFLOW_WORLD_WIDTH * workflowZoom;
         const worldRenderHeight = WORKFLOW_WORLD_HEIGHT * workflowZoom;
-        const maxPanX = viewportWidth / 2;
-        const minPanX = viewportWidth / 2 - worldRenderWidth;
-        const maxPanY = viewportHeight / 2;
-        const minPanY = viewportHeight / 2 - worldRenderHeight;
-        workflowPanX = clamp(workflowPanX, minPanX, maxPanX);
-        workflowPanY = clamp(workflowPanY, minPanY, maxPanY);
-        setFeedback("已聚焦到内容中心。");
+        workflowPanX = clamp(workflowPanX, viewportWidth / 2 - worldRenderWidth, viewportWidth / 2);
+        workflowPanY = clamp(workflowPanY, viewportHeight / 2 - worldRenderHeight, viewportHeight / 2);
+        if (target.kind === "orphan") selectedWorkflowNodeId = target.nodes[0].id;
+        setFeedback(targets.length > 1
+          ? `已聚焦「${target.label}」（再按一次看下一处，共 ${targets.length} 处）`
+          : "已聚焦到内容中心。");
       }
       renderWorkflowStable();
     }
@@ -8185,6 +8353,8 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "apply-workflow-node") {
       applyWorkflowNodeFromInspector();
+      workflowInspectorOpen = false;
+      renderWorkflowStable();
     }
     if (action === "delete-workflow-node") {
       readAgentForm();
@@ -8360,6 +8530,25 @@ document.addEventListener("click", async (event) => {
       selectedMemoryId = target.dataset.id || "";
       render();
     }
+    if (action === "open-memory-detail") {
+      selectedMemoryId = target.dataset.id || selectedMemoryId;
+      memoryDetailOpen = true;
+      render();
+    }
+    if (action === "close-memory-detail") {
+      memoryDetailOpen = false;
+      render();
+    }
+    if (action === "copy-memory") {
+      const m = (state.memories || []).find((x) => x.memory_id === target.dataset.id);
+      if (!m) throw new Error("未找到这条任务记忆。");
+      try {
+        await navigator.clipboard.writeText(m.text || "");
+        setFeedback("记忆内容已复制到剪贴板。");
+      } catch (e) {
+        setFeedback("复制失败，请手动选择文本复制。", "warn");
+      }
+    }
     if (action === "use-memory-context") {
       const item = (state.memories || []).find((row) => row.memory_id === target.dataset.id);
       if (!item) throw new Error("未找到这条任务记忆。");
@@ -8401,7 +8590,7 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "new-memory-folder") {
-      const folderName = prompt("给新记忆夹起个名字", "新记忆夹");
+      const folderName = await promptModal("新建记忆夹", "记忆夹名称", "新记忆夹", { placeholder: "如：项目A 记忆 / 客服记忆" });
       if (folderName === null) return;
       const folder = {
         folder_id: "",
@@ -8415,6 +8604,20 @@ document.addEventListener("click", async (event) => {
       const result = await api("/api/memory", { method: "POST", body: { action: "save_folder", folder } });
       selectedMemoryFolderId = result.folder?.folder_id || selectedMemoryFolderId || "default";
       setFeedback("已创建新记忆夹。");
+      await load();
+    }
+    if (action === "rename-memory-folder") {
+      const folderId = target.dataset.id || selectedMemoryFolderId;
+      if (!folderId || folderId === "default") throw new Error("默认记忆夹不能重命名。");
+      const folder = memoryFolderRows().find((item) => item.folder_id === folderId);
+      if (!folder) throw new Error("找不到这个记忆夹。");
+      const newName = await promptModal("重命名记忆夹", "新名称", folder.name || folderId);
+      if (newName === null) return;
+      const trimmed = (newName || "").trim();
+      if (!trimmed) throw new Error("名称不能为空。");
+      const result = await api("/api/memory", { method: "POST", body: { action: "save_folder", folder: { ...folder, folder_id: folderId, name: trimmed } } });
+      selectedMemoryFolderId = result.folder?.folder_id || folderId;
+      setFeedback("记忆夹已重命名。");
       await load();
     }
     if (action === "save-memory-folder") {
@@ -8435,6 +8638,8 @@ document.addEventListener("click", async (event) => {
     if (action === "delete-memory-folder") {
       const folderId = target.dataset.id || selectedMemoryFolderId;
       if (!folderId || folderId === "default") throw new Error("默认记忆夹不能删除。");
+      const __fname = memoryFolderLabel(folderId);
+      if (!(await confirmModal("删除记忆夹", `确定删除记忆夹“${__fname}”？夹内记忆会回到默认夹，不会被永久删除。`, { danger: true, confirmText: "删除" }))) return;
       await api("/api/memory", { method: "POST", body: { action: "delete_folder", folder_id: folderId } });
       selectedMemoryFolderId = "default";
       setFeedback("记忆夹已删除，相关记忆已回到默认夹。");
