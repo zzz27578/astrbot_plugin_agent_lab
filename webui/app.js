@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260612-fix3";
+const AGENT_LAB_WEBUI_BUILD = "20260612-fix5";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -42,12 +42,12 @@ const WORKFLOW_STAGES = [
 const WORKFLOW_NODE_WIDTH = 340;
 const WORKFLOW_NODE_HEIGHT = 208;
 const WORKFLOW_LANE_WIDTH = 640;
-const WORKFLOW_CANVAS_MIN_WIDTH = 12000;
-const WORKFLOW_CANVAS_MIN_HEIGHT = 5200;
-const WORKFLOW_CANVAS_MIN_X = -16000;
-const WORKFLOW_CANVAS_MAX_X = 48000;
-const WORKFLOW_CANVAS_MIN_Y = -12000;
-const WORKFLOW_CANVAS_MAX_Y = 32000;
+const WORKFLOW_CANVAS_MIN_WIDTH = 24000;
+const WORKFLOW_CANVAS_MIN_HEIGHT = 10400;
+const WORKFLOW_CANVAS_MIN_X = -32000;
+const WORKFLOW_CANVAS_MAX_X = 96000;
+const WORKFLOW_CANVAS_MIN_Y = -24000;
+const WORKFLOW_CANVAS_MAX_Y = 64000;
 const WORKFLOW_WORLD_WIDTH = WORKFLOW_CANVAS_MAX_X - WORKFLOW_CANVAS_MIN_X;
 const WORKFLOW_WORLD_HEIGHT = WORKFLOW_CANVAS_MAX_Y - WORKFLOW_CANVAS_MIN_Y;
 const WORKFLOW_MINIMAP_MIN_WIDTH = 104;
@@ -150,7 +150,7 @@ const WORKFLOW_REF_TYPES = ["", "tool", "api", "plugin", "skill", "module", "wor
 const WORKFLOW_WORKER_TYPES = ["", "GenericWorker", "ResearchWorker", "CodeReaderWorker", "PatchWorker", "TestWorker", "ApiWorker", "ToolWorker"];
 const WORKFLOW_TRIGGER_TYPES = ["command", "natural", "silent_global", "message_monitor", "keyword", "regex", "poke", "notice", "schedule", "plugin_event", "webhook", "manual_webui"];
 const WORKFLOW_CHAT_TYPES = ["private", "group"];
-const WORKFLOW_EDGE_TYPES = ["success", "failed", "uncertain", "retry", "approved", "rejected", "always"];
+const WORKFLOW_EDGE_TYPES = ["success", "failed", "uncertain", "retry", "approved", "rejected"];
 
 const WORKFLOW_ACTION_RUNTIME_TYPES = {
   listen_message: "trigger",
@@ -1234,6 +1234,7 @@ let workflowLibraryMode = "basic";
 let workflowEditorMode = "simple"; // simple | advanced ：节点编辑器默认填空题模式
 let workflowGlobalOpen = false; // 全局规则抽屉是否打开
 let workflowToolboxOpenGroups = new Set();
+let workflowToolboxSeeded = false; // 首次渲染把默认展开的分类填进上面的集合
 let workflowMinimapWidth = 128;
 let workflowMinimapHeight = 128;
 let workflowMinimapResize = null;
@@ -1725,6 +1726,7 @@ function workflowEdgeColor(type) {
 function workflowNormalizeEdgeType(type) {
   const t = String(type || "success").trim();
   if (t === "error" || t === "timeout") return "failed";
+  if (t === "always") return "success";
   return t || "success";
 }
 
@@ -1733,8 +1735,8 @@ const WORKFLOW_RUNTIME_PORTS = {
   trigger: { inputs: [], outputs: ["success"] },
   entry: { inputs: ["in"], outputs: ["success", "failed"] },
   detector: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
-  decision: { inputs: ["in"], outputs: ["success", "failed", "always"] },
-  parallel: { inputs: ["in"], outputs: ["success", "failed", "always"] },
+  decision: { inputs: ["in"], outputs: ["success", "failed"] },
+  parallel: { inputs: ["in"], outputs: ["success", "failed"] },
   guard: { inputs: ["in"], outputs: ["approved", "rejected"] },
   validation: { inputs: ["in"], outputs: ["success", "failed", "retry"] },
   notification: { inputs: ["in"], outputs: ["success", "failed"] },
@@ -1759,9 +1761,9 @@ const WORKFLOW_ACTION_PORTS = {
   retry: { inputs: ["in", "retry"], outputs: ["retry", "success", "failed"] },
   catch_error: { inputs: ["in"], outputs: ["success", "failed"] },
   request_approval: { inputs: ["in"], outputs: ["approved", "rejected"] },
-  route_condition: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "always"] },
-  conditional_router: { inputs: ["in"], outputs: ["success", "failed", "uncertain", "always"] },
-  parallel_branch: { inputs: ["in"], outputs: ["success", "failed", "always"] },
+  route_condition: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
+  conditional_router: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
+  parallel_branch: { inputs: ["in"], outputs: ["success", "failed"] },
   handoff: { inputs: ["in"], outputs: ["success", "failed"] },
   wait_user: { inputs: ["in"], outputs: ["success", "failed"] },
   validate_output: { inputs: ["in"], outputs: ["success", "failed", "retry"] },
@@ -2336,8 +2338,8 @@ function modernDefaultWorkflowEdges() {
     { from: "memory_recall", to: "plan", edge_type: "success" },
     { from: "plan", to: "risk_router", edge_type: "success" },
     { from: "plan", to: "parallel_branch", edge_type: "uncertain" },
-    { from: "parallel_branch", to: "parallel_research", edge_type: "always" },
-    { from: "parallel_branch", to: "parallel_verify", edge_type: "always" },
+    { from: "parallel_branch", to: "parallel_research", edge_type: "success" },
+    { from: "parallel_branch", to: "parallel_verify", edge_type: "success" },
     { from: "parallel_research", to: "transform", edge_type: "success" },
     { from: "parallel_verify", to: "transform", edge_type: "success" },
     { from: "risk_router", to: "execute", edge_type: "success" },
@@ -2631,8 +2633,8 @@ function defaultWorkflowEdges() {
     { from: "plan", to: "risk_router", edge_type: "success" },
     // 并行分支：把互不依赖的检索/复核拆出去并行，再统一汇总
     { from: "plan", to: "parallel_branch", edge_type: "uncertain" },
-    { from: "parallel_branch", to: "parallel_research", edge_type: "always" },
-    { from: "parallel_branch", to: "parallel_verify", edge_type: "always" },
+    { from: "parallel_branch", to: "parallel_research", edge_type: "success" },
+    { from: "parallel_branch", to: "parallel_verify", edge_type: "success" },
     { from: "parallel_research", to: "transform", edge_type: "success" },
     { from: "parallel_verify", to: "transform", edge_type: "success" },
     // 风险分流：低风险直接执行；需要外部系统走 API；高风险先审批
@@ -4128,6 +4130,7 @@ function workflowRightDock(report) {
       <div class="workflow-dock-group">
         <button class="workflow-dock-button text ${workflowToolboxOpen ? "active" : ""}" data-action="toggle-workflow-toolbox" title="打开 / 收起节点素材库" aria-label="素材库" type="button">素材</button>
         <button class="workflow-dock-button text ${workflowGlobalOpen ? "active" : ""}" data-action="open-workflow-global" title="全局规则：整套工作流的安全准则 / 参考 / 技能" aria-label="全局规则" type="button">全局</button>
+        <button class="workflow-dock-button text" data-action="auto-layout-workflow" title="按连线层级自动整理画布" aria-label="整理" type="button">整理</button>
       </div>
       <div class="workflow-dock-group">
         <button class="workflow-dock-button text" data-action="workflow-zoom-in" title="放大" aria-label="放大" type="button">+</button>
@@ -4260,6 +4263,12 @@ function applyWorkflowNodeFromInspector() {
     currentAgent.workflow_scope.user_denylist = linesToList($("scope-user-deny")?.value || "");
   }
   if (document.getElementById("workflow-default-completion-conditions")) currentAgent.entry_policy.default_completion_conditions = linesToList($("workflow-default-completion-conditions").value);
+  if (document.getElementById("wf-approval-mode")) {
+    currentAgent.approval_policy ||= {};
+    currentAgent.approval_policy.mode = $("wf-approval-mode").value;
+    currentAgent.approval_policy.require_approval = linesToList($("wf-approval-require").value);
+    currentAgent.approval_policy.preapproved_scopes = linesToList($("wf-approval-preapproved").value);
+  }
 
   currentAgent.workflow_edges = currentAgent.workflow_edges.map((edge) => ({
     ...edge,
@@ -4304,7 +4313,6 @@ function renderWorkflowPage() {
         <div class="workflow-top-tools">
           <button class="button tiny secondary" data-action="check-workflow" type="button">静态检查</button>
           <button class="button tiny secondary" data-action="dry-run-workflow" type="button">预跑诊断</button>
-          <button class="button tiny secondary" data-action="auto-layout-workflow" type="button">自动整理</button>
           <button class="button tiny" data-action="save-agent" type="button">保存</button>
         </div>
       </header>
@@ -4345,28 +4353,28 @@ function renderWorkflowPage() {
 // 全局规则编辑器：作用于整条工作流，而不是单个节点。映射 AgentSpec 的 system_prompt / approval / skills / isolation。
 function workflowGlobalEditor() {
   const a = ensureAgent(currentAgent || {});
-  a.approval_policy ||= {};
-  a.isolation_policy ||= {};
   a.heartbeat_policy ||= {};
   a.default_task_budget ||= {};
   a.enabled_skills ||= [];
-  a.entry_policy ||= {};
-  a.workflow_scope ||= {};
+  a.plugin_blacklist ||= [];
   const skills = state.skills || [];
   const enabledSkills = new Set(a.enabled_skills || []);
+  const blacklisted = new Set(a.plugin_blacklist || []);
   const skillRows = skills.length
     ? skills.map((sk) => {
         const name = String(sk.name || sk.id || "").trim();
         return `<label class="check-line"><input type="checkbox" data-global-skill="${esc(name)}" ${enabledSkills.has(name) ? "checked" : ""} /> <span>${esc(name)}</span><small>${esc(sk.path || sk.description || "")}</small></label>`;
       }).join("")
     : `<div class="empty">还没有可用的技能。请确认 AstrBot 已加载技能后刷新。</div>`;
-  const requireList = Array.isArray(a.approval_policy.require_approval) ? a.approval_policy.require_approval.join("\n") : "";
-  const preList = Array.isArray(a.approval_policy.preapproved_scopes) ? a.approval_policy.preapproved_scopes.join("\n") : "";
+  const pluginList = (state.plugins || []).filter((p) => p.name !== "astrbot_plugin_agent_lab");
+  const pluginRows = pluginList.length
+    ? pluginList.map((p) => `<label class="check-line"><input type="checkbox" data-global-plugin-blacklist="${esc(p.name)}" ${blacklisted.has(p.name) ? "checked" : ""} /> <span>${esc(p.display_name || p.name)}</span><small>${esc(p.name)}</small></label>`).join("")
+    : `<div class="empty">没有检测到第三方插件。</div>`;
   const budget = a.default_task_budget || {};
   return `
     <div class="detail-box workflow-editor">
       <section class="workflow-editor-section simple-editor">
-        <p class="simple-editor-lead">这里设置的规则对整条工作流的每一步都生效。</p>
+        <p class="simple-editor-lead">这里只放对整条工作流都生效的规则。入口 / 出口 / 审批 / 生效范围已分别改到对应的节点里设置。</p>
         <label class="simple-field">整套安全准则 / 行为基调（系统提示词）
           <textarea id="global-system-prompt" rows="5" placeholder="例如：所有写操作前先说明影响；不碰生产数据库；引用资料要给出处。">${esc(a.system_prompt || "")}</textarea>
           <small class="field-hint">相当于给整个 bot 定的总规矩，每个节点执行时都会带上。</small>
@@ -4376,29 +4384,13 @@ function workflowGlobalEditor() {
         </label>
       </section>
       <section class="workflow-editor-section simple-editor">
-        <h4>审批准则（高风险动作）</h4>
-        <label class="simple-field">审批力度
-          <select id="global-approval-mode">${labeledOptions(["observe","work","high_risk_review","delegated"], a.approval_policy.mode || "work", approvalModeLabel)}</select>
-        </label>
-        <label class="simple-field">必须先审批的动作（每行一个）
-          <textarea id="global-require-approval" rows="4" placeholder="file_delete&#10;deployment&#10;secret_read">${esc(requireList)}</textarea>
-        </label>
-        <label class="simple-field">已预授权、无需每次确认的范围（每行一个）
-          <textarea id="global-preapproved" rows="3" placeholder="read_only&#10;list_files">${esc(preList)}</textarea>
-        </label>
-      </section>
-      <section class="workflow-editor-section simple-editor">
         <h4>整条流程启用的技能（参考规则）</h4>
         ${skillRows}
       </section>
       <section class="workflow-editor-section simple-editor">
-        <h4>隔离与工具范围</h4>
-        <label class="simple-field">插件隔离
-          <select id="global-isolation-mode">${labeledOptions(["off","session","strict"], a.isolation_policy.mode || "strict", isolationModeLabel)}</select>
-        </label>
-        <label class="simple-field">工具范围
-          <select id="global-tool-mode">${labeledOptions(["full","whitelist","no_external"], a.isolation_policy.tool_mode || "whitelist", toolModeLabel)}</select>
-        </label>
+        <h4>插件黑名单</h4>
+        <p class="simple-editor-lead">勾选的插件会被本方案<strong>全程禁用</strong>，绝不会在任务流里被调用；没勾的插件，也只有被画布节点引用时才会启用。</p>
+        <div class="capability-list">${pluginRows}</div>
       </section>
       <section class="workflow-editor-section simple-editor">
         <h4>预算与运行控制</h4>
@@ -4413,39 +4405,6 @@ function workflowGlobalEditor() {
           <label>重复失败阈值<input id="global-max-repeated-failures" type="number" min="1" max="100" value="${esc(a.heartbeat_policy.max_repeated_failures ?? 3)}" /></label>
         </div>
       </section>
-      <section class="workflow-editor-section simple-editor">
-        <h4>入口规则（什么时候进入任务模式）</h4>
-        <label class="simple-field">开启暗号 / 命令（每行一个）
-          <textarea id="global-entry-trigger-phrases" rows="2" placeholder="进入任务模式">${esc(listToLines(a.entry_policy.trigger_phrases))}</textarea>
-        </label>
-        <label class="simple-field">任务关键词（每行一个）
-          <textarea id="global-entry-trigger-keywords" rows="2" placeholder="排查 / 部署 / 持续推进">${esc(listToLines(a.entry_policy.trigger_keywords))}</textarea>
-        </label>
-        <label class="simple-field">开启确认话术
-          <textarea id="global-entry-confirmation-text" rows="2">${esc(a.entry_policy.confirmation_text || "")}</textarea>
-        </label>
-      </section>
-      <section class="workflow-editor-section simple-editor">
-        <h4>出口规则（怎么结束、怎么验收）</h4>
-        <label class="simple-field">结束暗号 / 命令（每行一个）
-          <textarea id="global-exit-phrases" rows="2" placeholder="完成任务">${esc(listToLines(a.entry_policy.exit_phrases))}</textarea>
-        </label>
-        <label class="simple-field">默认验收条件（每行一个）
-          <textarea id="global-default-completion" rows="2" placeholder="用户验收通过">${esc(listToLines(a.entry_policy.default_completion_conditions))}</textarea>
-        </label>
-      </section>
-      <section class="workflow-editor-section simple-editor">
-        <h4>生效范围（这个方案在哪里生效）</h4>
-        <label class="check-line"><input type="checkbox" id="global-scope-global" ${a.application_scope === "global" ? "checked" : ""} /> 全局应用（所有会话都参与，不只入口命中时）</label>
-        <label>生效会话类型<div class="choice-grid compact-choice">${checkboxGroupHtml("global-scope-chat-type", WORKFLOW_CHAT_TYPES, (a.workflow_scope.chat_types) || ["private"], workflowChatTypeLabel)}</div></label>
-        <label class="check-line"><input type="checkbox" id="global-scope-admin-only" ${a.workflow_scope.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
-        <div class="form-grid compact">
-          <label>群聊白名单（每行一个群号）<textarea id="global-scope-group-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(a.workflow_scope.group_allowlist || []))}</textarea></label>
-          <label>群聊黑名单<textarea id="global-scope-group-deny" rows="2">${esc(listToLines(a.workflow_scope.group_denylist || []))}</textarea></label>
-          <label>用户白名单（每行一个）<textarea id="global-scope-user-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(a.workflow_scope.user_allowlist || []))}</textarea></label>
-          <label>用户黑名单<textarea id="global-scope-user-deny" rows="2">${esc(listToLines(a.workflow_scope.user_denylist || []))}</textarea></label>
-        </div>
-      </section>
       <div class="button-row">
         <button class="button" data-action="apply-workflow-global" type="button">应用全局规则</button>
         <button class="button secondary" data-action="close-workflow-global" type="button">关闭</button>
@@ -4457,22 +4416,10 @@ function workflowGlobalEditor() {
 // 把全局规则抽屉里的字段写回 AgentSpec（整条工作流级别）。
 function applyWorkflowGlobalRules() {
   const a = ensureAgent(currentAgent || {});
-  a.approval_policy ||= {};
-  a.isolation_policy ||= {};
   const sp = document.getElementById("global-system-prompt");
   const tp = document.getElementById("global-task-prompt");
   if (sp) a.system_prompt = sp.value;
   if (tp) a.task_prompt = tp.value;
-  const am = document.getElementById("global-approval-mode");
-  if (am) a.approval_policy.mode = am.value;
-  const ra = document.getElementById("global-require-approval");
-  if (ra) a.approval_policy.require_approval = linesToList(ra.value);
-  const pa = document.getElementById("global-preapproved");
-  if (pa) a.approval_policy.preapproved_scopes = linesToList(pa.value);
-  const im = document.getElementById("global-isolation-mode");
-  if (im) a.isolation_policy.mode = im.value;
-  const tm = document.getElementById("global-tool-mode");
-  if (tm) a.isolation_policy.tool_mode = tm.value;
   a.default_task_budget ||= {};
   const budgetMap = [
     ["global-budget-tokens", "max_total_tokens"],
@@ -4489,30 +4436,18 @@ function applyWorkflowGlobalRules() {
     const value = Number(el.value || 0);
     if (Number.isFinite(value)) a.default_task_budget[key] = Math.max(0, Math.round(value));
   });
+  a.heartbeat_policy ||= {};
   const repeated = document.getElementById("global-max-repeated-failures");
   if (repeated) a.heartbeat_policy.max_repeated_failures = Math.max(1, Math.round(Number(repeated.value || 3)));
   const skillBoxes = document.querySelectorAll("[data-global-skill]");
   if (skillBoxes.length) {
     a.enabled_skills = Array.from(skillBoxes).filter((b) => b.checked).map((b) => b.dataset.globalSkill);
   }
-  // 入口 / 出口 / 生效范围规则（原先散落在各节点编辑器，现统一在全局规则里）
-  a.entry_policy ||= {};
-  const gv = (id) => document.getElementById(id);
-  if (gv("global-entry-trigger-phrases")) a.entry_policy.trigger_phrases = linesToList(gv("global-entry-trigger-phrases").value);
-  if (gv("global-entry-trigger-keywords")) a.entry_policy.trigger_keywords = linesToList(gv("global-entry-trigger-keywords").value);
-  if (gv("global-entry-confirmation-text")) a.entry_policy.confirmation_text = gv("global-entry-confirmation-text").value.trim();
-  if (gv("global-exit-phrases")) a.entry_policy.exit_phrases = linesToList(gv("global-exit-phrases").value);
-  if (gv("global-default-completion")) a.entry_policy.default_completion_conditions = linesToList(gv("global-default-completion").value);
-  if (gv("global-scope-global")) {
-    a.application_scope = gv("global-scope-global").checked ? "global" : "entry";
-    a.workflow_scope ||= {};
-    a.workflow_scope.chat_types = checkedValues("global-scope-chat-type");
-    if (!a.workflow_scope.chat_types.length) a.workflow_scope.chat_types = ["private"];
-    a.workflow_scope.admin_only = gv("global-scope-admin-only")?.checked || false;
-    a.workflow_scope.group_allowlist = linesToList(gv("global-scope-group-allow")?.value || "");
-    a.workflow_scope.group_denylist = linesToList(gv("global-scope-group-deny")?.value || "");
-    a.workflow_scope.user_allowlist = linesToList(gv("global-scope-user-allow")?.value || "");
-    a.workflow_scope.user_denylist = linesToList(gv("global-scope-user-deny")?.value || "");
+  const blBoxes = document.querySelectorAll("[data-global-plugin-blacklist]");
+  if (blBoxes.length) {
+    a.plugin_blacklist = Array.from(blBoxes).filter((b) => b.checked).map((b) => b.dataset.globalPluginBlacklist);
+    a.plugin_overrides ||= {};
+    a.plugin_blacklist.forEach((name) => { a.plugin_overrides[name] = false; });
   }
 }
 
@@ -5045,6 +4980,7 @@ function workflowRuntimeModuleNode(refType, refId) {
 }
 
 function workflowToolbox() {
+  if (!workflowToolboxSeeded) { WORKFLOW_NODE_GROUPS.forEach((g) => { if (g.open) workflowToolboxOpenGroups.add(g.id); }); workflowToolboxSeeded = true; }
   const selectedTools = materializedToolSelection();
   const activePlugins = (state.plugins || []).filter((item) => item.activated !== false);
   const apis = state.custom_apis || [];
@@ -5058,7 +4994,7 @@ function workflowToolbox() {
   const libraryGroups = WORKFLOW_NODE_GROUPS;
   const groupedTemplates = libraryGroups
     .map((group) => ({ group, items: templates.filter((item) => workflowNodeGroupKey(item) === group.id) }))
-    .filter(({ items }) => items.length || !filter);
+    .filter(({ items }) => items.length > 0);
   const runtimeSections = [
     {
       id: "runtime_apis",
@@ -5997,21 +5933,6 @@ function setAgentFieldByPath(path, value) {
   obj[keys[keys.length - 1]] = value;
 }
 // 简易模式保存：把 sf-* 字段写回节点，只动该 action 暴露的字段；带 syncPath 的字段同时写回 AgentSpec 路径。
-// 节点编辑器实时存草稿：把当前输入写回选中节点（不触发重绘），这样切换输入框/任何重绘都不丢字。
-function liveSaveInspector() {
-  const node = selectedWorkflowNode();
-  if (!node) return;
-  const titleEl = document.getElementById("workflow-node-title");
-  if (titleEl && titleEl.value.trim()) node.title = titleEl.value.trim();
-  if (workflowEditorMode === "advanced") {
-    [["workflow-node-description", "description"], ["workflow-node-instruction", "instruction"], ["workflow-node-prompt", "prompt"]].forEach(([id, key]) => {
-      const el = document.getElementById(id);
-      if (el) node[key] = el.value;
-    });
-  } else {
-    applySimpleEditorFields(node);
-  }
-}
 function applySimpleEditorFields(node) {
   const fields = workflowSimpleFieldsFor(node.action || "manual");
   for (const f of fields) {
@@ -6140,12 +6061,49 @@ function workflowInspector() {
   const executorState = workflowNodeExecutorState(item);
   const bindingHint = workflowNodeBindingHint(item);
   const stage = workflowStage(item);
-  const isEntryNode = stage === "entry" || ["summarize_entry", "confirm_entry"].includes(item.action);
+  const isListenNode = item.action === "listen_message";
+  const isEntryNode = ["summarize_entry", "confirm_entry"].includes(item.action) || (stage === "entry" && !isListenNode);
   const isExitNode = stage === "archive" || ["archive", "exit_summary"].includes(item.action);
-  const isScopeNode = item.action === "scope_filter";
+  const isApprovalNode = item.action === "request_approval";
   const mode = workflowEditorMode === "advanced" ? "advanced" : "simple";
   const body = mode === "advanced" ? workflowInspectorAdvanced(item) : workflowSimpleEditor(item);
-  // 入口/出口/生效范围规则已上移到「全局规则」抽屉，不再每个节点重复显示。
+  const ep = currentAgent.entry_policy || {};
+  const sc = currentAgent.workflow_scope || {};
+  const ap = currentAgent.approval_policy || {};
+  const scopeRule = isListenNode ? `
+    <div class="workflow-node-rule-box">
+      <div class="panel-head"><div><p class="card-kicker">生效范围</p><h3>这条入口在哪里生效（可分流）</h3></div></div>
+      <label class="check-line"><input type="checkbox" id="scope-global" ${currentAgent.application_scope === "global" ? "checked" : ""} /> 全局应用（所有会话都参与，不只入口命中时）</label>
+      <label>生效会话类型<div class="choice-grid compact-choice">${checkboxGroupHtml("scope-chat-type", WORKFLOW_CHAT_TYPES, sc.chat_types || ["private"], workflowChatTypeLabel)}</div></label>
+      <label class="check-line"><input type="checkbox" id="scope-admin-only" ${sc.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
+      <div class="form-grid compact">
+        <label>群聊白名单（每行一个群号）<textarea id="scope-group-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(sc.group_allowlist || []))}</textarea></label>
+        <label>群聊黑名单<textarea id="scope-group-deny" rows="2">${esc(listToLines(sc.group_denylist || []))}</textarea></label>
+        <label>用户白名单（每行一个）<textarea id="scope-user-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(sc.user_allowlist || []))}</textarea></label>
+        <label>用户黑名单<textarea id="scope-user-deny" rows="2">${esc(listToLines(sc.user_denylist || []))}</textarea></label>
+      </div>
+      <small class="field-hint">不同入口节点可设不同范围：让一部分人走这条路、另一部分人走另一条。</small>
+    </div>` : "";
+  const entryRule = isEntryNode ? `
+    <div class="workflow-node-rule-box">
+      <div class="panel-head"><div><p class="card-kicker">入口规则</p><h3>什么时候进入任务模式</h3></div></div>
+      <label>开启暗号 / 命令<textarea id="workflow-entry-trigger-phrases" rows="3" placeholder="每行一个，例如：进入任务模式">${esc(listToLines(ep.trigger_phrases))}</textarea></label>
+      <label>任务关键词<textarea id="workflow-entry-trigger-keywords" rows="3" placeholder="每行一个，例如：排查、部署、持续推进">${esc(listToLines(ep.trigger_keywords))}</textarea></label>
+      <label>开启确认话术<textarea id="workflow-entry-confirmation-text" rows="3">${esc(ep.confirmation_text || "")}</textarea></label>
+    </div>` : "";
+  const exitRule = isExitNode ? `
+    <div class="workflow-node-rule-box">
+      <div class="panel-head"><div><p class="card-kicker">出口规则</p><h3>怎么结束、怎么验收</h3></div></div>
+      <label>结束暗号 / 命令<textarea id="workflow-exit-phrases" rows="3" placeholder="每行一个，例如：完成任务">${esc(listToLines(ep.exit_phrases))}</textarea></label>
+      <label>默认验收条件<textarea id="workflow-default-completion-conditions" rows="3">${esc(listToLines(ep.default_completion_conditions))}</textarea></label>
+    </div>` : "";
+  const approvalRule = isApprovalNode ? `
+    <div class="workflow-node-rule-box">
+      <div class="panel-head"><div><p class="card-kicker">审批准则</p><h3>这个审批节点怎么放行</h3></div></div>
+      <label>审批力度<select id="wf-approval-mode">${labeledOptions(["observe", "work", "high_risk_review", "delegated"], ap.mode || "work", approvalModeLabel)}</select></label>
+      <label>必须先审批的动作（每行一个）<textarea id="wf-approval-require" rows="4" placeholder="file_delete&#10;deployment&#10;secret_read">${esc(listToLines(ap.require_approval || []))}</textarea></label>
+      <label>已预授权、无需每次确认（每行一个）<textarea id="wf-approval-preapproved" rows="3" placeholder="read_only&#10;list_files">${esc(listToLines(ap.preapproved_scopes || []))}</textarea></label>
+    </div>` : "";
   const idField = mode === "simple" ? `<input type="hidden" id="workflow-node-id" value="${esc(item.id)}" />` : "";
   return `
     <div class="detail-box workflow-editor">
@@ -6163,6 +6121,10 @@ function workflowInspector() {
       </div>
       ${idField}
       ${body}
+      ${scopeRule}
+      ${entryRule}
+      ${exitRule}
+      ${approvalRule}
       <div class="button-row">
         <button class="button" data-action="apply-workflow-node" type="button">应用节点</button>
         <button class="button danger" data-action="delete-workflow-node" type="button">删除节点</button>
@@ -6948,6 +6910,7 @@ function pluginPanel() {
 function pluginEffective(plugin) {
   const override = currentAgent?.plugin_overrides?.[plugin.name];
   if (plugin.locked || plugin.name === "astrbot_plugin_agent_lab") return true;
+  if ((currentAgent?.plugin_blacklist || []).includes(plugin.name)) return false;
   if (!plugin.activated) return false;
   return typeof override === "boolean" ? override : true;
 }
@@ -7438,19 +7401,51 @@ function copyWorkflowNodeById(id) {
   return next;
 }
 
+// 「整理」：按连线把节点分层，从左到右一层一层排好，让线条结构一目了然。
+// 1) 用最长路径给每个节点定层级(列)；2) 每列内按"上一层连进来的节点平均位置"排序，减少交叉。
 function autoLayoutWorkflow() {
   ensureWorkflow();
-  const stageOrder = WORKFLOW_STAGES.map(([id]) => id);
-  const rows = new Map(stageOrder.map((stage) => [stage, 0]));
-  for (const stage of stageOrder) {
-    for (const node of currentAgent.workflow_nodes.filter((item) => workflowStage(item) === stage)) {
-      const row = rows.get(stage) || 0;
-      node.stage = stage;
-      node.x = 70 + stageOrder.indexOf(stage) * WORKFLOW_LANE_WIDTH;
-      node.y = 110 + row * 280;
-      rows.set(stage, row + 1);
-    }
+  const nodes = currentAgent.workflow_nodes || [];
+  if (!nodes.length) { workflowCheckReport = null; return; }
+  const edges = (currentAgent.workflow_edges || []).filter((e) => e && e.from !== e.to);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const indeg = new Map(nodes.map((n) => [n.id, 0]));
+  edges.forEach((e) => { if (byId.has(e.from) && byId.has(e.to)) indeg.set(e.to, (indeg.get(e.to) || 0) + 1); });
+  // 起点：入度为 0；没有就用入口阶段节点 / 第一个节点
+  let roots = nodes.filter((n) => (indeg.get(n.id) || 0) === 0).map((n) => n.id);
+  if (!roots.length) { const en = nodes.find((n) => workflowStage(n) === "entry") || nodes[0]; if (en) roots = [en.id]; }
+  // 最长路径分层（带封顶，避免回环死循环）
+  const level = new Map(nodes.map((n) => [n.id, 0]));
+  const cap = nodes.length;
+  for (let pass = 0; pass <= nodes.length; pass++) {
+    let changed = false;
+    edges.forEach((e) => {
+      if (!byId.has(e.from) || !byId.has(e.to)) return;
+      const nl = (level.get(e.from) || 0) + 1;
+      if (nl > (level.get(e.to) || 0) && nl <= cap) { level.set(e.to, nl); changed = true; }
+    });
+    if (!changed) break;
   }
+  // 按层分组
+  const byLevel = new Map();
+  nodes.forEach((n) => { const l = level.get(n.id) || 0; (byLevel.get(l) || byLevel.set(l, []).get(l)).push(n); });
+  const COL = Math.max(WORKFLOW_LANE_WIDTH, WORKFLOW_NODE_WIDTH + 180);
+  const ROW = WORKFLOW_NODE_HEIGHT + 120;
+  const X0 = 90, Y0 = 90;
+  const levels = Array.from(byLevel.keys()).sort((a, b) => a - b);
+  levels.forEach((l, li) => {
+    const col = byLevel.get(l);
+    if (li === 0) {
+      col.sort((a, b) => (Number(a.y) || 0) - (Number(b.y) || 0));
+    } else {
+      const bary = (n) => {
+        const preds = edges.filter((e) => e.to === n.id && (level.get(e.from) || 0) < l).map((e) => byId.get(e.from)).filter(Boolean);
+        return preds.length ? preds.reduce((s, p) => s + (Number(p.y) || 0), 0) / preds.length : (Number(n.y) || 0);
+      };
+      col.sort((a, b) => bary(a) - bary(b));
+    }
+    col.forEach((n, i) => { n.x = X0 + l * COL; n.y = Y0 + i * ROW; });
+  });
   workflowCheckReport = null;
 }
 
@@ -7543,11 +7538,6 @@ document.addEventListener("pointerdown", (event) => {
   if (route === "workflow" && workflowContextMenu && !event.target.closest(".workflow-context-menu")) {
     workflowContextMenu = null;
     removeWorkflowContextMenuDom();
-  }
-  // 表单控件（输入框/多行文本/下拉）一律走浏览器原生行为：聚焦、选词、展开下拉。
-  // 绝不在这里 preventDefault 或启动拖拽/平移/指针捕获，否则会“点不进输入框、下拉一开就收起”。
-  if (event.target.closest && event.target.closest("input, textarea, select, option, [contenteditable]")) {
-    return;
   }
   const workflowField = event.target.closest?.(WORKFLOW_FIELD_SELECTOR);
   if (workflowField && route === "workflow") {
@@ -7989,7 +7979,11 @@ document.addEventListener("click", async (event) => {
     event.stopPropagation();
     return;
   }
-  const target = event.target.closest("[data-route], [data-action]");
+  let target = event.target.closest("[data-route], [data-action]");
+  // 根因修复：<body> 上有 data-route（仅供 CSS 布局用）。closest 会让"任意点击"都命中 body，
+  // 从而误触发整页 render() —— 这正是点输入框/下拉框就丢焦、下拉闪退、数字光标跳、改字被还原的元凶。
+  // 排除 body/html（真正的导航按钮离得更近，仍会被正确命中）。
+  if (target === document.body || target === document.documentElement) target = null;
   if (!target) return;
   const action = target.dataset.action;
   if (workflowSuppressClick && target.closest(".flow-node")) {
@@ -8787,9 +8781,6 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("change", (event) => {
-  if (event.target && event.target.closest && event.target.closest(".workflow-inspector-drawer") && event.target.matches && event.target.matches("input, textarea, select")) {
-    liveSaveInspector();
-  }
   const target = event.target.closest("[data-action]");
   if (!target) return;
   if (target.dataset.action === "workflow-agent-select") {
@@ -8811,10 +8802,6 @@ document.addEventListener("change", (event) => {
 });
 
 document.addEventListener("input", (event) => {
-  // 节点编辑器：每次输入实时写回当前节点草稿，切换输入框或任何重绘都不会弄丢未保存的文字。
-  if (event.target && event.target.closest && event.target.closest(".workflow-inspector-drawer") && event.target.matches && event.target.matches("input, textarea, select")) {
-    liveSaveInspector();
-  }
   const target = event.target.closest("[data-action]");
   if (!target) return;
   const action = target.dataset.action;

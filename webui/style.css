@@ -970,9 +970,9 @@ button.list-row {
 }
 
 .workflow-minimap .workflow-minimap-viewport {
-  fill: rgba(22, 199, 154, 0.08);
+  fill: rgba(22, 199, 154, 0.12);
   stroke: #16c79a;
-  stroke-width: 8;
+  stroke-width: 2.5;
   vector-effect: non-scaling-stroke;
 }
 
@@ -1004,24 +1004,25 @@ button.list-row {
 }
 
 .workflow-minimap-resize.is-corner {
-  right: -5px;
-  bottom: -5px;
-  width: 16px;
-  height: 16px;
-  border: 1px solid rgba(170, 185, 180, 0.9);
+  right: -6px;
+  bottom: -6px;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid #16c79a;
   border-radius: 5px;
   background: #fff;
   cursor: nwse-resize;
+  box-shadow: 0 2px 7px rgba(22, 199, 154, 0.4);
 }
 
 .workflow-minimap-resize.is-corner::after {
   position: absolute;
-  right: 3px;
-  bottom: 3px;
-  width: 6px;
-  height: 6px;
-  border-right: 2px solid var(--muted);
-  border-bottom: 2px solid var(--muted);
+  right: 4px;
+  bottom: 4px;
+  width: 7px;
+  height: 7px;
+  border-right: 2px solid #16c79a;
+  border-bottom: 2px solid #16c79a;
   content: "";
 }
 
@@ -1652,7 +1653,7 @@ button.list-row {
 }
 
 .node-port-in::after {
-  right: 19px;
+  right: 18px;
 }
 
 .node-port-out {
@@ -1660,7 +1661,7 @@ button.list-row {
 }
 
 .node-port-out::after {
-  left: 19px;
+  left: 18px;
 }
 
 .node-port:hover::after,
@@ -1935,21 +1936,21 @@ button.list-row {
 }
 
 .workflow-tool-drawer {
-  top: 50%;
+  top: 40px;
   right: 74px;
-  bottom: auto;
-  height: min(720px, calc(100vh - 132px));
+  bottom: 40px;
+  height: auto;
   z-index: 32;
   width: min(390px, calc(100vw - 120px));
   background: rgba(255, 255, 255, 0.94);
-  transform: translateY(-50%);
+  transform: translateX(0);
   transition: transform 160ms ease, opacity 160ms ease;
 }
 
 .workflow-page.toolbox-closed .workflow-tool-drawer {
   pointer-events: none;
   opacity: 0;
-  transform: translate(calc(100% + 86px), -50%);
+  transform: translateX(calc(100% + 86px));
 }
 
 .workflow-toolbox-tab {
