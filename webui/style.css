@@ -1616,8 +1616,14 @@ button.list-row {
 }
 
 .node.multi-selected {
-  outline: 2px dashed var(--blue);
-  outline-offset: 5px;
+  outline: 2px solid rgba(49, 95, 143, 0.55);
+  outline-offset: 2px;
+  background: rgba(49, 95, 143, 0.1);
+  box-shadow: 0 0 0 4px rgba(49, 95, 143, 0.08);
+}
+
+.is-hidden {
+  display: none !important;
 }
 
 .node-port {
@@ -1735,7 +1741,6 @@ button.list-row {
   inset: 0 0 0 260px;
   z-index: 20;
   overflow: hidden;
-  min-height: 100vh;
   background:
     linear-gradient(90deg, rgba(23, 32, 29, 0.045) 1px, transparent 1px),
     linear-gradient(180deg, rgba(23, 32, 29, 0.04) 1px, transparent 1px),
@@ -1936,14 +1941,14 @@ button.list-row {
 }
 
 .workflow-tool-drawer {
-  top: 40px;
+  top: 50%;
   right: 74px;
-  bottom: 40px;
-  height: auto;
+  bottom: auto;
+  height: min(78%, 760px);
   z-index: 32;
   width: min(390px, calc(100vw - 120px));
   background: rgba(255, 255, 255, 0.94);
-  transform: translateX(0);
+  transform: translateY(-50%);
   transition: transform 160ms ease, opacity 160ms ease;
 }
 
@@ -2215,6 +2220,21 @@ button.list-row {
   background: rgba(49, 95, 143, 0.14);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72), 0 10px 24px rgba(49, 95, 143, 0.16);
   pointer-events: none;
+}
+
+/* 剪刀划线：半透明红色框，划过的连线提示被剪断 */
+.workflow-scissor-trail {
+  position: fixed;
+  z-index: 80;
+  border: 1px dashed var(--red);
+  background: rgba(180, 67, 58, 0.1);
+  pointer-events: none;
+}
+
+.workflow-link-hit.is-cutting {
+  stroke: var(--red);
+  stroke-opacity: 0.55;
+  stroke-width: 8;
 }
 
 .workflow-canvas-wrap.is-dropping::after {

@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260612-fix5";
+const AGENT_LAB_WEBUI_BUILD = "20260613-fix6";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -41,6 +41,7 @@ const WORKFLOW_STAGES = [
 
 const WORKFLOW_NODE_WIDTH = 340;
 const WORKFLOW_NODE_HEIGHT = 208;
+const WORKFLOW_NODE_BORDER = 5; // .flow-node 左侧色条边框宽度，用于把左侧连接点锚点与圆点对齐
 const WORKFLOW_LANE_WIDTH = 640;
 const WORKFLOW_CANVAS_MIN_WIDTH = 24000;
 const WORKFLOW_CANVAS_MIN_HEIGHT = 10400;
@@ -1240,6 +1241,10 @@ let workflowMinimapHeight = 128;
 let workflowMinimapResize = null;
 let workflowSelectionMode = false;
 let workflowSelectionDrag = null;
+let workflowScissorMode = false;
+let workflowScissorStroke = null; // 剪刀划线删除连线
+let workflowGroupDrag = null;     // 框选后整组移动
+let workflowSelectionMove = false; // 框选后“移动”开关：开后在画布上拖动即整组移动
 let workflowSelectedNodeIds = new Set();
 let workflowHistoryPast = [];
 let workflowHistoryFuture = [];
@@ -1757,8 +1762,8 @@ const WORKFLOW_ACTION_PORTS = {
   match_keyword: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
   match_regex: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
   llm_detect: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
-  scope_filter: { inputs: ["in"], outputs: ["success", "failed"] },
-  retry: { inputs: ["in", "retry"], outputs: ["retry", "success", "failed"] },
+  scope_filter: { inputs: ["in"], outputs: ["success"] },
+  retry: { inputs: ["retry"], outputs: ["success", "failed"] },
   catch_error: { inputs: ["in"], outputs: ["success", "failed"] },
   request_approval: { inputs: ["in"], outputs: ["approved", "rejected"] },
   route_condition: { inputs: ["in"], outputs: ["success", "failed", "uncertain"] },
@@ -3182,7 +3187,11 @@ function activeFieldSnapshotGlobal() {
       } catch (err) {}
     }
   }
-  return (snap.field || snap.scrolls.length) ? snap : null;
+  try {
+    const winTop = window.scrollY || document.scrollingElement?.scrollTop || 0;
+    if (winTop > 0) snap.winScroll = winTop;
+  } catch (err) {}
+  return (snap.field || snap.scrolls.length || snap.winScroll) ? snap : null;
 }
 function restoreFieldFocusGlobal(snap) {
   if (!snap) return;
@@ -3190,6 +3199,9 @@ function restoreFieldFocusGlobal(snap) {
     const el = document.querySelector(s.key);
     if (el) el.scrollTop = s.top;
   });
+  if (snap.winScroll) {
+    try { window.scrollTo(0, snap.winScroll); } catch (err) {}
+  }
   const f = snap.field;
   if (!f || !f.key) return;
   let el = null;
@@ -4118,10 +4130,15 @@ function workflowRightDock(report) {
   return `
     <aside class="workflow-right-dock" aria-label="画布工具">
       <div class="workflow-dock-group">
-        <button class="workflow-dock-button ${workflowSelectionMode ? "" : "active"}" data-action="workflow-pointer-mode" title="正常操作" aria-label="正常操作" type="button">${iconImg("pointer", "正常操作")}</button>
-        <button class="workflow-dock-button ${workflowSelectionMode ? "active" : ""}" data-action="workflow-select-mode" title="框选节点" aria-label="框选节点" type="button">${iconImg("select", "框选节点")}</button>
+        <button class="workflow-dock-button ${(!workflowSelectionMode && !workflowScissorMode) ? "active" : ""}" data-action="workflow-pointer-mode" title="正常操作（拖动节点 / 平移画布）" aria-label="正常操作" type="button">${iconImg("pointer", "正常操作")}</button>
+        <button class="workflow-dock-button ${workflowSelectionMode ? "active" : ""}" data-action="workflow-select-mode" title="框选节点：拖出范围选中多个节点" aria-label="框选节点" type="button">${iconImg("select", "框选节点")}</button>
+        <button class="workflow-dock-button ${workflowScissorMode ? "active" : ""}" data-action="workflow-scissor-mode" title="剪刀：按住划过连线即可剪断" aria-label="剪刀剪线" type="button">✂</button>
+      </div>
+      <div class="workflow-dock-group">
+        <button class="workflow-dock-button" data-action="move-selected-workflow-nodes" title="移动框选节点（再点一下结束移动）" aria-label="移动框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("pointer", "移动")}</button>
         <button class="workflow-dock-button" data-action="copy-selected-workflow-nodes" title="复制框选节点" aria-label="复制框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("copy", "复制")}</button>
         <button class="workflow-dock-button danger" data-action="delete-selected-workflow-nodes" title="删除框选节点" aria-label="删除框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
+        <button class="workflow-dock-button text ${(selectedCount || workflowSelectionMode || workflowScissorMode) ? "" : "is-hidden"}" data-action="workflow-clear-selection" title="退出框选 / 剪刀，回到正常操作" aria-label="完成" type="button">完成</button>
       </div>
       <div class="workflow-dock-group">
         <button class="workflow-dock-button" data-action="workflow-undo" title="撤销" aria-label="撤销" ${workflowHistoryPast.length ? "" : "disabled"} type="button">${iconImg("undo", "撤销")}</button>
@@ -4829,32 +4846,25 @@ function workflowBoard() {
 }
 
 function workflowCanvasSize() {
-  ensureWorkflow();
-  const nodes = currentAgent.workflow_nodes || [];
-  const maxX = nodes.reduce((value, node) => Math.max(value, Number(node.x || 0)), 0);
-  const maxY = nodes.reduce((value, node) => Math.max(value, Number(node.y || 0)), 0);
-  const minX = Math.min(WORKFLOW_CANVAS_MIN_X, nodes.reduce((value, node) => Math.min(value, Number(node.x || 0)), 0));
-  const minY = Math.max(
-    WORKFLOW_CANVAS_MIN_Y,
-    Math.min(0, nodes.reduce((value, node) => Math.min(value, Number(node.y || 0)), 0)),
-  );
+  // 固定的世界画布尺寸：等于整个可拖动世界，不随节点位置增减。
+  // 这样拖动节点（尤其向上/向负方向）不会改变 offset / size，整张画布是一个稳定的自由移动区域。
   return {
-    minX,
-    minY,
-    maxX: Math.max(WORKFLOW_CANVAS_MAX_X, maxX + WORKFLOW_NODE_WIDTH),
-    width: Math.max(WORKFLOW_CANVAS_MIN_WIDTH, maxX - minX + WORKFLOW_NODE_WIDTH + 260),
-    height: Math.max(WORKFLOW_CANVAS_MIN_HEIGHT, maxY - minY + WORKFLOW_NODE_HEIGHT + 220),
+    minX: WORKFLOW_CANVAS_MIN_X,
+    minY: WORKFLOW_CANVAS_MIN_Y,
+    maxX: WORKFLOW_CANVAS_MAX_X,
+    width: WORKFLOW_WORLD_WIDTH,
+    height: WORKFLOW_WORLD_HEIGHT,
   };
 }
 
 function workflowWorldOffsetX(size = null) {
-  const data = size || workflowCanvasSize();
-  return Math.abs(Math.min(0, Number(data.minX || 0))) + 140;
+  // 固定的世界原点偏移：不随节点位置变化，避免拖动节点时整张画布跟着重排（上下分裂感）。
+  return -WORKFLOW_CANVAS_MIN_X;
 }
 
 function workflowWorldOffsetY(size = null) {
-  const data = size || workflowCanvasSize();
-  return Math.abs(Math.min(0, Number(data.minY || 0))) + 120;
+  // 固定的世界原点偏移（同上）。
+  return -WORKFLOW_CANVAS_MIN_Y;
 }
 
 function workflowCanvas() {
@@ -5212,28 +5222,26 @@ function workflowMarkerDefs() {
 
 // 出口锚点：多出口节点按端口在节点高度上均匀分布；单出口仍在右侧中点。
 function workflowNodeOutAnchor(node, port, offsetX = 0, offsetY = 0) {
-  const ports = (workflowNodePorts(node).outputs) || ["success"];
+  const portsObj = workflowNodePorts(node);
+  const outs = portsObj.outputs || ["success"];
+  const ins = portsObj.inputs || [];
   const leftX = Number(node.x || 0) + offsetX;
   const baseX = leftX + WORKFLOW_NODE_WIDTH;
   const top = Number(node.y || 0) + offsetY;
-  const isLoopNode = ports.includes("retry");
+  const isLoopNode = ins.includes("retry");
   if (isLoopNode) {
-    // 重试出口从右侧离开并回环；其余出口从左侧离开
-    if (port === "retry") {
-      return { x: baseX, y: top + WORKFLOW_NODE_HEIGHT / 2, loop: true };
-    }
-    const leftOuts = ports.filter((t) => t !== "retry");
-    let li = leftOuts.indexOf(port);
+    // 重试节点：成功/失败出口都在左侧（补偿左边框宽度，让线从圆点正中出发）。
+    let li = outs.indexOf(port);
     if (li < 0) li = 0;
-    const lspan = WORKFLOW_NODE_HEIGHT / (leftOuts.length + 1);
-    return { x: leftX, y: top + lspan * (li + 1), leftExit: true };
+    const lspan = WORKFLOW_NODE_HEIGHT / (outs.length + 1);
+    return { x: leftX + WORKFLOW_NODE_BORDER, y: top + lspan * (li + 1), leftExit: true };
   }
-  if (!workflowNodeHasMultiOut(node) || ports.length <= 1) {
+  if (!workflowNodeHasMultiOut(node) || outs.length <= 1) {
     return { x: baseX, y: top + WORKFLOW_NODE_HEIGHT / 2 };
   }
-  let idx = ports.indexOf(port);
+  let idx = outs.indexOf(port);
   if (idx < 0) idx = 0;
-  const span = WORKFLOW_NODE_HEIGHT / (ports.length + 1);
+  const span = WORKFLOW_NODE_HEIGHT / (outs.length + 1);
   return { x: baseX, y: top + span * (idx + 1) };
 }
 
@@ -5345,10 +5353,13 @@ function centerWorkflowFromMinimap(event, minimap) {
 }
 
 function workflowNodeAnchor(node, port = "out", offsetX = 0, offsetY = 0) {
-  return {
-    x: Number(node.x || 0) + offsetX + (port === "out" ? WORKFLOW_NODE_WIDTH : 0),
-    y: Number(node.y || 0) + offsetY + WORKFLOW_NODE_HEIGHT / 2,
-  };
+  const left = Number(node.x || 0) + offsetX;
+  const y = Number(node.y || 0) + offsetY + WORKFLOW_NODE_HEIGHT / 2;
+  if (port === "out") return { x: left + WORKFLOW_NODE_WIDTH, y };
+  // 输入：重试节点的入口在右侧；普通节点在左侧（补偿 5px 左边框，使锚点与圆点正中重合）。
+  const isLoop = (workflowNodePorts(node).inputs || []).includes("retry");
+  if (isLoop) return { x: left + WORKFLOW_NODE_WIDTH, y, rightEntry: true };
+  return { x: left + WORKFLOW_NODE_BORDER, y };
 }
 
 function workflowLinkPath(from, to) {
@@ -5356,19 +5367,11 @@ function workflowLinkPath(from, to) {
   const y1 = Number(from.y || 0);
   const x2 = Number(to.x || 0);
   const y2 = Number(to.y || 0);
-  // retry 回环连线（从右侧出发，往右甩出去再绕回目标），形成明显的"环"。
-  if (from.loop) {
-    const out = 90;
-    return `M ${x1} ${y1} C ${x1 + out} ${y1}, ${x2 + out} ${y2}, ${x2} ${y2}`;
-  }
-  // 左侧出口（重试节点的成功/失败/错误）：从左边出发走向目标。
-  if (from.leftExit) {
-    const out = 80;
-    return `M ${x1} ${y1} C ${x1 - out} ${y1}, ${x2 + out} ${y2}, ${x2} ${y2}`;
-  }
-  const distance = Math.abs(x2 - x1);
-  const bend = clamp(distance * 0.48, 90, 260);
-  return `M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`;
+  // 出发方向：左侧出口往左甩，其余往右。
+  const c1x = from.leftExit ? x1 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x1 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
+  // 进入方向：右侧入口（重试节点）从右边进，其余从左边进。
+  const c2x = to.rightEntry ? x2 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x2 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
+  return `M ${x1} ${y1} C ${c1x} ${y1}, ${c2x} ${y2}, ${x2} ${y2}`;
 }
 
 function workflowSummaryPanel() {
@@ -5483,40 +5486,37 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
   const runtime = workflowNodeRuntimeInfo(item);
   const executorState = workflowNodeExecutorState(item);
   const ports = workflowNodePorts(item);
-  const hasInput = (ports.inputs || []).length > 0;
+  const inputs = ports.inputs || [];
+  const outputs = ports.outputs || [];
+  const isLoopNode = inputs.includes("retry");
+  const hasInput = inputs.length > 0;
   const pendingIn = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "in";
-  // 输入端口：触发/监听类节点没有输入口
-  const inPortHtml = hasInput
-    ? `<span class="node-port node-port-in ${pendingIn ? "pending" : ""}" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>`
-    : "";
-  // 输出端口：多出口节点按类型分别画带标签的端口；其余单出口
+  let inPortHtml = "";
   let outPortsHtml = "";
-  const isLoopNode = (ports.outputs || []).includes("retry");
   if (isLoopNode) {
-    // 重试循环：重试(回环)出口放右侧，其余出口(成功/失败/错误)放左侧。视觉上"往右绕回去重试，正常结果往左走下一步"。
-    const outs = ports.outputs || ["success"];
-    const leftOuts = outs.filter((t) => t !== "retry");
-    const leftHtml = leftOuts.map((type, idx) => {
-      const span = 100 / (leftOuts.length + 1);
+    // 重试节点：重试“入口”在右侧（别的节点失败/出错时连到这里）；成功/失败“出口”在左侧（处理完回到需要重试的起点）。
+    inPortHtml = `<span class="node-port node-port-in node-port-loop-in ${pendingIn ? "pending" : ""}" data-port="in" data-node-id="${esc(item.id)}" style="--port-color:${workflowEdgeColor("retry")}" title="重试入口：其他节点失败/出错时连到这里"><i class="port-tag port-tag-left" style="--port-color:${workflowEdgeColor("retry")}">↺ 重试入口</i></span>`;
+    outPortsHtml = outputs.map((type, idx) => {
+      const span = 100 / (outputs.length + 1);
       const topPct = span * (idx + 1);
       const pend = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === type;
-      return `<span class="node-port node-port-out node-port-typed node-port-left ${pend ? "pending" : ""}" data-port="${esc(type)}" data-edge-type="${esc(type)}" data-node-id="${esc(item.id)}" style="top:${topPct}%;--port-color:${workflowEdgeColor(type)}" title="${esc(workflowPortShortLabel(type))}出口"><i class="port-tag port-tag-left" style="--port-color:${workflowEdgeColor(type)}">${esc(workflowPortShortLabel(type))}</i></span>`;
+      return `<span class="node-port node-port-out node-port-typed node-port-left ${pend ? "pending" : ""}" data-port="${esc(type)}" data-edge-type="${esc(type)}" data-node-id="${esc(item.id)}" style="top:${topPct}%;--port-color:${workflowEdgeColor(type)}" title="${esc(workflowPortShortLabel(type))}出口：回到需要重试的起点"><i class="port-tag port-tag-left" style="--port-color:${workflowEdgeColor(type)}">${esc(workflowPortShortLabel(type))}</i></span>`;
     }).join("");
-    const pendR = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === "retry";
-    const retryHtml = `<span class="node-port node-port-out node-port-typed node-port-loop ${pendR ? "pending" : ""}" data-port="retry" data-edge-type="retry" data-node-id="${esc(item.id)}" style="--port-color:${workflowEdgeColor("retry")}" title="重试（绕回去再试一次）"><i class="port-tag" style="--port-color:${workflowEdgeColor("retry")}">↺ 重试</i></span>`;
-    outPortsHtml = leftHtml + retryHtml;
-  } else if (workflowNodeHasMultiOut(item)) {
-    const outs = ports.outputs || ["success"];
-    const fwdHtml = outs.map((type, idx) => {
-      const span = 100 / (outs.length + 1);
-      const topPct = span * (idx + 1);
-      const pend = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === type;
-      return `<span class="node-port node-port-out node-port-typed ${pend ? "pending" : ""}" data-port="${esc(type)}" data-edge-type="${esc(type)}" data-node-id="${esc(item.id)}" style="top:${topPct}%;--port-color:${workflowEdgeColor(type)}" title="${esc(workflowPortShortLabel(type))}出口"><i class="port-tag" style="--port-color:${workflowEdgeColor(type)}">${esc(workflowPortShortLabel(type))}</i></span>`;
-    }).join("");
-    outPortsHtml = fwdHtml;
   } else {
-    const pendingOut = workflowPendingPort?.nodeId === item.id && (workflowPendingPort?.port === "out" || workflowPendingPort?.port === "success");
-    outPortsHtml = `<span class="node-port node-port-out ${pendingOut ? "pending" : ""}" data-port="out" data-edge-type="success" data-node-id="${esc(item.id)}" title="输出连接点"></span>`;
+    inPortHtml = hasInput
+      ? `<span class="node-port node-port-in ${pendingIn ? "pending" : ""}" data-port="in" data-node-id="${esc(item.id)}" title="输入连接点"></span>`
+      : "";
+    if (workflowNodeHasMultiOut(item)) {
+      outPortsHtml = outputs.map((type, idx) => {
+        const span = 100 / (outputs.length + 1);
+        const topPct = span * (idx + 1);
+        const pend = workflowPendingPort?.nodeId === item.id && workflowPendingPort?.port === type;
+        return `<span class="node-port node-port-out node-port-typed ${pend ? "pending" : ""}" data-port="${esc(type)}" data-edge-type="${esc(type)}" data-node-id="${esc(item.id)}" style="top:${topPct}%;--port-color:${workflowEdgeColor(type)}" title="${esc(workflowPortShortLabel(type))}出口"><i class="port-tag" style="--port-color:${workflowEdgeColor(type)}">${esc(workflowPortShortLabel(type))}</i></span>`;
+      }).join("");
+    } else {
+      const pendingOut = workflowPendingPort?.nodeId === item.id && (workflowPendingPort?.port === "out" || workflowPendingPort?.port === "success");
+      outPortsHtml = `<span class="node-port node-port-out ${pendingOut ? "pending" : ""}" data-port="out" data-edge-type="success" data-node-id="${esc(item.id)}" title="输出连接点"></span>`;
+    }
   }
   return `
     <article class="node flow-node ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${workflowNodeHasMultiOut(item) ? "has-multi-out" : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0) + offsetY}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
@@ -6062,7 +6062,9 @@ function workflowInspector() {
   const bindingHint = workflowNodeBindingHint(item);
   const stage = workflowStage(item);
   const isListenNode = item.action === "listen_message";
-  const isEntryNode = ["summarize_entry", "confirm_entry"].includes(item.action) || (stage === "entry" && !isListenNode);
+  const isScopeNode = item.action === "scope_filter";
+  // 消息监听入口=配置“入口规则/暗号/关键词”；范围过滤器=配置“生效范围/黑白名单”。
+  const isEntryNode = isListenNode || ["summarize_entry", "confirm_entry"].includes(item.action) || (stage === "entry" && !isScopeNode);
   const isExitNode = stage === "archive" || ["archive", "exit_summary"].includes(item.action);
   const isApprovalNode = item.action === "request_approval";
   const mode = workflowEditorMode === "advanced" ? "advanced" : "simple";
@@ -6070,7 +6072,7 @@ function workflowInspector() {
   const ep = currentAgent.entry_policy || {};
   const sc = currentAgent.workflow_scope || {};
   const ap = currentAgent.approval_policy || {};
-  const scopeRule = isListenNode ? `
+  const scopeRule = isScopeNode ? `
     <div class="workflow-node-rule-box">
       <div class="panel-head"><div><p class="card-kicker">生效范围</p><h3>这条入口在哪里生效（可分流）</h3></div></div>
       <label class="check-line"><input type="checkbox" id="scope-global" ${currentAgent.application_scope === "global" ? "checked" : ""} /> 全局应用（所有会话都参与，不只入口命中时）</label>
@@ -7331,6 +7333,25 @@ function refreshWorkflowCanvasDom() {
   if (minimap && !workflowMinimapPan && !workflowMinimapResize) minimap.outerHTML = workflowMinimap(size);
 }
 
+// 剪刀工具几何辅助：把 SVG 用户坐标点转成屏幕(client)坐标；判断点到线段的距离。
+function workflowSvgPointToClient(pt) {
+  const svg = document.querySelector(".workflow-links");
+  if (!svg || typeof svg.getScreenCTM !== "function") return null;
+  const ctm = svg.getScreenCTM();
+  if (!ctm) return null;
+  return { x: ctm.a * pt.x + ctm.c * pt.y + ctm.e, y: ctm.b * pt.x + ctm.d * pt.y + ctm.f };
+}
+function pointNearSegment(px, py, ax, ay, bx, by, tol) {
+  const vx = bx - ax, vy = by - ay;
+  const wx = px - ax, wy = py - ay;
+  const len2 = vx * vx + vy * vy;
+  let t = len2 ? (wx * vx + wy * vy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const cx = ax + t * vx, cy = ay + t * vy;
+  const dx = px - cx, dy = py - cy;
+  return (dx * dx + dy * dy) <= tol * tol;
+}
+
 function workflowCanvasPoint(event) {
   const wrap = document.querySelector(".workflow-canvas-wrap");
   const canvas = document.querySelector(".workflow-canvas");
@@ -7409,42 +7430,75 @@ function autoLayoutWorkflow() {
   if (!nodes.length) { workflowCheckReport = null; return; }
   const edges = (currentAgent.workflow_edges || []).filter((e) => e && e.from !== e.to);
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const indeg = new Map(nodes.map((n) => [n.id, 0]));
-  edges.forEach((e) => { if (byId.has(e.from) && byId.has(e.to)) indeg.set(e.to, (indeg.get(e.to) || 0) + 1); });
-  // 起点：入度为 0；没有就用入口阶段节点 / 第一个节点
-  let roots = nodes.filter((n) => (indeg.get(n.id) || 0) === 0).map((n) => n.id);
-  if (!roots.length) { const en = nodes.find((n) => workflowStage(n) === "entry") || nodes[0]; if (en) roots = [en.id]; }
-  // 最长路径分层（带封顶，避免回环死循环）
-  const level = new Map(nodes.map((n) => [n.id, 0]));
-  const cap = nodes.length;
-  for (let pass = 0; pass <= nodes.length; pass++) {
-    let changed = false;
-    edges.forEach((e) => {
-      if (!byId.has(e.from) || !byId.has(e.to)) return;
-      const nl = (level.get(e.from) || 0) + 1;
-      if (nl > (level.get(e.to) || 0) && nl <= cap) { level.set(e.to, nl); changed = true; }
-    });
-    if (!changed) break;
+  const outAdj = new Map(nodes.map((n) => [n.id, []]));
+  const inAdj = new Map(nodes.map((n) => [n.id, []]));
+  edges.forEach((e) => {
+    if (!byId.has(e.from) || !byId.has(e.to)) return;
+    outAdj.get(e.from).push(e.to);
+    inAdj.get(e.to).push(e.from);
+  });
+  // 起点：入度为 0 的节点；没有就用入口阶段 / 第一个节点。
+  let roots = nodes.filter((n) => (inAdj.get(n.id) || []).length === 0).map((n) => n.id);
+  if (!roots.length) {
+    const en = nodes.find((n) => workflowStage(n) === "entry") || nodes[0];
+    if (en) roots = [en.id];
   }
+  // 按"事件经过的步骤"分层：从起点做 BFS，level = 距起点的最短步数。
+  // 这样相邻步骤永远在相邻列，连线只跨一格，不会出现跨好几列的长线。
+  const level = new Map();
+  const queue = [];
+  roots.forEach((id) => { level.set(id, 0); queue.push(id); });
+  let qi = 0;
+  while (qi < queue.length) {
+    const id = queue[qi++];
+    const lv = level.get(id) || 0;
+    for (const nx of (outAdj.get(id) || [])) {
+      if (!level.has(nx)) { level.set(nx, lv + 1); queue.push(nx); }
+    }
+  }
+  // 未被起点连到的孤立 / 回环节点：放到其上游最大层+1，至少 0。
+  nodes.forEach((n) => {
+    if (level.has(n.id)) return;
+    const preds = (inAdj.get(n.id) || []).filter((p) => level.has(p));
+    level.set(n.id, preds.length ? Math.max(...preds.map((p) => level.get(p))) + 1 : 0);
+  });
   // 按层分组
   const byLevel = new Map();
-  nodes.forEach((n) => { const l = level.get(n.id) || 0; (byLevel.get(l) || byLevel.set(l, []).get(l)).push(n); });
-  const COL = Math.max(WORKFLOW_LANE_WIDTH, WORKFLOW_NODE_WIDTH + 180);
-  const ROW = WORKFLOW_NODE_HEIGHT + 120;
-  const X0 = 90, Y0 = 90;
+  nodes.forEach((n) => {
+    const l = level.get(n.id) || 0;
+    if (!byLevel.has(l)) byLevel.set(l, []);
+    byLevel.get(l).push(n);
+  });
+  const COL = Math.max(WORKFLOW_LANE_WIDTH, WORKFLOW_NODE_WIDTH + 200);
+  const ROW = WORKFLOW_NODE_HEIGHT + 110;
+  const X0 = 120, Y0 = 120;
   const levels = Array.from(byLevel.keys()).sort((a, b) => a - b);
-  levels.forEach((l, li) => {
-    const col = byLevel.get(l);
-    if (li === 0) {
-      col.sort((a, b) => (Number(a.y) || 0) - (Number(b.y) || 0));
-    } else {
+  // 先给每个节点一个初始行号（按当前 y 排序），再用重心法迭代几轮减少交叉。
+  const rowIndex = new Map();
+  levels.forEach((l) => {
+    const col = byLevel.get(l).slice().sort((a, b) => (Number(a.y) || 0) - (Number(b.y) || 0));
+    col.forEach((n, i) => rowIndex.set(n.id, i));
+  });
+  for (let pass = 0; pass < 4; pass++) {
+    for (const l of levels) {
+      const col = byLevel.get(l);
       const bary = (n) => {
-        const preds = edges.filter((e) => e.to === n.id && (level.get(e.from) || 0) < l).map((e) => byId.get(e.from)).filter(Boolean);
-        return preds.length ? preds.reduce((s, p) => s + (Number(p.y) || 0), 0) / preds.length : (Number(n.y) || 0);
+        const neigh = [...(inAdj.get(n.id) || []), ...(outAdj.get(n.id) || [])]
+          .filter((m) => rowIndex.has(m));
+        if (!neigh.length) return rowIndex.get(n.id) || 0;
+        return neigh.reduce((s, m) => s + (rowIndex.get(m) || 0), 0) / neigh.length;
       };
       col.sort((a, b) => bary(a) - bary(b));
+      col.forEach((n, i) => rowIndex.set(n.id, i));
     }
-    col.forEach((n, i) => { n.x = X0 + l * COL; n.y = Y0 + i * ROW; });
+  }
+  // 落位：列 = 事件步数（从左到右），行内按重心排序后的次序。
+  levels.forEach((l) => {
+    const col = byLevel.get(l);
+    col.forEach((n, i) => {
+      n.x = X0 + l * COL;
+      n.y = Y0 + i * ROW;
+    });
   });
   workflowCheckReport = null;
 }
@@ -7655,6 +7709,37 @@ document.addEventListener("pointerdown", (event) => {
   if (event.target.closest(WORKFLOW_CANVAS_BLOCKER_SELECTOR)) return;
   if (event.target.closest("[data-action='delete-workflow-edge']")) return;
   event.preventDefault();
+  if (workflowScissorMode) {
+    const stroke = document.createElement("div");
+    stroke.className = "workflow-scissor-trail";
+    document.body.appendChild(stroke);
+    workflowScissorStroke = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      cut: new Set(),
+      el: stroke,
+    };
+    wrapEl.setPointerCapture?.(event.pointerId);
+    return;
+  }
+  if (workflowSelectionMove && workflowSelectedNodeIds.size) {
+    const base = new Map();
+    Array.from(workflowSelectedNodeIds).forEach((id) => {
+      const n = workflowNodeById(id);
+      if (n) base.set(id, { x: Number(n.x || 0), y: Number(n.y || 0) });
+    });
+    workflowGroupDrag = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      base,
+      moved: false,
+      before: workflowSnapshot(),
+    };
+    wrapEl.setPointerCapture?.(event.pointerId);
+    return;
+  }
   if (workflowSelectionMode) {
     workflowSelectedNodeIds.clear();
     const box = document.createElement("div");
@@ -7688,6 +7773,52 @@ document.addEventListener("pointerdown", (event) => {
 // 滚动与焦点的保持现在统一由 render() 中的 activeFieldSnapshotGlobal/restoreFieldFocusGlobal 完成。
 
 document.addEventListener("pointermove", (event) => {
+  if (workflowScissorStroke && workflowScissorStroke.pointerId === event.pointerId) {
+    const sx = workflowScissorStroke.startX, sy = workflowScissorStroke.startY;
+    const left = Math.min(sx, event.clientX), top = Math.min(sy, event.clientY);
+    Object.assign(workflowScissorStroke.el.style, {
+      left: left + "px", top: top + "px",
+      width: Math.abs(event.clientX - sx) + "px",
+      height: Math.abs(event.clientY - sy) + "px",
+    });
+    // 命中检测：剪刀划过的线段与每条连线的可点击粗描边相交即标记剪断
+    const segA = { x: workflowScissorStroke.lastX ?? sx, y: workflowScissorStroke.lastY ?? sy };
+    const segB = { x: event.clientX, y: event.clientY };
+    workflowScissorStroke.lastX = event.clientX;
+    workflowScissorStroke.lastY = event.clientY;
+    document.querySelectorAll(".workflow-link-hit").forEach((path) => {
+      const idx = path.dataset.index;
+      if (idx == null || workflowScissorStroke.cut.has(idx)) return;
+      try {
+        const len = path.getTotalLength();
+        const steps = Math.max(8, Math.min(60, Math.round(len / 14)));
+        for (let i = 0; i <= steps; i++) {
+          const pt = path.getPointAtLength((len * i) / steps);
+          const sp = workflowSvgPointToClient(pt);
+          if (!sp) continue;
+          if (pointNearSegment(sp.x, sp.y, segA.x, segA.y, segB.x, segB.y, 9)) {
+            workflowScissorStroke.cut.add(idx);
+            path.classList.add("is-cutting");
+            break;
+          }
+        }
+      } catch (e) {}
+    });
+    return;
+  }
+  if (workflowGroupDrag && workflowGroupDrag.pointerId === event.pointerId) {
+    const dx = (event.clientX - workflowGroupDrag.startX) / workflowZoom;
+    const dy = (event.clientY - workflowGroupDrag.startY) / workflowZoom;
+    workflowGroupDrag.moved ||= Math.abs(event.clientX - workflowGroupDrag.startX) + Math.abs(event.clientY - workflowGroupDrag.startY) > 3;
+    workflowGroupDrag.base.forEach((b, id) => {
+      const n = workflowNodeById(id);
+      if (!n) return;
+      n.x = clamp(b.x + dx, WORKFLOW_CANVAS_MIN_X, WORKFLOW_CANVAS_MAX_X);
+      n.y = clamp(b.y + dy, WORKFLOW_CANVAS_MIN_Y, WORKFLOW_CANVAS_MAX_Y);
+    });
+    refreshWorkflowCanvasDom();
+    return;
+  }
   if (workflowMaterialChipDrag && workflowMaterialChipDrag.pointerId === event.pointerId) {
     const dx = event.clientX - workflowMaterialChipDrag.startX;
     const dy = event.clientY - workflowMaterialChipDrag.startY;
@@ -7779,6 +7910,35 @@ document.addEventListener("pointermove", (event) => {
 });
 
 document.addEventListener("pointerup", (event) => {
+  if (workflowScissorStroke && workflowScissorStroke.pointerId === event.pointerId) {
+    const stroke = workflowScissorStroke;
+    workflowScissorStroke = null;
+    stroke.el?.remove();
+    const cutIdx = Array.from(stroke.cut).map((i) => Number(i)).filter((i) => Number.isFinite(i));
+    if (cutIdx.length) {
+      pushWorkflowHistory();
+      const drop = new Set(cutIdx);
+      currentAgent.workflow_edges = (currentAgent.workflow_edges || []).filter((_, i) => !drop.has(i));
+      workflowCheckReport = null;
+      workflowDryRunReport = null;
+      setFeedback(`已剪断 ${cutIdx.length} 条连线。`);
+      renderWorkflowStable();
+    } else {
+      refreshWorkflowCanvasDom();
+    }
+    return;
+  }
+  if (workflowGroupDrag && workflowGroupDrag.pointerId === event.pointerId) {
+    const drag = workflowGroupDrag;
+    workflowGroupDrag = null;
+    if (drag.moved) {
+      workflowHistoryPast.push(drag.before);
+      workflowHistoryFuture.length = 0;
+      workflowCheckReport = null;
+    }
+    renderWorkflowStable();
+    return;
+  }
   if (workflowMaterialChipDrag && workflowMaterialChipDrag.pointerId === event.pointerId) {
     const drag = workflowMaterialChipDrag;
     workflowMaterialChipDrag = null;
@@ -8080,6 +8240,34 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "workflow-select-mode") {
       workflowSelectionMode = true;
+      workflowScissorMode = false;
+      workflowSelectionMove = null;
+      setFeedback("框选模式：在画布上拖出范围即可选中多个节点。");
+      renderWorkflowStable();
+    }
+    if (action === "workflow-scissor-mode") {
+      workflowScissorMode = !workflowScissorMode;
+      workflowSelectionMode = false;
+      workflowSelectionMove = null;
+      setFeedback(workflowScissorMode ? "剪刀模式：按住鼠标划过要剪断的连线即可删除。" : "已退出剪刀模式。");
+      renderWorkflowStable();
+    }
+    if (action === "workflow-clear-selection") {
+      workflowSelectionMode = false;
+      workflowScissorMode = false;
+      workflowSelectionMove = null;
+      workflowSelectedNodeIds.clear();
+      workflowSelectionDrag?.box?.remove();
+      workflowSelectionDrag = null;
+      setFeedback("已回到正常操作。");
+      renderWorkflowStable();
+    }
+    if (action === "move-selected-workflow-nodes") {
+      if (!workflowSelectedNodeIds.size) return;
+      workflowSelectionMove = !workflowSelectionMove ? true : null;
+      setFeedback(workflowSelectionMove
+        ? "移动模式：在画布上按住拖动，所有选中节点一起移动；完成后再点一下『移动』。"
+        : "已结束移动模式。");
       renderWorkflowStable();
     }
     if (action === "workflow-undo") {
@@ -8760,6 +8948,10 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "toggle-integration") {
       toggleListValue("module_ids", target.dataset.id);
+      const nowOn = (currentAgent.module_ids || []).includes(target.dataset.id);
+      const mod = (state.integrations || state.modules || []).find((m) => m.module_id === target.dataset.id);
+      const nm = mod?.name || target.dataset.id;
+      setFeedback(nowOn ? `已把蓝图「${nm}」加入当前方案，记得点保存让它生效。` : `已从当前方案移除蓝图「${nm}」，记得点保存。`);
       render();
     }
     if (action === "save-blueprint-manifest") {
