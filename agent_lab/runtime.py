@@ -48,6 +48,10 @@ DETERMINISTIC_ACTIONS = {
     "save_state",
     "save_memory",
     "heartbeat",
+    "agent_role",
+    "api_scope",
+    "prompt_inject",
+    "note",
 }
 
 

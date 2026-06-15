@@ -328,7 +328,7 @@ def default_workflow_nodes() -> list[dict[str, Any]]:
             "kind": "trigger",
             "stage": "entry",
             "action": "listen_message",
-            "instruction": "统一承接命令、关键词、自然语言、拍一拍、notice、WebUI、插件事件和 webhook 触发。",
+            "instruction": "只承接消息、命令、暗号、关键词、正则、拍一拍、notice 和自然语言入口；定时、插件事件、Webhook 使用独立入口素材。",
             "output_variable": "event.message",
             "x": 70,
             "y": 240,
@@ -685,8 +685,17 @@ class WorkflowTrigger:
     regex: list[str] = field(default_factory=list)
     cron: str = ""
     cron_expressions: list[str] = field(default_factory=list)
+    schedule_timezone: str = ""
+    schedule_jitter_seconds: int = 0
+    schedule_payload: dict[str, Any] = field(default_factory=dict)
+    schedule_output_variable: str = "event.schedule"
+    plugin_sources: list[str] = field(default_factory=list)
     plugin_events: list[str] = field(default_factory=list)
+    plugin_match_mode: str = "any"  # any | all
+    plugin_payload_variable: str = "event.payload"
     webhook_path: str = ""
+    webhook_auth_type: str = "none"  # none | bearer | header
+    webhook_secret_id: str = ""
     description: str = ""
 
     @classmethod
@@ -721,14 +730,28 @@ class WorkflowTrigger:
             for item in base.types
             if str(item).strip() in valid_types
         ] or ["command"]
-        for key in ("command_names", "keywords", "regex", "cron_expressions", "plugin_events"):
+        for key in (
+            "command_names",
+            "keywords",
+            "regex",
+            "cron_expressions",
+            "plugin_sources",
+            "plugin_events",
+        ):
             value = getattr(base, key)
             if isinstance(value, str):
                 value = [part.strip() for part in value.replace("；", ",").split(",")]
             elif not isinstance(value, list):
                 value = []
             setattr(base, key, [str(item).strip() for item in value if str(item).strip()])
-        for key in ("command_names", "keywords", "regex", "cron_expressions", "plugin_events"):
+        for key in (
+            "command_names",
+            "keywords",
+            "regex",
+            "cron_expressions",
+            "plugin_sources",
+            "plugin_events",
+        ):
             setattr(base, key, _clean_string_list(getattr(base, key)))
         base.cron = str(base.cron or "").strip()[:120]
         if base.cron and base.cron not in base.cron_expressions:
@@ -736,7 +759,29 @@ class WorkflowTrigger:
         base.cron_expressions = [item[:120] for item in base.cron_expressions if item.strip()][:12]
         if not base.cron and base.cron_expressions:
             base.cron = base.cron_expressions[0]
+        base.schedule_timezone = str(base.schedule_timezone or "").strip()[:80]
+        try:
+            base.schedule_jitter_seconds = max(0, min(int(base.schedule_jitter_seconds or 0), 86400))
+        except Exception:
+            base.schedule_jitter_seconds = 0
+        if not isinstance(base.schedule_payload, dict):
+            base.schedule_payload = {}
+        else:
+            base.schedule_payload = dict(base.schedule_payload)
+        base.schedule_output_variable = (
+            str(base.schedule_output_variable or "event.schedule").strip()[:160]
+            or "event.schedule"
+        )
+        match_mode = str(base.plugin_match_mode or "any").strip().lower()
+        base.plugin_match_mode = match_mode if match_mode in {"any", "all"} else "any"
+        base.plugin_payload_variable = (
+            str(base.plugin_payload_variable or "event.payload").strip()[:160]
+            or "event.payload"
+        )
         base.webhook_path = str(base.webhook_path or "").strip()[:200]
+        auth_type = str(base.webhook_auth_type or "none").strip().lower()
+        base.webhook_auth_type = auth_type if auth_type in {"none", "bearer", "header"} else "none"
+        base.webhook_secret_id = str(base.webhook_secret_id or "").strip()[:160]
         base.description = str(base.description or "").strip()[:500]
         return base
 
@@ -1251,6 +1296,8 @@ class TaskState:
             "node_outputs": {},
             "variables": {},
             "react_traces": [],
+            "prompt_injections": [],
+            "api_scopes": {},
             "execution_counts": {},
             "blackboard": {
                 "assignments": [],

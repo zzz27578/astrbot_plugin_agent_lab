@@ -178,11 +178,14 @@ WORKFLOW_ACTIONS = {
     "archive",
     "exit_summary",
     "manual",
+    "agent_role",
+    "api_scope",
     "dispatch_tasks",
     "collect_report",
     "agent_message",
     "agent_debate",
     "summarize_decision",
+    "prompt_inject",
     "note",
     "delay",
 }
@@ -292,11 +295,29 @@ BUILTIN_TOOL_CATALOG = [
 ]
 
 BUILTIN_WORKFLOW_MODULE_CATALOG: dict[str, dict[str, Any]] = {
+    "agent_role": {
+        "kind": "state",
+        "stage": "plan",
+        "risk": "safe",
+        "description": "Agent 角色块：在画布上声明子 Agent 泳道，和 AgentSpec.sub_agents 双向同步。",
+    },
+    "api_scope": {
+        "kind": "api",
+        "stage": "plan",
+        "risk": "work",
+        "description": "API 范围块：声明一组节点默认使用的自定义 API，与一次性 call_api 节点区分。",
+    },
+    "prompt_inject": {
+        "kind": "state",
+        "stage": "plan",
+        "risk": "safe",
+        "description": "提示注入节点：把局部提示写入 workflow_data.prompt_injections，影响后续执行节点。",
+    },
     "note": {
         "kind": "state",
         "stage": "plan",
         "risk": "safe",
-        "description": "便签/注释节点：无副作用，直接放行（No-Op），用于标注与可读性。",
+        "description": "兼容旧便签节点；保存或执行时按 prompt_inject 处理，不再是 No-Op。",
     },
     "delay": {
         "kind": "state",
@@ -2164,7 +2185,10 @@ class AgentLabPlugin(Star):
         self.node_executors.register("agent_message", self._execute_agent_message_node)
         self.node_executors.register("agent_debate", self._execute_debate_validation_node)
         self.node_executors.register("summarize_decision", self._execute_summarize_decision_node)
-        self.node_executors.register("note", self._execute_note_node)
+        self.node_executors.register("agent_role", self._execute_agent_role_node)
+        self.node_executors.register("api_scope", self._execute_api_scope_node)
+        self.node_executors.register("prompt_inject", self._execute_prompt_inject_node)
+        self.node_executors.register("note", self._execute_prompt_inject_node)
         self.node_executors.register("delay", self._execute_delay_node)
         self.node_executors.register("request_approval", self._execute_approval_node)
         self.node_executors.register("wait_user", self._execute_wait_node)
@@ -2861,6 +2885,8 @@ class AgentLabPlugin(Star):
         data.setdefault("node_outputs", {})
         data.setdefault("variables", {})
         data.setdefault("react_traces", [])
+        data.setdefault("prompt_injections", [])
+        data.setdefault("api_scopes", {})
         data.setdefault("execution_counts", {})
         data.setdefault("observations", [])
         data.setdefault("loop_guard", {})
@@ -3548,7 +3574,15 @@ class AgentLabPlugin(Star):
                 text=getattr(ctx.event, "message_str", "") or ctx.task.root_goal,
             )
             self._ensure_workflow_data(ctx.task)["trigger_payload"] = payload
+        trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(ctx.spec, "workflow_trigger", None)))
+        if action == "schedule_trigger" and trigger.schedule_payload:
+            payload.setdefault("schedule_payload", dict(trigger.schedule_payload))
+            payload.update({key: value for key, value in trigger.schedule_payload.items() if key not in payload})
         self._set_workflow_variable(ctx.task, "trigger_payload", payload)
+        if action == "schedule_trigger":
+            self._set_workflow_variable(ctx.task, trigger.schedule_output_variable, payload)
+        elif action == "plugin_event_trigger":
+            self._set_workflow_variable(ctx.task, trigger.plugin_payload_variable, payload.get("payload") or payload)
         data = {
             "route": "success",
             "source": payload.get("source") or action,
@@ -5218,22 +5252,27 @@ class AgentLabPlugin(Star):
                 advance=False,
                 note="node_executor_api_budget",
             )
+        node_for_call = dict(ctx.node)
+        scope = self._api_scope_for_node(ctx.task, ctx.node)
+        if scope and not str(node_for_call.get("api_id") or node_for_call.get("ref_id") or "").strip():
+            node_for_call["api_id"] = str(scope.get("api_id") or "").strip()
+            node_for_call["api_scope_id"] = str(scope.get("node_id") or "").strip()
         base = {
-            "node_id": str(ctx.node.get("id") or ""),
-            "title": ctx.node.get("title") or ctx.node.get("id") or "",
-            "kind": ctx.node.get("kind") or "api",
-            "action": ctx.node.get("action") or "call_api",
+            "node_id": str(node_for_call.get("id") or ""),
+            "title": node_for_call.get("title") or node_for_call.get("id") or "",
+            "kind": node_for_call.get("kind") or "api",
+            "action": node_for_call.get("action") or "call_api",
             "ok": False,
             "status": "blocked",
             "summary": "",
             "details": "",
         }
-        payload = self._node_payload_from_variable(ctx.task, ctx.node)
+        payload = self._node_payload_from_variable(ctx.task, node_for_call)
         if payload is None:
-            payload = self._node_templated_json_object(ctx.task, ctx.node, "api_payload", "payload", "params")
+            payload = self._node_templated_json_object(ctx.task, node_for_call, "api_payload", "payload", "params")
         else:
             payload = self._resolve_workflow_template(ctx.task, payload)
-        worker = await self._run_parallel_api_worker(ctx.node, base, api_payload=payload)
+        worker = await self._run_parallel_api_worker(node_for_call, base, api_payload=payload)
         ok = bool(worker.get("ok"))
         return NodeExecutionResult(
             ok=ok,
@@ -5244,6 +5283,26 @@ class AgentLabPlugin(Star):
             blocked=not ok,
             note="node_executor_api",
         )
+
+    def _api_scope_for_node(self, task: TaskState, node: dict[str, Any]) -> dict[str, Any]:
+        node_id = str((node or {}).get("id") or "").strip()
+        data = self._ensure_workflow_data(task)
+        scopes = data.get("api_scopes") if isinstance(data.get("api_scopes"), dict) else {}
+        selected = None
+        for scope in scopes.values():
+            if not isinstance(scope, dict):
+                continue
+            scope_mode = str(scope.get("scope_mode") or "selected").strip().lower()
+            node_ids = {
+                str(item).strip()
+                for item in (scope.get("scope_node_ids") or [])
+                if str(item).strip()
+            }
+            if node_ids and node_id in node_ids:
+                return scope
+            if scope_mode in {"all", "global", "downstream"} and selected is None:
+                selected = scope
+        return selected or {}
 
     async def _execute_tool_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         tool_name = str(
@@ -5557,10 +5616,11 @@ class AgentLabPlugin(Star):
                 ok=False,
                 status="blocked",
                 outcome="意见传达节点缺少目标子Agent。",
-                next_node_id=self._single_next(ctx.outgoing),
+                next_node_id="",
                 data={"route": "failed"},
                 needs_react=False,
-                advance=True,
+                blocked=True,
+                advance=False,
                 note="node_executor_agent_message_no_target",
             )
         ctx.task.post_message(target, text, sender="orchestrator")
@@ -5612,15 +5672,144 @@ class AgentLabPlugin(Star):
             note="node_executor_summarize_decision",
         )
 
-    async def _execute_note_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
-        """便签/注释：无副作用，直接放行到下游（No-Op，提升复杂流可读性）。"""
+    async def _execute_agent_role_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """Agent 角色块：运行时确认画布角色已同步到 AgentSpec.sub_agents。"""
+        sub_agent_id = str(
+            ctx.node.get("sub_agent_id")
+            or ctx.node.get("ref_id")
+            or ctx.node.get("id")
+            or ""
+        ).strip()
+        sub_agent = next(
+            (
+                item
+                for item in (getattr(ctx.spec, "sub_agents", None) or [])
+                if getattr(item, "sub_agent_id", "") == sub_agent_id
+            ),
+            None,
+        )
+        if not sub_agent:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="Agent 角色块未同步到有效子 Agent。",
+                blocked=True,
+                advance=False,
+                data={"sub_agent_id": sub_agent_id},
+                note="node_executor_agent_role_missing",
+            )
+        data = {
+            "sub_agent_id": sub_agent.sub_agent_id,
+            "name": sub_agent.name,
+            "provider_id": sub_agent.provider_id,
+            "enabled_tools": list(sub_agent.enabled_tools or []),
+            "member_node_ids": list(sub_agent.member_node_ids or []),
+            "max_concurrency": sub_agent.max_concurrency,
+            "rate_per_minute": sub_agent.rate_per_minute,
+        }
         return NodeExecutionResult(
-            outcome="便签节点（无副作用）。",
+            outcome=f"Agent 角色块已生效：{sub_agent.name or sub_agent.sub_agent_id}。",
             next_node_id=self._single_next(ctx.outgoing),
-            data={"route": "success"},
+            data=data,
             needs_react=False,
             advance=True,
-            note="node_executor_note",
+            note="node_executor_agent_role",
+        )
+
+    async def _execute_api_scope_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """API 范围块：写入任务上下文，供下游 call_api 读取默认 API。"""
+        api_id = str(ctx.node.get("api_id") or ctx.node.get("ref_id") or "").strip()
+        if not api_id:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="API 范围块必须绑定 api_id。",
+                blocked=True,
+                advance=False,
+                note="node_executor_api_scope_missing_api",
+            )
+        api_spec = self.storage.get_custom_api(api_id)
+        if not api_spec:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome=f"未找到 API 范围块绑定的自定义 API：{api_id}",
+                blocked=True,
+                advance=False,
+                note="node_executor_api_scope_missing_registry",
+            )
+        scope_node_ids = self._node_string_list(
+            ctx.task,
+            ctx.node,
+            "scope_node_ids",
+            "member_node_ids",
+            "target_node_ids",
+        )
+        scope = {
+            "node_id": str(ctx.node.get("id") or ""),
+            "api_id": api_id,
+            "scope_mode": str(ctx.node.get("scope_mode") or "selected").strip() or "selected",
+            "scope_node_ids": scope_node_ids,
+            "owner": str(ctx.node.get("owner") or "").strip(),
+            "output_variable": str(ctx.node.get("output_variable") or "").strip(),
+            "default_call_policy": self._node_json_object(ctx.node, "default_call_policy", "constraints"),
+        }
+        data = self._ensure_workflow_data(ctx.task)
+        scopes = data.setdefault("api_scopes", {})
+        if not isinstance(scopes, dict):
+            scopes = {}
+            data["api_scopes"] = scopes
+        scopes[str(ctx.node.get("id") or api_id)] = scope
+        if scope["output_variable"]:
+            self._set_workflow_variable(ctx.task, scope["output_variable"], scope)
+        return NodeExecutionResult(
+            outcome=f"API 范围块已绑定：{api_spec.get('name') or api_id}。",
+            next_node_id=self._single_next(ctx.outgoing),
+            data=scope,
+            needs_react=False,
+            advance=True,
+            note="node_executor_api_scope",
+        )
+
+    async def _execute_prompt_inject_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """提示注入：写入运行态，供后续 tick/ReAct 节点读取。"""
+        text = str(
+            ctx.node.get("inject_text")
+            or ctx.node.get("prompt")
+            or ctx.node.get("instruction")
+            or ctx.node.get("description")
+            or ""
+        ).strip()
+        if not text:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="提示注入节点缺少注入文本。",
+                blocked=True,
+                advance=False,
+                note="node_executor_prompt_inject_missing_text",
+            )
+        injection = {
+            "time": now_iso(),
+            "node_id": str(ctx.node.get("id") or ""),
+            "title": str(ctx.node.get("title") or ""),
+            "scope": str(ctx.node.get("inject_scope") or ctx.node.get("scope") or "downstream").strip() or "downstream",
+            "text": self._compact_text(text, 2000),
+        }
+        data = self._ensure_workflow_data(ctx.task)
+        injections = data.setdefault("prompt_injections", [])
+        if not isinstance(injections, list):
+            injections = []
+        injections.append(injection)
+        data["prompt_injections"] = injections[-40:]
+        self._set_workflow_variable(ctx.task, "workflow.prompt_injections", data["prompt_injections"])
+        return NodeExecutionResult(
+            outcome="提示注入已写入后续执行上下文。",
+            next_node_id=self._single_next(ctx.outgoing),
+            data=injection,
+            needs_react=False,
+            advance=True,
+            note="node_executor_prompt_inject",
         )
 
     async def _execute_delay_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
@@ -6838,8 +7027,13 @@ class AgentLabPlugin(Star):
                     base["error"] = "Custom API worker is outside the Agent tool profile."
                     base["summary"] = base["error"]
                     return base
+                node_for_call = dict(node)
+                scope = self._api_scope_for_node(task, node_for_call)
+                if scope and not str(node_for_call.get("api_id") or node_for_call.get("ref_id") or "").strip():
+                    node_for_call["api_id"] = str(scope.get("api_id") or "").strip()
+                    node_for_call["api_scope_id"] = str(scope.get("node_id") or "").strip()
                 return await self._run_parallel_api_worker(
-                    node,
+                    node_for_call,
                     base,
                     api_payload=api_payload,
                 )
@@ -7049,7 +7243,7 @@ class AgentLabPlugin(Star):
         if kind == "tool":
             allowed = set(spec.enabled_tools or [])
             if owner_tools:
-                allowed = allowed & set(owner_tools)
+                allowed = allowed & set(owner_tools) if allowed else set(owner_tools)
             for name in allowed:
                 if name in {
                     NO_EXTERNAL_TOOLS_SENTINEL,
@@ -8596,10 +8790,24 @@ class AgentLabPlugin(Star):
                         continue
                 if not matched:
                     return False, "regex not matched"
-        if source_type == "plugin_event" and trigger.plugin_events:
+        if source_type == "plugin_event" and (trigger.plugin_events or trigger.plugin_sources):
             event_name = str(payload.get("event_name") or payload.get("name") or "").strip()
-            if event_name not in set(trigger.plugin_events):
-                return False, "plugin event not matched"
+            plugin_name = str(
+                payload.get("plugin_name")
+                or payload.get("plugin")
+                or payload.get("source_plugin")
+                or payload.get("source")
+                or ""
+            ).strip()
+            event_matched = bool(trigger.plugin_events and event_name in set(trigger.plugin_events))
+            source_matched = bool(trigger.plugin_sources and plugin_name in set(trigger.plugin_sources))
+            if trigger.plugin_match_mode == "all":
+                if trigger.plugin_events and not event_matched:
+                    return False, "plugin event not matched"
+                if trigger.plugin_sources and not source_matched:
+                    return False, "plugin source not matched"
+            elif not (event_matched or source_matched):
+                return False, "plugin event/source not matched"
         if source_type == "webhook" and trigger.webhook_path:
             requested = str(payload.get("webhook_path") or payload.get("path") or "").strip().strip("/")
             expected = trigger.webhook_path.strip().strip("/")
@@ -8726,6 +8934,8 @@ class AgentLabPlugin(Star):
                 kind = "state"
             stage = cls._workflow_stage(raw_node, kind)
             action = str(raw_node.get("action") or "manual").strip() or "manual"
+            if action == "note":
+                action = "prompt_inject"
             description = str(raw_node.get("description") or "").strip()
             instruction = str(
                 raw_node.get("instruction") or description or title
@@ -8783,12 +8993,18 @@ class AgentLabPlugin(Star):
                 ("ref_type", 32),
                 ("ref_id", 160),
                 ("api_id", 160),
+                ("api_scope_id", 160),
+                ("sub_agent_id", 160),
+                ("owner", 160),
                 ("plugin_name", 160),
                 ("tool_name", 160),
                 ("skill_name", 160),
                 ("condition", 1000),
                 ("route_variable", 160),
                 ("variable_name", 160),
+                ("output_variable", 160),
+                ("payload_variable", 160),
+                ("scope_mode", 32),
                 ("template_id", 160),
                 ("path", 500),
                 ("url", 500),
@@ -8798,6 +9014,8 @@ class AgentLabPlugin(Star):
                 ("permission_profile", 32),
                 ("parallel_group", 80),
                 ("prompt", 4000),
+                ("role_prompt", 4000),
+                ("inject_text", 4000),
             ):
                 if key in normalized:
                     normalized[key] = str(normalized.get(key) or "").strip()[:limit]
@@ -8852,6 +9070,294 @@ class AgentLabPlugin(Star):
 
         spec.workflow_nodes = nodes
         spec.workflow_edges = edges
+        cls._sync_workflow_trigger_from_nodes(spec)
+        cls._sync_workflow_sub_agents(spec)
+
+    @classmethod
+    def _sync_workflow_trigger_from_nodes(cls, spec: AgentSpec) -> None:
+        trigger = WorkflowTrigger.from_dict(cls._as_plain_dict(getattr(spec, "workflow_trigger", None)))
+        original = WorkflowTrigger.from_dict(cls._as_plain_dict(getattr(spec, "workflow_trigger", None)))
+        nodes = [node for node in spec.workflow_nodes if isinstance(node, dict)]
+        existing_ids = {str(node.get("id") or "") for node in nodes}
+        existing_actions = {str(node.get("action") or "").strip() for node in nodes}
+
+        def add_migrated_node(
+            action: str,
+            title: str,
+            defaults: dict[str, Any],
+        ) -> None:
+            node_id = cls._unique_workflow_id(cls._normalize_workflow_id(action), existing_ids)
+            existing_ids.add(node_id)
+            nodes.append(
+                {
+                    "id": node_id,
+                    "title": title,
+                    "kind": "trigger",
+                    "stage": "entry",
+                    "action": action,
+                    "instruction": defaults.pop("instruction", title),
+                    "x": 70,
+                    "y": 240 + len(existing_ids) * 48,
+                    **defaults,
+                }
+            )
+
+        original_types = set(original.types or [])
+        if "schedule" in original_types and "schedule_trigger" not in existing_actions:
+            add_migrated_node(
+                "schedule_trigger",
+                "复杂定时入口",
+                {
+                    "instruction": "从旧 workflow_trigger 定时配置迁移而来，只承接 cron 定时入口。",
+                    "cron": original.cron,
+                    "cron_expressions": list(original.cron_expressions or []),
+                    "timezone": original.schedule_timezone,
+                    "jitter_seconds": original.schedule_jitter_seconds,
+                    "schedule_payload": dict(original.schedule_payload or {}),
+                    "output_variable": original.schedule_output_variable,
+                },
+            )
+        if "plugin_event" in original_types and "plugin_event_trigger" not in existing_actions:
+            add_migrated_node(
+                "plugin_event_trigger",
+                "插件事件入口",
+                {
+                    "instruction": "从旧 workflow_trigger 插件事件配置迁移而来，只承接插件事件入口。",
+                    "plugin_sources": list(original.plugin_sources or []),
+                    "event_names": list(original.plugin_events or []),
+                    "match_mode": original.plugin_match_mode,
+                    "payload_variable": original.plugin_payload_variable,
+                },
+            )
+        if "webhook" in original_types and "webhook_trigger" not in existing_actions:
+            add_migrated_node(
+                "webhook_trigger",
+                "Webhook 入口",
+                {
+                    "instruction": "从旧 workflow_trigger Webhook 配置迁移而来，只承接 Webhook 入口。",
+                    "webhook_path": original.webhook_path,
+                    "auth_type": original.webhook_auth_type,
+                    "credential_id": original.webhook_secret_id,
+                },
+            )
+
+        actions = {str(node.get("action") or "").strip() for node in nodes}
+
+        message_types = {
+            "command",
+            "natural",
+            "silent_global",
+            "message_monitor",
+            "keyword",
+            "regex",
+            "poke",
+            "notice",
+            "manual_webui",
+        }
+        types: set[str] = set()
+
+        def params(node: dict[str, Any]) -> dict[str, Any]:
+            raw = node.get("params")
+            if isinstance(raw, dict):
+                return raw
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                except Exception:
+                    return {}
+                return parsed if isinstance(parsed, dict) else {}
+            return {}
+
+        for node in nodes:
+            action = str(node.get("action") or "").strip()
+            node_params = params(node)
+            if action == "listen_message":
+                node_types = cls._clean_string_list(node.get("trigger_types") or node.get("types"))
+                selected = [item for item in node_types if item in message_types]
+                if not selected:
+                    selected = [item for item in original.types if item in message_types]
+                if not selected:
+                    selected = ["command"]
+                types.update(selected)
+                trigger.command_names = cls._clean_string_list(
+                    node.get("command_names") or node.get("commands") or original.command_names
+                )
+                trigger.keywords = cls._clean_string_list(
+                    node.get("keywords") or node.get("keyword") or original.keywords
+                )
+                trigger.regex = cls._clean_string_list(
+                    node.get("regex") or node.get("regex_patterns") or original.regex
+                )
+            elif action == "schedule_trigger":
+                types.add("schedule")
+                cron_value = (
+                    node.get("cron")
+                    or node_params.get("cron")
+                    or node.get("cron_expression")
+                    or original.cron
+                )
+                trigger.cron = str(cron_value or "").strip()[:120]
+                trigger.cron_expressions = cls._clean_string_list(
+                    node.get("cron_expressions")
+                    or node.get("crons")
+                    or ([trigger.cron] if trigger.cron else original.cron_expressions)
+                )
+                trigger.schedule_timezone = str(
+                    node.get("timezone")
+                    or node_params.get("timezone")
+                    or original.schedule_timezone
+                    or ""
+                ).strip()[:80]
+                jitter = node.get("jitter_seconds", node_params.get("jitter_seconds", original.schedule_jitter_seconds))
+                try:
+                    trigger.schedule_jitter_seconds = max(0, min(int(jitter or 0), 86400))
+                except Exception:
+                    trigger.schedule_jitter_seconds = 0
+                payload = node.get("schedule_payload") or node_params.get("payload") or original.schedule_payload
+                trigger.schedule_payload = payload if isinstance(payload, dict) else {}
+                trigger.schedule_output_variable = str(
+                    node.get("output_variable")
+                    or original.schedule_output_variable
+                    or "event.schedule"
+                ).strip()[:160] or "event.schedule"
+            elif action == "plugin_event_trigger":
+                types.add("plugin_event")
+                trigger.plugin_sources = cls._clean_string_list(
+                    node.get("plugin_sources")
+                    or node.get("plugin_name")
+                    or node.get("plugin_names")
+                    or original.plugin_sources
+                )
+                trigger.plugin_events = cls._clean_string_list(
+                    node.get("event_names")
+                    or node.get("plugin_events")
+                    or node.get("event_name")
+                    or original.plugin_events
+                )
+                mode = str(node.get("match_mode") or original.plugin_match_mode or "any").strip().lower()
+                trigger.plugin_match_mode = mode if mode in {"any", "all"} else "any"
+                trigger.plugin_payload_variable = str(
+                    node.get("payload_variable")
+                    or node.get("output_variable")
+                    or original.plugin_payload_variable
+                    or "event.payload"
+                ).strip()[:160] or "event.payload"
+            elif action == "webhook_trigger":
+                types.add("webhook")
+                trigger.webhook_path = str(
+                    node.get("webhook_path")
+                    or node.get("path")
+                    or node_params.get("path")
+                    or original.webhook_path
+                    or ""
+                ).strip()[:200]
+                auth_type = str(
+                    node.get("auth_type")
+                    or node_params.get("auth_type")
+                    or original.webhook_auth_type
+                    or "none"
+                ).strip().lower()
+                trigger.webhook_auth_type = auth_type if auth_type in {"none", "bearer", "header"} else "none"
+                trigger.webhook_secret_id = str(
+                    node.get("credential_id")
+                    or node.get("secret_id")
+                    or original.webhook_secret_id
+                    or ""
+                ).strip()[:160]
+
+        if actions.intersection({"listen_message", "schedule_trigger", "plugin_event_trigger", "webhook_trigger"}):
+            trigger.types = list(types) or ["command"]
+        spec.workflow_trigger = WorkflowTrigger.from_dict(trigger.to_dict() if hasattr(trigger, "to_dict") else trigger.__dict__)
+
+        for node in nodes:
+            action = str(node.get("action") or "").strip()
+            if action == "listen_message":
+                node.setdefault("trigger_types", [item for item in spec.workflow_trigger.types if item in message_types])
+                node.setdefault("command_names", list(spec.workflow_trigger.command_names))
+                node.setdefault("keywords", list(spec.workflow_trigger.keywords))
+                node.setdefault("regex", list(spec.workflow_trigger.regex))
+            elif action == "schedule_trigger":
+                node.setdefault("cron", spec.workflow_trigger.cron)
+                node.setdefault("timezone", spec.workflow_trigger.schedule_timezone)
+                node.setdefault("jitter_seconds", spec.workflow_trigger.schedule_jitter_seconds)
+                node.setdefault("schedule_payload", dict(spec.workflow_trigger.schedule_payload))
+                node.setdefault("output_variable", spec.workflow_trigger.schedule_output_variable)
+            elif action == "plugin_event_trigger":
+                node.setdefault("plugin_sources", list(spec.workflow_trigger.plugin_sources))
+                node.setdefault("event_names", list(spec.workflow_trigger.plugin_events))
+                node.setdefault("match_mode", spec.workflow_trigger.plugin_match_mode)
+                node.setdefault("payload_variable", spec.workflow_trigger.plugin_payload_variable)
+            elif action == "webhook_trigger":
+                node.setdefault("webhook_path", spec.workflow_trigger.webhook_path)
+                node.setdefault("auth_type", spec.workflow_trigger.webhook_auth_type)
+                node.setdefault("credential_id", spec.workflow_trigger.webhook_secret_id)
+
+    @classmethod
+    def _sync_workflow_sub_agents(cls, spec: AgentSpec) -> None:
+        existing = {
+            str(getattr(item, "sub_agent_id", "") or ""): item
+            for item in (getattr(spec, "sub_agents", None) or [])
+            if str(getattr(item, "sub_agent_id", "") or "").strip()
+        }
+        by_name = {
+            str(getattr(item, "name", "") or "").strip(): item
+            for item in existing.values()
+            if str(getattr(item, "name", "") or "").strip()
+        }
+        merged: dict[str, SubAgentSpec] = dict(existing)
+        for node in spec.workflow_nodes:
+            if node.get("action") != "agent_role":
+                continue
+            sub_agent_id = str(
+                node.get("sub_agent_id")
+                or node.get("ref_id")
+                or node.get("id")
+                or ""
+            ).strip()
+            name = str(node.get("name") or node.get("title") or "").strip()
+            source = existing.get(sub_agent_id) or by_name.get(name) or SubAgentSpec()
+            payload = source.to_dict()
+            if sub_agent_id:
+                payload["sub_agent_id"] = sub_agent_id
+            if name:
+                payload["name"] = name
+            for node_key, spec_key in (
+                ("color", "color"),
+                ("role_prompt", "role_prompt"),
+                ("prompt", "role_prompt"),
+                ("provider_id", "provider_id"),
+                ("max_concurrency", "max_concurrency"),
+                ("rate_per_minute", "rate_per_minute"),
+                ("notes", "notes"),
+            ):
+                if node.get(node_key) not in (None, ""):
+                    payload[spec_key] = node.get(node_key)
+            if "enabled_tools" in node:
+                payload["enabled_tools"] = cls._clean_string_list(node.get("enabled_tools"))
+            item = SubAgentSpec.from_dict(payload)
+            node["sub_agent_id"] = item.sub_agent_id
+            node["ref_type"] = "sub_agent"
+            node["ref_id"] = item.sub_agent_id
+            node["color"] = item.color
+            node["provider_id"] = item.provider_id
+            node["max_concurrency"] = item.max_concurrency
+            node["rate_per_minute"] = item.rate_per_minute
+            if item.role_prompt:
+                node["role_prompt"] = item.role_prompt
+            merged[item.sub_agent_id] = item
+
+        valid_ids = set(merged.keys())
+        members: dict[str, list[str]] = {sub_id: [] for sub_id in valid_ids}
+        for node in spec.workflow_nodes:
+            owner = str(node.get("owner") or "").strip()
+            node_id = str(node.get("id") or "").strip()
+            if owner and owner in valid_ids and node_id and node.get("action") != "agent_role":
+                members.setdefault(owner, []).append(node_id)
+            elif owner and owner not in valid_ids:
+                node.pop("owner", None)
+        for sub_id, item in merged.items():
+            item.member_node_ids = list(dict.fromkeys(members.get(sub_id, [])))
+        spec.sub_agents = list(merged.values())
 
     @staticmethod
     def _normalize_workflow_id(value: str) -> str:
@@ -9017,6 +9523,39 @@ class AgentLabPlugin(Star):
             "write_record",
             "generate_report",
         }
+        trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
+        sub_agent_ids = {
+            str(getattr(item, "sub_agent_id", "") or "").strip()
+            for item in (getattr(spec, "sub_agents", None) or [])
+            if str(getattr(item, "sub_agent_id", "") or "").strip()
+        }
+        owner_counts: dict[str, int] = {sub_id: 0 for sub_id in sub_agent_ids}
+
+        def has_value(node: dict[str, Any], *keys: str) -> bool:
+            for key in keys:
+                value = node.get(key)
+                if value in (None, "", [], {}):
+                    continue
+                return True
+            return False
+
+        def scoped_api_for(node_id: str) -> str:
+            for scope_node in nodes:
+                if scope_node.get("action") != "api_scope":
+                    continue
+                api_id = str(scope_node.get("api_id") or scope_node.get("ref_id") or "").strip()
+                scope_mode = str(scope_node.get("scope_mode") or "selected").strip().lower()
+                scope_ids = self._clean_string_list(
+                    scope_node.get("scope_node_ids")
+                    or scope_node.get("member_node_ids")
+                    or scope_node.get("target_node_ids")
+                )
+                if scope_ids and node_id in set(scope_ids):
+                    return api_id
+                if scope_mode in {"all", "global"}:
+                    return api_id
+            return ""
+
         entry_ids = [
             str(node.get("id") or "")
             for node in nodes
@@ -9119,6 +9658,12 @@ class AgentLabPlugin(Star):
             stack.extend(outgoing.get(current, []))
         for node in nodes:
             node_id = str(node.get("id") or "")
+            owner_id = str(node.get("owner") or "").strip()
+            if owner_id:
+                if owner_id not in sub_agent_ids:
+                    add_issue("error", "owner_missing_agent_role", "节点 owner 必须指向存在的 Agent 角色块/子 Agent。", node_id)
+                else:
+                    owner_counts[owner_id] = owner_counts.get(owner_id, 0) + 1
             if entry_ids and node_id not in reachable:
                 add_issue("warn", "unreachable_node", "入口无法到达该节点。", node_id)
             if node_id not in entry_ids and not incoming.get(node_id):
@@ -9142,15 +9687,48 @@ class AgentLabPlugin(Star):
                 if not edge_types.intersection({"success", "failed", "uncertain", "error"}):
                     add_issue("warn", "detector_without_result_routes", "检测模块建议显式配置通过/失败/不确定/错误出口。", node_id)
             if node.get("special_module") == "listener":
-                trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
                 if not trigger.enabled:
                     add_issue("warn", "listener_trigger_disabled", "监听模块所在工作流的 workflow_trigger 未启用。", node_id)
-                if node.get("action") == "listen_message" and not set(trigger.types or []).intersection({"message_monitor", "keyword", "regex", "natural"}):
+                if node.get("action") == "listen_message" and not set(trigger.types or []).intersection({"command", "manual_webui", "silent_global", "message_monitor", "keyword", "regex", "natural", "poke", "notice"}):
                     add_issue("warn", "listener_without_message_trigger", "消息监听模块需要在 workflow_trigger.types 中启用 message_monitor、keyword、regex 或 natural。", node_id)
+                if node.get("action") == "listen_message" and has_value(
+                    node,
+                    "cron",
+                    "cron_expression",
+                    "cron_expressions",
+                    "timezone",
+                    "schedule_payload",
+                    "jitter_seconds",
+                    "plugin_sources",
+                    "plugin_events",
+                    "event_names",
+                    "plugin_name",
+                    "webhook_path",
+                    "webhook_auth_type",
+                    "webhook_secret_id",
+                ):
+                    add_issue("error", "message_trigger_has_foreign_fields", "消息监听入口不得配置定时、插件事件或 Webhook 字段。", node_id)
+                if node.get("action") == "plugin_event_trigger" and not (trigger.plugin_sources or trigger.plugin_events):
+                    add_issue("error", "plugin_event_trigger_unbound", "插件事件入口必须绑定插件来源或事件名。", node_id)
                 if node.get("action") == "webhook_trigger" and "webhook" not in set(trigger.types or []):
                     add_issue("warn", "webhook_trigger_not_enabled", "Webhook 监听模块需要在 workflow_trigger.types 中启用 webhook。", node_id)
-                if node.get("action") == "schedule_trigger" and ("schedule" not in set(trigger.types or []) or not (trigger.cron or trigger.cron_expressions)):
-                    add_issue("warn", "schedule_trigger_not_configured", "定时监听模块需要启用 schedule 并配置 cron。", node_id)
+                if node.get("action") == "webhook_trigger" and not trigger.webhook_path:
+                    add_issue("warn", "webhook_trigger_without_path", "Webhook 入口建议配置路径，避免任何 webhook 都能命中。", node_id)
+                if node.get("action") == "schedule_trigger" and ("schedule" not in set(trigger.types or [])):
+                    add_issue("warn", "schedule_trigger_not_enabled", "定时监听模块需要在 workflow_trigger.types 中启用 schedule。", node_id)
+                if node.get("action") == "schedule_trigger" and not (trigger.cron or trigger.cron_expressions):
+                    add_issue("error", "schedule_trigger_without_cron", "定时入口必须配置 cron。", node_id)
+            if node.get("action") == "agent_role":
+                role_id = str(node.get("sub_agent_id") or node.get("ref_id") or "").strip()
+                if not role_id or role_id not in sub_agent_ids:
+                    add_issue("error", "agent_role_not_synced", "Agent 角色块必须能同步为有效子 Agent。", node_id)
+            if node.get("action") == "prompt_inject":
+                if not incoming.get(node_id):
+                    add_issue("error", "prompt_inject_missing_input", "提示注入节点必须有输入连线。", node_id)
+                if not outgoing.get(node_id):
+                    add_issue("error", "prompt_inject_missing_output", "提示注入节点必须有输出连线。", node_id)
+                if not str(node.get("inject_text") or node.get("prompt") or node.get("instruction") or node.get("description") or "").strip():
+                    add_issue("error", "prompt_inject_missing_text", "提示注入节点必须配置注入文本。", node_id)
             if node.get("kind") == "loop" or node.get("action") == "retry":
                 edge_types = {
                     str(edge.get("edge_type") or "success")
@@ -9209,15 +9787,28 @@ class AgentLabPlugin(Star):
                     add_issue("warn", "login_without_handoff", "登录/刷新登录态流程建议连接 human_login_handoff，以处理验证码、2FA 或风控验证。", node_id)
                 if node.get("action") in {"cookie_jar", "browser_profile", "credential_ref"} and "secret_redaction" not in action_ids:
                     add_issue("warn", "identity_without_redaction", "身份/Cookie/浏览器会话工作流建议加入 secret_redaction，防止报告或归档泄露敏感字段。", node_id)
+            if node.get("action") == "api_scope":
+                api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
+                if not api_id:
+                    add_issue("error", "api_scope_unbound", "API 范围块必须绑定有效 API。", node_id)
+                else:
+                    api_spec = self.storage.get_custom_api(api_id)
+                    if not api_spec:
+                        add_issue("error", "api_scope_missing_api", f"API 范围块引用的自定义 API 不存在：{api_id}", node_id)
+                    elif not api_spec.get("url"):
+                        add_issue("error", "api_scope_without_url", f"API 范围块引用的自定义 API 未配置 URL：{api_id}", node_id)
             if node.get("kind") == "api" or node.get("action") == "call_api":
                 api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
+                inherited_api_id = scoped_api_for(node_id)
                 if api_id:
                     api_spec = self.storage.get_custom_api(api_id)
                     if not api_spec:
                         add_issue("error", "missing_api", f"未找到引用的自定义 API：{api_id}", node_id)
                     elif not api_spec.get("url"):
                         add_issue("error", "api_without_url", f"自定义 API 未配置 URL：{api_id}", node_id)
-                else:
+                elif node.get("action") == "call_api" and inherited_api_id:
+                    pass
+                elif node.get("action") != "api_scope":
                     add_issue("warn", "api_unbound", "API 节点尚未绑定具体自定义 API。", node_id)
             plugin_name = str(node.get("plugin_name") or "").strip()
             if plugin_name:

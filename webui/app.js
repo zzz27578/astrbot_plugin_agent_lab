@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260613-fix6";
+const AGENT_LAB_WEBUI_BUILD = "20260615-fix7";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -144,12 +144,16 @@ const WORKFLOW_ACTIONS = [
   "revoke_session",
   "global_control",
   "skill_evolution",
+  "agent_role",
+  "api_scope",
+  "prompt_inject",
   "manual",
 ];
 const WORKFLOW_PERMISSION_PROFILES = ["ordinary", "work", "code", "web", "danger"];
-const WORKFLOW_REF_TYPES = ["", "tool", "api", "plugin", "skill", "module", "workflow"];
+const WORKFLOW_REF_TYPES = ["", "tool", "api", "plugin", "skill", "module", "workflow", "sub_agent"];
 const WORKFLOW_WORKER_TYPES = ["", "GenericWorker", "ResearchWorker", "CodeReaderWorker", "PatchWorker", "TestWorker", "ApiWorker", "ToolWorker"];
 const WORKFLOW_TRIGGER_TYPES = ["command", "natural", "silent_global", "message_monitor", "keyword", "regex", "poke", "notice", "schedule", "plugin_event", "webhook", "manual_webui"];
+const WORKFLOW_MESSAGE_TRIGGER_TYPES = ["command", "natural", "silent_global", "message_monitor", "keyword", "regex", "poke", "notice", "manual_webui"];
 const WORKFLOW_CHAT_TYPES = ["private", "group"];
 const WORKFLOW_EDGE_TYPES = ["success", "failed", "uncertain", "retry", "approved", "rejected"];
 
@@ -219,6 +223,9 @@ const WORKFLOW_ACTION_RUNTIME_TYPES = {
   revoke_session: "guard",
   global_control: "guard",
   skill_evolution: "guard",
+  agent_role: "state",
+  api_scope: "api",
+  prompt_inject: "state",
   manual: "react",
 };
 const WORKFLOW_KIND_RUNTIME_TYPES = {
@@ -307,6 +314,9 @@ const WORKFLOW_EXECUTABLE_ACTIONS = new Set([
   "revoke_session",
   "global_control",
   "skill_evolution",
+  "agent_role",
+  "api_scope",
+  "prompt_inject",
 ]);
 const WORKFLOW_RUNTIME_LABELS = {
   entry: "入口",
@@ -332,14 +342,15 @@ const WORKFLOW_NODE_GROUPS = [
   { id: "entry_context", title: "开始与上下文", hint: "入口命令、确认、摘要和任务隔离。", icon: "book", open: true },
   { id: "plan_route", title: "计划与分支", hint: "拆解任务、选择路线、控制重试。", icon: "gridAdd", open: true },
   { id: "tool_exec", title: "执行工具", hint: "绑定 AstrBot 工具并把结果写入状态。", icon: "tool", open: true },
-  { id: "api_external", title: "API 与外部系统", hint: "调用已注册 API，凭证由后端注入。", icon: "gridAdd", open: false },
+  { id: "api_external", title: "API 与外部系统", hint: "一次 API 调用和 API 作用范围分开管理。", icon: "gridAdd", open: false },
+  { id: "data_template", title: "数据与模板", hint: "变量、文本模板、JSON 转换、合并和迭代准备。", icon: "copy", open: false },
   { id: "memory_state", title: "记忆与回写", hint: "读取任务记忆，保存进度和完成记录。", icon: "memory", open: true },
   { id: "safety_human", title: "审批与安全", hint: "高风险动作、人工接管、范围锁定。", icon: "select", open: false },
   { id: "account_identity", title: "账号与登录态", hint: "绑定 GitHub / B站 等账号凭证、检查登录、人工扫码、用完注销。", icon: "select", open: false },
   { id: "validate_exit", title: "校验与出口", hint: "验收、通知、归档和退出回流。", icon: "copy", open: false },
   { id: "parallel_pack", title: "并行工作包", hint: "可拆给并行 Agent 的只读/复核/汇总单元。", icon: "gridAdd", open: false },
-  { id: "agent_collab", title: "协同", hint: "主agent 调度：任务分配、报告整理、意见传达、事项讨论、汇总决策。", icon: "gridAdd", open: false },
-  { id: "flow_timing", title: "时序与辅助", hint: "延时/暂停、便签注释等流程控制与可读性素材。", icon: "gridAdd", open: false },
+  { id: "agent_collab", title: "Agent 编排", hint: "Agent 角色、领地、任务分配、报告整理、意见传达、事项讨论、汇总决策。", icon: "gridAdd", open: false },
+  { id: "flow_timing", title: "时序与辅助", hint: "延时/暂停等流程控制素材。", icon: "gridAdd", open: false },
 ];
 const WORKFLOW_LIBRARY_GROUP_ALIASES = {
   "入口": "entry_context",
@@ -349,12 +360,16 @@ const WORKFLOW_LIBRARY_GROUP_ALIASES = {
   "工具": "tool_exec",
   "API": "api_external",
   "记忆": "memory_state",
-  "变量": "plan_route",
+  "变量": "data_template",
+  "数据": "data_template",
+  "模板": "data_template",
   "安全": "safety_human",
   "控制": "report_control",
   "验证": "validate_exit",
   "出口": "validate_exit",
   "并行": "parallel_pack",
+  "Agent": "agent_collab",
+  "协同": "agent_collab",
 };
 
 const WORKFLOW_MERGED_TEMPLATE_IDS = new Set([
@@ -397,6 +412,54 @@ const WORKFLOW_LEGACY_NODE_MIGRATIONS = {
 
 const WORKFLOW_NODE_TEMPLATES = [
   {
+    id: "agent_role",
+    title: "注册新 Agent",
+    kind: "state",
+    stage: "plan",
+    action: "agent_role",
+    library_group: "agent_collab",
+    instruction: "在画布上声明一个 Agent 角色块，可配置模型、颜色、提示词、工具范围、并发和限速。",
+    color: "#5b8def",
+    role_prompt: "",
+    enabled_tools: [],
+    max_concurrency: 2,
+    rate_per_minute: 0,
+  },
+  {
+    id: "main_agent",
+    title: "主 Agent",
+    kind: "branch",
+    stage: "checkpoint",
+    action: "summarize_decision",
+    library_group: "agent_collab",
+    instruction: "主 Agent 汇总黑板、校验子 Agent 结果，并决定下一步。",
+    next_step: "",
+  },
+  {
+    id: "api_scope",
+    title: "API 作用范围",
+    kind: "api",
+    stage: "plan",
+    action: "api_scope",
+    library_group: "api_external",
+    instruction: "为一组节点声明默认 API，和一次性 API 调用分开管理。",
+    api_id: "",
+    scope_mode: "selected",
+    scope_node_ids: [],
+    output_variable: "workflow.api_scope",
+  },
+  {
+    id: "prompt_inject",
+    title: "提示注入",
+    kind: "state",
+    stage: "plan",
+    action: "prompt_inject",
+    library_group: "flow_timing",
+    instruction: "把局部提示写入后续执行上下文，影响后续节点或 Agent。",
+    inject_text: "",
+    inject_scope: "downstream",
+  },
+  {
     id: "delay",
     title: "延时",
     kind: "state",
@@ -408,12 +471,14 @@ const WORKFLOW_NODE_TEMPLATES = [
   },
   {
     id: "note",
-    title: "便签 / 注释",
+    title: "提示注入",
     kind: "state",
     stage: "plan",
-    action: "note",
+    action: "prompt_inject",
     library_group: "flow_timing",
-    instruction: "流程说明便签，不影响执行（No-Op）。",
+    instruction: "兼容旧便签素材：现在会把文本注入后续执行上下文。",
+    inject_text: "",
+    inject_scope: "downstream",
   },
   {
     id: "dispatch_tasks",
@@ -952,7 +1017,19 @@ const WORKFLOW_NODE_TEMPLATES = [
     action: "schedule_trigger",
     library_group: "trigger_monitor",
     instruction: "按 cron 或外部计划触发工作流，可替代简单定时任务，后续仍能接检测、审批、报告。",
+    cron: "*/15 * * * *",
     params: { cron: "*/15 * * * *" },
+  },
+  {
+    id: "webhook_trigger",
+    title: "Webhook 入口",
+    kind: "trigger",
+    stage: "entry",
+    action: "webhook_trigger",
+    library_group: "trigger_monitor",
+    instruction: "外部系统通过 Webhook 调用触发工作流；只承接 Webhook 入口，配置路径与鉴权。",
+    webhook_path: "/agent-lab/webhook",
+    auth_type: "none",
   },
   {
     id: "rate_limit_guard",
@@ -1317,6 +1394,8 @@ let workflowSelectionMode = false;
 let workflowSelectionDrag = null;
 let workflowScissorMode = false;
 let workflowScissorStroke = null; // 剪刀划线删除连线
+let workflowTerritoryPaintAgent = ""; // 正在为哪个子Agent圈地(sub_agent_id)
+let workflowApiScopePaint = ""; // 正在为哪个 api_scope 节点选范围(node id)
 let workflowGroupDrag = null;     // 框选后整组移动
 let workflowSelectionMove = false; // 框选后“移动”开关：开后在画布上拖动即整组移动
 let workflowSelectedNodeIds = new Set();
@@ -4205,7 +4284,6 @@ function workflowRightDock(report) {
         <button class="workflow-dock-button danger" data-action="delete-selected-workflow-nodes" title="删除框选节点" aria-label="删除框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
         <button class="workflow-dock-button text ${(selectedCount || workflowSelectionMode || workflowScissorMode) ? "" : "is-hidden"}" data-action="workflow-clear-selection" title="退出框选 / 剪刀，回到正常操作" aria-label="完成" type="button">完成</button>
       </div>
-      ${workflowAssignBar()}
       <div class="workflow-dock-group">
         <button class="workflow-dock-button" data-action="workflow-undo" title="撤销" aria-label="撤销" ${workflowHistoryPast.length ? "" : "disabled"} type="button">${iconImg("undo", "撤销")}</button>
         <button class="workflow-dock-button" data-action="workflow-redo" title="重做" aria-label="重做" ${workflowHistoryFuture.length ? "" : "disabled"} type="button">${iconImg("redo", "重做")}</button>
@@ -4213,7 +4291,6 @@ function workflowRightDock(report) {
       <div class="workflow-dock-group">
         <button class="workflow-dock-button text ${workflowToolboxOpen ? "active" : ""}" data-action="toggle-workflow-toolbox" title="打开 / 收起节点素材库" aria-label="素材库" type="button">素材</button>
         <button class="workflow-dock-button text ${workflowGlobalOpen ? "active" : ""}" data-action="open-workflow-global" title="全局规则：整套工作流的安全准则 / 参考 / 技能" aria-label="全局规则" type="button">全局</button>
-        <button class="workflow-dock-button text ${workflowSubAgentOpen ? "active" : ""}" data-action="toggle-workflow-subagents" title="子Agent 泳道：注册子Agent、管理领地" aria-label="子Agent" type="button">子A</button>
         <button class="workflow-dock-button text" data-action="auto-layout-workflow" title="按连线层级自动整理画布" aria-label="整理" type="button">整理</button>
       </div>
       <div class="workflow-dock-group">
@@ -4978,6 +5055,7 @@ function workflowCanvas() {
         <span>${currentAgent.workflow_edges.length} 连线</span>
         <span>${Math.round(workflowZoom * 100)}%</span>
       </div>
+      ${(workflowTerritoryPaintAgent || workflowApiScopePaint) ? `<div class="workflow-paint-banner">${workflowTerritoryPaintAgent ? "圈地中：点节点加入/移出领地" : "选范围中：点节点加入/移出 API 范围"} <button class="button tiny" data-action="workflow-exit-paint" type="button">完成</button></div>` : ""}
       <div class="workflow-zoom-controls">
         <button class="button tiny secondary" data-action="workflow-zoom-out" type="button">缩小</button>
         <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
@@ -5738,6 +5816,7 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
     <article class="node flow-node ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${workflowNodeHasMultiOut(item) ? "has-multi-out" : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0) + offsetY}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
       ${inPortHtml}
       ${outPortsHtml}
+      ${workflowApiBadge(item)}
       <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
       <span class="node-runtime">
         <b class="runtime-badge ${esc(executorState.tone)}">${esc(executorState.label)}</b>
@@ -5745,9 +5824,38 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
       </span>
       <strong>${esc(item.title || item.id)}</strong>
       <p>${esc(item.instruction || item.description || item.id)}</p>
+      ${workflowBlockCardExtra(item)}
       <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}${item.output_variable ? ` · 输出 ${esc(item.output_variable)}` : ""}${item.prompt ? " · 有提示词" : ""}</span>
     </article>
   `;
+}
+
+function workflowBlockCardExtra(item) {
+  const act = item.action || "";
+  if (act === "agent_role") {
+    const subId = item.sub_agent_id || item.id || "";
+    const painting = workflowTerritoryPaintAgent && workflowTerritoryPaintAgent === subId;
+    const tools = Array.isArray(item.enabled_tools) ? item.enabled_tools.length : 0;
+    const owned = (currentAgent.workflow_nodes || []).filter((n) => n.owner === subId && n.action !== "agent_role").length;
+    const summary = `${esc(item.provider_id || "继承模型")} · 工具 ${tools ? tools : "继承"} · 并发 ${item.max_concurrency || 2}${item.rate_per_minute ? (" · " + item.rate_per_minute + "/min") : ""} · 领地 ${owned} 节点`;
+    return `<div class="node-block-extra"><span class="node-block-summary">${summary}</span><button class="node-block-btn ${painting ? "active" : ""}" data-action="agent-role-territory" data-id="${esc(subId)}" type="button">${painting ? "完成圈地" : "选领地"}</button></div>`;
+  }
+  if (act === "api_scope") {
+    const painting = workflowApiScopePaint && workflowApiScopePaint === item.id;
+    const cnt = Array.isArray(item.scope_node_ids) ? item.scope_node_ids.length : 0;
+    const scopeLabel = ({ selected: "框选节点", downstream: "下游", all: "整个方案" })[item.scope_mode || "selected"] || (item.scope_mode || "框选节点");
+    const summary = `API: ${esc(item.api_id || "未绑定")} · 范围 ${scopeLabel} · ${cnt} 节点`;
+    return `<div class="node-block-extra"><span class="node-block-summary">${summary}</span><button class="node-block-btn ${painting ? "active" : ""}" data-action="api-scope-range" data-id="${esc(item.id)}" type="button">${painting ? "完成选范围" : "选范围"}</button></div>`;
+  }
+  return "";
+}
+
+function workflowApiBadge(item) {
+  if (!item || item.action === "api_scope") return "";
+  const scopes = (currentAgent.workflow_nodes || []).filter((n) => n.action === "api_scope" && Array.isArray(n.scope_node_ids) && n.scope_node_ids.includes(item.id));
+  if (!scopes.length) return "";
+  const apiNames = scopes.map((n) => n.api_id || "API").join(" / ");
+  return `<span class="node-api-badge" title="受 API 范围块覆盖：${esc(apiNames)}">API</span>`;
 }
 
 function selectedWorkflowNode() {
@@ -5769,6 +5877,27 @@ function workflowDatalistOptions(items, key = "name", label = "description") {
 // ============ 节点"填空题"字段注册表 ============
 // 每个 action 只暴露新手真正需要填的几个字段；高级字段收进"高级"模式。
 const WORKFLOW_SIMPLE_FIELDS = {
+  agent_role: [
+    { field: "_role_lead", label: "Agent 角色块", type: "note", text: "上方『节点名称』就是这个 Agent 的名字；保存方案后会同步成一个子Agent 泳道。" },
+    { field: "provider_id", label: "模型 / provider（留空＝继承方案）", type: "text", placeholder: "如：openai-gpt4o" },
+    { field: "color", label: "卡片 / 领地颜色", type: "color", default: "#5b8def" },
+    { field: "role_prompt", label: "角色提示词", type: "textarea", placeholder: "这个 Agent 的职责、风格与边界。" },
+    { field: "enabled_tools", label: "工具范围（每行一个工具名，留空＝继承方案）", type: "lines", placeholder: "web_search" },
+    { field: "max_concurrency", label: "并发上限", type: "number", default: 2, min: 1, max: 16 },
+    { field: "rate_per_minute", label: "每分钟限速（0＝不限）", type: "number", default: 0, min: 0, max: 1000 },
+    { field: "_territory", label: "领地", type: "note", text: "框选画布节点后，用右侧工具条『指派』把它们圈给这个 Agent；未圈的归主agent。" },
+  ],
+  api_scope: [
+    { field: "api_id", label: "绑定哪个已注册 API？", type: "apiPick", required: true },
+    { field: "scope_mode", label: "作用范围", type: "select", default: "selected", options: [["selected","只作用于框选的节点"],["downstream","作用于下游所有节点"],["all","作用于整个方案"]] },
+    { field: "output_variable", label: "输出变量名", type: "text", placeholder: "workflow.api_scope" },
+    { field: "_api_scope", label: "API 作用范围", type: "note", text: "只声明一组节点默认用的 API，和一次性『API 调用』节点区分；范围内节点未显式指定 API 时回退到这里。" },
+  ],
+  prompt_inject: [
+    { field: "inject_text", label: "要注入的提示文本", type: "textarea", required: true, placeholder: "会拼进后续执行上下文的提示，例如：注意目标站点限频，放慢节奏。" },
+    { field: "inject_scope", label: "注入范围", type: "select", default: "downstream", options: [["downstream","下游所有节点"],["next","仅下一个节点"],["all","整个任务"]] },
+    { field: "_pi", label: "提示注入（原便签升级）", type: "note", text: "和便签不同，这段文本会真正影响后续节点/Agent 的执行，不只是注释。" },
+  ],
   note: [
     { field: "instruction", label: "便签内容", type: "textarea",
       placeholder: "写给自己/协作者的说明，不影响执行（No-Op）。" },
@@ -5813,8 +5942,10 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "instruction", label: "报告范围 / 包含什么", type: "textarea", placeholder: "如：汇总成果、关键改动、遗留风险、下次续写入口。" },
   ],
   plugin_event_trigger: [
-    { field: "event_name", label: "监听哪个插件事件？", type: "text", placeholder: "其它插件广播的事件名；留空＝全部" },
-    { field: "_pet", label: "插件事件触发", type: "note", text: "把其它插件广播的事件作为流程起点。" },
+    { field: "plugin_sources", label: "来自哪些插件（每行一个，留空＝任意插件）", type: "lines", placeholder: "astrbot_plugin_xxx" },
+    { field: "event_names", label: "监听哪些事件名（每行一个，留空＝全部）", type: "lines", placeholder: "qq_guard.ban_requested" },
+    { field: "match_mode", label: "匹配方式", type: "select", default: "any", options: [["any","命中任一事件即触发"],["all","全部事件命中才触发"]] },
+    { field: "_pet", label: "插件事件入口", type: "note", text: "只承接其它插件广播的事件；保存后自动并入工作流触发的『插件事件』类型。" },
   ],
   listen_message: [
     { field: "monitor_scope", label: "什么时候监听？", type: "select", default: "mentioned",
@@ -5848,8 +5979,16 @@ const WORKFLOW_SIMPLE_FIELDS = {
       text: "选全局或填群聊/私聊、群和用户的黑白名单；命中走『成功』出口，不命中走『失败』出口。" },
   ],
   schedule_trigger: [
-    { field: "_cron", label: "定时规则在工作流『触发』里配置 cron", type: "note",
-      text: "例如每天 9 点：0 9 * * *。这个节点是定时流程的起点。" },
+    { field: "cron", label: "定时 Cron 表达式", type: "textarea", required: true, placeholder: "每天9点：0 9 * * *；每15分钟：*/15 * * * *" },
+    { field: "timezone", label: "时区（可选）", type: "text", placeholder: "Asia/Shanghai" },
+    { field: "jitter_seconds", label: "错峰抖动秒数（0＝不抖动）", type: "number", default: 0, min: 0, max: 86400 },
+    { field: "_st", label: "复杂定时入口", type: "note", text: "只承接定时触发；保存后自动并入工作流触发的『定时』类型。" },
+  ],
+  webhook_trigger: [
+    { field: "webhook_path", label: "Webhook 路径", type: "text", required: true, placeholder: "/agent-lab/moderation" },
+    { field: "auth_type", label: "鉴权方式", type: "select", default: "none", options: [["none","无鉴权"],["bearer","Bearer Token"],["header","自定义 Header"]] },
+    { field: "credential_id", label: "凭证（Bearer/Header 时选）", type: "credPick" },
+    { field: "_wt", label: "Webhook 入口", type: "note", text: "只承接外部 Webhook 调用；保存后自动并入『Webhook』类型。路径建议唯一，避免任何请求都命中。" },
   ],
   run_tools: [
     { field: "tool_name", label: "调用哪个工具？", type: "toolPick", required: true },
@@ -6156,6 +6295,7 @@ function workflowSimpleFieldHtml(item, f) {
   if (f.type === "number") { const cur = fieldVal(f) || (f.default ?? ""); return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" type="number" min="${esc(f.min ?? 0)}" max="${esc(f.max ?? 1000000)}" value="${esc(cur)}" />${hint}</label>`; }
   if (f.type === "checkbox") { const checked = f.syncPath ? agentFieldByPath(f.syncPath) === true : item[f.field] === true; return `<label class="check-line simple-field"><input id="${id}" type="checkbox" ${checked ? "checked" : ""} />${esc(f.label)}${req}${hint}</label>`; }
   if (f.type === "select") { const cur = fieldVal(f) || f.default || (f.options?.[0]?.[0] ?? ""); const opts = (f.options || []).map(([v,l]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`).join(""); return `<label class="simple-field">${esc(f.label)}${req}<select id="${id}">${opts}</select>${hint}</label>`; }
+  if (f.type === "color") { const cur = fieldVal(f) || f.default || "#5b8def"; return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" type="color" value="${esc(cur)}" />${hint}</label>`; }
   if (f.type === "toolPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-tool-list" value="${esc(fieldVal(f))}" placeholder="选择 AstrBot 工具" />${hint}</label>`;
   if (f.type === "apiPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-api-list" value="${esc(fieldVal(f))}" placeholder="选择已注册 API" />${hint}</label>`;
   if (f.type === "credPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-cred-list" value="${esc(fieldVal(f))}" placeholder="选择已保存的账号/凭证" />${hint}</label>`;
@@ -6329,7 +6469,8 @@ function workflowInspector() {
   const isListenNode = item.action === "listen_message";
   const isScopeNode = item.action === "scope_filter";
   // 消息监听入口=配置“入口规则/暗号/关键词”；范围过滤器=配置“生效范围/黑白名单”。
-  const isEntryNode = isListenNode || ["summarize_entry", "confirm_entry"].includes(item.action) || (stage === "entry" && !isScopeNode);
+  const isDedicatedTrigger = ["schedule_trigger", "plugin_event_trigger", "webhook_trigger"].includes(item.action);
+  const isEntryNode = isListenNode || ["summarize_entry", "confirm_entry"].includes(item.action) || (stage === "entry" && !isScopeNode && !isDedicatedTrigger);
   const isExitNode = stage === "archive" || ["archive", "exit_summary"].includes(item.action);
   const isApprovalNode = item.action === "request_approval";
   const mode = workflowEditorMode === "advanced" ? "advanced" : "simple";
@@ -6354,17 +6495,14 @@ function workflowInspector() {
   const entryRule = isEntryNode ? `
     <div class="workflow-node-rule-box">
       <div class="panel-head"><div><p class="card-kicker">触发条件（统一）</p><h3>什么消息/事件让机器人进入任务模式</h3></div></div>
-      <small class="field-hint">这里是入口触发的唯一配置处（已合并原「自动化面板」与「入口规则」两处）。暗号=精确短语，关键词=模糊命中，自然语言=由模型判断该不该进。生效范围/黑白名单在范围过滤节点配置。</small>
+      <small class="field-hint">这里是入口触发的唯一配置处（已合并原「自动化面板」与「入口规则」两处）。暗号=精确短语，关键词=模糊命中，自然语言=由模型判断该不该进。生效范围/黑白名单在范围过滤节点配置。定时 / 插件事件 / Webhook 请用各自的专用入口素材分别配置。</small>
       <label class="check-line"><input type="checkbox" id="wf-uni-enabled" ${(currentAgent.workflow_trigger || {}).enabled !== false ? "checked" : ""} /> 启用此工作流触发</label>
-      <label class="span-2">启用的触发类型<div class="choice-grid compact-choice">${checkboxGroupHtml("wf-uni-types", WORKFLOW_TRIGGER_TYPES, (currentAgent.workflow_trigger || {}).types || ["command"], workflowTriggerTypeLabel)}</div></label>
+      <label class="span-2">启用的触发类型<div class="choice-grid compact-choice">${checkboxGroupHtml("wf-uni-types", WORKFLOW_MESSAGE_TRIGGER_TYPES, (currentAgent.workflow_trigger || {}).types || ["command"], workflowTriggerTypeLabel)}</div></label>
       <div class="form-grid compact">
         <label>暗号 / 精确短语（每行一个）<textarea id="workflow-entry-trigger-phrases" rows="3" placeholder="每行一个，例如：进入任务模式">${esc(listToLines(ep.trigger_phrases))}</textarea></label>
         <label>关键词 / 模糊命中（每行一个）<textarea id="workflow-entry-trigger-keywords" rows="3" placeholder="每行一个，例如：排查、部署、持续推进">${esc(listToLines(ep.trigger_keywords))}</textarea></label>
         <label>命令别名（每行一个）<textarea id="wf-uni-commands" rows="2" placeholder="agentlab&#10;al">${esc(listToLines((currentAgent.workflow_trigger || {}).command_names || []))}</textarea></label>
         <label>正则（每行一个）<textarea id="wf-uni-regex" rows="2" placeholder="https?://">${esc(listToLines((currentAgent.workflow_trigger || {}).regex || []))}</textarea></label>
-        <label>定时 Cron<textarea id="wf-uni-cron" rows="2" placeholder="*/15 * * * *">${esc((currentAgent.workflow_trigger || {}).cron || "")}</textarea></label>
-        <label>插件事件（每行一个）<textarea id="wf-uni-plugin-events" rows="2" placeholder="qq_guard.ban_requested">${esc(listToLines((currentAgent.workflow_trigger || {}).plugin_events || []))}</textarea></label>
-        <label>Webhook 路径<input id="wf-uni-webhook" value="${esc((currentAgent.workflow_trigger || {}).webhook_path || "")}" placeholder="/agent-lab/moderation" /></label>
       </div>
       <label class="check-line"><input type="checkbox" id="wf-uni-admin-only" ${sc.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
       <label>进入前确认<select id="wf-uni-confirm-mode">${labeledOptions(["off", "fixed", "prompt"], (ep.require_confirmation === false ? "off" : (ep.confirmation_mode || "fixed")), (v) => v === "off" ? "关闭（命中即进）" : v === "fixed" ? "固定话术" : "提示词生成（按下方提示动态生成确认语）")}</select></label>
@@ -7961,6 +8099,7 @@ document.addEventListener("pointerdown", (event) => {
   }
   const canvasEl = document.querySelector(".workflow-canvas");
   const nodeEl = event.target.closest(".flow-node");
+  if (nodeEl && event.target.closest(".node-block-btn")) return;
   if (nodeEl && canvasEl?.contains(nodeEl)) {
     const item = workflowNodeById(nodeEl.dataset.id);
     if (!item) return;
@@ -8533,6 +8672,8 @@ document.addEventListener("click", async (event) => {
     if (action === "workflow-clear-selection") {
       workflowSelectionMode = false;
       workflowScissorMode = false;
+      workflowTerritoryPaintAgent = "";
+      workflowApiScopePaint = "";
       workflowSelectionMove = null;
       workflowSelectedNodeIds.clear();
       workflowSelectionDrag?.box?.remove();
@@ -8709,6 +8850,25 @@ document.addEventListener("click", async (event) => {
         render();
       }
     }
+    if (action === "agent-role-territory") {
+      const __sid = target.dataset.id || "";
+      workflowTerritoryPaintAgent = workflowTerritoryPaintAgent === __sid ? "" : __sid;
+      workflowApiScopePaint = "";
+      setFeedback(workflowTerritoryPaintAgent ? "圈地模式：点画布节点把它加入/移出这个 Agent 的领地，完成后再点一次按钮。" : "已退出圈地模式。");
+      renderWorkflowStable();
+    }
+    if (action === "api-scope-range") {
+      const __aid = target.dataset.id || "";
+      workflowApiScopePaint = workflowApiScopePaint === __aid ? "" : __aid;
+      workflowTerritoryPaintAgent = "";
+      setFeedback(workflowApiScopePaint ? "选范围模式：点节点把它加入/移出这个 API 范围，完成后再点一次按钮。" : "已退出选范围模式。");
+      renderWorkflowStable();
+    }
+    if (action === "workflow-exit-paint") {
+      workflowTerritoryPaintAgent = "";
+      workflowApiScopePaint = "";
+      renderWorkflowStable();
+    }
     if (action === "assign-subagent") {
       const subId = target.dataset.id || "";
       if (workflowSelectedNodeIds.size) {
@@ -8786,8 +8946,19 @@ document.addEventListener("click", async (event) => {
       renderWorkflowStable();
     }
     if (action === "select-workflow-node") {
+      const __nid = target.dataset.id;
+      if (workflowTerritoryPaintAgent) {
+        const __n = currentAgent.workflow_nodes.find((n) => n.id === __nid);
+        if (__n && __n.action !== "agent_role") { pushWorkflowHistory(); setNodeOwner(__nid, __n.owner === workflowTerritoryPaintAgent ? "" : workflowTerritoryPaintAgent); renderWorkflowStable(); }
+        return;
+      }
+      if (workflowApiScopePaint) {
+        const __s = currentAgent.workflow_nodes.find((n) => n.id === workflowApiScopePaint);
+        if (__s && __nid !== workflowApiScopePaint) { pushWorkflowHistory(); const arr = Array.isArray(__s.scope_node_ids) ? __s.scope_node_ids.slice() : []; const __i = arr.indexOf(__nid); if (__i >= 0) arr.splice(__i, 1); else arr.push(__nid); __s.scope_node_ids = arr; renderWorkflowStable(); }
+        return;
+      }
       readAgentForm();
-      selectedWorkflowNodeId = target.dataset.id;
+      selectedWorkflowNodeId = __nid;
       workflowInspectorOpen = true;
       workflowContextMenu = null;
       renderWorkflowStable();

@@ -150,6 +150,22 @@ def _agent_runtime_text(task: TaskState) -> str:
     )
 
 
+def _prompt_injections_text(task: TaskState) -> str:
+    data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
+    rows = data.get("prompt_injections") if isinstance(data.get("prompt_injections"), list) else []
+    lines = []
+    for item in rows[-8:]:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        node_id = str(item.get("node_id") or "-").strip()
+        scope = str(item.get("scope") or "downstream").strip()
+        lines.append(f"- {node_id} scope={scope}: {text[:500]}")
+    return "\n".join(lines) if lines else "- none"
+
+
 def _confirm_mode_label(entry: Any) -> str:
     if not getattr(entry, "require_confirmation", True):
         return "不确认（命中即进）"
@@ -336,6 +352,9 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 
 [Structured Agent Runtime]
 {_agent_runtime_text(task)}
+
+[Active Prompt Injections]
+{_prompt_injections_text(task)}
 
 [Heartbeat Contract]
 如果这是心跳唤醒，第一步必须读取并相信 task_state 和 agent_runtime；本轮只推进有限工作单元；结束时必须用 agent_lab_update_state 总结当前现状、下一步、是否阻塞。
