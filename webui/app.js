@@ -1486,6 +1486,10 @@ function workflowNodeExecutorState(item = {}) {
 
 function workflowNodeGroupKey(item = {}) {
   const group = String(item.library_group || "").trim();
+  // 1) 直接命中合法分组 id（如 agent_collab / flow_timing / data_template / api_external）优先返回，
+  //    避免再走启发式被误判进 plan_route。
+  if (group && WORKFLOW_NODE_GROUPS.some((g) => g.id === group)) return group;
+  // 2) 中文/历史别名映射。
   if (WORKFLOW_LIBRARY_GROUP_ALIASES[group]) return WORKFLOW_LIBRARY_GROUP_ALIASES[group];
   const action = String(item.action || "").trim();
   const kind = String(item.kind || "").trim();
