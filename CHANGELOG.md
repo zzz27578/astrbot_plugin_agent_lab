@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.2.0 — 子Agent 泳道 / 多Agent 协同 / 并发治理 + 素材审计
+
+- 子Agent「泳道」：新增 `SubAgentSpec`(模型/角色/工具范围/领地/并发上限/限速)，内嵌 `AgentSpec.sub_agents`；节点新增 `owner` 归属字段；零迁移兼容老方案。
+- 并发治理：并行 worker provider/工具/角色按 node.owner 的子Agent 解析；三层并发闸(泳道内按 owner 分桶 / 方案级 / 全局 tick 闸)；心跳错峰 jitter；资源锁(同标签跨泳道串行)；每泳道限速。新增配置 `global_max_concurrent_ticks`/`heartbeat_jitter_seconds`/`workflow_parallel_concurrency`。
+- 多Agent 协同：共享黑板(`TaskState.workflow_data["blackboard"]`)+ 5 个协同节点(任务分配/报告整理/意见传达/事项讨论/汇总决策，debate 复用现成校验)。
+- 素材体系审计与整改：64 个可见素材逐项过三准则(功能唯一/可配置/插入生效)，整改后 56✅/8🟡/0❌(docs/MATERIAL_AUDIT.md)；补齐协同节点编辑表单、隐藏重复换皮件、修正 memory_filter 元数据。
+- n8n 对标补空白：新增 `note`(便签/No-Op) 与 `delay`(延时≤300s) 节点。
+- 入口统一：入口节点检查器重构为单一「触发条件表」(暗号/命令/关键词/正则/自然语言/定时/插件事件/Webhook/启用/谁能触发/进入前确认三档)，合并原自动化面板与入口规则两处配置；自动化面板触发段改为摘要+指引，避免重复与覆盖。
+- 确认三档：EntryPolicy 新增 confirmation_mode(off/fixed/prompt)，注入提示反映「关闭/固定话术/提示词生成」。
+- 前端：子Agent 注册表抽屉(增删改查)、框选「指派」圈地、节点按 owner 上色、领地框渲染、provider free-text；协同/延时节点的画布模板与编辑表单。
+- 自检：models/concurrency/orchestration/subagent-ui 四套 smoke + compileall + node --check 全过。可视化交互需在 AstrBot WebUI 实测。
+
+
 ## v0.1.1
 
 - Added `NodeExecutorRegistry` and canonical workflow runtime types so canvas nodes normalize into entry/state/decision/parallel/tool/api/memory/guard/validation/notification/terminal/react categories.

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import json
 import re
+import random
 import shutil
 import subprocess
 import time
@@ -48,6 +50,7 @@ from .agent_lab.conditions import (
 )
 from .agent_lab.hooks import AgentLabRunHooks
 from .agent_lab.models import TaskBudget, new_id, now_iso
+from .agent_lab.models import SubAgentSpec
 from .agent_lab.models import WorkflowScope, WorkflowTrigger
 from .agent_lab.modules import ModuleRegistry
 from .agent_lab.prompts import (
@@ -175,6 +178,13 @@ WORKFLOW_ACTIONS = {
     "archive",
     "exit_summary",
     "manual",
+    "dispatch_tasks",
+    "collect_report",
+    "agent_message",
+    "agent_debate",
+    "summarize_decision",
+    "note",
+    "delay",
 }
 AUTO_IDENTITY_LABEL_SOURCES = {
     "astrbot_runtime",
@@ -282,6 +292,48 @@ BUILTIN_TOOL_CATALOG = [
 ]
 
 BUILTIN_WORKFLOW_MODULE_CATALOG: dict[str, dict[str, Any]] = {
+    "note": {
+        "kind": "state",
+        "stage": "plan",
+        "risk": "safe",
+        "description": "便签/注释节点：无副作用，直接放行（No-Op），用于标注与可读性。",
+    },
+    "delay": {
+        "kind": "state",
+        "stage": "execute",
+        "risk": "safe",
+        "description": "延时节点：等待 N 秒再继续（上限 300s），用于错峰/限频手动节流。",
+    },
+    "dispatch_tasks": {
+        "kind": "branch",
+        "stage": "execute",
+        "risk": "work",
+        "description": "主agent 把任务拆成 assignment，按领地/子Agent 指派并写入共享黑板。",
+    },
+    "collect_report": {
+        "kind": "report",
+        "stage": "checkpoint",
+        "risk": "safe",
+        "description": "收齐子Agent 并行输出，汇成结构化报告写入黑板。",
+    },
+    "agent_message": {
+        "kind": "notification",
+        "stage": "execute",
+        "risk": "safe",
+        "description": "向某个子Agent 的信箱投递一条意见或指令。",
+    },
+    "agent_debate": {
+        "kind": "validation",
+        "stage": "checkpoint",
+        "risk": "work",
+        "description": "让多个子Agent 互相质询/校验不确定结论（复用 debate 校验）。",
+    },
+    "summarize_decision": {
+        "kind": "branch",
+        "stage": "checkpoint",
+        "risk": "work",
+        "description": "主agent 读共享黑板做下一步决策，输出 next_step。",
+    },
     "listen_message": {
         "kind": "trigger",
         "stage": "entry",
@@ -486,6 +538,11 @@ class AgentLabPlugin(Star):
         self.guard = SessionPluginGuard(protected_plugins={PLUGIN_NAME})
         self.webui_server: StandaloneWebUIServer | None = None
         self._running_ticks: set[str] = set()
+        self._global_tick_semaphore = asyncio.Semaphore(
+            max(1, min(int(_cfg(self.config, "global_max_concurrent_ticks", 3) or 3), 32))
+        )
+        self._resource_locks: dict[str, asyncio.Lock] = {}
+        self._lane_rate_state: dict[str, float] = {}
         self.workflow_runtime = WorkflowRuntime(
             max_auto_steps=int(_cfg(self.config, "workflow_auto_steps_per_tick", 6))
         )
@@ -1748,6 +1805,9 @@ class AgentLabPlugin(Star):
             task.add_blocker("heartbeat_event", "无法构造 CronMessageEvent。")
             self.storage.save_task(task)
             return
+        jitter = float(_cfg(self.config, "heartbeat_jitter_seconds", 8) or 0)
+        if jitter > 0:
+            await asyncio.sleep(random.uniform(0, jitter))
         result = await self._tick(event, reason="heartbeat")
         logger.info("[AgentLab] heartbeat result for %s: %s", task.task_id, result[:500])
 
@@ -2099,6 +2159,13 @@ class AgentLabPlugin(Star):
         self.node_executors.register("catch_error", self._execute_catch_error_node)
         self.node_executors.register("validate_output", self._execute_validation_node)
         self.node_executors.register("debate_validation", self._execute_debate_validation_node)
+        self.node_executors.register("dispatch_tasks", self._execute_dispatch_node)
+        self.node_executors.register("collect_report", self._execute_collect_report_node)
+        self.node_executors.register("agent_message", self._execute_agent_message_node)
+        self.node_executors.register("agent_debate", self._execute_debate_validation_node)
+        self.node_executors.register("summarize_decision", self._execute_summarize_decision_node)
+        self.node_executors.register("note", self._execute_note_node)
+        self.node_executors.register("delay", self._execute_delay_node)
         self.node_executors.register("request_approval", self._execute_approval_node)
         self.node_executors.register("wait_user", self._execute_wait_node)
         self.node_executors.register("handoff", self._execute_wait_node)
@@ -5371,6 +5438,209 @@ class AgentLabPlugin(Star):
             note="node_executor_debate_validation",
         )
 
+    async def _execute_dispatch_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """主agent 派活：把节点上的分派清单写进共享黑板 assignments。"""
+        raw = self._node_json_value(ctx.task, ctx.node, "assignments", "dispatch", "tasks")
+        items: list[dict[str, Any]] = []
+        if isinstance(raw, list):
+            for entry in raw:
+                if isinstance(entry, dict):
+                    items.append(entry)
+                elif str(entry or "").strip():
+                    # 支持编辑页 lines 格式："目标子Agent | 指令 | 资源标签(逗号)"
+                    parts = [p.strip() for p in str(entry).split("|")]
+                    if len(parts) >= 2:
+                        items.append({
+                            "sub_agent_id": parts[0],
+                            "instruction": parts[1],
+                            "resource_tags": parts[2] if len(parts) >= 3 else "",
+                        })
+                    else:
+                        items.append({"instruction": parts[0]})
+        assigned: list[dict[str, Any]] = []
+        for entry in items[:40]:
+            target = str(
+                entry.get("sub_agent_id")
+                or entry.get("sub_agent")
+                or entry.get("target")
+                or entry.get("owner")
+                or ""
+            ).strip()
+            instruction = str(
+                self._resolve_workflow_template(
+                    ctx.task, entry.get("instruction") or entry.get("task") or ""
+                )
+            ).strip()
+            tags = entry.get("resource_tags") or entry.get("tags") or []
+            if isinstance(tags, str):
+                tags = [t.strip() for t in re.split(r"[\n,，、;；]+", tags) if t.strip()]
+            if not isinstance(tags, list):
+                tags = []
+            assign_id = ctx.task.post_assignment(target, instruction, resource_tags=tags)
+            assigned.append(
+                {"assign_id": assign_id, "sub_agent_id": target, "instruction": instruction}
+            )
+        ctx.task.add_log(
+            "agent_dispatch", self._compact_text(json.dumps(assigned, ensure_ascii=False), 800)
+        )
+        return NodeExecutionResult(
+            outcome=f"主agent 派发 {len(assigned)} 条任务到共享黑板。",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "assignments": assigned},
+            needs_react=False,
+            advance=True,
+            note="node_executor_dispatch_tasks",
+        )
+
+    async def _execute_collect_report_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """收齐最近一轮并行 worker 的产出，按 owner 汇成黑板 reports。"""
+        runs = list(getattr(ctx.task, "parallel_runs", []) or [])
+        latest = runs[-1] if runs else {}
+        workers = latest.get("workers") if isinstance(latest, dict) else []
+        node_map = {str(n.get("id") or ""): n for n in (ctx.spec.workflow_nodes or [])}
+        collected: list[dict[str, Any]] = []
+        for w in (workers or []):
+            if not isinstance(w, dict):
+                continue
+            wnode = node_map.get(str(w.get("node_id") or ""), {})
+            owner = self._subagent_of_node(ctx.spec, wnode)
+            sub_id = owner.sub_agent_id if owner else str(w.get("node_id") or "")
+            ctx.task.post_report(
+                sub_id,
+                str(w.get("summary") or w.get("error") or "")[:600],
+                evidence=self._compact_text(str(w.get("details") or ""), 800),
+                risks="" if w.get("ok") else str(w.get("error") or "worker blocked"),
+            )
+            collected.append(
+                {
+                    "sub_agent_id": sub_id,
+                    "ok": bool(w.get("ok")),
+                    "summary": str(w.get("summary") or "")[:200],
+                }
+            )
+        ok_count = sum(1 for c in collected if c["ok"])
+        summary = f"收齐 {len(collected)} 份子Agent 汇报（{ok_count} 成功）。"
+        if collected:
+            ctx.task.current_summary = summary
+        ctx.task.add_log("agent_collect_report", summary)
+        return NodeExecutionResult(
+            outcome=summary,
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "reports": collected},
+            needs_react=False,
+            advance=True,
+            note="node_executor_collect_report",
+        )
+
+    async def _execute_agent_message_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """意见传达：向某子Agent 的信箱投一条意见/指令。"""
+        target = str(
+            self._resolve_workflow_template(
+                ctx.task,
+                ctx.node.get("target_sub_agent")
+                or ctx.node.get("target")
+                or ctx.node.get("sub_agent_id")
+                or "",
+            )
+        ).strip()
+        text = str(
+            self._resolve_workflow_template(
+                ctx.task,
+                ctx.node.get("message")
+                or ctx.node.get("content")
+                or ctx.node.get("instruction")
+                or "",
+            )
+        ).strip()
+        if not target:
+            return NodeExecutionResult(
+                ok=False,
+                status="blocked",
+                outcome="意见传达节点缺少目标子Agent。",
+                next_node_id=self._single_next(ctx.outgoing),
+                data={"route": "failed"},
+                needs_react=False,
+                advance=True,
+                note="node_executor_agent_message_no_target",
+            )
+        ctx.task.post_message(target, text, sender="orchestrator")
+        return NodeExecutionResult(
+            outcome=f"已向子Agent {target} 投递一条意见。",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "target": target},
+            needs_react=False,
+            advance=True,
+            note="node_executor_agent_message",
+        )
+
+    async def _execute_summarize_decision_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """汇总决策：读共享黑板做下一步决策，写 decisions + next_step。"""
+        bb = ctx.task._blackboard()
+        assignments = bb.get("assignments") or []
+        reports = bb.get("reports") or []
+        pending = [
+            a for a in assignments if str(a.get("status") or "") not in {"done", "completed"}
+        ]
+        report_lines = [
+            f"- {r.get('sub_agent_id') or '?'}: {str(r.get('summary') or '')[:120]}"
+            for r in reports[-8:]
+        ]
+        basis = (
+            f"assignments={len(assignments)}(pending {len(pending)}), reports={len(reports)}\n"
+            + "\n".join(report_lines)
+        )
+        explicit = str(
+            self._resolve_workflow_template(
+                ctx.task, ctx.node.get("decision") or ctx.node.get("instruction") or ""
+            )
+        ).strip()
+        summary = explicit or f"已综合 {len(reports)} 份汇报，{len(pending)} 条任务待办。"
+        next_hint = str(
+            self._resolve_workflow_template(ctx.task, ctx.node.get("next_step") or "")
+        ).strip()
+        ctx.task.post_decision(summary, basis=basis, next_step=next_hint)
+        if next_hint:
+            ctx.task.next_step = next_hint
+        ctx.task.current_summary = summary
+        ctx.task.add_log("agent_decision", self._compact_text(summary + "\n" + basis, 800))
+        return NodeExecutionResult(
+            outcome=summary,
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "pending": len(pending), "reports": len(reports)},
+            needs_react=False,
+            advance=True,
+            note="node_executor_summarize_decision",
+        )
+
+    async def _execute_note_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """便签/注释：无副作用，直接放行到下游（No-Op，提升复杂流可读性）。"""
+        return NodeExecutionResult(
+            outcome="便签节点（无副作用）。",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success"},
+            needs_react=False,
+            advance=True,
+            note="node_executor_note",
+        )
+
+    async def _execute_delay_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        """延时：等待 N 秒再放行（上限 300s，避免长占 tick；长暂停请改用心跳）。"""
+        raw = ctx.node.get("delay_seconds", ctx.node.get("seconds", 0))
+        try:
+            seconds = max(0, min(int(float(raw or 0)), 300))
+        except Exception:
+            seconds = 0
+        if seconds > 0:
+            await asyncio.sleep(seconds)
+        return NodeExecutionResult(
+            outcome=f"已延时 {seconds}s。",
+            next_node_id=self._single_next(ctx.outgoing),
+            data={"route": "success", "delay_seconds": seconds},
+            needs_react=False,
+            advance=True,
+            note="node_executor_delay",
+        )
+
     async def _execute_approval_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         if ctx.task.pending_approvals():
             ctx.task.status = "paused"
@@ -6272,6 +6542,62 @@ class AgentLabPlugin(Star):
             f"下一候选：{next_text}"
         )
 
+    def _subagent_of_node(self, spec: AgentSpec, node: dict[str, Any]) -> "SubAgentSpec | None":
+        """按 node.owner 找到所属子Agent；无 owner 或找不到 → None（归主agent）。"""
+        owner_id = str((node or {}).get("owner") or "").strip()
+        if not owner_id:
+            return None
+        for sa in getattr(spec, "sub_agents", None) or []:
+            if getattr(sa, "sub_agent_id", "") == owner_id:
+                return sa
+        return None
+
+    def _node_resource_tags(self, node: dict[str, Any]) -> list[str]:
+        raw = (node or {}).get("resource_tags")
+        if isinstance(raw, str):
+            parts = re.split(r"[\n,，、;；]+", raw)
+        elif isinstance(raw, list):
+            parts = raw
+        else:
+            parts = []
+        return [str(p).strip() for p in parts if str(p).strip()]
+
+    def _resource_lock(self, tag: str) -> asyncio.Lock:
+        lock = self._resource_locks.get(tag)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._resource_locks[tag] = lock
+        return lock
+
+    @contextlib.asynccontextmanager
+    async def _acquire_resource_locks(self, tags: list[str]):
+        """对资源标签按序加锁（同标签跨泳道串行），避免多流程互踩同一资源。"""
+        ordered = sorted({str(t).strip() for t in (tags or []) if str(t).strip()})
+        acquired: list[asyncio.Lock] = []
+        try:
+            for tag in ordered:
+                lock = self._resource_lock(tag)
+                await lock.acquire()
+                acquired.append(lock)
+            yield
+        finally:
+            for lock in reversed(acquired):
+                lock.release()
+
+    async def _lane_rate_throttle(self, owner: "SubAgentSpec | None") -> None:
+        """每泳道 rate_per_minute 限速（最小间隔法；0=不限）。"""
+        if not owner or int(getattr(owner, "rate_per_minute", 0) or 0) <= 0:
+            return
+        min_interval = 60.0 / float(int(owner.rate_per_minute))
+        async with self._resource_lock(f"__lane_rate__:{owner.sub_agent_id}"):
+            last = self._lane_rate_state.get(owner.sub_agent_id, 0.0)
+            now = time.monotonic()
+            wait = min_interval - (now - last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+                now = time.monotonic()
+            self._lane_rate_state[owner.sub_agent_id] = now
+
     async def _run_parallel_workflow(
         self,
         *,
@@ -6310,18 +6636,31 @@ class AgentLabPlugin(Star):
                 "error": "并行分支没有匹配的后续工作包。",
             }
         api_payloads = api_payloads or {}
-        semaphore = asyncio.Semaphore(max(1, max_concurrency))
+        default_semaphore = asyncio.Semaphore(max(1, max_concurrency))
+        lane_semaphores: dict[str, asyncio.Semaphore] = {}
+
+        def _semaphore_for(node: dict[str, Any]) -> asyncio.Semaphore:
+            owner = self._subagent_of_node(spec, node)
+            if owner is None:
+                return default_semaphore
+            sem = lane_semaphores.get(owner.sub_agent_id)
+            if sem is None:
+                sem = asyncio.Semaphore(max(1, int(owner.max_concurrency or 2)))
+                lane_semaphores[owner.sub_agent_id] = sem
+            return sem
 
         async def run_worker(node_id: str) -> dict[str, Any]:
-            async with semaphore:
-                return await self._run_parallel_worker(
-                    event=event,
-                    task=task,
-                    spec=spec,
-                    node=node_map[node_id],
-                    shared_instruction=shared_instruction,
-                    api_payload=api_payloads.get(node_id) or {},
-                )
+            node = node_map[node_id]
+            async with _semaphore_for(node):
+                async with self._acquire_resource_locks(self._node_resource_tags(node)):
+                    return await self._run_parallel_worker(
+                        event=event,
+                        task=task,
+                        spec=spec,
+                        node=node,
+                        shared_instruction=shared_instruction,
+                        api_payload=api_payloads.get(node_id) or {},
+                    )
 
         workers = [
             normalize_worker_output(item)
@@ -6573,23 +6912,44 @@ class AgentLabPlugin(Star):
             base["error"] = f"插件模块被当前隔离策略禁用：{plugin_name}"
             base["summary"] = base["error"]
             return base
-        provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(event.unified_msg_origin)
-        worker_spec = worker_spec_for_node(node, allowed_tools=spec.enabled_tools)
+        owner = self._subagent_of_node(spec, node)
+        owner_provider = (owner.provider_id if owner else "") or ""
+        provider_id = (
+            owner_provider
+            or spec.provider_id
+            or await self.context.get_current_chat_provider_id(event.unified_msg_origin)
+        )
+        lane_tools = (
+            owner.enabled_tools if (owner and owner.enabled_tools) else spec.enabled_tools
+        )
+        worker_spec = worker_spec_for_node(node, allowed_tools=lane_tools)
+        lane_role = (owner.role_prompt.strip() if (owner and owner.role_prompt) else "")
+        lane_header = (
+            f"[子Agent 泳道] {owner.name or owner.sub_agent_id}\n{lane_role}\n\n"
+            if owner
+            else ""
+        )
         system_prompt = (
             f"{spec.system_prompt}\n\n"
+            f"{lane_header}"
             "[Agent Lab Parallel Worker]\n"
             f"worker_type={worker_spec.worker_type}\n"
             "你是当前 AstrBot 身份下的并行工作包执行者，不是新的 bot 人设。"
             "只完成本节点分配的工作；不要调用 agent_lab_finish，不要直接决定任务完成。"
             "如需使用工具，只能使用本节点允许的工具或插件来源工具，并遵守审批/白名单。"
         )
+        await self._lane_rate_throttle(owner)
         prompt = self._parallel_worker_prompt(task, node, shared_instruction)
         resp = await self.context.tool_loop_agent(
             event=event,
             chat_provider_id=provider_id,
             prompt=prompt,
             system_prompt=system_prompt,
-            tools=self._build_parallel_worker_toolset(spec, node),
+            tools=self._build_parallel_worker_toolset(
+                spec,
+                node,
+                owner_tools=(set(lane_tools) if (owner and owner.enabled_tools) else None),
+            ),
             max_steps=max(1, min(int(_cfg(self.config, "parallel_worker_max_steps", 6) or 6), 12)),
             tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120)),
             llm_compress_keep_recent=int(_cfg(self.config, "llm_compress_keep_recent", 4)),
@@ -6651,7 +7011,7 @@ class AgentLabPlugin(Star):
             ]
         )
 
-    def _build_parallel_worker_toolset(self, spec: AgentSpec, node: dict[str, Any]):
+    def _build_parallel_worker_toolset(self, spec: AgentSpec, node: dict[str, Any], owner_tools: "set[str] | None" = None):
         from astrbot.core.agent.tool import ToolSet
 
         tmgr = self.context.get_llm_tool_manager()
@@ -6688,6 +7048,8 @@ class AgentLabPlugin(Star):
             return toolset
         if kind == "tool":
             allowed = set(spec.enabled_tools or [])
+            if owner_tools:
+                allowed = allowed & set(owner_tools)
             for name in allowed:
                 if name in {
                     NO_EXTERNAL_TOOLS_SENTINEL,

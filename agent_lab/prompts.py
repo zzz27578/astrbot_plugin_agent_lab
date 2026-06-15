@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from .models import AgentSpec, TaskState
 
 
@@ -148,6 +150,17 @@ def _agent_runtime_text(task: TaskState) -> str:
     )
 
 
+def _confirm_mode_label(entry: Any) -> str:
+    if not getattr(entry, "require_confirmation", True):
+        return "不确认（命中即进）"
+    mode = str(getattr(entry, "confirmation_mode", "fixed") or "fixed")
+    if mode == "off":
+        return "不确认（命中即进）"
+    if mode == "prompt":
+        return "按下方提示词动态生成确认语后再征求同意"
+    return "发送下方固定确认话术后再征求同意"
+
+
 def _entry_policy_text(spec: AgentSpec) -> str:
     entry = spec.entry_policy
     return "\n".join(
@@ -156,8 +169,8 @@ def _entry_policy_text(spec: AgentSpec) -> str:
             _lines_or_none(entry.trigger_phrases),
             "- 任务关键词：",
             _lines_or_none(entry.trigger_keywords),
-            f"- 是否需要开启确认：{'是' if entry.require_confirmation else '否'}",
-            f"- 开启确认话术：{entry.confirmation_text or '-'}",
+            f"- 进入前确认方式：{_confirm_mode_label(entry)}",
+            f"- 确认话术/提示：{entry.confirmation_text or '-'}",
             "- 默认完成条件：",
             _lines_or_none(entry.default_completion_conditions),
             "- 结束暗号/命令：",

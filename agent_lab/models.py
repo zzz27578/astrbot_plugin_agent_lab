@@ -270,6 +270,56 @@ class MemoryFolder:
         return base
 
 
+@dataclass
+class SubAgentSpec:
+    """一条子Agent「泳道」：自带模型/API、角色、工具范围、领地与并发上限。
+
+    内嵌在 AgentSpec.sub_agents（方案级），领地(member_node_ids) 只在该方案的
+    workflow_nodes 范围内有意义。复用 save_agent 持久化，无需新存储文件。
+    """
+
+    sub_agent_id: str = field(default_factory=lambda: new_id("sa"))
+    name: str = ""
+    color: str = "#5b8def"          # 领地框 + 节点上色
+    role_prompt: str = ""           # 角色/职责提示词，拼进该泳道 worker 的 system_prompt
+    provider_id: str = ""           # 本泳道独立模型/API；空=继承方案=继承当前会话
+    enabled_tools: list[str] = field(default_factory=list)  # 工具范围(子集，空=继承方案)
+    max_concurrency: int = 2        # 本泳道并发上限(per-lane semaphore)
+    rate_per_minute: int = 0        # 0=不限；>0 本泳道每分钟调用上限
+    member_node_ids: list[str] = field(default_factory=list)  # 领地：归属节点 id（缓存，node.owner 为权威）
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any] | None) -> "SubAgentSpec":
+        if not isinstance(payload, dict):
+            return cls()
+        base = cls()
+        for key in asdict(base):
+            if key in payload:
+                setattr(base, key, payload[key])
+        base.sub_agent_id = str(base.sub_agent_id or "").strip() or new_id("sa")
+        base.name = str(base.name or "").strip()[:80]
+        color = str(base.color or "").strip()
+        base.color = color if re.match(r"^#[0-9a-fA-F]{6}$", color) else "#5b8def"
+        base.role_prompt = str(base.role_prompt or "").strip()[:4000]
+        base.provider_id = str(base.provider_id or "").strip()[:120]
+        base.enabled_tools = list(dict.fromkeys(_clean_string_list(base.enabled_tools)))
+        try:
+            base.max_concurrency = max(1, min(int(base.max_concurrency or 2), 6))
+        except Exception:
+            base.max_concurrency = 2
+        try:
+            base.rate_per_minute = max(0, min(int(base.rate_per_minute or 0), 600))
+        except Exception:
+            base.rate_per_minute = 0
+        base.member_node_ids = list(dict.fromkeys(_clean_string_list(base.member_node_ids)))
+        base.notes = str(base.notes or "").strip()[:500]
+        return base
+
+
 def default_workflow_nodes() -> list[dict[str, Any]]:
     return [
         {
@@ -578,6 +628,7 @@ class EntryPolicy:
     confirmation_text: str = (
         "我会进入任务模式：隔离当前会话插件、压缩上文、创建 task_state，并在高风险动作前请求审批。是否开启？"
     )
+    confirmation_mode: str = "fixed"  # off | fixed | prompt（require_confirmation=False 时等价 off）
     default_completion_conditions: list[str] = field(
         default_factory=lambda: ["用户验收通过", "任务成果已归档", "关键改动和风险已总结"]
     )
@@ -1062,6 +1113,7 @@ class AgentSpec:
     memory_policy: MemoryPolicy = field(default_factory=MemoryPolicy)
     approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
     heartbeat_policy: HeartbeatPolicy = field(default_factory=HeartbeatPolicy)
+    sub_agents: list[SubAgentSpec] = field(default_factory=list)
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
 
@@ -1127,6 +1179,9 @@ class AgentSpec:
         payload["isolation_policy"] = IsolationPolicy.from_dict(
             payload.get("isolation_policy")
         )
+        payload["sub_agents"] = [
+            SubAgentSpec.from_dict(x) for x in (payload.get("sub_agents") or [])
+        ]
         base = cls()
         for key in asdict(base):
             if key in payload:
@@ -1197,6 +1252,12 @@ class TaskState:
             "variables": {},
             "react_traces": [],
             "execution_counts": {},
+            "blackboard": {
+                "assignments": [],
+                "reports": [],
+                "mailbox": {},
+                "decisions": [],
+            },
         }
     )
     parallel_runs: list[dict[str, Any]] = field(default_factory=list)
@@ -1262,6 +1323,109 @@ class TaskState:
         payload.setdefault("time", now_iso())
         self.parallel_runs.append(payload)
         self.parallel_runs = self.parallel_runs[-40:]
+        self.updated_at = now_iso()
+
+    # --- 共享黑板（多Agent 协同）：主agent 派活 / 子agent 汇报 / 意见传达 / 决策 ---
+    def _blackboard(self) -> dict[str, Any]:
+        """惰性返回 blackboard；老任务（无此 key）也能安全使用。"""
+        bb = self.workflow_data.get("blackboard")
+        if not isinstance(bb, dict):
+            bb = {}
+            self.workflow_data["blackboard"] = bb
+        if not isinstance(bb.get("assignments"), list):
+            bb["assignments"] = []
+        if not isinstance(bb.get("reports"), list):
+            bb["reports"] = []
+        if not isinstance(bb.get("mailbox"), dict):
+            bb["mailbox"] = {}
+        if not isinstance(bb.get("decisions"), list):
+            bb["decisions"] = []
+        return bb
+
+    def post_assignment(
+        self,
+        sub_agent_id: str,
+        instruction: str,
+        *,
+        resource_tags: list[str] | None = None,
+        status: str = "pending",
+    ) -> str:
+        bb = self._blackboard()
+        assign_id = new_id("asg")
+        bb["assignments"].append(
+            {
+                "assign_id": assign_id,
+                "sub_agent_id": str(sub_agent_id or "").strip(),
+                "instruction": str(instruction or "").strip(),
+                "resource_tags": [
+                    str(t).strip() for t in (resource_tags or []) if str(t).strip()
+                ],
+                "status": str(status or "pending").strip(),
+                "created_at": now_iso(),
+            }
+        )
+        bb["assignments"] = bb["assignments"][-80:]
+        self.updated_at = now_iso()
+        return assign_id
+
+    def post_report(
+        self,
+        sub_agent_id: str,
+        summary: str,
+        *,
+        assign_id: str = "",
+        evidence: str = "",
+        risks: str = "",
+        next_step: str = "",
+    ) -> None:
+        bb = self._blackboard()
+        bb["reports"].append(
+            {
+                "sub_agent_id": str(sub_agent_id or "").strip(),
+                "assign_id": str(assign_id or "").strip(),
+                "summary": str(summary or "").strip(),
+                "evidence": str(evidence or "").strip(),
+                "risks": str(risks or "").strip(),
+                "next": str(next_step or "").strip(),
+                "time": now_iso(),
+            }
+        )
+        bb["reports"] = bb["reports"][-80:]
+        self.updated_at = now_iso()
+
+    def post_message(
+        self, sub_agent_id: str, text: str, *, sender: str = "orchestrator"
+    ) -> None:
+        target = str(sub_agent_id or "").strip()
+        if not target:
+            return
+        bb = self._blackboard()
+        box = bb["mailbox"].get(target)
+        if not isinstance(box, list):
+            box = []
+        box.append(
+            {
+                "from": str(sender or "orchestrator").strip(),
+                "text": str(text or "").strip(),
+                "time": now_iso(),
+            }
+        )
+        bb["mailbox"][target] = box[-40:]
+        self.updated_at = now_iso()
+
+    def post_decision(
+        self, summary: str, *, basis: str = "", next_step: str = ""
+    ) -> None:
+        bb = self._blackboard()
+        bb["decisions"].append(
+            {
+                "summary": str(summary or "").strip(),
+                "basis": str(basis or "").strip(),
+                "next": str(next_step or "").strip(),
+                "time": now_iso(),
+            }
+        )
+        bb["decisions"] = bb["decisions"][-80:]
         self.updated_at = now_iso()
 
     def add_token_usage(self, usage: Any) -> None:

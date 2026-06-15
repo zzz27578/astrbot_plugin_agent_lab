@@ -76,5 +76,23 @@
     "description": "任务最大令牌预算",
     "default": 240000,
     "hint": "限制整个任务期间累计使用的模型令牌。"
+  },
+  "global_max_concurrent_ticks": {
+    "type": "int",
+    "description": "全局同时推进的任务轮数上限",
+    "default": 3,
+    "hint": "跨任务的 tick 总并发闸；心跳一起醒时排队，避免惊群。建议 2-6。"
+  },
+  "heartbeat_jitter_seconds": {
+    "type": "int",
+    "description": "心跳错峰抖动（秒）",
+    "default": 8,
+    "hint": "心跳唤醒前随机延迟 0~N 秒，避免多任务同秒同时推进。0=不抖动。"
+  },
+  "workflow_parallel_concurrency": {
+    "type": "int",
+    "description": "并行分支默认并发上限",
+    "default": 3,
+    "hint": "未指派子Agent 的并行工作包共享的默认并发；上限 6。子Agent 泳道用各自的并发上限。"
   }
 }

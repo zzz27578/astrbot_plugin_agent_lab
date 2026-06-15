@@ -54,7 +54,12 @@ class AgentRuntimeRunner:
         self._running_ticks.add(tick_key)
         lease_token = ""
         before_hash = self._progress_hash(task)
+        _gate = getattr(self, "_global_tick_semaphore", None)
+        _gate_held = False
         try:
+            if _gate is not None:
+                await _gate.acquire()
+                _gate_held = True
             lease_ok, lease_message = self._acquire_task_lease(task, reason=reason)
             if not lease_ok:
                 return lease_message
@@ -244,6 +249,8 @@ class AgentRuntimeRunner:
                 f"{' 已暂停任务并关闭心跳。' if task.status == 'paused' else ''}"
             )
         finally:
+            if _gate_held:
+                _gate.release()
             latest = self.storage.load_active_task(event.unified_msg_origin)
             if latest and latest.task_id == task.task_id:
                 self._release_task_lease(latest, lease_token)

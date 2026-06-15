@@ -4499,3 +4499,13 @@ input[type="checkbox"] {
 .blueprint-attach-banner { margin: 10px 0 4px; padding: 9px 12px; border-radius: 9px; font-size: 13px; font-weight: 600; }
 .blueprint-attach-banner.on { background: rgba(47, 158, 95, 0.12); border: 1px solid rgba(47, 158, 95, 0.4); color: #1f7d4f; }
 .blueprint-attach-banner.off { background: var(--panel-2, #f1f4f2); border: 1px solid var(--line, #dfe5e2); color: var(--muted, #5d6b65); }
+
+
+/* ===== 子Agent 泳道 / 领地（批次1）===== */
+.workflow-territory{position:absolute;border:1.5px dashed;border-radius:14px;pointer-events:none;z-index:0;}
+.workflow-territory-tag{position:absolute;left:8px;top:-12px;color:#fff;font-size:12px;line-height:1.6;padding:1px 8px;border-radius:8px;font-weight:600;white-space:nowrap;}
+.subagent-list{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+.subagent-row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;background:rgba(127,127,127,.06);border-radius:8px;}
+.subagent-row-main{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.subagent-row-ops{display:flex;gap:6px;flex-shrink:0;}
+.workflow-dock-label{font-size:11px;opacity:.7;align-self:center;padding:0 2px;}
