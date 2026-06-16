@@ -5952,15 +5952,22 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "_pet", label: "插件事件入口", type: "note", text: "只承接其它插件广播的事件；保存后自动并入工作流触发的『插件事件』类型。" },
   ],
   listen_message: [
-    { field: "monitor_scope", label: "什么时候监听？", type: "select", default: "mentioned",
-      options: [["mentioned","只有 Bot 被 @ 或对话时"],["global","全局监听所有消息"]],
-      hint: "全局监听适合群管/刷屏检测；被对话时监听更省资源。" },
-    { field: "require_confirmation", label: "进入流程前需要确认", type: "checkbox", syncPath: "entry_policy.require_confirmation",
-      hint: "与上方『触发 / 生效范围』里的确认开关是同一设置，两处任意修改都会同步写回 entry_policy。" },
-    { field: "keywords", label: "只关心包含这些词的消息（可留空＝全部）", type: "lines",
-      placeholder: "每行一个关键词，如：广告\n加群" },
-    { field: "_trigger_note", label: "触发类型和谁能触发在画布上方『触发 / 生效范围』统一配置", type: "note",
-      text: "命令、关键词、正则、自然语言、拍一拍、notice、定时、插件事件、Webhook 和黑白名单都会保存到 workflow_trigger / workflow_scope。" },
+    { field: "monitor_scope", label: "监听时机", type: "select", default: "mentioned",
+      options: [["mentioned","被 @ / 对话 / 命令时"],["global","全局监听所有消息"]],
+      hint: "全局监听适合群管/刷屏；被对话时更省资源。" },
+    { field: "command_names", label: "斜杠命令 / 命令别名（每行一个，可留空）", type: "lines",
+      placeholder: "agentlab\nal" },
+    { field: "trigger_phrases", label: "暗号 / 精确短语（每行一个，可留空）", type: "lines", syncPath: "entry_policy.trigger_phrases",
+      placeholder: "进入任务模式" },
+    { field: "keywords", label: "关键词 / 模糊命中（每行一个，可留空）", type: "lines",
+      placeholder: "广告\n加群" },
+    { field: "regex", label: "正则匹配（每行一个，可留空·进阶）", type: "lines",
+      placeholder: "https?://" },
+    { field: "require_confirmation", label: "进入任务前需要确认", type: "checkbox", syncPath: "entry_policy.require_confirmation" },
+    { field: "confirmation_text", label: "确认话术（可选）", type: "textarea", syncPath: "entry_policy.confirmation_text",
+      placeholder: "留空用默认；填了则进入前先发这段确认语。" },
+    { field: "_lm", label: "消息监听入口", type: "note",
+      text: "命令/暗号/关键词/正则——填了哪项就启用哪项匹配，未填即忽略；不再需要单独勾选触发类型。黑白名单、群聊/私聊范围在『范围过滤器』节点配置；定时 / 插件事件 / Webhook 请用各自专用入口素材。" },
   ],
   match_keyword: [
     { field: "keywords", label: "命中哪些关键词？", type: "lines", required: true,
@@ -6367,6 +6374,29 @@ function applySimpleEditorFields(node) {
       if (f.syncPath) setAgentFieldByPath(f.syncPath, t);
     }
   }
+  // 消息监听入口：由填写项自动推导触发类型，不再让用户单独勾选（去重）。
+  if ((node.action || "") === "listen_message") deriveListenTriggerTypes(node);
+}
+
+// 根据消息监听入口节点填写的内容推导 workflow_trigger 类型集合，并写回节点与 agent。
+function deriveListenTriggerTypes(node) {
+  const has = (k) => Array.isArray(node[k]) && node[k].length > 0;
+  const t = new Set();
+  if ((node.monitor_scope || "mentioned") === "global") t.add("message_monitor");
+  else { t.add("command"); t.add("natural"); }
+  if (has("command_names")) t.add("command");
+  if (has("keywords")) t.add("keyword");
+  if (has("regex")) t.add("regex");
+  if (!t.size) t.add("command");
+  node.trigger_types = Array.from(t);
+  if (currentAgent) {
+    currentAgent.workflow_trigger ||= {};
+    currentAgent.workflow_trigger.enabled = true;
+    currentAgent.workflow_trigger.types = Array.from(t);
+    currentAgent.workflow_trigger.command_names = Array.isArray(node.command_names) ? node.command_names.slice() : [];
+    currentAgent.workflow_trigger.keywords = Array.isArray(node.keywords) ? node.keywords.slice() : [];
+    currentAgent.workflow_trigger.regex = Array.isArray(node.regex) ? node.regex.slice() : [];
+  }
 }
 
 function workflowInspectorAdvanced(item) {
@@ -6496,23 +6526,7 @@ function workflowInspector() {
       </div>
       <small class="field-hint">不同入口节点可设不同范围：让一部分人走这条路、另一部分人走另一条。</small>
     </div>` : "";
-  const entryRule = isEntryNode ? `
-    <div class="workflow-node-rule-box">
-      <div class="panel-head"><div><p class="card-kicker">触发条件（统一）</p><h3>什么消息/事件让机器人进入任务模式</h3></div></div>
-      <small class="field-hint">这里是入口触发的唯一配置处（已合并原「自动化面板」与「入口规则」两处）。暗号=精确短语，关键词=模糊命中，自然语言=由模型判断该不该进。生效范围/黑白名单在范围过滤节点配置。定时 / 插件事件 / Webhook 请用各自的专用入口素材分别配置。</small>
-      <label class="check-line"><input type="checkbox" id="wf-uni-enabled" ${(currentAgent.workflow_trigger || {}).enabled !== false ? "checked" : ""} /> 启用此工作流触发</label>
-      <label class="span-2">启用的触发类型<div class="choice-grid compact-choice">${checkboxGroupHtml("wf-uni-types", WORKFLOW_MESSAGE_TRIGGER_TYPES, (currentAgent.workflow_trigger || {}).types || ["command"], workflowTriggerTypeLabel)}</div></label>
-      <div class="form-grid compact">
-        <label>暗号 / 精确短语（每行一个）<textarea id="workflow-entry-trigger-phrases" rows="3" placeholder="每行一个，例如：进入任务模式">${esc(listToLines(ep.trigger_phrases))}</textarea></label>
-        <label>关键词 / 模糊命中（每行一个）<textarea id="workflow-entry-trigger-keywords" rows="3" placeholder="每行一个，例如：排查、部署、持续推进">${esc(listToLines(ep.trigger_keywords))}</textarea></label>
-        <label>命令别名（每行一个）<textarea id="wf-uni-commands" rows="2" placeholder="agentlab&#10;al">${esc(listToLines((currentAgent.workflow_trigger || {}).command_names || []))}</textarea></label>
-        <label>正则（每行一个）<textarea id="wf-uni-regex" rows="2" placeholder="https?://">${esc(listToLines((currentAgent.workflow_trigger || {}).regex || []))}</textarea></label>
-      </div>
-      <label class="check-line"><input type="checkbox" id="wf-uni-admin-only" ${sc.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
-      <label>进入前确认<select id="wf-uni-confirm-mode">${labeledOptions(["off", "fixed", "prompt"], (ep.require_confirmation === false ? "off" : (ep.confirmation_mode || "fixed")), (v) => v === "off" ? "关闭（命中即进）" : v === "fixed" ? "固定话术" : "提示词生成（按下方提示动态生成确认语）")}</select></label>
-      <label>确认话术 / 提示词<textarea id="workflow-entry-confirmation-text" rows="3" placeholder="固定话术：直接发这段；提示词生成：写一段指示让 Bot 生成确认语">${esc(ep.confirmation_text || "")}</textarea></label>
-      <label>触发说明（什么情况下启动，可选）<textarea id="wf-uni-description" rows="2" placeholder="说明这个画布应该在什么情况下进入任务模式。">${esc((currentAgent.workflow_trigger || {}).description || "")}</textarea></label>
-    </div>` : "";
+  const entryRule = ""; // 触发条件已内聚到「消息监听入口」节点字段，去除统一盒子（去重）。
   const exitRule = isExitNode ? `
     <div class="workflow-node-rule-box">
       <div class="panel-head"><div><p class="card-kicker">出口规则</p><h3>怎么结束、怎么验收</h3></div></div>
