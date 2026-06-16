@@ -4290,14 +4290,7 @@ function workflowRightDock(report) {
     <aside class="workflow-right-dock" aria-label="画布工具">
       <div class="workflow-dock-group">
         <button class="workflow-dock-button ${(!workflowSelectionMode && !workflowScissorMode) ? "active" : ""}" data-action="workflow-pointer-mode" title="正常操作（拖动节点 / 平移画布）" aria-label="正常操作" type="button">${iconImg("pointer", "正常操作")}</button>
-        <button class="workflow-dock-button ${workflowSelectionMode ? "active" : ""}" data-action="workflow-select-mode" title="框选节点：拖出范围选中多个节点" aria-label="框选节点" type="button">${iconImg("select", "框选节点")}</button>
         <button class="workflow-dock-button ${workflowScissorMode ? "active" : ""}" data-action="workflow-scissor-mode" title="剪刀：按住划过连线即可剪断" aria-label="剪刀剪线" type="button">✂</button>
-      </div>
-      <div class="workflow-dock-group">
-        <button class="workflow-dock-button" data-action="move-selected-workflow-nodes" title="移动框选节点（再点一下结束移动）" aria-label="移动框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("pointer", "移动")}</button>
-        <button class="workflow-dock-button" data-action="copy-selected-workflow-nodes" title="复制框选节点" aria-label="复制框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("copy", "复制")}</button>
-        <button class="workflow-dock-button danger" data-action="delete-selected-workflow-nodes" title="删除框选节点" aria-label="删除框选节点" ${selectedCount ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
-        <button class="workflow-dock-button text ${(selectedCount || workflowSelectionMode || workflowScissorMode) ? "" : "is-hidden"}" data-action="workflow-clear-selection" title="退出框选 / 剪刀，回到正常操作" aria-label="完成" type="button">完成</button>
       </div>
       <div class="workflow-dock-group">
         <button class="workflow-dock-button" data-action="workflow-undo" title="撤销" aria-label="撤销" ${workflowHistoryPast.length ? "" : "disabled"} type="button">${iconImg("undo", "撤销")}</button>
@@ -4312,6 +4305,15 @@ function workflowRightDock(report) {
         <button class="workflow-dock-button text" data-action="workflow-zoom-in" title="放大" aria-label="放大" type="button">+</button>
         <button class="workflow-dock-button text" data-action="workflow-focus-content" title="聚焦到内容(快捷键 F)" aria-label="聚焦内容" type="button">FOC</button>
         <button class="workflow-dock-button text" data-action="workflow-zoom-out" title="缩小" aria-label="缩小" type="button">-</button>
+      </div>
+      <div class="workflow-dock-group workflow-dock-select-group">
+        <div class="workflow-dock-flyout ${(workflowSelectionMode || selectedCount) ? "open" : ""}" aria-hidden="${(workflowSelectionMode || selectedCount) ? "false" : "true"}">
+          <button class="workflow-dock-button" data-action="move-selected-workflow-nodes" title="移动框选节点（再点一下结束移动）" aria-label="移动" ${selectedCount ? "" : "disabled"} type="button">${iconImg("pointer", "移动")}</button>
+          <button class="workflow-dock-button" data-action="copy-selected-workflow-nodes" title="复制框选节点" aria-label="复制" ${selectedCount ? "" : "disabled"} type="button">${iconImg("copy", "复制")}</button>
+          <button class="workflow-dock-button danger" data-action="delete-selected-workflow-nodes" title="删除框选节点" aria-label="删除" ${selectedCount ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
+          <button class="workflow-dock-button text" data-action="workflow-clear-selection" title="退出框选，回到正常操作" aria-label="完成" type="button">完成</button>
+        </div>
+        <button class="workflow-dock-button select-toggle ${workflowSelectionMode ? "active" : ""}" data-action="workflow-select-mode" title="框选节点：拖出范围选中多个节点，弹出移动/复制/删除" aria-label="框选节点" type="button">${iconImg("select", "框选节点")}</button>
       </div>
     </aside>
   `;
@@ -8760,10 +8762,11 @@ document.addEventListener("click", async (event) => {
       renderWorkflowStable();
     }
     if (action === "workflow-select-mode") {
-      workflowSelectionMode = true;
+      workflowSelectionMode = !workflowSelectionMode;
       workflowScissorMode = false;
       workflowSelectionMove = null;
-      setFeedback("框选模式：在画布上拖出范围即可选中多个节点。");
+      if (!workflowSelectionMode) { workflowSelectedNodeIds.clear(); workflowTerritoryPaintAgent = ""; workflowApiScopePaint = ""; }
+      setFeedback(workflowSelectionMode ? "框选模式：拖出范围选中多个节点，右侧弹出移动/复制/删除。" : "已退出框选。");
       renderWorkflowStable();
     }
     if (action === "workflow-scissor-mode") {
