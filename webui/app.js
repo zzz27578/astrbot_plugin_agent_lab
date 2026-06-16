@@ -5485,7 +5485,7 @@ function workflowTerritoryLayer(offsetX, offsetY) {
     const maxX = Math.max.apply(null, xs) + offsetX + NODE_W + PAD;
     const maxY = Math.max.apply(null, ys) + offsetY + NODE_H + PAD;
     const painting = workflowTerritoryPaintAgent === o.key;
-    return `<div class="workflow-territory ${o.main ? "is-main" : ""} ${painting ? "is-painting" : ""}" style="left:${minX}px;top:${minY}px;width:${maxX - minX}px;height:${maxY - minY}px;--terr:${o.color}"><span class="workflow-territory-tag" style="background:${o.color}">${esc(o.name)}${o.main ? " · 主" : ""}</span></div>`;
+    return `<div class="workflow-territory ${o.main ? "is-main" : ""} ${painting ? "is-painting" : ""}" style="left:${minX}px;top:${minY}px;width:${maxX - minX}px;height:${maxY - minY}px;--terr:${o.color}"><span class="workflow-territory-tag" style="background:${o.color}">${esc(o.name)}${o.main ? " · 主" : ""} · ${members.length} 节点</span></div>`;
   }).join("");
 }
 function workflowAssignBar() {
@@ -5496,7 +5496,12 @@ function workflowAssignBar() {
 }
 
 function workflowNodeColor(item) {
-  const __ownerCol = item && item.owner ? subAgentColorOf(item.owner) : "";
+  // Agent 角色块用自己挑的颜色；被圈地的节点用所属 Agent 的颜色（与领地框完全一致）。
+  if (item && item.action === "agent_role") {
+    if (/^#[0-9a-fA-F]{6}$/.test(String(item.color || ""))) return item.color;
+    if (item.main_agent) return "#7c5cff";
+  }
+  const __ownerCol = item && item.owner ? workflowAgentColorFor(item.owner) : "";
   if (__ownerCol) return __ownerCol;
   const kind = String(item?.kind || "state");
   const stage = String(item?.stage || "");
