@@ -1632,6 +1632,12 @@ button.list-row {
   display: none !important;
 }
 
+.workflow-territory{position:absolute;border:1.6px solid var(--terr,#5b8def);border-radius:18px;pointer-events:none;z-index:0;box-shadow:inset 0 0 24px -6px rgba(0,0,0,.06),0 8px 24px -16px rgba(30,45,41,.55);transition:background .18s ease,border-color .18s ease;}
+.workflow-territory.is-main{border-width:2.5px;}
+.workflow-territory.is-painting{border-style:dashed;animation:territory-pulse 1.3s ease-in-out infinite;}
+@keyframes territory-pulse{0%,100%{filter:brightness(1);}50%{filter:brightness(1.07);}}
+.workflow-territory-tag{position:absolute;left:10px;top:-13px;color:#fff;font-size:12px;line-height:1.7;padding:1px 10px;border-radius:9px;font-weight:600;white-space:nowrap;box-shadow:0 2px 8px -3px rgba(0,0,0,.45);}
+
 .node-port {
   position: absolute;
   top: 50%;

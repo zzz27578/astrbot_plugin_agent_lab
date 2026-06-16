@@ -12,3 +12,6 @@ dist/
 build/
 *.egg-info/
 
+
+# 本地前端预览截图(headless chromium)
+_preview/

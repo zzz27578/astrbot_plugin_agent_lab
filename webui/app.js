@@ -5490,7 +5490,7 @@ function workflowTerritoryLayer(offsetX, offsetY) {
     const maxX = Math.max.apply(null, xs) + offsetX + NODE_W + PAD;
     const maxY = Math.max.apply(null, ys) + offsetY + NODE_H + PAD;
     const painting = workflowTerritoryPaintAgent === o.key;
-    return `<div class="workflow-territory ${o.main ? "is-main" : ""} ${painting ? "is-painting" : ""}" style="left:${minX}px;top:${minY}px;width:${maxX - minX}px;height:${maxY - minY}px;--terr:${o.color}"><span class="workflow-territory-tag" style="background:${o.color}">${esc(o.name)}${o.main ? " · 主" : ""} · ${members.length} 节点</span></div>`;
+    return `<div class="workflow-territory ${o.main ? "is-main" : ""} ${painting ? "is-painting" : ""}" style="left:${minX}px;top:${minY}px;width:${maxX - minX}px;height:${maxY - minY}px;--terr:${o.color};background:${o.color}1f;border-color:${o.color}"><span class="workflow-territory-tag" style="background:${o.color}">${esc(o.name)}${o.main ? " · 主" : ""} · ${members.length} 节点</span></div>`;
   }).join("");
 }
 function workflowAssignBar() {
