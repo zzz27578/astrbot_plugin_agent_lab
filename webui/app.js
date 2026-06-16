@@ -5979,10 +5979,10 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "instruction", label: "报告范围 / 包含什么", type: "textarea", placeholder: "如：汇总成果、关键改动、遗留风险、下次续写入口。" },
   ],
   plugin_event_trigger: [
-    { field: "plugin_sources", label: "来自哪些插件（每行一个，留空＝任意插件）", type: "lines", placeholder: "astrbot_plugin_xxx" },
+    { field: "plugin_sources", label: "来自哪些插件（勾选，留空＝任意插件）", type: "pluginChecks" },
     { field: "event_names", label: "监听哪些事件名（每行一个，留空＝全部）", type: "lines", placeholder: "qq_guard.ban_requested" },
     { field: "match_mode", label: "匹配方式", type: "select", default: "any", options: [["any","命中任一事件即触发"],["all","全部事件命中才触发"]] },
-    { field: "_pet", label: "插件事件入口", type: "note", text: "只承接其它插件广播的事件；保存后自动并入工作流触发的『插件事件』类型。" },
+    { field: "_pet", label: "插件事件入口", type: "note", text: "只承接其它插件广播的事件：勾选来源插件，可选填事件名。保存后自动并入工作流触发的『插件事件』类型。" },
   ],
   listen_message: [
     { field: "monitor_scope", label: "监听时机", type: "select", default: "mentioned",
@@ -6346,6 +6346,14 @@ function workflowSimpleFieldHtml(item, f) {
   if (f.type === "pluginPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-plugin-list" value="${esc(fieldVal(f))}" placeholder="选择已启用插件" />${hint}</label>`;
   if (f.type === "folderPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-folder-list" value="${esc(fieldVal(f))}" placeholder="选择记忆夹 ID" />${hint}</label>`;
   if (f.type === "subAgentPick") return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" list="workflow-subagent-list" value="${esc(fieldVal(f))}" placeholder="选择子Agent（名称或ID）" />${hint}</label>`;
+  if (f.type === "pluginChecks") {
+    const cur = Array.isArray(item[f.field]) ? item[f.field] : [];
+    const plugins = (state.plugins || []).filter((pl) => pl.activated !== false);
+    if (!plugins.length) return `<div class="simple-note"><b>${esc(f.label)}</b><span>当前没有可选插件；可在『插件管理』启用，或留空＝监听任意插件事件。</span></div>`;
+    const names = plugins.map((pl) => pl.name);
+    const labeler = (n) => { const pl = plugins.find((x) => x.name === n); return pl ? (pl.display_name || pl.name) : n; };
+    return `<label class="simple-field">${esc(f.label)}${req}<div class="choice-grid compact-choice sf-plugin-checks">${checkboxGroupHtml("sf-" + f.field, names, cur, labeler)}</div>${hint}</label>`;
+  }
   return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" value="${esc(fieldVal(f))}" placeholder="${esc(f.placeholder || "")}" />${hint}</label>`;
 }
 function workflowSimpleEditor(item) {
@@ -6386,6 +6394,11 @@ function applySimpleEditorFields(node) {
   const fields = workflowSimpleFieldsFor(node.action || "manual");
   for (const f of fields) {
     if (f.type === "note") continue;
+    if (f.type === "pluginChecks") {
+      const arr = checkedValues("sf-" + f.field);
+      if (arr.length) node[f.field] = arr; else delete node[f.field];
+      continue;
+    }
     const el = document.getElementById(`sf-${f.field}`);
     if (!el) continue;
     const raw = el.value;
