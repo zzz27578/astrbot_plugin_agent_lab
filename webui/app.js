@@ -7882,71 +7882,104 @@ function autoLayoutWorkflow() {
   const inAdj = new Map(nodes.map((n) => [n.id, []]));
   edges.forEach((e) => {
     if (!byId.has(e.from) || !byId.has(e.to)) return;
-    outAdj.get(e.from).push(e.to);
-    inAdj.get(e.to).push(e.from);
+    outAdj.get(e.from).push({ to: e.to });
+    inAdj.get(e.to).push({ from: e.from });
   });
-  // 起点：入度为 0 的节点；没有就用入口阶段 / 第一个节点。
-  let roots = nodes.filter((n) => (inAdj.get(n.id) || []).length === 0).map((n) => n.id);
-  if (!roots.length) {
-    const en = nodes.find((n) => workflowStage(n) === "entry") || nodes[0];
-    if (en) roots = [en.id];
-  }
-  // 按"事件经过的步骤"分层：从起点做 BFS，level = 距起点的最短步数。
-  // 这样相邻步骤永远在相邻列，连线只跨一格，不会出现跨好几列的长线。
-  const level = new Map();
-  const queue = [];
-  roots.forEach((id) => { level.set(id, 0); queue.push(id); });
-  let qi = 0;
-  while (qi < queue.length) {
-    const id = queue[qi++];
-    const lv = level.get(id) || 0;
-    for (const nx of (outAdj.get(id) || [])) {
-      if (!level.has(nx)) { level.set(nx, lv + 1); queue.push(nx); }
+  // 1) DFS 找回边（指向递归栈内节点的边）；分层时忽略回边，避免 retry / 循环把层级拉乱。
+  const backEdges = new Set();
+  const color = new Map();
+  const dfs = (start) => {
+    const stack = [{ id: start, i: 0 }];
+    color.set(start, 1);
+    while (stack.length) {
+      const top = stack[stack.length - 1];
+      const outs = outAdj.get(top.id) || [];
+      if (top.i < outs.length) {
+        const nx = outs[top.i++].to;
+        const c = color.get(nx) || 0;
+        if (c === 0) { color.set(nx, 1); stack.push({ id: nx, i: 0 }); }
+        else if (c === 1) backEdges.add(`${top.id}->${nx}`);
+      } else { color.set(top.id, 2); stack.pop(); }
+    }
+  };
+  nodes.forEach((n) => { if (!color.has(n.id)) dfs(n.id); });
+  const fwdIn = (id) => (inAdj.get(id) || []).filter((e) => !backEdges.has(`${e.from}->${id}`));
+  const fwdOut = (id) => (outAdj.get(id) || []).filter((e) => !backEdges.has(`${id}->${e.to}`));
+  let roots = nodes.filter((n) => fwdIn(n.id).length === 0).map((n) => n.id);
+  if (!roots.length) { const en = nodes.find((n) => workflowStage(n) === "entry") || nodes[0]; if (en) roots = [en.id]; }
+  // 2) 最长路径分层（Kahn 拓扑，rank = max(前驱)+1），保证节点排在所有前驱右侧。
+  const rank = new Map();
+  const indeg = new Map(nodes.map((n) => [n.id, fwdIn(n.id).length]));
+  const q = [];
+  nodes.forEach((n) => { if ((indeg.get(n.id) || 0) === 0) { rank.set(n.id, 0); q.push(n.id); } });
+  roots.forEach((id) => { if (!rank.has(id)) { rank.set(id, 0); q.push(id); } });
+  let head = 0;
+  while (head < q.length) {
+    const id = q[head++];
+    const r = rank.get(id) || 0;
+    for (const e of fwdOut(id)) {
+      if (!rank.has(e.to) || r + 1 > rank.get(e.to)) rank.set(e.to, r + 1);
+      indeg.set(e.to, (indeg.get(e.to) || 1) - 1);
+      if ((indeg.get(e.to) || 0) <= 0) q.push(e.to);
     }
   }
-  // 未被起点连到的孤立 / 回环节点：放到其上游最大层+1，至少 0。
-  nodes.forEach((n) => {
-    if (level.has(n.id)) return;
-    const preds = (inAdj.get(n.id) || []).filter((p) => level.has(p));
-    level.set(n.id, preds.length ? Math.max(...preds.map((p) => level.get(p))) + 1 : 0);
-  });
-  // 按层分组
-  const byLevel = new Map();
-  nodes.forEach((n) => {
-    const l = level.get(n.id) || 0;
-    if (!byLevel.has(l)) byLevel.set(l, []);
-    byLevel.get(l).push(n);
+  nodes.forEach((n) => { if (!rank.has(n.id)) { const ps = fwdIn(n.id).map((e) => rank.get(e.from)).filter((v) => v != null); rank.set(n.id, ps.length ? Math.max(...ps) + 1 : 0); } });
+  // 3) 侧链节点（人工接管 / 重试 / 错误捕获 / 审批）不占主行，下沉到该列底部。
+  const SIDE_ACTIONS = new Set(["handoff", "retry", "catch_error", "wait_user", "human_login_handoff", "revoke_session", "request_approval"]);
+  const isSide = (n) => SIDE_ACTIONS.has(String(n.action || "")) || String(n.kind || "") === "human";
+  // 4) 领地分带：按 owner 分组成水平泳道，main/无主在最上，其余按最小 rank 排序；
+  //    agent_role 角色卡作为该带表头置于左上。同一 Agent 的圈地节点因此连成一片，不再东一块西一块。
+  const ownerOf = (n) => String(n.owner || "");
+  const ownerNodes = new Map();
+  nodes.forEach((n) => { const o = ownerOf(n); if (!ownerNodes.has(o)) ownerNodes.set(o, []); ownerNodes.get(o).push(n); });
+  const ownerMinRank = (o) => Math.min(...ownerNodes.get(o).map((n) => rank.get(n.id) || 0));
+  const owners = Array.from(ownerNodes.keys()).sort((a, b) => {
+    if (a === "" && b !== "") return -1;
+    if (b === "" && a !== "") return 1;
+    return ownerMinRank(a) - ownerMinRank(b);
   });
   const COL = Math.max(WORKFLOW_LANE_WIDTH, WORKFLOW_NODE_WIDTH + 200);
   const ROW = WORKFLOW_NODE_HEIGHT + 110;
-  const X0 = 120, Y0 = 120;
-  const levels = Array.from(byLevel.keys()).sort((a, b) => a - b);
-  // 先给每个节点一个初始行号（按当前 y 排序），再用重心法迭代几轮减少交叉。
-  const rowIndex = new Map();
-  levels.forEach((l) => {
-    const col = byLevel.get(l).slice().sort((a, b) => (Number(a.y) || 0) - (Number(b.y) || 0));
-    col.forEach((n, i) => rowIndex.set(n.id, i));
-  });
-  for (let pass = 0; pass < 4; pass++) {
-    for (const l of levels) {
-      const col = byLevel.get(l);
-      const bary = (n) => {
-        const neigh = [...(inAdj.get(n.id) || []), ...(outAdj.get(n.id) || [])]
-          .filter((m) => rowIndex.has(m));
-        if (!neigh.length) return rowIndex.get(n.id) || 0;
-        return neigh.reduce((s, m) => s + (rowIndex.get(m) || 0), 0) / neigh.length;
-      };
-      col.sort((a, b) => bary(a) - bary(b));
+  const BAND_GAP = ROW;
+  const X0 = 140, Y0 = 140;
+  let bandTop = Y0;
+  owners.forEach((o) => {
+    const list = ownerNodes.get(o);
+    const cols = new Map();
+    list.forEach((n) => { const r = rank.get(n.id) || 0; if (!cols.has(r)) cols.set(r, []); cols.get(r).push(n); });
+    const colKeys = Array.from(cols.keys()).sort((a, b) => a - b);
+    const rowIndex = new Map();
+    const headFirst = (n) => (String(n.action || "") === "agent_role" ? -1 : 0);
+    colKeys.forEach((r) => {
+      const col = cols.get(r).slice().sort((a, b) => {
+        const sa = isSide(a) ? 1 : 0, sb = isSide(b) ? 1 : 0; if (sa !== sb) return sa - sb;
+        const ha = headFirst(a), hb = headFirst(b); if (ha !== hb) return ha - hb;
+        return (Number(a.y) || 0) - (Number(b.y) || 0);
+      });
       col.forEach((n, i) => rowIndex.set(n.id, i));
-    }
-  }
-  // 落位：列 = 事件步数（从左到右），行内按重心排序后的次序。
-  levels.forEach((l) => {
-    const col = byLevel.get(l);
-    col.forEach((n, i) => {
-      n.x = X0 + l * COL;
-      n.y = Y0 + i * ROW;
     });
+    for (let pass = 0; pass < 4; pass++) {
+      for (const r of colKeys) {
+        const col = cols.get(r);
+        const bary = (n) => {
+          const neigh = [...fwdIn(n.id).map((e) => e.from), ...fwdOut(n.id).map((e) => e.to)]
+            .filter((m) => rowIndex.has(m) && ownerOf(byId.get(m)) === o);
+          if (!neigh.length) return rowIndex.get(n.id) || 0;
+          return neigh.reduce((acc, m) => acc + (rowIndex.get(m) || 0), 0) / neigh.length;
+        };
+        col.sort((a, b) => {
+          const sa = isSide(a) ? 1 : 0, sb = isSide(b) ? 1 : 0; if (sa !== sb) return sa - sb;
+          const ha = headFirst(a), hb = headFirst(b); if (ha !== hb) return ha - hb;
+          return bary(a) - bary(b);
+        });
+        col.forEach((n, i) => rowIndex.set(n.id, i));
+      }
+    }
+    const bandRows = Math.max(1, ...colKeys.map((r) => cols.get(r).length));
+    colKeys.forEach((r) => {
+      cols.get(r).forEach((n) => { n.x = X0 + r * COL; n.y = bandTop + (rowIndex.get(n.id) || 0) * ROW; });
+    });
+    bandTop += bandRows * ROW + BAND_GAP;
   });
   workflowCheckReport = null;
 }
