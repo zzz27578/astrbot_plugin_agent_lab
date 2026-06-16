@@ -1717,6 +1717,15 @@ button.list-row {
   left: -28px;
   right: auto;
 }
+/* 重试节点的"重试入口"放在右侧（HTML 标了 node-port-loop-in） */
+.node-port-loop-in {
+  left: auto;
+  right: -28px;
+}
+.node-port-loop-in::after {
+  right: auto;
+  left: 18px;
+}
 .node-port-typed .port-tag.port-tag-left {
   left: auto;
   right: 26px;

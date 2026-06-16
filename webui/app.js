@@ -5346,8 +5346,9 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const d = workflowLinkPath(start, end);
     const color = workflowEdgeColor(edgeType);
     const marker = `workflow-arrow-${edgeType}`;
-    const midX = (start.x + end.x) / 2;
-    const midY = (start.y + end.y) / 2;
+    const __mid = workflowLinkMidpoint(start, end);
+    const midX = __mid.x;
+    const midY = __mid.y;
     const showLabel = edgeType !== "success" && edgeType !== "always";
     const labelHtml = showLabel
       ? `<g class="workflow-link-label" transform="translate(${midX} ${midY})"><rect x="-18" y="-9" width="36" height="18" rx="5" fill="#fff" stroke="${color}"></rect><text x="0" y="3" text-anchor="middle" fill="${color}">${esc(workflowPortShortLabel(edgeType))}</text></g>`
@@ -5700,6 +5701,15 @@ function workflowLinkPath(from, to) {
   // 进入方向：右侧入口（重试节点）从右边进，其余从左边进。
   const c2x = to.rightEntry ? x2 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x2 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
   return `M ${x1} ${y1} C ${c1x} ${y1}, ${c2x} ${y2}, ${x2} ${y2}`;
+}
+
+// 连线是三次贝塞尔；标签按 t=0.5 的曲线实际中点定位，避免拖拽时与弯曲的线分离。
+function workflowLinkMidpoint(from, to) {
+  const x1 = Number(from.x || 0), y1 = Number(from.y || 0);
+  const x2 = Number(to.x || 0), y2 = Number(to.y || 0);
+  const c1x = from.leftExit ? x1 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x1 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
+  const c2x = to.rightEntry ? x2 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x2 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
+  return { x: 0.125 * x1 + 0.375 * c1x + 0.375 * c2x + 0.125 * x2, y: (y1 + y2) / 2 };
 }
 
 function workflowSummaryPanel() {
