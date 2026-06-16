@@ -428,12 +428,17 @@ const WORKFLOW_NODE_TEMPLATES = [
   {
     id: "main_agent",
     title: "主 Agent",
-    kind: "branch",
-    stage: "checkpoint",
-    action: "summarize_decision",
+    kind: "state",
+    stage: "plan",
+    action: "agent_role",
+    main_agent: true,
     library_group: "agent_collab",
-    instruction: "主 Agent 汇总黑板、校验子 Agent 结果，并决定下一步。",
-    next_step: "",
+    instruction: "主 Agent：全局调度、汇总子 Agent 结果。可设模型/颜色/提示词，并圈定自己直管的领地。",
+    color: "#7c5cff",
+    role_prompt: "",
+    enabled_tools: [],
+    max_concurrency: 4,
+    rate_per_minute: 0,
   },
   {
     id: "api_scope",
@@ -5065,7 +5070,7 @@ function workflowCanvas() {
         <span>${currentAgent.workflow_edges.length} 连线</span>
         <span>${Math.round(workflowZoom * 100)}%</span>
       </div>
-      ${(workflowTerritoryPaintAgent || workflowApiScopePaint) ? `<div class="workflow-paint-banner">${workflowTerritoryPaintAgent ? "圈地中：点节点加入/移出领地" : "选范围中：点节点加入/移出 API 范围"} <button class="button tiny" data-action="workflow-exit-paint" type="button">完成</button></div>` : ""}
+      ${(workflowTerritoryPaintAgent || workflowApiScopePaint) ? `<div class="workflow-paint-banner">${workflowTerritoryPaintAgent ? "圈地中：拖框选节点划入领地" : "选范围中：拖框把节点纳入 API 范围"} <button class="button tiny" data-action="workflow-exit-paint" type="button">完成</button></div>` : ""}
       <div class="workflow-zoom-controls">
         <button class="button tiny secondary" data-action="workflow-zoom-out" type="button">缩小</button>
         <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
@@ -5455,22 +5460,34 @@ function subAgentsDrawer() {
     <div class="button-row"><button class="button" data-action="subagent-new" type="button">+ 新建子Agent</button></div>
     <div class="subagent-list">${rows || '<div class="empty">还没有子Agent。点上面新建，再框选节点指派领地。</div>'}</div>`;
 }
+function workflowAgentColorFor(key) {
+  const n = (currentAgent.workflow_nodes || []).find((x) => x.action === "agent_role" && String(x.sub_agent_id || x.id) === String(key));
+  if (n && /^#[0-9a-fA-F]{6}$/.test(String(n.color || ""))) return n.color;
+  if (n && n.main_agent) return "#7c5cff";
+  const sa = subAgentById(key);
+  return sa ? subAgentHex(sa) : "#5b8def";
+}
 function workflowTerritoryLayer(offsetX, offsetY) {
-  const list = ensureSubAgents();
-  if (!list.length) return "";
   const nodes = currentAgent.workflow_nodes || [];
-  const NODE_W = 210, NODE_H = 96, PAD = 26;
-  return list.map((s) => {
-    const members = nodes.filter((n) => n.owner === s.sub_agent_id);
+  // 领地所有者 = 画布上的 agent_role 节点（含主Agent）；颜色取节点自身，和卡片一致。
+  const owners = [];
+  nodes.filter((n) => n.action === "agent_role").forEach((n) => {
+    owners.push({ key: String(n.sub_agent_id || n.id), name: n.title || n.name || (n.main_agent ? "主 Agent" : "Agent"), color: workflowAgentColorFor(n.sub_agent_id || n.id), main: !!n.main_agent });
+  });
+  ensureSubAgents().forEach((sa) => { if (!owners.some((o) => o.key === sa.sub_agent_id)) owners.push({ key: sa.sub_agent_id, name: sa.name || "子Agent", color: subAgentHex(sa), main: false }); });
+  if (!owners.length) return "";
+  const NODE_W = WORKFLOW_NODE_WIDTH, NODE_H = WORKFLOW_NODE_HEIGHT, PAD = 32;
+  return owners.map((o) => {
+    const members = nodes.filter((n) => String(n.owner || "") === o.key);
     if (!members.length) return "";
     const xs = members.map((n) => Number(n.x || 0));
     const ys = members.map((n) => Number(n.y || 0));
     const minX = Math.min.apply(null, xs) + offsetX - PAD;
-    const minY = Math.min.apply(null, ys) + offsetY - PAD - 16;
+    const minY = Math.min.apply(null, ys) + offsetY - PAD - 18;
     const maxX = Math.max.apply(null, xs) + offsetX + NODE_W + PAD;
     const maxY = Math.max.apply(null, ys) + offsetY + NODE_H + PAD;
-    const col = subAgentHex(s);
-    return `<div class="workflow-territory" style="left:${minX}px;top:${minY}px;width:${maxX - minX}px;height:${maxY - minY}px;border-color:${col};background:${col}1f"><span class="workflow-territory-tag" style="background:${col}">${esc(s.name || "子Agent")}</span></div>`;
+    const painting = workflowTerritoryPaintAgent === o.key;
+    return `<div class="workflow-territory ${o.main ? "is-main" : ""} ${painting ? "is-painting" : ""}" style="left:${minX}px;top:${minY}px;width:${maxX - minX}px;height:${maxY - minY}px;--terr:${o.color}"><span class="workflow-territory-tag" style="background:${o.color}">${esc(o.name)}${o.main ? " · 主" : ""}</span></div>`;
   }).join("");
 }
 function workflowAssignBar() {
@@ -5899,7 +5916,7 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "enabled_tools", label: "工具范围（每行一个工具名，留空＝继承方案）", type: "lines", placeholder: "web_search" },
     { field: "max_concurrency", label: "并发上限", type: "number", default: 2, min: 1, max: 16 },
     { field: "rate_per_minute", label: "每分钟限速（0＝不限）", type: "number", default: 0, min: 0, max: 1000 },
-    { field: "_territory", label: "领地", type: "note", text: "框选画布节点后，用右侧工具条『指派』把它们圈给这个 Agent；未圈的归主agent。" },
+    { field: "_territory", label: "领地（圈地）", type: "note", text: "点卡片上的『选领地』按钮→直接在画布拖框，框住的节点就归这个 Agent；拖动节点进出方框即增减。未圈的节点归主Agent。" },
   ],
   api_scope: [
     { field: "api_id", label: "绑定哪个已注册 API？", type: "apiPick", required: true },
@@ -8447,10 +8464,32 @@ document.addEventListener("pointerup", (event) => {
     const rect = workflowSelectionDrag.box.getBoundingClientRect();
     workflowSelectionDrag.box.remove();
     workflowSelectionDrag = null;
-    workflowSelectedNodeIds.clear();
+    const hitIds = [];
     document.querySelectorAll(".flow-node").forEach((node) => {
       const nr = node.getBoundingClientRect();
       const hit = nr.left <= rect.right && nr.right >= rect.left && nr.top <= rect.bottom && nr.bottom >= rect.top;
+      if (hit && node.dataset.id) hitIds.push(node.dataset.id);
+    });
+    if (workflowTerritoryPaintAgent) {
+      // 圈地：框住的节点直接划入该 Agent 领地（agent_role 卡本身不被划走）
+      pushWorkflowHistory();
+      let cnt = 0;
+      hitIds.forEach((id) => { const n = currentAgent.workflow_nodes.find((x) => x.id === id); if (n && n.action !== "agent_role") { setNodeOwner(id, workflowTerritoryPaintAgent); cnt++; } });
+      setFeedback(`已把 ${cnt} 个节点划入领地（拖动节点出框可移出）。`);
+      renderWorkflowStable();
+      return;
+    }
+    if (workflowApiScopePaint) {
+      pushWorkflowHistory();
+      const sNode = currentAgent.workflow_nodes.find((n) => n.id === workflowApiScopePaint);
+      if (sNode) { const set = new Set(Array.isArray(sNode.scope_node_ids) ? sNode.scope_node_ids : []); hitIds.forEach((id) => { if (id !== workflowApiScopePaint) set.add(id); }); sNode.scope_node_ids = Array.from(set); }
+      setFeedback(`已把 ${hitIds.length} 个节点纳入 API 范围。`);
+      renderWorkflowStable();
+      return;
+    }
+    workflowSelectedNodeIds.clear();
+    document.querySelectorAll(".flow-node").forEach((node) => {
+      const hit = hitIds.includes(node.dataset.id);
       node.classList.toggle("multi-selected", hit);
       if (hit && node.dataset.id) workflowSelectedNodeIds.add(node.dataset.id);
     });
@@ -8919,19 +8958,27 @@ document.addEventListener("click", async (event) => {
       const __sid = target.dataset.id || "";
       workflowTerritoryPaintAgent = workflowTerritoryPaintAgent === __sid ? "" : __sid;
       workflowApiScopePaint = "";
-      setFeedback(workflowTerritoryPaintAgent ? "圈地模式：点画布节点把它加入/移出这个 Agent 的领地，完成后再点一次按钮。" : "已退出圈地模式。");
+      workflowScissorMode = false;
+      workflowSelectionMode = !!workflowTerritoryPaintAgent; // 选领地即进入框选
+      if (!workflowTerritoryPaintAgent) workflowSelectedNodeIds.clear();
+      setFeedback(workflowTerritoryPaintAgent ? "圈地中：直接在画布拖出方框，框住的节点就划入这个 Agent 的领地；也可单击节点逐个增减。完成后再点一次按钮。" : "已退出圈地。");
       renderWorkflowStable();
     }
     if (action === "api-scope-range") {
       const __aid = target.dataset.id || "";
       workflowApiScopePaint = workflowApiScopePaint === __aid ? "" : __aid;
       workflowTerritoryPaintAgent = "";
-      setFeedback(workflowApiScopePaint ? "选范围模式：点节点把它加入/移出这个 API 范围，完成后再点一次按钮。" : "已退出选范围模式。");
+      workflowScissorMode = false;
+      workflowSelectionMode = !!workflowApiScopePaint; // 选范围即进入框选
+      if (!workflowApiScopePaint) workflowSelectedNodeIds.clear();
+      setFeedback(workflowApiScopePaint ? "选范围中：拖框把节点纳入这个 API 范围；也可单击逐个增减。完成后再点一次按钮。" : "已退出选范围。");
       renderWorkflowStable();
     }
     if (action === "workflow-exit-paint") {
       workflowTerritoryPaintAgent = "";
       workflowApiScopePaint = "";
+      workflowSelectionMode = false;
+      workflowSelectedNodeIds.clear();
       renderWorkflowStable();
     }
     if (action === "assign-subagent") {

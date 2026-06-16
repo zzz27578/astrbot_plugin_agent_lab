@@ -9305,8 +9305,16 @@ class AgentLabPlugin(Star):
             if str(getattr(item, "name", "") or "").strip()
         }
         merged: dict[str, SubAgentSpec] = dict(existing)
+        main_owner_ids: set[str] = set()
         for node in spec.workflow_nodes:
             if node.get("action") != "agent_role":
+                continue
+            if node.get("main_agent"):
+                # 主 Agent 是角色块但不作为可调度子Agent；仅记录其 id 作为合法领地 owner。
+                mid = str(node.get("sub_agent_id") or node.get("id") or "").strip()
+                if mid:
+                    node["sub_agent_id"] = mid
+                    main_owner_ids.add(mid)
                 continue
             sub_agent_id = str(
                 node.get("sub_agent_id")
@@ -9346,8 +9354,8 @@ class AgentLabPlugin(Star):
                 node["role_prompt"] = item.role_prompt
             merged[item.sub_agent_id] = item
 
-        valid_ids = set(merged.keys())
-        members: dict[str, list[str]] = {sub_id: [] for sub_id in valid_ids}
+        valid_ids = set(merged.keys()) | set(main_owner_ids)
+        members: dict[str, list[str]] = {sub_id: [] for sub_id in merged.keys()}
         for node in spec.workflow_nodes:
             owner = str(node.get("owner") or "").strip()
             node_id = str(node.get("id") or "").strip()
