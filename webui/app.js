@@ -7426,7 +7426,7 @@ function toolsPanel() {
           <small>${esc(tool.description || tool.plugin_display_name || tool.source || "注册工具")}</small>
         </span>
         <span class="tool-card-meta">
-          ${badge(disabled ? "随插件关闭" : checked ? "已启用" : "未启用", disabled ? "bad" : checked ? "ok" : "")}
+          <span class="tool-status tool-status-${disabled ? "off" : checked ? "on" : "idle"}" title="${disabled ? "随插件关闭" : checked ? "已启用" : "未启用"}" aria-label="${disabled ? "随插件关闭" : checked ? "已启用" : "未启用"}"></span>
           <select data-action="set-tool-risk" data-id="${esc(tool.name)}" title="风险等级">${options(["safe", "work", "high"], risk, riskLabel)}</select>
         </span>
       </label>

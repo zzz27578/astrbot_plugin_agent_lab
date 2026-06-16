@@ -2576,6 +2576,14 @@ body[data-route="workflow"] {
 .tool-card-main small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-card-meta { display: flex; align-items: center; gap: 8px; }
 .tool-card-meta select { font-size: 12px; }
+.tool-status { width: 20px; height: 20px; border-radius: 50%; display: inline-grid; place-items: center; flex: 0 0 auto; font-size: 12px; font-weight: 700; line-height: 1; }
+.tool-status::before { display: block; }
+.tool-status-on { background: color-mix(in srgb, var(--green,#2f7d5b) 16%, #fff); color: var(--green,#2f7d5b); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--green,#2f7d5b) 55%, transparent); }
+.tool-status-on::before { content: "\2713"; }
+.tool-status-idle { background: rgba(127,127,127,.1); color: #9aa6a1; box-shadow: inset 0 0 0 1.5px rgba(127,127,127,.3); }
+.tool-status-idle::before { content: "\25CB"; }
+.tool-status-off { background: color-mix(in srgb, var(--red,#b4433a) 14%, #fff); color: var(--red,#b4433a); box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--red,#b4433a) 50%, transparent); }
+.tool-status-off::before { content: "\2715"; }
 /* 开关样式 */
 .tool-card-switch { position: relative; display: inline-flex; flex: 0 0 auto; width: 38px; height: 22px; }
 .tool-card-switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
