@@ -709,6 +709,7 @@ const WORKFLOW_NODE_TEMPLATES = [
 
   {
     id: "document_source",
+    advanced: true,
     title: "文档/路径输入",
     kind: "transform",
     stage: "plan",
@@ -771,6 +772,7 @@ const WORKFLOW_NODE_TEMPLATES = [
   },
   {
     id: "variable_set",
+    advanced: true,
     title: "设置变量",
     kind: "transform",
     stage: "execute",
@@ -780,6 +782,7 @@ const WORKFLOW_NODE_TEMPLATES = [
   },
   {
     id: "variable_get",
+    advanced: true,
     title: "读取变量",
     kind: "transform",
     stage: "execute",
@@ -798,6 +801,7 @@ const WORKFLOW_NODE_TEMPLATES = [
   },
   {
     id: "json_transform",
+    advanced: true,
     title: "JSON转换",
     kind: "transform",
     stage: "execute",
@@ -807,6 +811,7 @@ const WORKFLOW_NODE_TEMPLATES = [
   },
   {
     id: "merge",
+    advanced: true,
     title: "合并数据",
     kind: "transform",
     stage: "execute",
@@ -816,6 +821,7 @@ const WORKFLOW_NODE_TEMPLATES = [
   },
   {
     id: "iterator",
+    advanced: true,
     title: "迭代器",
     kind: "branch",
     stage: "execute",
@@ -5175,8 +5181,10 @@ function workflowToolbox() {
   const apis = state.custom_apis || [];
   const filter = workflowMaterialFilter.trim();
   const basicGroupIds = new Set(["trigger_monitor", "entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
+  const showAdvanced = workflowLibraryMode === "advanced";
   const templates = WORKFLOW_NODE_TEMPLATES
     .filter((item) => !WORKFLOW_MERGED_TEMPLATE_IDS.has(item.id))
+    .filter((item) => showAdvanced || !item.advanced)
     .filter((item) =>
       includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
     );
@@ -5219,11 +5227,13 @@ function workflowToolbox() {
   ];
   return `
     <div class="workflow-toolbox">
-      <div class="workflow-toolbox-intro">
-        <strong>节点素材</strong>
-        <span>所有可用节点、工具、API 和插件模块；拖到画布即可拼接流程。</span>
+      <div class="workflow-toolbox-bar">
+        <input class="filter-input workflow-material-filter" data-action="filter-workflow-materials" value="${esc(workflowMaterialFilter)}" placeholder="搜索节点 / 工具 / API / 插件" />
+        <div class="workflow-libmode-switch" role="tablist" aria-label="素材层级">
+          <button class="libmode-tab ${workflowLibraryMode !== "advanced" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="basic" type="button">基础</button>
+          <button class="libmode-tab ${workflowLibraryMode === "advanced" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="advanced" type="button">进阶</button>
+        </div>
       </div>
-      <input class="filter-input workflow-material-filter" data-action="filter-workflow-materials" value="${esc(workflowMaterialFilter)}" placeholder="搜索节点、工具、API 或插件" />
       <div class="workflow-template-groups">
         ${groupedTemplates.map(({ group, items }) => {
           const open = workflowToolboxOpenGroups.has(group.id) || Boolean(filter && items.length);
@@ -5903,8 +5913,12 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "_pi", label: "提示注入（原便签升级）", type: "note", text: "和便签不同，这段文本会真正影响后续节点/Agent 的执行，不只是注释。" },
   ],
   note: [
-    { field: "instruction", label: "便签内容", type: "textarea",
-      placeholder: "写给自己/协作者的说明，不影响执行（No-Op）。" },
+    { field: "inject_text", label: "要注入的提示文本", type: "textarea", required: true,
+      placeholder: "会拼进后续执行上下文的提示，例如：注意目标站点限频，放慢节奏。" },
+    { field: "inject_scope", label: "注入范围", type: "select", default: "downstream",
+      options: [["downstream","下游所有节点"],["next","仅下一个节点"],["all","整个任务"]] },
+    { field: "_note_pi", label: "便签＝提示注入", type: "note",
+      text: "这张便签会把文本真正注入后续节点/Agent 的执行上下文（不再是纯注释）。需要有输入和输出连线。" },
   ],
   delay: [
     { field: "delay_seconds", label: "延时秒数（0–300）", type: "number", default: 5, min: 0, max: 300,
