@@ -4172,8 +4172,11 @@ function renderCanvas() {
           <div class="button-row scheme-actions">
             <button class="button" data-action="new-agent" type="button">新建方案</button>
             <button class="button secondary" data-action="duplicate-agent" type="button" ${a.agent_id ? "" : "disabled"}>复制</button>
+            <button class="button secondary" data-action="export-plan" type="button" ${a.agent_id ? "" : "disabled"} title="把这套方案打包成 JSON，便于分享/备份">导出(打包)</button>
+            <button class="button secondary" data-action="import-plan" type="button" title="从别人分享的方案 JSON 导入为新方案">导入</button>
             <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
           </div>
+          <p class="setting-hint-line">导出(打包)＝把当前方案存成 JSON 分享给别人；导入＝把别人分享的方案 JSON 加为新方案。蓝图交流就用这两个。</p>
           <div class="list scheme-list">${agentRows()}</div>
         </div>
       </aside>
@@ -7326,7 +7329,6 @@ function renderIntegrations() {
     ["tools", "注册工具", "按来源插件折叠工具白名单", (state.tools || []).length],
     ["apis", "自定义接口", "把外部服务注册为受管工具", (state.custom_apis || []).length],
     ["credentials", "凭证库", "统一加密保存接口密钥", (state.credentials || []).length],
-    ["blueprints", "外部方案蓝图", "接入外部任务方案", (state.integrations || state.modules || []).length],
   ];
   $("view").innerHTML = `
     <section class="integration-shell">
@@ -7358,7 +7360,8 @@ function integrationBody() {
   if (integrationTab === "apis") return apisPanel();
   if (integrationTab === "credentials") return credentialsPanel();
   if (integrationTab === "skills") return skillsPanel();
-  return blueprintsPanel();
+  if (integrationTab === "blueprints") return blueprintsPanel();
+  return pluginPanel();
 }
 
 function pluginPanel() {
@@ -8757,6 +8760,48 @@ document.addEventListener("click", async (event) => {
       selectedAgentId = result.agent?.agent_id || "";
       setFeedback("已复制方案。");
       await load();
+    }
+    if (action === "export-plan") {
+      if (!currentAgent.agent_id) throw new Error("请先选择一个已保存的方案再导出。");
+      readAgentForm();
+      const plan = clone(currentAgent);
+      delete plan.agent_id; delete plan.created_at; delete plan.updated_at;
+      const wrapped = { _agent_lab_plan: 1, exported_at: new Date().toISOString(), name: plan.name || "方案", agent: plan };
+      const blob = new Blob([JSON.stringify(wrapped, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const aEl = document.createElement("a");
+      aEl.href = url;
+      aEl.download = `${String(plan.name || "方案").replace(/[^\w\u4e00-\u9fa5-]+/g, "_").slice(0, 40)}.aglab.json`;
+      document.body.appendChild(aEl); aEl.click(); aEl.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      showToast("方案已打包导出", "ok");
+    }
+    if (action === "import-plan") {
+      const inp = document.createElement("input");
+      inp.type = "file"; inp.accept = "application/json,.json";
+      inp.onchange = async () => {
+        const f = inp.files && inp.files[0];
+        if (!f) return;
+        try {
+          const data = JSON.parse(await f.text());
+          const plan = (data && data.agent) ? data.agent : data;
+          if (!plan || (!plan.workflow_nodes && !plan.name)) throw new Error("不是有效的方案文件");
+          const copy = ensureAgent(clone(plan));
+          delete copy.agent_id; delete copy.created_at; delete copy.updated_at;
+          copy.name = String(copy.name || "导入方案");
+          copy.identity_label_source = "manual";
+          const result = await api("/api/agents", { method: "POST", body: copy });
+          selectedAgentId = result.agent?.agent_id || "";
+          selectedWorkflowNodeId = "";
+          setFeedback("已导入方案。");
+          showToast("方案已导入", "ok");
+          await load();
+        } catch (e) {
+          setFeedback("导入失败：" + (e && e.message ? e.message : e), "error");
+          showToast("导入失败", "error");
+        }
+      };
+      inp.click();
     }
     if (action === "rename-agent") {
       if (!currentAgent.agent_id) throw new Error("请先选择一个已保存的方案。");
