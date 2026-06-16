@@ -934,7 +934,7 @@ button.list-row {
 
 .workflow-minimap {
   position: absolute;
-  right: 72px;
+  right: 14px;
   bottom: 18px;
   z-index: 24;
   margin: 0;
@@ -1780,30 +1780,30 @@ button.list-row {
 
 /* 收起状态下露出的提示把手：加宽 + 白边 + 阴影 + ▾，平常也能注意到可下拉顶栏 */
 .workflow-page-top::after {
-  content: "▾ 顶栏";
+  content: "\25BE";
   position: absolute;
   left: 50%;
-  bottom: -20px;
+  bottom: -16px;
   display: grid;
   place-items: center;
-  min-width: 116px;
-  height: 18px;
-  padding: 0 12px;
-  border-radius: 0 0 11px 11px;
+  width: 40px;
+  height: 15px;
+  border-radius: 0 0 9px 9px;
   border: 1.5px solid #fff;
   border-top: 0;
   color: #fff;
   font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 1px;
-  background: rgba(36, 52, 47, 0.74);
-  box-shadow:
-    0 0 0 1px rgba(200, 212, 208, 0.95),
-    0 6px 16px rgba(30, 45, 41, 0.26);
+  line-height: 1;
+  background: rgba(36, 52, 47, 0.72);
+  box-shadow: 0 0 0 1px rgba(200, 212, 208, 0.9), 0 5px 13px rgba(30, 45, 41, 0.24);
   transform: translateX(-50%);
-  opacity: 0.96;
+  opacity: 0.95;
   transition: opacity 160ms ease, transform 160ms ease;
 }
+/* 顶栏固定：常驻显示，隐藏下拉把手 */
+.workflow-page.top-pinned .workflow-page-top { transform: translateY(0) !important; opacity: 1 !important; pointer-events: auto !important; }
+.workflow-page.top-pinned .workflow-page-top::after { display: none; }
+.workflow-top-pin.active { background: var(--accent, #5b8def); color: #fff; border-color: var(--accent, #5b8def); }
 
 /* 顶部热区：鼠标移到画布最上沿就触发顶栏滑出 */
 .workflow-top-hotzone {
@@ -1976,14 +1976,14 @@ button.list-row {
 }
 
 .workflow-page.toolbox-open .workflow-minimap {
-  right: 74px;
+  right: 14px;
 }
 
 .workflow-right-dock {
   position: absolute;
   top: 76px;
   right: 14px;
-  bottom: 18px;
+  bottom: auto;
   z-index: 35;
   display: flex;
   flex-direction: column;
@@ -2006,7 +2006,6 @@ button.list-row {
 /* 框选组：推到底部；点击框选后，移动/复制/删除/完成 以抽屉从左侧滑出 */
 .workflow-dock-select-group {
   position: relative;
-  margin-top: auto;
 }
 .workflow-dock-select-group .select-toggle.active {
   background: var(--accent, #5b8def);

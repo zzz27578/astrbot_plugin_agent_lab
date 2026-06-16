@@ -1378,6 +1378,7 @@ let workflowDryRunReport = null;
 let workflowToolboxOpen = true;
 let workflowInspectorOpen = false;
 let workflowNavCollapsed = true;
+let workflowTopPinned = false; // 顶栏是否固定常驻
 let workflowContextMenu = null;
 let workflowSuppressClick = false;
 let workflowReportOpen = false;
@@ -1428,6 +1429,9 @@ function esc(value) {
 }
 
 function iconImg(name, label = "") {
+  if (name === "refresh") {
+    return `<svg class="game-icon" viewBox="0 0 24 24" role="img" aria-label="${esc(label)}" focusable="false"><path d="M12 5a7 7 0 0 1 6.32 4h-2.07a5 5 0 1 0 .9 4.5l1.94.5A7 7 0 1 1 12 5Z" fill="currentColor"/><path d="M18.5 4.2 19.6 9 14.8 8z" fill="currentColor"/></svg>`;
+  }
   if (name === "pointer") {
     return `
       <svg class="game-icon workflow-pointer-icon" viewBox="0 0 24 24" role="img" aria-label="${esc(label)}" focusable="false">
@@ -4292,6 +4296,15 @@ function workflowRightDock(report) {
         <button class="workflow-dock-button ${(!workflowSelectionMode && !workflowScissorMode) ? "active" : ""}" data-action="workflow-pointer-mode" title="正常操作（拖动节点 / 平移画布）" aria-label="正常操作" type="button">${iconImg("pointer", "正常操作")}</button>
         <button class="workflow-dock-button ${workflowScissorMode ? "active" : ""}" data-action="workflow-scissor-mode" title="剪刀：按住划过连线即可剪断" aria-label="剪刀剪线" type="button">✂</button>
       </div>
+      <div class="workflow-dock-group workflow-dock-select-group">
+        <div class="workflow-dock-flyout ${(workflowSelectionMode || selectedCount) ? "open" : ""}" aria-hidden="${(workflowSelectionMode || selectedCount) ? "false" : "true"}">
+          <button class="workflow-dock-button" data-action="move-selected-workflow-nodes" title="移动框选节点（再点一下结束移动）" aria-label="移动" ${selectedCount ? "" : "disabled"} type="button">${iconImg("pointer", "移动")}</button>
+          <button class="workflow-dock-button" data-action="copy-selected-workflow-nodes" title="复制框选节点" aria-label="复制" ${selectedCount ? "" : "disabled"} type="button">${iconImg("copy", "复制")}</button>
+          <button class="workflow-dock-button danger" data-action="delete-selected-workflow-nodes" title="删除框选节点" aria-label="删除" ${selectedCount ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
+          <button class="workflow-dock-button text" data-action="workflow-clear-selection" title="退出框选，回到正常操作" aria-label="完成" type="button">完成</button>
+        </div>
+        <button class="workflow-dock-button select-toggle ${workflowSelectionMode ? "active" : ""}" data-action="workflow-select-mode" title="框选节点：拖出范围选中多个节点，弹出移动/复制/删除" aria-label="框选节点" type="button">${iconImg("select", "框选节点")}</button>
+      </div>
       <div class="workflow-dock-group">
         <button class="workflow-dock-button" data-action="workflow-undo" title="撤销" aria-label="撤销" ${workflowHistoryPast.length ? "" : "disabled"} type="button">${iconImg("undo", "撤销")}</button>
         <button class="workflow-dock-button" data-action="workflow-redo" title="重做" aria-label="重做" ${workflowHistoryFuture.length ? "" : "disabled"} type="button">${iconImg("redo", "重做")}</button>
@@ -4305,15 +4318,6 @@ function workflowRightDock(report) {
         <button class="workflow-dock-button text" data-action="workflow-zoom-in" title="放大" aria-label="放大" type="button">+</button>
         <button class="workflow-dock-button text" data-action="workflow-focus-content" title="聚焦到内容(快捷键 F)" aria-label="聚焦内容" type="button">FOC</button>
         <button class="workflow-dock-button text" data-action="workflow-zoom-out" title="缩小" aria-label="缩小" type="button">-</button>
-      </div>
-      <div class="workflow-dock-group workflow-dock-select-group">
-        <div class="workflow-dock-flyout ${(workflowSelectionMode || selectedCount) ? "open" : ""}" aria-hidden="${(workflowSelectionMode || selectedCount) ? "false" : "true"}">
-          <button class="workflow-dock-button" data-action="move-selected-workflow-nodes" title="移动框选节点（再点一下结束移动）" aria-label="移动" ${selectedCount ? "" : "disabled"} type="button">${iconImg("pointer", "移动")}</button>
-          <button class="workflow-dock-button" data-action="copy-selected-workflow-nodes" title="复制框选节点" aria-label="复制" ${selectedCount ? "" : "disabled"} type="button">${iconImg("copy", "复制")}</button>
-          <button class="workflow-dock-button danger" data-action="delete-selected-workflow-nodes" title="删除框选节点" aria-label="删除" ${selectedCount ? "" : "disabled"} type="button">${iconImg("trash", "删除")}</button>
-          <button class="workflow-dock-button text" data-action="workflow-clear-selection" title="退出框选，回到正常操作" aria-label="完成" type="button">完成</button>
-        </div>
-        <button class="workflow-dock-button select-toggle ${workflowSelectionMode ? "active" : ""}" data-action="workflow-select-mode" title="框选节点：拖出范围选中多个节点，弹出移动/复制/删除" aria-label="框选节点" type="button">${iconImg("select", "框选节点")}</button>
       </div>
     </aside>
   `;
@@ -4487,7 +4491,7 @@ function renderWorkflowPage() {
   }
   const report = workflowCheckReport || localWorkflowReport();
   $("view").innerHTML = `
-    <section class="workflow-page ${workflowToolboxOpen ? "toolbox-open" : "toolbox-closed"} ${workflowInspectorOpen ? "inspector-open" : ""} ${workflowRibbonOpen ? "ribbon-open" : ""}">
+    <section class="workflow-page ${workflowToolboxOpen ? "toolbox-open" : "toolbox-closed"} ${workflowInspectorOpen ? "inspector-open" : ""} ${workflowRibbonOpen ? "ribbon-open" : ""} ${workflowTopPinned ? "top-pinned" : ""}">
       <button class="workflow-nav-toggle" data-action="toggle-workflow-nav" title="${workflowNavCollapsed ? "展开导航" : "收起导航"}" type="button">${workflowNavCollapsed ? "☰" : "×"}</button>
       <main class="workflow-main-canvas">
         ${workflowCanvas()}
@@ -4507,6 +4511,7 @@ function renderWorkflowPage() {
           ${badge(report.valid ? "检查通过" : `${report.errors || 0} 错误 / ${report.warnings || 0} 提醒`, report.valid ? "ok" : "warn")}
         </div>
         <div class="workflow-top-tools">
+          <button class="button tiny secondary workflow-top-pin ${workflowTopPinned ? "active" : ""}" data-action="toggle-top-pin" title="${workflowTopPinned ? "取消固定顶栏" : "固定顶栏常驻"}" type="button">${workflowTopPinned ? "📌 已固定" : "📌 固定"}</button>
           <button class="button tiny secondary" data-action="check-workflow" type="button">静态检查</button>
           <button class="button tiny secondary" data-action="dry-run-workflow" type="button">预跑诊断</button>
           <button class="button tiny" data-action="save-agent" type="button">保存</button>
@@ -4514,9 +4519,6 @@ function renderWorkflowPage() {
       </header>
       ${workflowRightDock(report)}
       <aside class="workflow-tool-drawer">
-        <div class="drawer-head">
-          <div><p class="card-kicker">模块库</p><h3>拼图素材 <small>可直接拖拽</small></h3></div>
-        </div>
         <div class="drawer-scroll">${workflowToolbox()}</div>
       </aside>
       ${workflowInspectorOpen ? `
@@ -5188,10 +5190,8 @@ function workflowToolbox() {
   const apis = state.custom_apis || [];
   const filter = workflowMaterialFilter.trim();
   const basicGroupIds = new Set(["trigger_monitor", "entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
-  const showAdvanced = workflowLibraryMode === "advanced";
   const templates = WORKFLOW_NODE_TEMPLATES
     .filter((item) => !WORKFLOW_MERGED_TEMPLATE_IDS.has(item.id))
-    .filter((item) => showAdvanced || !item.advanced)
     .filter((item) =>
       includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
     );
@@ -5236,10 +5236,6 @@ function workflowToolbox() {
     <div class="workflow-toolbox">
       <div class="workflow-toolbox-bar">
         <input class="filter-input workflow-material-filter" data-action="filter-workflow-materials" value="${esc(workflowMaterialFilter)}" placeholder="搜索节点 / 工具 / API / 插件" />
-        <div class="workflow-libmode-switch" role="tablist" aria-label="素材层级">
-          <button class="libmode-tab ${workflowLibraryMode !== "advanced" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="basic" type="button">基础</button>
-          <button class="libmode-tab ${workflowLibraryMode === "advanced" ? "active" : ""}" data-action="set-workflow-library-mode" data-id="advanced" type="button">进阶</button>
-        </div>
       </div>
       <div class="workflow-template-groups">
         ${groupedTemplates.map(({ group, items }) => {
@@ -8953,6 +8949,10 @@ document.addEventListener("click", async (event) => {
           ? `已聚焦「${target.label}」（再按一次看下一处，共 ${targets.length} 处）`
           : "已聚焦到内容中心。");
       }
+      renderWorkflowStable();
+    }
+    if (action === "toggle-top-pin") {
+      workflowTopPinned = !workflowTopPinned;
       renderWorkflowStable();
     }
     if (action === "toggle-workflow-nav") {
