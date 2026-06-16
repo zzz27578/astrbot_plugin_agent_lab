@@ -2586,7 +2586,49 @@ body[data-route="workflow"] {
 
 .integration-content {
   min-width: 0;
+  max-height: calc(100vh - 150px);
+  overflow: auto;
+  padding-right: 4px;
 }
+
+/* ===== 注册工具页（重做） ===== */
+.tools-page { display: grid; gap: 12px; }
+.tools-intro { display: grid; gap: 3px; }
+.tools-intro strong { font-size: 15px; }
+.tools-intro span { color: var(--muted); font-size: 12.5px; }
+.tools-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; position: sticky; top: 0; z-index: 3; background: var(--panel, #fff); padding: 4px 0; }
+.tools-toolbar .filter-input { flex: 1; min-width: 200px; }
+.tools-toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.tools-count { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.tools-groups { display: grid; gap: 10px; }
+.tool-source-group { border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,0.6); overflow: hidden; }
+.tool-source-group > summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; cursor: pointer; font-weight: 600; list-style: none; }
+.tool-source-group > summary::-webkit-details-marker { display: none; }
+.tool-source-group > summary .tsg-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-source-group > summary .tsg-count { font-size: 12px; color: var(--muted); background: rgba(127,127,127,.1); border-radius: 6px; padding: 1px 8px; }
+.tool-card-list { display: grid; gap: 6px; padding: 6px 10px 12px; }
+.tool-card { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: #fff; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.tool-card:hover:not(.is-disabled) { border-color: var(--accent, #5b8def); }
+.tool-card.is-on { background: color-mix(in srgb, var(--accent,#5b8def) 6%, #fff); border-color: color-mix(in srgb, var(--accent,#5b8def) 40%, var(--line)); }
+.tool-card.is-disabled { opacity: .55; cursor: not-allowed; }
+.tool-card-main { display: grid; gap: 2px; min-width: 0; }
+.tool-card-main strong { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-card-main small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool-card-meta { display: flex; align-items: center; gap: 8px; }
+.tool-card-meta select { font-size: 12px; }
+/* 开关样式 */
+.tool-card-switch { position: relative; display: inline-flex; flex: 0 0 auto; width: 38px; height: 22px; }
+.tool-card-switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
+.tool-card-switch i { pointer-events: none; position: absolute; inset: 0; border-radius: 999px; background: #cdd5d2; transition: background .16s ease; }
+.tool-card-switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.25); transition: transform .16s ease; }
+.tool-card-switch input:checked + i { background: var(--accent, #5b8def); }
+.tool-card-switch input:checked + i::after { transform: translateX(16px); }
+.tool-card-switch input:disabled + i { background: #e2e6e4; }
+.tool-approval-block { border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,0.6); padding: 0 12px; }
+.tool-approval-block > summary { padding: 11px 0; cursor: pointer; font-weight: 600; }
+.tool-approval-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px; padding-bottom: 10px; }
+.tool-approval-grid label { display: grid; gap: 4px; font-size: 12.5px; }
+@media (max-width: 760px) { .tool-approval-grid { grid-template-columns: 1fr; } }
 
 .subnav {
   position: sticky;

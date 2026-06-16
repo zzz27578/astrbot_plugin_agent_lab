@@ -7293,6 +7293,7 @@ function instanceRow(task) {
 }
 
 function renderIntegrations() {
+  const __prevScroll = document.querySelector(".integration-content")?.scrollTop || 0;
   const tabs = [
     ["plugins", "插件管理", "控制任务模式可见的插件", (state.plugins || []).length],
     ["tools", "注册工具", "按来源插件折叠工具白名单", (state.tools || []).length],
@@ -7320,6 +7321,8 @@ function renderIntegrations() {
       </div>
     </section>
   `;
+  const __sc = document.querySelector(".integration-content");
+  if (__sc) __sc.scrollTop = __prevScroll; // 还原滚动，避免切换/勾选后跳回顶部
 }
 
 function integrationBody() {
@@ -7386,35 +7389,38 @@ function pluginEffective(plugin) {
 
 function toolsPanel() {
   const selected = new Set(currentAgent.enabled_tools || []);
+  const noExternal = selected.has(EMPTY_TOOLS_SENTINEL);
   const rows = (state.tools || []).filter((tool) =>
-    includesQuery(
-      [tool.name, tool.description, tool.plugin_name, tool.plugin_display_name, tool.source],
-      toolFilter,
-    )
+    includesQuery([tool.name, tool.description, tool.plugin_name, tool.plugin_display_name, tool.source], toolFilter)
   );
   const sourceGroups = new Map();
+  let selectableCount = 0;
+  let selectedCount = 0;
   rows.forEach((tool) => {
     const plugin = (state.plugins || []).find((item) => item.name === tool.plugin_name);
     const pluginOn = plugin ? pluginEffective(plugin) : true;
-    const checked = selected.has(tool.name) && !selected.has(EMPTY_TOOLS_SENTINEL) && pluginOn && tool.active !== false;
+    const checked = selected.has(tool.name) && !noExternal && pluginOn && tool.active !== false;
     const disabled = !pluginOn || tool.active === false;
+    if (!disabled) selectableCount++;
+    if (checked) selectedCount++;
     const risk = currentAgent.tool_risk_overrides?.[tool.name] || tool.risk || "work";
     const row = `
-      <div class="toggle-row ${disabled ? "disabled" : ""}">
-        <input type="checkbox" data-action="toggle-tool" data-id="${esc(tool.name)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} />
-        <span><strong>${esc(tool.name)}</strong><br /><small>${esc(tool.plugin_display_name || tool.source || "注册工具")}</small></span>
-        <span class="tool-controls">
-          ${badge(riskLabel(risk), riskTone(risk))}
-          ${badge(disabled ? "随插件关闭" : checked ? "已选择" : "未选择", disabled ? "bad" : checked ? "ok" : "")}
-          <select data-action="set-tool-risk" data-id="${esc(tool.name)}">${options(["safe", "work", "high"], risk, riskLabel)}</select>
+      <label class="tool-card ${disabled ? "is-disabled" : ""} ${checked ? "is-on" : ""}">
+        <span class="tool-card-switch"><input type="checkbox" data-action="toggle-tool" data-id="${esc(tool.name)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><i aria-hidden="true"></i></span>
+        <span class="tool-card-main">
+          <strong>${esc(tool.name)}</strong>
+          <small>${esc(tool.description || tool.plugin_display_name || tool.source || "注册工具")}</small>
         </span>
-      </div>
+        <span class="tool-card-meta">
+          ${badge(disabled ? "随插件关闭" : checked ? "已启用" : "未启用", disabled ? "bad" : checked ? "ok" : "")}
+          <select data-action="set-tool-risk" data-id="${esc(tool.name)}" title="风险等级">${options(["safe", "work", "high"], risk, riskLabel)}</select>
+        </span>
+      </label>
     `;
     const key = tool.plugin_name || tool.plugin_display_name || tool.source || "registered";
     if (!sourceGroups.has(key)) {
       sourceGroups.set(key, {
         title: tool.plugin_display_name || tool.plugin_name || (tool.source === "builtin_catalog" ? "AstrBot 内置工具目录" : "未绑定插件的注册工具"),
-        pluginName: tool.plugin_name || "",
         enabled: plugin ? pluginEffective(plugin) : tool.active !== false,
         rows: [],
       });
@@ -7424,38 +7430,43 @@ function toolsPanel() {
   const groups = Array.from(sourceGroups.values()).sort((a, b) =>
     Number(b.enabled) - Number(a.enabled) || a.title.localeCompare(b.title, "zh-CN")
   );
-  const group = (item) => `
-    <details class="collapse-group" ${item.enabled ? "open" : ""}>
+  const groupHtml = (item) => `
+    <details class="tool-source-group" ${item.enabled ? "open" : ""}>
       <summary>
-        <span>${esc(item.title)}</span>
-        ${badge(item.enabled ? "来源可用" : "随插件关闭", item.enabled ? "ok" : "bad")}
-        <small>${item.rows.length}</small>
+        <span class="tsg-title">${esc(item.title)}</span>
+        ${badge(item.enabled ? "可用" : "随插件关闭", item.enabled ? "ok" : "bad")}
+        <span class="tsg-count">${item.rows.length}</span>
       </summary>
-      <div class="capability-list">${item.rows.join("")}</div>
+      <div class="tool-card-list">${item.rows.join("")}</div>
     </details>
   `;
   return `
-    <div class="section-note">
-      工具按来源插件分组；保存后会进入任务运行白名单。
-    </div>
-    <section class="grid two">
-      <div>
-        <div class="button-row">
-          <button class="button secondary" data-action="enable-visible-tools" type="button">启用当前可用工具</button>
-          <button class="button secondary" data-action="disable-tools" type="button">禁用外部工具</button>
+    <div class="tools-page">
+      <div class="tools-intro">
+        <strong>注册工具白名单</strong>
+        <span>勾选任务模式可调用的工具，按来源插件分组；修改即时生效，保存方案后写入运行时白名单。</span>
+      </div>
+      <div class="tools-toolbar">
+        <input class="filter-input" data-action="filter-tools" value="${esc(toolFilter)}" placeholder="搜索工具名 / 来源插件 / 说明" />
+        <div class="tools-toolbar-actions">
+          <span class="tools-count">${noExternal ? "已禁用全部外部工具" : `已启用 ${selectedCount} / 可用 ${selectableCount}`}</span>
+          <button class="button secondary" data-action="enable-visible-tools" type="button">全选可用</button>
+          <button class="button secondary" data-action="disable-tools" type="button">全部禁用</button>
         </div>
-        <input class="filter-input" data-action="filter-tools" value="${esc(toolFilter)}" placeholder="筛选工具名、来源插件或说明" />
-        ${groups.map(group).join("") || `<div class="empty">没有匹配的注册工具。</div>`}
       </div>
-      <div class="detail-box approval-editor">
-        <div class="panel-head"><div><p class="card-kicker">审批</p><h3>工具审批策略</h3></div></div>
-        <label>审批模式<select id="tool-approval-mode">${options(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
-        <label>已授权范围<textarea id="preapproved-scopes" rows="5" placeholder="例如：读取项目文件&#10;运行测试&#10;小范围明确文件编辑">${esc(listToLines(currentAgent.approval_policy.preapproved_scopes))}</textarea></label>
-        <label>必须审批动作<textarea id="require-approval" rows="8">${esc(listToLines(currentAgent.approval_policy.require_approval))}</textarea></label>
-        <label>审批备注<textarea id="approval-note" rows="4">${esc(currentAgent.approval_policy.note || "")}</textarea></label>
+      ${noExternal ? `<div class="section-note">当前为「无外部工具」模式：任务只用内置能力。点任意工具或「全选可用」即可重新启用。</div>` : ""}
+      <div class="tools-groups">${groups.map(groupHtml).join("") || `<div class="empty">没有匹配的注册工具。</div>`}</div>
+      <details class="tool-approval-block">
+        <summary>工具审批策略</summary>
+        <div class="tool-approval-grid">
+          <label>审批模式<select id="tool-approval-mode">${options(["observe", "work", "high_risk_review", "delegated"], currentAgent.approval_policy.mode || "work", approvalModeLabel)}</select></label>
+          <label>已授权范围（无需每次确认）<textarea id="preapproved-scopes" rows="4" placeholder="例如：读取项目文件&#10;运行测试">${esc(listToLines(currentAgent.approval_policy.preapproved_scopes))}</textarea></label>
+          <label>必须审批动作<textarea id="require-approval" rows="4" placeholder="例如：删除文件&#10;部署">${esc(listToLines(currentAgent.approval_policy.require_approval))}</textarea></label>
+          <label>审批备注<textarea id="approval-note" rows="3">${esc(currentAgent.approval_policy.note || "")}</textarea></label>
+        </div>
         <div class="button-row"><button class="button secondary" data-action="apply-approval-policy" type="button">应用审批策略</button></div>
-      </div>
-    </section>
+      </details>
+    </div>
   `;
 }
 
