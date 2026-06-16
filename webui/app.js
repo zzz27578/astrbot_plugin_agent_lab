@@ -4457,6 +4457,7 @@ function applyWorkflowNodeFromInspector() {
     currentAgent.workflow_scope.chat_types = checkedValues("scope-chat-type");
     if (!currentAgent.workflow_scope.chat_types.length) currentAgent.workflow_scope.chat_types = ["private"];
     currentAgent.workflow_scope.admin_only = document.getElementById("scope-admin-only")?.checked || false;
+    currentAgent.workflow_scope.platforms = linesToList($("scope-platforms")?.value || "");
     currentAgent.workflow_scope.group_allowlist = linesToList($("scope-group-allow")?.value || "");
     currentAgent.workflow_scope.group_denylist = linesToList($("scope-group-deny")?.value || "");
     currentAgent.workflow_scope.user_allowlist = linesToList($("scope-user-allow")?.value || "");
@@ -6571,17 +6572,19 @@ function workflowInspector() {
   const ap = currentAgent.approval_policy || {};
   const scopeRule = isScopeNode ? `
     <div class="workflow-node-rule-box">
-      <div class="panel-head"><div><p class="card-kicker">生效范围</p><h3>这条入口在哪里生效（可分流）</h3></div></div>
+      <div class="panel-head"><div><p class="card-kicker">生效范围</p><h3>谁能触发 / 在哪里生效</h3></div></div>
       <label class="check-line"><input type="checkbox" id="scope-global" ${currentAgent.application_scope === "global" ? "checked" : ""} /> 全局应用（所有会话都参与，不只入口命中时）</label>
       <label>生效会话类型<div class="choice-grid compact-choice">${checkboxGroupHtml("scope-chat-type", WORKFLOW_CHAT_TYPES, sc.chat_types || ["private"], workflowChatTypeLabel)}</div></label>
       <label class="check-line"><input type="checkbox" id="scope-admin-only" ${sc.admin_only === true ? "checked" : ""} /> 仅管理员可触发</label>
+      <label>平台（每行一个，留空＝全部平台）<textarea id="scope-platforms" list="scope-platform-list" rows="2" placeholder="aiocqhttp（QQ）\nwechatpadpro（微信）">${esc(listToLines(sc.platforms || []))}</textarea></label>
+      <datalist id="scope-platform-list"><option value="aiocqhttp">QQ（NapCat/Lagrange）</option><option value="qq_official">QQ 官方机器人</option><option value="wechatpadpro">微信</option><option value="gewechat">微信(gewechat)</option><option value="telegram">Telegram</option><option value="discord">Discord</option><option value="lark">飞书</option><option value="dingtalk">钉钉</option></datalist>
       <div class="form-grid compact">
-        <label>群聊白名单（每行一个群号）<textarea id="scope-group-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(sc.group_allowlist || []))}</textarea></label>
-        <label>群聊黑名单<textarea id="scope-group-deny" rows="2">${esc(listToLines(sc.group_denylist || []))}</textarea></label>
-        <label>用户白名单（每行一个）<textarea id="scope-user-allow" rows="2" placeholder="留空＝不限">${esc(listToLines(sc.user_allowlist || []))}</textarea></label>
-        <label>用户黑名单<textarea id="scope-user-deny" rows="2">${esc(listToLines(sc.user_denylist || []))}</textarea></label>
+        <label>允许的群（每行一个 QQ 群号）<textarea id="scope-group-allow" rows="2" placeholder="留空＝不限；填了只这些群生效">${esc(listToLines(sc.group_allowlist || []))}</textarea></label>
+        <label>屏蔽的群<textarea id="scope-group-deny" rows="2" placeholder="这些群不触发">${esc(listToLines(sc.group_denylist || []))}</textarea></label>
+        <label>允许的用户（每行一个 QQ 号 / 用户 ID）<textarea id="scope-user-allow" rows="2" placeholder="留空＝不限；私聊就填对方账号">${esc(listToLines(sc.user_allowlist || []))}</textarea></label>
+        <label>屏蔽的用户<textarea id="scope-user-deny" rows="2" placeholder="这些人不触发">${esc(listToLines(sc.user_denylist || []))}</textarea></label>
       </div>
-      <small class="field-hint">不同入口节点可设不同范围：让一部分人走这条路、另一部分人走另一条。</small>
+      <small class="field-hint">配 QQ 很简单：私聊→把对方 QQ 号填「允许的用户」；某个群→把群号填「允许的群」；都留空＝不限。平台名按所用适配器填（QQ 常见是 aiocqhttp）。</small>
     </div>` : "";
   const entryRule = ""; // 触发条件已内聚到「消息监听入口」节点字段，去除统一盒子（去重）。
   const exitRule = isExitNode ? `
