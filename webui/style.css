@@ -4603,8 +4603,18 @@ input[type="checkbox"] {
 .memory-tag { display: inline-block; margin: 0 4px 4px 0; padding: 2px 9px; border-radius: 999px; background: var(--panel-2, #eef3f1); border: 1px solid var(--line, #dfe5e2); font-size: 11.5px; color: var(--ink, #1b2723); }
 .memory-content-block { border: 1px solid var(--line, #dfe5e2); border-radius: 10px; background: var(--panel-2, #f6f9f7); margin-bottom: 12px; overflow: hidden; }
 .memory-content-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line, #dfe5e2); font-size: 12px; font-weight: 600; color: var(--muted, #5d6b65); }
-.memory-content-text { padding: 12px; font-size: 13.5px; line-height: 1.7; color: var(--ink, #1b2723); whi
+.memory-content-text { padding: 12px; font-size: 13.5px; line-height: 1.7; color: var(--ink, #1b2723); white-space: pre-wrap; word-break: break-word; }
 /* 外部蓝图：是否加入当前方案的醒目状态条 */
 .blueprint-attach-banner { margin: 10px 0 4px; padding: 9px 12px; border-radius: 9px; font-size: 13px; font-weight: 600; }
 .blueprint-attach-banner.on { background: rgba(47, 158, 95, 0.12); border: 1px solid rgba(47, 158, 95, 0.4); color: #1f7d4f; }
-.blueprint-attach-banner.off { background: var(--
+.blueprint-attach-banner.off { background: var(--panel-2, #eef3f1); border: 1px solid var(--line, #dfe5e2); color: var(--muted, #5d6b65); }
+/* ===== 运行监控 / 方案运行概览（重构） ===== */
+.monitor-page { display: grid; gap: 14px; }
+.monitor-metrics { gap: 12px; }
+.monitor-grid { display: grid; grid-template-columns: minmax(280px, 340px) minmax(0, 1fr); gap: 14px; align-items: start; }
+.monitor-runs { position: sticky; top: 70px; max-height: calc(100vh - 92px); overflow: auto; display: grid; gap: 8px; align-content: start; }
+.monitor-runs .list { display: grid; gap: 6px; }
+.monitor-sched-head { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.monitor-detail { min-width: 0; display: grid; gap: 10px; align-content: start; }
+.scheme-run-overview .mini-stats { margin: 4px 0 10px; }
+@media (max-width: 1080px) { .monitor-grid { grid-template-columns: 1fr; } .monitor-runs { position: static; max-height: none; } }

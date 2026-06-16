@@ -4221,31 +4221,19 @@ function renderCanvas() {
           </div>
         </section>
 
-        ${liveConsolePanel(liveTask, Boolean(runnableTask))}
-
-        ${taskRuntimeMonitorPanel(runnableTask)}
-
-        <section class="panel">
+        <section class="panel scheme-run-overview">
           <div class="panel-head">
-            <div><p class="card-kicker">运行中的任务</p><h2>活跃 ${activeRows.length} · 归档 ${archivedRows.length}</h2></div>
+            <div><p class="card-kicker">运行概览</p><h2>本方案运行情况</h2></div>
+            <button class="button secondary" data-route="monitor" type="button">去运行监控看详情</button>
           </div>
-          <div class="task-list scheme-task-list">
-            ${taskConsoleRows(activeRows)}
-            ${archivedRows.length ? `<p class="card-kicker console-archive-title">归档任务</p>${taskConsoleRows(archivedRows.slice(0, 18), true)}` : ""}
+          <div class="mini-stats">
+            <span>活跃任务 ${activeRows.length}</span>
+            <span>归档 ${archivedRows.length}</span>
+            <span>${liveTask ? ("当前：" + esc(liveTask.root_goal || liveTask.task_id)) : "当前无运行任务"}</span>
           </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-head">
-            <div><p class="card-kicker">任务详情</p><h2>${task ? esc(task.root_goal || task.task_id) : "请选择或创建任务"}</h2></div>
-            <div class="inline-actions">
-              <button class="button secondary" data-action="tick-task" ${runnableTask ? "" : "disabled"} type="button">Tick</button>
-              <button class="button secondary" data-action="toggle-heartbeat" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开启心跳"}</button>
-              <button class="button secondary" data-action="finish-task" ${runnableTask ? "" : "disabled"} type="button">完成</button>
-              <button class="button danger" data-action="cancel-task" ${runnableTask ? "" : "disabled"} type="button">取消</button>
-            </div>
-          </div>
-          ${task ? taskDetail(task) : `<div class="empty">请选择或创建任务。</div>`}
+          ${activeRows.length
+            ? `<div class="task-list scheme-task-list">${taskConsoleRows(activeRows.slice(0, 5))}</div>`
+            : `<div class="empty">还没有运行中的任务。配好上面的入口后点「进入任务模式」开始；实时运行状态、心跳、产物都在 <a data-route="monitor" class="inline-link">运行监控</a> 查看。</div>`}
         </section>
       </main>
     </section>
@@ -7202,32 +7190,34 @@ function renderMonitor() {
   const selectedRun = runs.find((item) => item.task_id === selectedTaskId) || activeRuns[0] || runs[0] || null;
   const scheduleJobs = Object.values(state.schedule_jobs || {});
   $("view").innerHTML = `
-    <section class="grid three">
-      ${metric("运行实例", runs.length, `${activeRuns.length} 活跃`)}
-      ${metric("待投递", runs.reduce((sum, item) => sum + Number(item.outbox_pending || 0), 0))}
-      ${metric("计划任务", scheduleJobs.length)}
-    </section>
-    <section class="grid two">
-      <div class="panel">
-        <div class="panel-head"><div><p class="card-kicker">Workflow Runs</p><h2>运行实例</h2></div></div>
-        <div class="list">${workflowRunRows(runs)}</div>
+    <section class="monitor-page">
+      <div class="grid three monitor-metrics">
+        ${metric("运行中任务", activeRuns.length, `共 ${runs.length} 个实例`)}
+        ${metric("待发消息", runs.reduce((sum, item) => sum + Number(item.outbox_pending || 0), 0))}
+        ${metric("定时任务", scheduleJobs.length)}
       </div>
-      <div class="panel">
-        <div class="panel-head">
-          <div><p class="card-kicker">操作</p><h2>实时控制</h2></div>
-          <div class="inline-actions">
-            <button class="button secondary" data-action="restart-heartbeat" ${selectedRun?.active ? "" : "disabled"} type="button">一键重启心跳</button>
-            <button class="button danger" data-action="cancel-task" ${selectedRun?.active ? "" : "disabled"} type="button">强制停止任务</button>
+      <div class="monitor-grid">
+        <aside class="panel monitor-runs">
+          <div class="panel-head"><div><p class="card-kicker">实例</p><h3>运行实例 ${runs.length ? `· ${runs.length}` : ""}</h3></div></div>
+          <div class="list">${workflowRunRows(runs)}</div>
+          <div class="panel-head monitor-sched-head"><div><p class="card-kicker">定时</p><h3>定时与心跳</h3></div></div>
+          <div class="list">${scheduleJobs.map((job) => `
+            <div class="list-row">
+              <div class="row-title"><span>${esc(job.agent_id || job.task_id || job.job_id || "schedule")}</span>${badge(job.enabled === false ? "暂停" : "启用", job.enabled === false ? "warn" : "ok")}</div>
+              <div class="row-meta">${esc(job.cron || job.cron_expression || "-")} · ${esc(job.next_run_at || job.last_run_at || "")}</div>
+            </div>
+          `).join("") || `<div class="empty">暂无定时任务。</div>`}</div>
+        </aside>
+        <main class="panel monitor-detail">
+          <div class="panel-head">
+            <div><p class="card-kicker">详情</p><h2>${selectedRun ? esc(selectedRun.agent_name || selectedRun.task_id) : "运行详情"}</h2></div>
+            <div class="inline-actions">
+              <button class="button secondary" data-action="restart-heartbeat" ${selectedRun?.active ? "" : "disabled"} type="button">重启心跳</button>
+              <button class="button danger" data-action="cancel-task" ${selectedRun?.active ? "" : "disabled"} type="button">强制停止</button>
+            </div>
           </div>
-        </div>
-        ${selectedRun ? workflowRunDetail(selectedRun) : `<div class="empty">暂无运行实例。</div>`}
-        <div class="panel-head"><div><p class="card-kicker">Schedule</p><h3>定时与心跳任务</h3></div></div>
-        <div class="list">${scheduleJobs.map((job) => `
-          <div class="list-row">
-            <div class="row-title"><span>${esc(job.agent_id || job.task_id || job.job_id || "schedule")}</span>${badge(job.enabled === false ? "暂停" : "启用", job.enabled === false ? "warn" : "ok")}</div>
-            <div class="row-meta">${esc(job.cron || job.cron_expression || "-")} · ${esc(job.next_run_at || job.last_run_at || "")}</div>
-          </div>
-        `).join("") || `<div class="empty">暂无定时任务。</div>`}</div>
+          ${selectedRun ? workflowRunDetail(selectedRun) : `<div class="empty">还没有运行实例。在「方案管理」配好入口、进入任务模式后，这里实时显示运行路径、待发消息、阻塞和产物。</div>`}
+        </main>
       </div>
     </section>
   `;
