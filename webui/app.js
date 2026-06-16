@@ -7751,6 +7751,7 @@ async function saveAgent(makeDefault = false) {
   const result = await api("/api/agents", { method: "POST", body: payload });
   selectedAgentId = result.agent?.agent_id || selectedAgentId;
   setFeedback("任务模式配置已保存。");
+  showToast("保存成功", "ok");
   await load();
   return result.agent;
 }
@@ -9084,9 +9085,8 @@ document.addEventListener("click", async (event) => {
       pushWorkflowHistory();
       autoLayoutWorkflow();
       focusWorkflowStart();
-      workflowReportMode = "layout";
-      workflowReportOpen = true;
-      setFeedback("工作流已按阶段自动整理，保存配置后生效。");
+      setFeedback("已按层级自动整理。");
+      showToast("已按层级自动整理", "ok");
       renderWorkflowStable();
     }
     if (action === "select-workflow-node") {
