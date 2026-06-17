@@ -3521,7 +3521,7 @@ function runOverview() {
       <div class="run-overview-main">
         <div class="live-ring ${task ? "running" : ""}"><span></span></div>
         <div>
-          <p class="card-kicker">当前状态</p>
+          
           <h2>${task ? esc(task.root_goal || task.task_id) : "当前没有运行中的任务"}</h2>
           <div class="module-meta">
             ${badge(agentDisplayName(currentAgent), "ok")}
@@ -4167,12 +4167,12 @@ function renderCanvas() {
       <aside class="scheme-sidebar">
         <div class="panel scheme-list-panel">
           <div class="panel-head">
-            <div><p class="card-kicker">方案管理</p><h2>流程方案</h2></div>
+            <div><h2>流程方案</h2></div>
           </div>
           <div class="button-row scheme-actions">
             <button class="button" data-action="new-agent" type="button">新建方案</button>
             <button class="button secondary" data-action="duplicate-agent" type="button" ${a.agent_id ? "" : "disabled"}>复制</button>
-            <button class="button secondary" data-action="export-plan" type="button" ${a.agent_id ? "" : "disabled"} title="把这套方案打包成 JSON，便于分享/备份">导出(打包)</button>
+            <button class="button secondary" data-action="export-plan" type="button" ${a.agent_id ? "" : "disabled"} title="把这套方案导出成 JSON，便于分享/备份">导出</button>
             <button class="button secondary" data-action="import-plan" type="button" title="从别人分享的方案 JSON 导入为新方案">导入</button>
             <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
           </div>
@@ -4666,7 +4666,7 @@ function renderMemoryPage() {
   $("view").innerHTML = `
     <section class="memory-page">
       <div class="panel-head memory-page-head">
-        <div><p class="card-kicker">任务记忆</p><h2>看哪些任务做过、哪些记录要保留</h2></div>
+        <div><h2>看哪些任务做过、哪些记录要保留</h2></div>
         <div class="inline-actions">
           <button class="button secondary" data-route="tasks" type="button">任务列表</button>
           <button class="button secondary" data-route="workflow" type="button">工作流画布</button>
@@ -5064,7 +5064,7 @@ function workflowCanvas() {
       <div class="workflow-canvas-meta">
         <span>${currentAgent.workflow_nodes.length} 节点</span>
         <span>${currentAgent.workflow_edges.length} 连线</span>
-        <span>${Math.round(workflowZoom * 100)}%</span>
+        <span class="workflow-zoom-pct">${Math.round(workflowZoom * 100)}%</span>
       </div>
       ${(workflowTerritoryPaintAgent || workflowApiScopePaint) ? `<div class="workflow-paint-banner">${workflowTerritoryPaintAgent ? "圈地中：拖框选节点划入领地" : "选范围中：拖框把节点纳入 API 范围"} <button class="button tiny" data-action="workflow-exit-paint" type="button">完成</button></div>` : ""}
       <div class="workflow-zoom-controls">
@@ -7323,7 +7323,7 @@ function renderIntegrations() {
   $("view").innerHTML = `
     <section class="integration-shell">
       <div class="panel-head">
-        <div><p class="card-kicker">能力边界</p><h2>插件与集成</h2></div>
+        <div><h2>插件与集成</h2></div>
         <button class="button" data-action="save-agent" type="button">保存当前配置</button>
       </div>
       <div class="integration-layout">
@@ -7828,6 +7828,8 @@ function refreshWorkflowCanvasDom() {
   svg.setAttribute("height", String(size.height));
   svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
   svg.innerHTML = workflowLinksSvg(offsetX, offsetY);
+  const __pct = document.querySelector(".workflow-zoom-pct");
+  if (__pct) __pct.textContent = `${Math.round(workflowZoom * 100)}%`;
   const minimap = document.querySelector(".workflow-minimap");
   if (minimap && !workflowMinimapPan && !workflowMinimapResize) minimap.outerHTML = workflowMinimap(size);
 }
@@ -8831,8 +8833,13 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "workflow-pointer-mode") {
       workflowSelectionMode = false;
+      workflowScissorMode = false;
+      workflowTerritoryPaintAgent = "";
+      workflowApiScopePaint = "";
+      workflowSelectionMove = null;
       workflowSelectionDrag?.box?.remove();
       workflowSelectionDrag = null;
+      setFeedback("已回到正常操作。");
       renderWorkflowStable();
     }
     if (action === "workflow-select-mode") {
@@ -8939,8 +8946,8 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "workflow-zoom-in" || action === "workflow-zoom-out" || action === "workflow-zoom-reset" || action === "workflow-fit" || action === "workflow-focus-content") {
       readAgentForm();
-      if (action === "workflow-zoom-in") workflowZoom = clamp(workflowZoom + 0.1, 0.35, 1.6);
-      if (action === "workflow-zoom-out") workflowZoom = clamp(workflowZoom - 0.1, 0.35, 1.6);
+      if (action === "workflow-zoom-in") workflowZoom = clamp(workflowZoom + 0.1, 0.15, 1.6);
+      if (action === "workflow-zoom-out") workflowZoom = clamp(workflowZoom - 0.1, 0.15, 1.6);
       if (action === "workflow-zoom-reset") {
         workflowZoom = 1;
         workflowPanX = 0;
@@ -8988,7 +8995,7 @@ document.addEventListener("click", async (event) => {
           (viewportHeight * paddingRatio) / contentHeight,
           1.0
         );
-        workflowZoom = clamp(fitZoom, target.kind === "orphan" ? 0.5 : 0.35, 1.0);
+        // 聚焦不改变缩放比例：保留当前 workflowZoom，仅平移到内容中心。
         const size = workflowCanvasSize();
         const offsetX = workflowWorldOffsetX(size);
         const offsetY = workflowWorldOffsetY(size);

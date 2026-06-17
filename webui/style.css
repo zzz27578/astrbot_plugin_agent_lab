@@ -1818,7 +1818,7 @@ button.list-row {
 /* 顶栏固定：常驻显示，隐藏下拉把手 */
 .workflow-page.top-pinned .workflow-page-top { transform: translateY(0) !important; opacity: 1 !important; pointer-events: auto !important; }
 .workflow-page.top-pinned .workflow-page-top::after { display: none; }
-.workflow-top-pin.active { background: var(--accent, #5b8def); color: #fff; border-color: var(--accent, #5b8def); }
+.workflow-top-pin.active { background: var(--ink, #17201d); color: #fff; border-color: var(--ink, #17201d); }
 
 /* 顶部热区：鼠标移到画布最上沿就触发顶栏滑出 */
 .workflow-top-hotzone {
