@@ -827,10 +827,12 @@ button.list-row {
   border: 1px solid var(--line);
   border-radius: 8px;
   background:
-    linear-gradient(90deg, rgba(23, 32, 29, 0.045) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(23, 32, 29, 0.04) 1px, transparent 1px),
-    #fbfcfb;
-  background-size: 24px 24px;
+    linear-gradient(90deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
+    #f3f7fb;
+  background-size: 26px 26px, 26px 26px, 130px 130px, 130px 130px;
   cursor: grab;
 }
 
@@ -905,12 +907,27 @@ button.list-row {
   pointer-events: auto;
 }
 
-.workflow-link {
+.workflow-link-casing {
   fill: none;
-  stroke: var(--link-color, rgba(49, 95, 143, 0.68));
-  stroke-width: 2.4;
+  stroke: var(--link-color, rgba(49, 95, 143, 0.6));
+  stroke-width: 7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.16;
   pointer-events: none;
 }
+.workflow-link {
+  fill: none;
+  stroke: var(--link-color, rgba(49, 95, 143, 0.85));
+  stroke-width: 3.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 3 12;
+  animation: belt-flow 0.8s linear infinite;
+  pointer-events: none;
+}
+@keyframes belt-flow { to { stroke-dashoffset: -15; } }
+@media (prefers-reduced-motion: reduce) { .workflow-link { animation: none; stroke-dasharray: none; } }
 
 .workflow-link-hit {
   fill: none;
@@ -920,9 +937,12 @@ button.list-row {
   pointer-events: stroke;
 }
 
-.workflow-link-hit:hover + .workflow-link {
-  stroke: rgba(180, 67, 58, 0.88);
-  stroke-width: 3;
+.workflow-link-hit:hover ~ .workflow-link {
+  stroke: rgba(180, 67, 58, 0.95);
+  stroke-width: 4;
+}
+.workflow-link-hit:hover + .workflow-link-casing {
+  opacity: 0.3;
 }
 
 .workflow-link-preview {
@@ -1820,10 +1840,12 @@ button.list-row {
   z-index: 20;
   overflow: hidden;
   background:
-    linear-gradient(90deg, rgba(23, 32, 29, 0.045) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(23, 32, 29, 0.04) 1px, transparent 1px),
-    #fbfcfb;
-  background-size: 24px 24px;
+    linear-gradient(90deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
+    #f3f7fb;
+  background-size: 26px 26px, 26px 26px, 130px 130px, 130px 130px;
 }
 
 .workflow-page-top {
@@ -2002,10 +2024,12 @@ button.list-row {
   border: 0;
   border-radius: 0;
   background:
-    linear-gradient(90deg, rgba(23, 32, 29, 0.045) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(23, 32, 29, 0.04) 1px, transparent 1px),
-    #fbfcfb;
-  background-size: 24px 24px;
+    linear-gradient(90deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
+    #f3f7fb;
+  background-size: 26px 26px, 26px 26px, 130px 130px, 130px 130px;
   cursor: grab;
 }
 

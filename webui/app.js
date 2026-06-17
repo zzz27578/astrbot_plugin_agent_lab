@@ -5366,6 +5366,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
       : "";
     return `
       <path class="workflow-link-hit" d="${d}" data-action="delete-workflow-edge" data-index="${index}"></path>
+      <path class="workflow-link-casing" d="${d}" style="--link-color:${color}"></path>
       <path class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-edge-type="${esc(edgeType)}" style="--link-color:${color};marker-end:url(#${marker})"></path>
       ${labelHtml}
     `;
@@ -5733,25 +5734,47 @@ function workflowNodeAnchor(node, port = "out", offsetX = 0, offsetY = 0) {
   return { x: left + WORKFLOW_NODE_BORDER, y };
 }
 
+// 把一串轴对齐折点连成带圆角的正交"管道"路径（传送带风）。
+function roundedOrthPath(points, r) {
+  const pts = [];
+  for (const pt of points) { const last = pts[pts.length - 1]; if (!last || last[0] !== pt[0] || last[1] !== pt[1]) pts.push(pt); }
+  if (pts.length < 2) return "";
+  let d = `M ${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const [px, py] = pts[i - 1], [cx, cy] = pts[i], [nx, ny] = pts[i + 1];
+    const inLen = Math.hypot(cx - px, cy - py), outLen = Math.hypot(nx - cx, ny - cy);
+    const rr = Math.max(0, Math.min(r, inLen / 2, outLen / 2));
+    const ix = cx - Math.sign(cx - px) * rr, iy = cy - Math.sign(cy - py) * rr;
+    const ox = cx + Math.sign(nx - cx) * rr, oy = cy + Math.sign(ny - cy) * rr;
+    d += ` L ${ix.toFixed(1)} ${iy.toFixed(1)} Q ${cx} ${cy} ${ox.toFixed(1)} ${oy.toFixed(1)}`;
+  }
+  const last = pts[pts.length - 1];
+  d += ` L ${last[0]} ${last[1]}`;
+  return d;
+}
+// 连线=正交管道：从出口先直出一小段，走到中线竖直转弯，再直入入口。比贝塞尔更像传送带/管道，少打结。
 function workflowLinkPath(from, to) {
-  const x1 = Number(from.x || 0);
-  const y1 = Number(from.y || 0);
-  const x2 = Number(to.x || 0);
-  const y2 = Number(to.y || 0);
-  // 出发方向：左侧出口往左甩，其余往右。
-  const c1x = from.leftExit ? x1 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x1 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
-  // 进入方向：右侧入口（重试节点）从右边进，其余从左边进。
-  const c2x = to.rightEntry ? x2 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x2 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
-  return `M ${x1} ${y1} C ${c1x} ${y1}, ${c2x} ${y2}, ${x2} ${y2}`;
+  const x1 = Number(from.x || 0), y1 = Number(from.y || 0);
+  const x2 = Number(to.x || 0), y2 = Number(to.y || 0);
+  const exitDir = from.leftExit ? -1 : 1;
+  const entryDir = to.rightEntry ? 1 : -1;
+  const stub = 26;
+  const sx = x1 + exitDir * stub;
+  const ex = x2 + entryDir * stub;
+  let midX = (sx + ex) / 2;
+  // 防止竖直主干落在端口里：保证主干在两个 stub 之间且离端口有间距
+  if (exitDir > 0 && entryDir < 0) midX = Math.max(sx, Math.min(ex, midX));
+  const points = [[x1, y1], [sx, y1], [midX, y1], [midX, y2], [ex, y2], [x2, y2]];
+  return roundedOrthPath(points, 14);
 }
 
 // 连线是三次贝塞尔；标签按 t=0.5 的曲线实际中点定位，避免拖拽时与弯曲的线分离。
 function workflowLinkMidpoint(from, to) {
   const x1 = Number(from.x || 0), y1 = Number(from.y || 0);
   const x2 = Number(to.x || 0), y2 = Number(to.y || 0);
-  const c1x = from.leftExit ? x1 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x1 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
-  const c2x = to.rightEntry ? x2 + clamp(Math.abs(x2 - x1) * 0.4, 70, 200) : x2 - clamp(Math.abs(x2 - x1) * 0.4, 70, 200);
-  return { x: 0.125 * x1 + 0.375 * c1x + 0.375 * c2x + 0.125 * x2, y: (y1 + y2) / 2 };
+  const sx = x1 + (from.leftExit ? -26 : 26);
+  const ex = x2 + (to.rightEntry ? 26 : -26);
+  return { x: (sx + ex) / 2, y: (y1 + y2) / 2 };
 }
 
 function workflowSummaryPanel() {
