@@ -4176,6 +4176,7 @@ function renderCanvas() {
             <button class="button secondary" data-action="duplicate-agent" type="button" ${a.agent_id ? "" : "disabled"}>复制</button>
             <button class="button secondary" data-action="export-plan" type="button" ${a.agent_id ? "" : "disabled"} title="把这套方案导出成 JSON，便于分享/备份">导出</button>
             <button class="button secondary" data-action="import-plan" type="button" title="从别人分享的方案 JSON 导入为新方案">导入</button>
+            <button class="button secondary" data-action="reset-default-workflow" type="button" title="用内置最新长任务 Agent 方案覆盖当前画布节点/连线">重置为内置方案</button>
             <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
           </div>
           <p class="setting-hint-line">导出(打包)＝把当前方案存成 JSON 分享给别人；导入＝把别人分享的方案 JSON 加为新方案。蓝图交流就用这两个。</p>
@@ -8928,6 +8929,19 @@ document.addEventListener("click", async (event) => {
       document.body.appendChild(aEl); aEl.click(); aEl.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1500);
       showToast("方案已打包导出", "ok");
+    }
+    if (action === "reset-default-workflow") {
+      if (await confirmModal("重置为内置长任务方案", "用内置的最新「长任务 Agent」方案覆盖当前画布的节点和连线？触发、生效范围、审批、子Agent 等其它配置保留；保存方案后才生效。", { danger: true, confirmText: "重置画布" })) {
+        ensureWorkflow();
+        pushWorkflowHistory();
+        currentAgent.workflow_nodes = clone(defaultWorkflowNodes());
+        currentAgent.workflow_edges = clone(defaultWorkflowEdges());
+        selectedWorkflowNodeId = "";
+        workflowCheckReport = null;
+        setFeedback("已重置为内置长任务方案，保存后生效。");
+        showToast("已载入内置长任务方案", "ok");
+        render();
+      }
     }
     if (action === "import-plan") {
       const inp = document.createElement("input");
