@@ -242,6 +242,7 @@ textarea {
   text-align: left;
   cursor: pointer;
   line-height: 1.35;
+  font-size: 14px;
 }
 
 .nav button strong,
@@ -1572,20 +1573,47 @@ button.list-row {
   box-shadow: 0 10px 24px rgba(30, 45, 41, 0.12);
 }
 
-.node .node-stage {
-  margin: 0 0 7px;
+.node .node-stage { display: none; }
+
+/* 节点标题：放大加粗，缩小画布也看得清"这个节点干什么" */
+.flow-node > .node-title, .node .node-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 2px 0 4px;
+  font-size: 21px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: var(--ink);
+}
+.flow-node > .node-desc, .node .node-desc {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+/* 状态徽章/动作说明放到卡片底部，不挡标题 */
+.flow-node .node-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.flow-node .node-foot .node-foot-meta {
   color: var(--muted);
   font-size: 11px;
-  text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-
-.node-runtime {
-  margin: 0 0 8px;
-}
-
 .node strong {
   display: block;
-  margin-bottom: 8px;
 }
 
 .node p {
@@ -2389,10 +2417,10 @@ button.list-row {
 }
 
 .workflow-nav-toggle {
-  position: absolute;
-  top: 14px;
+  position: fixed;
+  top: 70px;
   left: 14px;
-  z-index: 32;
+  z-index: 70;
   transition: left 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
   display: grid;
   place-items: center;
@@ -2405,14 +2433,6 @@ button.list-row {
   box-shadow: 0 14px 30px rgba(30, 45, 41, 0.14);
   cursor: pointer;
   font-size: 18px;
-}
-
-body[data-route="workflow"] .nav button span,
-body[data-route="workflow"] .nav button strong {
-  display: block;
-  overflow: hidden;
-  line-height: 1.35;
-  white-space: nowrap;
 }
 
 body[data-route="workflow"] .nav {
@@ -4451,8 +4471,8 @@ body[data-route="workflow"].workflow-nav-collapsed .rail {
   box-shadow: none;
 }
 body[data-route="workflow"]:not(.workflow-nav-collapsed) .workflow-nav-toggle {
-  left: 188px;
-  z-index: 42;
+  left: 194px;
+  z-index: 71;
 }
 
 body[data-route="workflow"] .topbar,

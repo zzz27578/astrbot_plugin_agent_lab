@@ -5853,15 +5853,13 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
       ${inPortHtml}
       ${outPortsHtml}
       ${workflowApiBadge(item)}
-      <span class="node-stage">${esc(workflowStageLabel(item.stage || "plan"))} · ${esc(workflowActionLabel(item.action || "manual"))}</span>
-      <span class="node-runtime">
-        <b class="runtime-badge ${esc(executorState.tone)}">${esc(executorState.label)}</b>
-        <em>${esc(WORKFLOW_RUNTIME_LABELS[runtime.runtime_type] || runtime.runtime_type || "ReAct")}</em>
-      </span>
-      <strong>${esc(item.title || item.id)}</strong>
-      <p>${esc(item.instruction || item.description || item.id)}</p>
+      <strong class="node-title">${esc(item.title || item.id)}</strong>
+      <p class="node-desc">${esc(item.instruction || item.description || "")}</p>
       ${workflowBlockCardExtra(item)}
-      <span>${esc(item.id)} · ${esc(workflowKindLabel(item.kind || "state"))}${item.output_variable ? ` · 输出 ${esc(item.output_variable)}` : ""}${item.prompt ? " · 有提示词" : ""}</span>
+      <div class="node-foot">
+        <b class="runtime-badge ${esc(executorState.tone)}">${esc(executorState.label)}</b>
+        <span class="node-foot-meta">${esc(workflowActionLabel(item.action || "manual"))}${item.output_variable ? ` · ${esc(item.output_variable)}` : ""}</span>
+      </div>
     </article>
   `;
 }
