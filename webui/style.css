@@ -1026,6 +1026,27 @@ button.list-row {
   border-bottom: 2px solid #16c79a;
   content: "";
 }
+.workflow-minimap-resize.is-corner-nw {
+  top: -6px;
+  left: -6px;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid #5b8def;
+  border-radius: 5px;
+  background: #fff;
+  cursor: nwse-resize;
+  box-shadow: 0 2px 7px rgba(91, 141, 239, 0.4);
+}
+.workflow-minimap-resize.is-corner-nw::after {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: 7px;
+  height: 7px;
+  border-left: 2px solid #5b8def;
+  border-top: 2px solid #5b8def;
+  content: "";
+}
 
 .workflow-board {
   display: grid;

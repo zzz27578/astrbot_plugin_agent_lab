@@ -5631,9 +5631,7 @@ function workflowMinimap(size) {
           <rect class="workflow-minimap-viewport" x="${vx}" y="${vy}" width="${vw}" height="${vh}" rx="10"></rect>
         </g>
       </svg>
-      <span class="workflow-minimap-resize is-east" data-edge="e" title="拖动调整小地图宽度"></span>
-      <span class="workflow-minimap-resize is-south" data-edge="s" title="拖动调整小地图高度"></span>
-      <span class="workflow-minimap-resize is-corner" data-edge="se" title="拖动调整小地图大小"></span>
+      <span class="workflow-minimap-resize is-corner-nw" data-edge="nw" title="拖动调整小地图大小"></span>
     </div>
   `;
 }
@@ -8174,9 +8172,8 @@ document.addEventListener("pointerdown", (event) => {
   const minimap = event.target.closest(".workflow-minimap");
   if (minimap && route === "workflow") {
     event.preventDefault();
-    workflowMinimapPan = { pointerId: event.pointerId, element: minimap };
+    workflowMinimapPan = { pointerId: event.pointerId, element: minimap, startX: event.clientX, startY: event.clientY, basePanX: workflowPanX, basePanY: workflowPanY, scale: Number(minimap.dataset.scale || 0) || 1 };
     minimap.setPointerCapture?.(event.pointerId);
-    centerWorkflowFromMinimap(event, minimap);
     return;
   }
   const portEl = event.target.closest(".node-port");
@@ -8370,13 +8367,11 @@ document.addEventListener("pointermove", (event) => {
   if (workflowMinimapResize && workflowMinimapResize.pointerId === event.pointerId) {
     const dx = event.clientX - workflowMinimapResize.startX;
     const dy = event.clientY - workflowMinimapResize.startY;
-    const edge = workflowMinimapResize.edge || "se";
-    if (edge.includes("e")) {
-      workflowMinimapWidth = clamp(workflowMinimapResize.baseWidth + dx, WORKFLOW_MINIMAP_MIN_WIDTH, WORKFLOW_MINIMAP_MAX_WIDTH);
-    }
-    if (edge.includes("s")) {
-      workflowMinimapHeight = clamp(workflowMinimapResize.baseHeight + dy, WORKFLOW_MINIMAP_MIN_HEIGHT, WORKFLOW_MINIMAP_MAX_HEIGHT);
-    }
+    const edge = workflowMinimapResize.edge || "nw";
+    if (edge.includes("w")) workflowMinimapWidth = clamp(workflowMinimapResize.baseWidth - dx, WORKFLOW_MINIMAP_MIN_WIDTH, WORKFLOW_MINIMAP_MAX_WIDTH);
+    else if (edge.includes("e")) workflowMinimapWidth = clamp(workflowMinimapResize.baseWidth + dx, WORKFLOW_MINIMAP_MIN_WIDTH, WORKFLOW_MINIMAP_MAX_WIDTH);
+    if (edge.includes("n")) workflowMinimapHeight = clamp(workflowMinimapResize.baseHeight - dy, WORKFLOW_MINIMAP_MIN_HEIGHT, WORKFLOW_MINIMAP_MAX_HEIGHT);
+    else if (edge.includes("s")) workflowMinimapHeight = clamp(workflowMinimapResize.baseHeight + dy, WORKFLOW_MINIMAP_MIN_HEIGHT, WORKFLOW_MINIMAP_MAX_HEIGHT);
     const size = workflowCanvasSize();
     const minimap = document.querySelector(".workflow-minimap");
     if (minimap) minimap.outerHTML = workflowMinimap(size);
@@ -8396,7 +8391,11 @@ document.addEventListener("pointermove", (event) => {
     return;
   }
   if (workflowMinimapPan && workflowMinimapPan.pointerId === event.pointerId) {
-    centerWorkflowFromMinimap(event, workflowMinimapPan.element);
+    const p = workflowMinimapPan;
+    const sc = p.scale || 1;
+    workflowPanX = Math.round(p.basePanX - ((event.clientX - p.startX) / sc) * workflowZoom);
+    workflowPanY = Math.round(p.basePanY - ((event.clientY - p.startY) / sc) * workflowZoom);
+    refreshWorkflowCanvasDom();
     return;
   }
   if (workflowConnection && workflowConnection.pointerId === event.pointerId) {
