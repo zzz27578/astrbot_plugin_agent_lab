@@ -5222,16 +5222,6 @@ function workflowToolbox() {
       empty: "先在“插件与集成 → 自定义接口”里注册 API",
     },
     {
-      id: "runtime_credentials",
-      title: "你注册的账号 / 凭证",
-      hint: "把已保存的账号 / Cookie 作为登录态节点接入；登录态由后端注入，不回显。",
-      items: creds
-        .map((c) => workflowRuntimeModuleNode("credential", c.credential_id))
-        .filter(Boolean)
-        .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
-      empty: "先在“插件与集成 → 凭证库”里注册账号",
-    },
-    {
       id: "runtime_tools",
       title: "工具模块",
       hint: "从当前任务工具白名单里生成可执行工具节点。",
