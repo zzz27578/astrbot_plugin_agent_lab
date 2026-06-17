@@ -8611,8 +8611,12 @@ document.addEventListener("pointerup", (event) => {
       const key = workflowTerritoryPaintAgent;
       if (newRect.w < 60 || newRect.h < 60) { setFeedback("领地太小了，拖一个大一点的方框。", "warn"); renderWorkflowStable(); return; }
       if (workflowTerritoriesOverlap(newRect, key)) { setFeedback("领地不能和别的 Agent 领地重叠，请重新画一块。", "warn"); renderWorkflowStable(); return; }
-      const role = workflowAgentRoleByKey(key);
-      if (role) { pushWorkflowHistory(); role.territory = newRect; recomputeTerritoryOwners(); }
+      pushWorkflowHistory();
+      ensureWorkflow();
+      const idx = (currentAgent.workflow_nodes || []).findIndex((n) => n.action === "agent_role" && String(n.sub_agent_id || n.id) === String(key));
+      if (idx < 0) { setFeedback("没找到对应的 Agent 角色块。", "warn"); workflowTerritoryPaintAgent = ""; workflowSelectionMode = false; renderWorkflowStable(); return; }
+      currentAgent.workflow_nodes[idx].territory = newRect;
+      recomputeTerritoryOwners();
       workflowTerritoryPaintAgent = "";
       workflowSelectionMode = false;
       setFeedback("领地已设定：框内节点归这个 Agent；拖动节点进出、或拖动/伸缩领地都会实时更新。");
@@ -9176,8 +9180,11 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "agent-role-clear-territory") {
       const __sid = target.dataset.id || "";
-      const role = workflowAgentRoleByKey(__sid);
-      if (role && role.territory) { pushWorkflowHistory(); delete role.territory; recomputeTerritoryOwners(); }
+      pushWorkflowHistory();
+      ensureWorkflow();
+      const __ridx = (currentAgent.workflow_nodes || []).findIndex((n) => n.action === "agent_role" && String(n.sub_agent_id || n.id) === String(__sid));
+      if (__ridx >= 0) delete currentAgent.workflow_nodes[__ridx].territory;
+      recomputeTerritoryOwners();
       workflowTerritoryPaintAgent = "";
       setFeedback("已取消该 Agent 的领地，框内节点归还主agent。");
       renderWorkflowStable();
