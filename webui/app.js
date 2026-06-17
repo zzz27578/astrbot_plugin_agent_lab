@@ -1402,6 +1402,7 @@ let workflowToolboxSeeded = false; // 首次渲染把默认展开的分类填进
 let workflowMinimapWidth = 128;
 let workflowMinimapHeight = 128;
 let workflowMinimapResize = null;
+let workflowTerritoryDrag = null; // 领地矩形 移动/伸缩 拖拽态
 let workflowSelectionMode = false;
 let workflowSelectionDrag = null;
 let workflowScissorMode = false;
@@ -5066,7 +5067,7 @@ function workflowCanvas() {
         <span>${currentAgent.workflow_edges.length} 连线</span>
         <span class="workflow-zoom-pct">${Math.round(workflowZoom * 100)}%</span>
       </div>
-      ${(workflowTerritoryPaintAgent || workflowApiScopePaint) ? `<div class="workflow-paint-banner">${workflowTerritoryPaintAgent ? "圈地中：拖框选节点划入领地" : "选范围中：拖框把节点纳入 API 范围"} <button class="button tiny" data-action="workflow-exit-paint" type="button">完成</button></div>` : ""}
+      ${(workflowTerritoryPaintAgent || workflowApiScopePaint) ? `<div class="workflow-paint-banner">${workflowTerritoryPaintAgent ? "圈地中：在画布拖出一个方框作为领地（替换原领地）" : "选范围中：拖框把节点纳入 API 范围"} <button class="button tiny" data-action="workflow-exit-paint" type="button">完成</button></div>` : ""}
       <div class="workflow-zoom-controls">
         <button class="button tiny secondary" data-action="workflow-zoom-out" type="button">缩小</button>
         <button class="button tiny secondary" data-action="workflow-zoom-in" type="button">放大</button>
@@ -5458,27 +5459,60 @@ function workflowAgentColorFor(key) {
   const sa = subAgentById(key);
   return sa ? subAgentHex(sa) : "#5b8def";
 }
-function workflowTerritoryLayer(offsetX, offsetY) {
+function territoryContains(t, node) {
+  if (!t || !(Number(t.w) > 0)) return false;
+  const cx = Number(node.x || 0) + WORKFLOW_NODE_WIDTH / 2;
+  const cy = Number(node.y || 0) + WORKFLOW_NODE_HEIGHT / 2;
+  return cx >= Number(t.x) && cx <= Number(t.x) + Number(t.w) && cy >= Number(t.y) && cy <= Number(t.y) + Number(t.h);
+}
+function workflowAgentRoleByKey(key) {
+  return (currentAgent.workflow_nodes || []).find((n) => n.action === "agent_role" && String(n.sub_agent_id || n.id) === String(key));
+}
+function workflowTerritoryRoles() {
+  return (currentAgent.workflow_nodes || []).filter((n) => n.action === "agent_role" && n.territory && Number(n.territory.w) > 0 && Number(n.territory.h) > 0);
+}
+// 领地=几何矩形：节点中心落在哪个领地矩形里，就归属那个 Agent；不在任何矩形则归主agent(无 owner)。
+function recomputeTerritoryOwners() {
   const nodes = currentAgent.workflow_nodes || [];
-  // 领地所有者 = 画布上的 agent_role 节点（含主Agent）；颜色取节点自身，和卡片一致。
-  const owners = [];
-  nodes.filter((n) => n.action === "agent_role").forEach((n) => {
-    owners.push({ key: String(n.sub_agent_id || n.id), name: n.title || n.name || (n.main_agent ? "主 Agent" : "Agent"), color: workflowAgentColorFor(n.sub_agent_id || n.id), main: !!n.main_agent });
+  const roles = workflowTerritoryRoles();
+  nodes.forEach((m) => {
+    if (m.action === "agent_role") return;
+    let owner = "";
+    for (const r of roles) { if (territoryContains(r.territory, m)) { owner = String(r.sub_agent_id || r.id); break; } }
+    if (owner) m.owner = owner; else delete m.owner;
   });
-  ensureSubAgents().forEach((sa) => { if (!owners.some((o) => o.key === sa.sub_agent_id)) owners.push({ key: sa.sub_agent_id, name: sa.name || "子Agent", color: subAgentHex(sa), main: false }); });
-  if (!owners.length) return "";
-  const NODE_W = WORKFLOW_NODE_WIDTH, NODE_H = WORKFLOW_NODE_HEIGHT, PAD = 32;
-  return owners.map((o) => {
-    const members = nodes.filter((n) => String(n.owner || "") === o.key);
-    if (!members.length) return "";
-    const xs = members.map((n) => Number(n.x || 0));
-    const ys = members.map((n) => Number(n.y || 0));
-    const minX = Math.min.apply(null, xs) + offsetX - PAD;
-    const minY = Math.min.apply(null, ys) + offsetY - PAD - 18;
-    const maxX = Math.max.apply(null, xs) + offsetX + NODE_W + PAD;
-    const maxY = Math.max.apply(null, ys) + offsetY + NODE_H + PAD;
-    const painting = workflowTerritoryPaintAgent === o.key;
-    return `<div class="workflow-territory ${o.main ? "is-main" : ""} ${painting ? "is-painting" : ""}" style="left:${minX}px;top:${minY}px;width:${maxX - minX}px;height:${maxY - minY}px;--terr:${o.color};background:${o.color}1f;border-color:${o.color}"><span class="workflow-territory-tag" style="background:${o.color}">${esc(o.name)}${o.main ? " · 主" : ""} · ${members.length} 节点</span></div>`;
+}
+function workflowTerritoriesOverlap(rect, exceptKey) {
+  for (const r of workflowTerritoryRoles()) {
+    if (String(r.sub_agent_id || r.id) === String(exceptKey)) continue;
+    const t = r.territory;
+    if (rect.x < Number(t.x) + Number(t.w) && rect.x + rect.w > Number(t.x) && rect.y < Number(t.y) + Number(t.h) && rect.y + rect.h > Number(t.y)) return true;
+  }
+  return false;
+}
+function clientToWorldPoint(clientX, clientY) {
+  const wrap = document.querySelector(".workflow-canvas-wrap");
+  const rect = wrap ? wrap.getBoundingClientRect() : { left: 0, top: 0 };
+  const zoom = workflowZoom || 1;
+  return { x: (clientX - rect.left - workflowPanX) / zoom - workflowWorldOffsetX(), y: (clientY - rect.top - workflowPanY) / zoom - workflowWorldOffsetY() };
+}
+function workflowTerritoryLayer(offsetX, offsetY) {
+  const roles = workflowTerritoryRoles();
+  if (!roles.length) return "";
+  const nodes = currentAgent.workflow_nodes || [];
+  return roles.map((n) => {
+    const key = String(n.sub_agent_id || n.id);
+    const color = workflowAgentColorFor(n.sub_agent_id || n.id);
+    const name = n.title || n.name || (n.main_agent ? "主 Agent" : "Agent");
+    const t = n.territory;
+    const left = Number(t.x) + offsetX, top = Number(t.y) + offsetY, w = Number(t.w), h = Number(t.h);
+    const count = nodes.filter((m) => m.action !== "agent_role" && territoryContains(t, m)).length;
+    const drawing = workflowTerritoryPaintAgent === key;
+    const handles = ["nw", "ne", "sw", "se"].map((c) => `<span class="workflow-territory-handle h-${c}" data-terr-key="${esc(key)}" data-terr-mode="${c}" title="拖动伸缩领地"></span>`).join("");
+    return `<div class="workflow-territory ${n.main_agent ? "is-main" : ""} ${drawing ? "is-painting" : ""}" data-terr-owner="${esc(key)}" style="left:${left}px;top:${top}px;width:${w}px;height:${h}px;--terr:${color};background:${color}1f;border-color:${color}">
+      <span class="workflow-territory-tag" style="background:${color}" data-terr-key="${esc(key)}" data-terr-mode="move" title="拖动移动领地"><i class="terr-grip" aria-hidden="true"></i>${esc(name)}${n.main_agent ? " · 主" : ""} · ${count} 节点</span>
+      ${handles}
+    </div>`;
   }).join("");
 }
 function workflowAssignBar() {
@@ -5868,9 +5902,10 @@ function workflowBlockCardExtra(item) {
     const subId = item.sub_agent_id || item.id || "";
     const painting = workflowTerritoryPaintAgent && workflowTerritoryPaintAgent === subId;
     const tools = Array.isArray(item.enabled_tools) ? item.enabled_tools.length : 0;
-    const owned = (currentAgent.workflow_nodes || []).filter((n) => n.owner === subId && n.action !== "agent_role").length;
+    const hasTerr = item.territory && Number(item.territory.w) > 0;
+    const owned = hasTerr ? (currentAgent.workflow_nodes || []).filter((n) => n.action !== "agent_role" && territoryContains(item.territory, n)).length : 0;
     const summary = `${esc(item.provider_id || "继承模型")} · 工具 ${tools ? tools : "继承"} · 并发 ${item.max_concurrency || 2}${item.rate_per_minute ? (" · " + item.rate_per_minute + "/min") : ""} · 领地 ${owned} 节点`;
-    return `<div class="node-block-extra"><span class="node-block-summary">${summary}</span><button class="node-block-btn ${painting ? "active" : ""}" data-action="agent-role-territory" data-id="${esc(subId)}" type="button">${painting ? "完成圈地" : "选领地"}</button></div>`;
+    return `<div class="node-block-extra"><span class="node-block-summary">${summary}</span><button class="node-block-btn ${painting ? "active" : ""}" data-action="agent-role-territory" data-id="${esc(subId)}" type="button">${painting ? "拖框画领地…" : (hasTerr ? "重选领地" : "选领地")}</button>${hasTerr ? `<button class="node-block-btn" data-action="agent-role-clear-territory" data-id="${esc(subId)}" type="button">取消领地</button>` : ""}</div>`;
   }
   if (act === "api_scope") {
     const painting = workflowApiScopePaint && workflowApiScopePaint === item.id;
@@ -8176,6 +8211,18 @@ document.addEventListener("pointerdown", (event) => {
     minimap.setPointerCapture?.(event.pointerId);
     return;
   }
+  const terrHandle = event.target.closest("[data-terr-mode]");
+  if (terrHandle && route === "workflow") {
+    const key = terrHandle.dataset.terrKey;
+    const role = workflowAgentRoleByKey(key);
+    if (role && role.territory) {
+      event.preventDefault(); event.stopPropagation();
+      pushWorkflowHistory();
+      workflowTerritoryDrag = { pointerId: event.pointerId, key, mode: terrHandle.dataset.terrMode || "move", startX: event.clientX, startY: event.clientY, base: { ...role.territory }, el: terrHandle.closest(".workflow-territory") };
+      terrHandle.setPointerCapture?.(event.pointerId);
+      return;
+    }
+  }
   const portEl = event.target.closest(".node-port");
   if (portEl && document.querySelector(".workflow-canvas")?.contains(portEl)) {
     const portInfo = workflowPortInfo(portEl);
@@ -8398,6 +8445,28 @@ document.addEventListener("pointermove", (event) => {
     refreshWorkflowCanvasDom();
     return;
   }
+  if (workflowTerritoryDrag && workflowTerritoryDrag.pointerId === event.pointerId) {
+    const d = workflowTerritoryDrag;
+    const role = workflowAgentRoleByKey(d.key);
+    if (role) {
+      const zoom = workflowZoom || 1;
+      const dx = (event.clientX - d.startX) / zoom;
+      const dy = (event.clientY - d.startY) / zoom;
+      let r = { ...d.base };
+      if (d.mode === "move") { r.x = d.base.x + dx; r.y = d.base.y + dy; }
+      else {
+        if (d.mode.includes("w")) { r.x = d.base.x + dx; r.w = d.base.w - dx; }
+        if (d.mode.includes("e")) { r.w = d.base.w + dx; }
+        if (d.mode.includes("n")) { r.y = d.base.y + dy; r.h = d.base.h - dy; }
+        if (d.mode.includes("s")) { r.h = d.base.h + dy; }
+      }
+      if (r.w >= 60 && r.h >= 60) {
+        role.territory = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) };
+        if (d.el) { const ox = workflowWorldOffsetX(), oy = workflowWorldOffsetY(); d.el.style.left = (role.territory.x + ox) + "px"; d.el.style.top = (role.territory.y + oy) + "px"; d.el.style.width = role.territory.w + "px"; d.el.style.height = role.territory.h + "px"; }
+      }
+    }
+    return;
+  }
   if (workflowConnection && workflowConnection.pointerId === event.pointerId) {
     const dx = event.clientX - workflowConnection.startX;
     const dy = event.clientY - workflowConnection.startY;
@@ -8462,6 +8531,7 @@ document.addEventListener("pointerup", (event) => {
   }
   if (workflowGroupDrag && workflowGroupDrag.pointerId === event.pointerId) {
     const drag = workflowGroupDrag;
+    recomputeTerritoryOwners();
     workflowGroupDrag = null;
     if (drag.moved) {
       workflowHistoryPast.push(drag.before);
@@ -8504,11 +8574,18 @@ document.addEventListener("pointerup", (event) => {
       if (hit && node.dataset.id) hitIds.push(node.dataset.id);
     });
     if (workflowTerritoryPaintAgent) {
-      // 圈地：框住的节点直接划入该 Agent 领地（agent_role 卡本身不被划走）
-      pushWorkflowHistory();
-      let cnt = 0;
-      hitIds.forEach((id) => { const n = currentAgent.workflow_nodes.find((x) => x.id === id); if (n && n.action !== "agent_role") { setNodeOwner(id, workflowTerritoryPaintAgent); cnt++; } });
-      setFeedback(`已把 ${cnt} 个节点划入领地（拖动节点出框可移出）。`);
+      // 圈地=画一个几何矩形领地：框内节点归该 Agent，拖动节点进/出会实时改变归属。
+      const a = clientToWorldPoint(rect.left, rect.top);
+      const b = clientToWorldPoint(rect.right, rect.bottom);
+      const newRect = { x: Math.round(Math.min(a.x, b.x)), y: Math.round(Math.min(a.y, b.y)), w: Math.round(Math.abs(b.x - a.x)), h: Math.round(Math.abs(b.y - a.y)) };
+      const key = workflowTerritoryPaintAgent;
+      if (newRect.w < 60 || newRect.h < 60) { setFeedback("领地太小了，拖一个大一点的方框。", "warn"); renderWorkflowStable(); return; }
+      if (workflowTerritoriesOverlap(newRect, key)) { setFeedback("领地不能和别的 Agent 领地重叠，请重新画一块。", "warn"); renderWorkflowStable(); return; }
+      const role = workflowAgentRoleByKey(key);
+      if (role) { pushWorkflowHistory(); role.territory = newRect; recomputeTerritoryOwners(); }
+      workflowTerritoryPaintAgent = "";
+      workflowSelectionMode = false;
+      setFeedback("领地已设定：框内节点归这个 Agent；拖动节点进出、或拖动/伸缩领地都会实时更新。");
       renderWorkflowStable();
       return;
     }
@@ -8533,6 +8610,20 @@ document.addEventListener("pointerup", (event) => {
     workflowMinimapPan.element.releasePointerCapture?.(event.pointerId);
     workflowMinimapPan = null;
     refreshWorkflowCanvasDom();
+    return;
+  }
+  if (workflowTerritoryDrag && workflowTerritoryDrag.pointerId === event.pointerId) {
+    const d = workflowTerritoryDrag;
+    workflowTerritoryDrag = null;
+    const role = workflowAgentRoleByKey(d.key);
+    if (role && role.territory) {
+      if (workflowTerritoriesOverlap(role.territory, d.key)) {
+        role.territory = { ...d.base };
+        setFeedback("领地不能和别的 Agent 领地重叠，已撤销这次调整。", "warn");
+      }
+      recomputeTerritoryOwners();
+    }
+    renderWorkflowStable();
     return;
   }
   if (workflowConnection && workflowConnection.pointerId === event.pointerId) {
@@ -8586,6 +8677,10 @@ document.addEventListener("pointerup", (event) => {
       workflowHistoryFuture = [];
     }
     workflowSuppressClick = true;
+    recomputeTerritoryOwners(); // 节点可能被拖进/拖出某个领地
+    workflowDrag = null;
+    renderWorkflowStable();
+    return;
   }
   workflowDrag = null;
 });
@@ -8596,7 +8691,7 @@ document.addEventListener("wheel", (event) => {
   event.preventDefault();
   const oldZoom = workflowZoom;
   const delta = event.deltaY > 0 ? -0.08 : 0.08;
-  const nextZoom = clamp(oldZoom + delta, 0.35, 1.8);
+  const nextZoom = clamp(oldZoom + delta, 0.15, 1.8);
   if (nextZoom === oldZoom) return;
   const rect = wrapEl.getBoundingClientRect();
   const localX = event.clientX - rect.left;
@@ -9044,9 +9139,17 @@ document.addEventListener("click", async (event) => {
       workflowTerritoryPaintAgent = workflowTerritoryPaintAgent === __sid ? "" : __sid;
       workflowApiScopePaint = "";
       workflowScissorMode = false;
-      workflowSelectionMode = !!workflowTerritoryPaintAgent; // 选领地即进入框选
+      workflowSelectionMode = !!workflowTerritoryPaintAgent; // 选领地即进入框选画矩形
       if (!workflowTerritoryPaintAgent) workflowSelectedNodeIds.clear();
-      setFeedback(workflowTerritoryPaintAgent ? "圈地中：直接在画布拖出方框，框住的节点就划入这个 Agent 的领地；也可单击节点逐个增减。完成后再点一次按钮。" : "已退出圈地。");
+      setFeedback(workflowTerritoryPaintAgent ? "圈地中：在画布上拖出一个方框作为这个 Agent 的领地（会替换原领地）；之后框内节点即归它，可拖动节点进出或拖角伸缩。" : "已退出圈地。");
+      renderWorkflowStable();
+    }
+    if (action === "agent-role-clear-territory") {
+      const __sid = target.dataset.id || "";
+      const role = workflowAgentRoleByKey(__sid);
+      if (role && role.territory) { pushWorkflowHistory(); delete role.territory; recomputeTerritoryOwners(); }
+      workflowTerritoryPaintAgent = "";
+      setFeedback("已取消该 Agent 的领地，框内节点归还主agent。");
       renderWorkflowStable();
     }
     if (action === "api-scope-range") {
@@ -9143,11 +9246,8 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "select-workflow-node") {
       const __nid = target.dataset.id;
-      if (workflowTerritoryPaintAgent) {
-        const __n = currentAgent.workflow_nodes.find((n) => n.id === __nid);
-        if (__n && __n.action !== "agent_role") { pushWorkflowHistory(); setNodeOwner(__nid, __n.owner === workflowTerritoryPaintAgent ? "" : workflowTerritoryPaintAgent); renderWorkflowStable(); }
-        return;
-      }
+      if (workflowTerritoryPaintAgent) { return; } // 圈地用拖框画矩形，单击不再逐个改归属
+
       if (workflowApiScopePaint) {
         const __s = currentAgent.workflow_nodes.find((n) => n.id === workflowApiScopePaint);
         if (__s && __nid !== workflowApiScopePaint) { pushWorkflowHistory(); const arr = Array.isArray(__s.scope_node_ids) ? __s.scope_node_ids.slice() : []; const __i = arr.indexOf(__nid); if (__i >= 0) arr.splice(__i, 1); else arr.push(__nid); __s.scope_node_ids = arr; renderWorkflowStable(); }

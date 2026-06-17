@@ -1685,7 +1685,15 @@ button.list-row {
 .workflow-territory.is-main{border-width:2.5px;}
 .workflow-territory.is-painting{border-style:dashed;animation:territory-pulse 1.3s ease-in-out infinite;}
 @keyframes territory-pulse{0%,100%{filter:brightness(1);}50%{filter:brightness(1.07);}}
-.workflow-territory-tag{position:absolute;left:10px;top:-13px;color:#fff;font-size:12px;line-height:1.7;padding:1px 10px;border-radius:9px;font-weight:600;white-space:nowrap;box-shadow:0 2px 8px -3px rgba(0,0,0,.45);}
+.workflow-territory-tag{position:absolute;left:10px;top:-16px;display:inline-flex;align-items:center;gap:6px;color:#fff;font-size:14px;line-height:1.5;padding:3px 12px;border-radius:10px;font-weight:700;white-space:nowrap;box-shadow:0 3px 10px -3px rgba(0,0,0,.5);pointer-events:auto;cursor:grab;}
+.workflow-territory-tag:active{cursor:grabbing;}
+.workflow-territory-tag .terr-grip{width:12px;height:12px;flex:0 0 auto;background-image:radial-gradient(currentColor 1.4px, transparent 1.5px);background-size:5px 5px;opacity:.8;}
+.workflow-territory-handle{position:absolute;width:16px;height:16px;border:2px solid var(--terr,#5b8def);background:#fff;border-radius:4px;pointer-events:auto;box-shadow:0 1px 4px rgba(0,0,0,.25);opacity:0;transition:opacity .15s ease;}
+.workflow-territory:hover .workflow-territory-handle, .workflow-territory.is-painting .workflow-territory-handle{opacity:1;}
+.workflow-territory-handle.h-nw{left:-9px;top:-9px;cursor:nwse-resize;}
+.workflow-territory-handle.h-ne{right:-9px;top:-9px;cursor:nesw-resize;}
+.workflow-territory-handle.h-sw{left:-9px;bottom:-9px;cursor:nesw-resize;}
+.workflow-territory-handle.h-se{right:-9px;bottom:-9px;cursor:nwse-resize;}
 
 .node-port {
   position: absolute;
