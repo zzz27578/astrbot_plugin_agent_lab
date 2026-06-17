@@ -4500,7 +4500,7 @@ body[data-route="workflow"].workflow-nav-collapsed .rail {
   box-shadow: none;
 }
 body[data-route="workflow"]:not(.workflow-nav-collapsed) .workflow-nav-toggle {
-  left: 194px;
+  left: 250px;
   z-index: 71;
 }
 
