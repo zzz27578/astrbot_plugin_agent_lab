@@ -15,6 +15,15 @@
     {
       "api_id": "weather",
       "name": "天气API"
+    },
+    {
+      "api_id": "search",
+      "name": "联网搜索",
+      "url": "https://api.x.com/search",
+      "method": "GET",
+      "credential_id": "",
+      "auth_type": "bearer",
+      "provider_id": ""
     }
   ],
   "credentials": [
@@ -267,6 +276,23 @@
           "edge_type": "success"
         }
       ]
+    }
+  ],
+  "providers": [
+    {
+      "provider_id": "openai_main",
+      "model": "gpt-4o",
+      "type": "openai"
+    },
+    {
+      "provider_id": "deepseek",
+      "model": "deepseek-chat",
+      "type": "openai"
+    },
+    {
+      "provider_id": "claude",
+      "model": "claude-3.7",
+      "type": "anthropic"
     }
   ]
 }

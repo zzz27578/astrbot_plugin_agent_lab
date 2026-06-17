@@ -7518,6 +7518,30 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/heartbeat", self.api_task_heartbeat, ["POST"], "Toggle heartbeat")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/approval", self.api_task_approval, ["POST"], "Resolve approval")
 
+    def _provider_rows(self) -> list[dict[str, Any]]:
+        """列出 AstrBot 已配置的模型提供商，给自定义 API/Agent 直接选用。容错：拿不到返回空。"""
+        rows: list[dict[str, Any]] = []
+        getter = getattr(self.context, "get_all_providers", None)
+        try:
+            provs = list(getter() or []) if callable(getter) else []
+        except Exception:
+            provs = []
+        for prov in provs:
+            try:
+                meta = prov.meta() if hasattr(prov, "meta") else None
+                pid = str(getattr(meta, "id", "") or getattr(prov, "provider_id", "") or "").strip()
+                if not pid:
+                    continue
+                try:
+                    model = str(prov.get_model()) if hasattr(prov, "get_model") else str(getattr(meta, "model", "") or "")
+                except Exception:
+                    model = ""
+                ptype = str(getattr(meta, "type", "") or getattr(meta, "provider_type", "") or "")
+                rows.append({"provider_id": pid, "model": model, "type": ptype})
+            except Exception:
+                continue
+        return rows
+
     async def api_state(self):
         self._sync_default_agent_identity()
         return jsonify(
@@ -7535,6 +7559,7 @@ class AgentLabPlugin(Star):
                 "integrations": self.modules.list_modules(),
                 "custom_apis": self.storage.list_custom_apis(),
                 "credentials": self.storage.list_credentials(),
+                "providers": self._provider_rows(),
                 "skill_rules": self.storage.list_skill_rules(),
                 "memories": self.storage.list_memory_entries(),
                 "memory_folders": self.storage.list_memory_folders(),
@@ -7807,6 +7832,7 @@ class AgentLabPlugin(Star):
                 "ok": True,
                 "custom_apis": self.storage.list_custom_apis(),
                 "credentials": self.storage.list_credentials(),
+                "providers": self._provider_rows(),
                 "skill_rules": self.storage.list_skill_rules(),
             }
         )

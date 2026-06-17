@@ -7554,6 +7554,7 @@ function apisPanel() {
     <section class="grid two">
       <div>
         <div class="form-grid">
+          <label class="span-2">用 AstrBot 模型提供商（选了就复用它在 AstrBot 里配好的地址/密钥，下面 URL/凭证可留空）<select id="api-provider"><option value="">不用 · 手动填 URL + 凭证</option>${(state.providers || []).map((pv) => `<option value="${esc(pv.provider_id)}">${esc(pv.provider_id)}${pv.model ? (" · " + esc(pv.model)) : ""}${pv.type ? (" (" + esc(pv.type) + ")") : ""}</option>`).join("")}</select></label>
           <label>API 名称<input id="api-name" placeholder="grok_search_proxy" /></label>
           <label>HTTP 方法<select id="api-method">${options(["GET", "POST", "PUT", "DELETE"], "GET")}</select></label>
           <label class="span-2">URL<input id="api-url" placeholder="https://api.example.com/v1/search" /></label>
@@ -7570,7 +7571,7 @@ function apisPanel() {
       <div class="capability-list">${(state.custom_apis || []).map((item) => `
         <div class="list-row">
           <div class="row-title"><span>${esc(item.name)}</span>${badge(item.method || "GET")}</div>
-          <div class="row-meta">${esc(item.url)} · 凭证：${esc(item.credential_id || "无")} · 鉴权：${esc(authTypeLabel(item.auth_type || "bearer"))}</div>
+          <div class="row-meta">${item.provider_id ? ("提供商：" + esc(item.provider_id) + " · ") : ""}${esc(item.url || "(用提供商)")} · 凭证：${esc(item.credential_id || "无")} · 鉴权：${esc(authTypeLabel(item.auth_type || "bearer"))}</div>
         </div>
       `).join("") || `<div class="empty">暂无自定义 API。</div>`}</div>
     </section>
@@ -9672,6 +9673,7 @@ document.addEventListener("click", async (event) => {
         method: "POST",
         body: {
           kind: "api",
+          provider_id: $("api-provider")?.value || "",
           name: $("api-name").value,
           method: $("api-method").value,
           url: $("api-url").value,
