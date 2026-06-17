@@ -4667,3 +4667,12 @@ input[type="checkbox"] {
 .monitor-detail { min-width: 0; display: grid; gap: 10px; align-content: start; }
 .scheme-run-overview .mini-stats { margin: 4px 0 10px; }
 @media (max-width: 1080px) { .monitor-grid { grid-template-columns: 1fr; } .monitor-runs { position: static; max-height: none; } }
+
+/* ===== 凭证库：账号小图标(favicon) + 添加表单 ===== */
+.cred-page { display: grid; gap: 12px; }
+.cred-add { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: rgba(255,255,255,0.6); }
+.cred-list { display: grid; gap: 8px; }
+.cred-row { display: flex; align-items: center; gap: 12px; }
+.cred-row-main { min-width: 0; flex: 1; }
+.cred-favicon { width: 26px; height: 26px; border-radius: 6px; flex: 0 0 auto; object-fit: contain; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
+.cred-favicon-empty { display: inline-grid; place-items: center; font-size: 14px; }

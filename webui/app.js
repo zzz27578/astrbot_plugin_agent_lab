@@ -7576,16 +7576,46 @@ function apisPanel() {
   `;
 }
 
+// 从站点/域名/账号文字猜出域名，用于取网站小图标(favicon)
+function credentialDomainGuess(text) {
+  const t = String(text || "").trim().toLowerCase();
+  if (!t) return "";
+  const m = t.match(/([a-z0-9-]+\.[a-z0-9.-]+)/);
+  if (m) return m[1].replace(/^www\./, "");
+  const map = { bilibili: "bilibili.com", "哔哩": "bilibili.com", "b站": "bilibili.com", github: "github.com", weibo: "weibo.com", "微博": "weibo.com", zhihu: "zhihu.com", "知乎": "zhihu.com", youtube: "youtube.com", twitter: "x.com", telegram: "telegram.org", discord: "discord.com", "微信": "weixin.qq.com", wechat: "weixin.qq.com", qq: "qq.com", douyin: "douyin.com", "抖音": "douyin.com", xiaohongshu: "xiaohongshu.com", "小红书": "xiaohongshu.com", gmail: "google.com", google: "google.com" };
+  for (const k in map) { if (t.includes(k)) return map[k]; }
+  return "";
+}
+function credentialFaviconHtml(text) {
+  const d = credentialDomainGuess(text);
+  if (!d) return `<span class="cred-favicon cred-favicon-empty" title="未识别站点">🔑</span>`;
+  return `<img class="cred-favicon" src="https://www.google.com/s2/favicons?domain=${encodeURIComponent(d)}&sz=64" alt="" loading="lazy" title="${esc(d)}" />`;
+}
 function credentialsPanel() {
+  const sites = ["bilibili.com", "github.com", "weibo.com", "zhihu.com", "youtube.com", "x.com", "telegram.org", "discord.com", "qq.com", "weixin.qq.com", "douyin.com", "xiaohongshu.com"];
   return `
-    <section>
-      <div class="section-note">凭证由后端统一管理；这里仅展示已登记的引用，避免在插件管理页直接输入密钥。</div>
-      <div class="capability-list">${(state.credentials || []).map((item) => `
-        <div class="list-row">
-          <div class="row-title"><span>${esc(item.label || item.credential_id)}</span>${badge(item.has_value ? "已加密" : "空值", item.has_value ? "ok" : "warn")}</div>
-          <div class="row-meta">${esc(item.credential_id)} · ${esc(item.provider || "-")} · ${esc(item.scope || "tool")}</div>
+    <section class="cred-page">
+      <div class="section-note">凭证值由后端加密保存，前端不回显明文。填站点/域名（或账号里带网址）会自动带出该网站的小图标，方便辨认是哪个账号。</div>
+      <div class="panel-lite cred-add">
+        <div class="panel-head"><div><h3>添加账号 / 凭证</h3></div></div>
+        <div class="form-grid compact">
+          <label>名称<input id="cred-label" placeholder="如：B站主号 Cookie" /></label>
+          <label>站点 / 域名<input id="cred-provider" list="cred-site-list" placeholder="bilibili.com" /></label>
+          <label>用途<select id="cred-scope">${options(["tool", "web", "api", "login"], "web", (v) => ({ tool: "工具", web: "网页 / 账号", api: "API", login: "登录态" }[v] || v))}</select></label>
+          <label class="span-2">密钥 / Cookie 值<textarea id="cred-value" rows="2" placeholder="粘贴密钥或 Cookie；保存后加密，不回显明文"></textarea></label>
         </div>
-      `).join("") || `<div class="empty">暂无凭证。</div>`}</div>
+        <datalist id="cred-site-list">${sites.map((s) => `<option value="${s}"></option>`).join("")}</datalist>
+        <div class="button-row"><button class="button" data-action="save-credential" type="button">加密保存</button></div>
+      </div>
+      <div class="capability-list cred-list">${(state.credentials || []).map((item) => `
+        <div class="list-row cred-row">
+          ${credentialFaviconHtml(item.provider || item.label || item.credential_id)}
+          <div class="cred-row-main">
+            <div class="row-title"><span>${esc(item.label || item.credential_id)}</span>${badge(item.has_value ? "已加密" : "空值", item.has_value ? "ok" : "warn")}</div>
+            <div class="row-meta">${esc(item.credential_id)} · ${esc(item.provider || "-")} · ${esc(item.scope || "tool")}</div>
+          </div>
+        </div>
+      `).join("") || `<div class="empty">还没有账号 / 凭证。上面填站点+密钥即可加密保存。</div>`}</div>
     </section>
   `;
 }

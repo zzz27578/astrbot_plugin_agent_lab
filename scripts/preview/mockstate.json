@@ -17,7 +17,22 @@
       "name": "天气API"
     }
   ],
-  "credentials": [],
+  "credentials": [
+    {
+      "credential_id": "bili_main",
+      "label": "B站主号 Cookie",
+      "provider": "bilibili.com",
+      "scope": "web",
+      "has_value": true
+    },
+    {
+      "credential_id": "gh_tok",
+      "label": "GitHub Token",
+      "provider": "github.com",
+      "scope": "api",
+      "has_value": true
+    }
+  ],
   "skills": [],
   "memory_folders": [],
   "plugins": [
