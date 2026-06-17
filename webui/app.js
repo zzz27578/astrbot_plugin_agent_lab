@@ -5174,6 +5174,21 @@ function workflowRuntimeModuleNode(refType, refId) {
       output_variable: `tool.${normalizeWorkflowId(idValue || "step")}.result`,
     };
   }
+  if (ref === "credential") {
+    const item = (state.credentials || []).find((c) => c.credential_id === idValue);
+    return {
+      id: `cred_${normalizeWorkflowId(idValue || "account")}`,
+      title: item?.label || idValue || "账号 / 凭证",
+      kind: "guard",
+      stage: "entry",
+      action: "credential_ref",
+      instruction: `引用已登记账号「${item?.label || idValue}」${item?.provider ? "（" + item.provider + "）" : ""}；登录态/密钥由后端注入，不回显给模型。${item?.notes ? " 备注：" + String(item.notes).slice(0, 60) : ""}`,
+      ref_type: "credential",
+      ref_id: idValue,
+      credential_id: idValue,
+      output_variable: `credential.${normalizeWorkflowId(idValue || "account")}`,
+    };
+  }
   return null;
 }
 
@@ -5182,6 +5197,7 @@ function workflowToolbox() {
   const selectedTools = materializedToolSelection();
   const activePlugins = (state.plugins || []).filter((item) => item.activated !== false);
   const apis = state.custom_apis || [];
+  const creds = state.credentials || [];
   const filter = workflowMaterialFilter.trim();
   const basicGroupIds = new Set(["trigger_monitor", "entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
   const templates = WORKFLOW_NODE_TEMPLATES
@@ -5196,13 +5212,23 @@ function workflowToolbox() {
   const runtimeSections = [
     {
       id: "runtime_apis",
-      title: "已注册 API",
-      hint: "像积木一样插入自定义 API，凭证仍由后端注入。",
+      title: "你注册的 API（拖入即用）",
+      hint: "这些是你在「插件与集成 → 自定义接口」里登记的具体 API；拖进画布即调用，凭证后端注入。（上面『API 与外部系统』是通用 API 动作积木。）",
       items: apis
         .map((item) => workflowRuntimeModuleNode("api", item.api_id))
         .filter(Boolean)
         .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
-      empty: "先在“插件与集成”里注册 API",
+      empty: "先在“插件与集成 → 自定义接口”里注册 API",
+    },
+    {
+      id: "runtime_credentials",
+      title: "你注册的账号 / 凭证",
+      hint: "把已保存的账号 / Cookie 作为登录态节点接入；登录态由后端注入，不回显。",
+      items: creds
+        .map((c) => workflowRuntimeModuleNode("credential", c.credential_id))
+        .filter(Boolean)
+        .filter((item) => includesQuery([item.title, item.ref_id, item.instruction], filter)),
+      empty: "先在“插件与集成 → 凭证库”里注册账号",
     },
     {
       id: "runtime_tools",
