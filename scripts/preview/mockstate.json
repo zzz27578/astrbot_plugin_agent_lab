@@ -1,49 +1,257 @@
 {
   "ok": true,
   "default_agent_id": "demo",
-  "runtime": { "bot_label": "DemoBot", "bot_label_source": "manual" },
-  "metrics": { "token_usage": 0 },
+  "runtime": {
+    "bot_label": "DemoBot",
+    "bot_label_source": "manual"
+  },
+  "metrics": {
+    "token_usage": 0
+  },
   "skill_rules": [],
-  "tasks": [], "archives": [],
-  "custom_apis": [{"api_id":"weather","name":"天气API"}],
-  "credentials": [], "skills": [], "memory_folders": [],
+  "tasks": [],
+  "archives": [],
+  "custom_apis": [
+    {
+      "api_id": "weather",
+      "name": "天气API"
+    }
+  ],
+  "credentials": [],
+  "skills": [],
+  "memory_folders": [],
   "plugins": [
-    {"name":"astrbot_plugin_agent_lab","display_name":"Agent Lab","activated":true,"locked":true},
-    {"name":"aiocqhttp_extras","display_name":"QQ扩展","activated":true},
-    {"name":"qq_guard","display_name":"群管插件","activated":true}
+    {
+      "name": "astrbot_plugin_agent_lab",
+      "display_name": "Agent Lab",
+      "activated": true,
+      "locked": true
+    },
+    {
+      "name": "aiocqhttp_extras",
+      "display_name": "QQ扩展",
+      "activated": true
+    },
+    {
+      "name": "qq_guard",
+      "display_name": "群管插件",
+      "activated": true
+    }
   ],
   "tools": [
-    {"name":"web_search","description":"联网搜索","plugin_name":"astrbot_plugin_agent_lab","risk":"work","active":true},
-    {"name":"file_read","description":"读取文件","plugin_name":"astrbot_plugin_agent_lab","risk":"safe","active":true},
-    {"name":"ban_user","description":"禁言用户","plugin_name":"qq_guard","risk":"high","active":true}
+    {
+      "name": "web_search",
+      "description": "联网搜索",
+      "plugin_name": "astrbot_plugin_agent_lab",
+      "risk": "work",
+      "active": true
+    },
+    {
+      "name": "file_read",
+      "description": "读取文件",
+      "plugin_name": "astrbot_plugin_agent_lab",
+      "risk": "safe",
+      "active": true
+    },
+    {
+      "name": "ban_user",
+      "description": "禁言用户",
+      "plugin_name": "qq_guard",
+      "risk": "high",
+      "active": true
+    }
   ],
-  "agents": [{
-    "agent_id":"demo","name":"演示方案","enabled":true,
-    "workflow_trigger":{"enabled":true,"types":["command","keyword"]},
-    "workflow_scope":{"chat_types":["private","group"]},
-    "entry_policy":{}, "approval_policy":{"mode":"work","require_approval":[],"preapproved_scopes":[]}, "isolation_policy":{},
-    "enabled_tools":["web_search","file_read"],
-    "sub_agents":[{"sub_agent_id":"sa_search","name":"检索员","color":"#e0556a","member_node_ids":["exec","tidy"]}],
-    "workflow_nodes":[
-      {"id":"listen","title":"消息监听入口","kind":"trigger","stage":"entry","action":"listen_message","monitor_scope":"mentioned","keywords":["查"],"command_names":["go"],"x":140,"y":160},
-      {"id":"detect","title":"关键词检测器","kind":"detector","stage":"plan","action":"match_keyword","params":{"keywords":["广告"]},"x":620,"y":160},
-      {"id":"main","title":"主 Agent","kind":"state","stage":"plan","action":"agent_role","main_agent":true,"color":"#7c5cff","x":620,"y":420},
-      {"id":"role","title":"检索员","kind":"state","stage":"plan","action":"agent_role","color":"#e0556a","sub_agent_id":"sa_search","x":140,"y":760},
-      {"id":"exec","title":"工具执行","kind":"tool","stage":"execute","action":"run_tools","tool_name":"web_search","owner":"sa_search","x":620,"y":760},
-      {"id":"tidy","title":"上下文整理","kind":"transform","stage":"execute","action":"transform_context","owner":"sa_search","x":1100,"y":760},
-      {"id":"valid","title":"结果校验","kind":"validation","stage":"checkpoint","action":"validate_output","x":1100,"y":420},
-      {"id":"retry","title":"重试循环","kind":"loop","stage":"checkpoint","action":"retry","max_retries":3,"x":1580,"y":420},
-      {"id":"exit","title":"归档出口","kind":"state","stage":"archive","action":"archive","x":1580,"y":160}
-    ],
-    "workflow_edges":[
-      {"from":"listen","to":"detect","edge_type":"success"},
-      {"from":"detect","to":"exec","edge_type":"success"},
-      {"from":"exec","to":"valid","edge_type":"success"},
-      {"from":"valid","to":"exit","edge_type":"success"},
-      {"from":"valid","to":"retry","edge_type":"failed"},
-      {"from":"retry","to":"exec","edge_type":"retry"},
-      {"from":"exec","to":"tidy","edge_type":"success"},
-      {"from":"role","to":"exec","edge_type":"success"}
-    ]
-  }]
+  "agents": [
+    {
+      "agent_id": "demo",
+      "name": "演示方案",
+      "enabled": true,
+      "workflow_trigger": {
+        "enabled": true,
+        "types": [
+          "command",
+          "keyword"
+        ]
+      },
+      "workflow_scope": {
+        "chat_types": [
+          "private",
+          "group"
+        ]
+      },
+      "entry_policy": {},
+      "approval_policy": {
+        "mode": "work",
+        "require_approval": [],
+        "preapproved_scopes": []
+      },
+      "isolation_policy": {},
+      "enabled_tools": [
+        "web_search",
+        "file_read"
+      ],
+      "sub_agents": [
+        {
+          "sub_agent_id": "sa_search",
+          "name": "检索员",
+          "color": "#e0556a",
+          "member_node_ids": [
+            "exec",
+            "tidy"
+          ]
+        }
+      ],
+      "workflow_nodes": [
+        {
+          "id": "listen",
+          "title": "消息监听入口",
+          "kind": "trigger",
+          "stage": "entry",
+          "action": "listen_message",
+          "monitor_scope": "mentioned",
+          "keywords": [
+            "查"
+          ],
+          "command_names": [
+            "go"
+          ],
+          "x": 140,
+          "y": 160
+        },
+        {
+          "id": "detect",
+          "title": "关键词检测器",
+          "kind": "detector",
+          "stage": "plan",
+          "action": "match_keyword",
+          "params": {
+            "keywords": [
+              "广告"
+            ]
+          },
+          "x": 620,
+          "y": 160
+        },
+        {
+          "id": "main",
+          "title": "主 Agent",
+          "kind": "state",
+          "stage": "plan",
+          "action": "agent_role",
+          "main_agent": true,
+          "color": "#7c5cff",
+          "x": 620,
+          "y": 420
+        },
+        {
+          "id": "role",
+          "title": "检索员",
+          "kind": "state",
+          "stage": "plan",
+          "action": "agent_role",
+          "color": "#e0556a",
+          "sub_agent_id": "sa_search",
+          "x": 140,
+          "y": 760,
+          "territory": {
+            "x": 560,
+            "y": 700,
+            "w": 960,
+            "h": 280
+          }
+        },
+        {
+          "id": "exec",
+          "title": "工具执行",
+          "kind": "tool",
+          "stage": "execute",
+          "action": "run_tools",
+          "tool_name": "web_search",
+          "owner": "sa_search",
+          "x": 620,
+          "y": 760
+        },
+        {
+          "id": "tidy",
+          "title": "上下文整理",
+          "kind": "transform",
+          "stage": "execute",
+          "action": "transform_context",
+          "owner": "sa_search",
+          "x": 1100,
+          "y": 760
+        },
+        {
+          "id": "valid",
+          "title": "结果校验",
+          "kind": "validation",
+          "stage": "checkpoint",
+          "action": "validate_output",
+          "x": 1100,
+          "y": 420
+        },
+        {
+          "id": "retry",
+          "title": "重试循环",
+          "kind": "loop",
+          "stage": "checkpoint",
+          "action": "retry",
+          "max_retries": 3,
+          "x": 1580,
+          "y": 420
+        },
+        {
+          "id": "exit",
+          "title": "归档出口",
+          "kind": "state",
+          "stage": "archive",
+          "action": "archive",
+          "x": 1580,
+          "y": 160
+        }
+      ],
+      "workflow_edges": [
+        {
+          "from": "listen",
+          "to": "detect",
+          "edge_type": "success"
+        },
+        {
+          "from": "detect",
+          "to": "exec",
+          "edge_type": "success"
+        },
+        {
+          "from": "exec",
+          "to": "valid",
+          "edge_type": "success"
+        },
+        {
+          "from": "valid",
+          "to": "exit",
+          "edge_type": "success"
+        },
+        {
+          "from": "valid",
+          "to": "retry",
+          "edge_type": "failed"
+        },
+        {
+          "from": "retry",
+          "to": "exec",
+          "edge_type": "retry"
+        },
+        {
+          "from": "exec",
+          "to": "tidy",
+          "edge_type": "success"
+        },
+        {
+          "from": "role",
+          "to": "exec",
+          "edge_type": "success"
+        }
+      ]
+    }
+  ]
 }
