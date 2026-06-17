@@ -557,6 +557,7 @@ class AgentLabStorage:
             "label": str(item.get("label") or existing.get("label") or credential_id).strip(),
             "provider": str(item.get("provider") or existing.get("provider") or "").strip(),
             "scope": str(item.get("scope") or existing.get("scope") or "tool").strip(),
+            "notes": str(item.get("notes") if item.get("notes") is not None else existing.get("notes", "") or "").strip(),
             "updated_at": now_iso(),
         }
         row["created_at"] = row.get("created_at") or row["updated_at"]
@@ -570,6 +571,12 @@ class AgentLabStorage:
         public["has_value"] = bool(row.get("encrypted_value"))
         public["masked_value"] = "********" if row.get("encrypted_value") else ""
         return public
+
+    def delete_credential(self, credential_id: str) -> dict[str, Any]:
+        cid = str(credential_id or "").strip()
+        items = [row for row in self._read_list(self.credentials_path) if str(row.get("credential_id") or "") != cid]
+        self._write_json(self.credentials_path, items)
+        return {"ok": True, "deleted": cid}
 
     def get_credential_secret(self, credential_id: str) -> str:
         credential_id = str(credential_id or "").strip()

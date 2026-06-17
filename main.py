@@ -7794,6 +7794,8 @@ class AgentLabPlugin(Star):
             payload = await request.get_json(force=True, silent=True) or {}
             kind = str(payload.get("kind") or "api")
             if kind == "credential":
+                if str(payload.get("op") or "") == "delete":
+                    return jsonify({"ok": True, "deleted": self.storage.delete_credential(payload.get("credential_id"))})
                 return jsonify({"ok": True, "credential": self.storage.save_credential(payload)})
             if kind == "skill_rule":
                 rule = self.storage.save_skill_rule(payload)

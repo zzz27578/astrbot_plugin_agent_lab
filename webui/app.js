@@ -1403,6 +1403,7 @@ let workflowMinimapWidth = 128;
 let workflowMinimapHeight = 128;
 let workflowMinimapResize = null;
 let workflowTerritoryDrag = null; // 领地矩形 移动/伸缩 拖拽态
+let credEditId = ""; // 正在编辑的凭证 id
 let workflowSelectionMode = false;
 let workflowSelectionDrag = null;
 let workflowScissorMode = false;
@@ -7593,26 +7594,33 @@ function credentialFaviconHtml(text) {
 }
 function credentialsPanel() {
   const sites = ["bilibili.com", "github.com", "weibo.com", "zhihu.com", "youtube.com", "x.com", "telegram.org", "discord.com", "qq.com", "weixin.qq.com", "douyin.com", "xiaohongshu.com"];
+  const editing = (state.credentials || []).find((c) => c.credential_id === credEditId) || null;
   return `
     <section class="cred-page">
       <div class="section-note">凭证值由后端加密保存，前端不回显明文。填站点/域名（或账号里带网址）会自动带出该网站的小图标，方便辨认是哪个账号。</div>
       <div class="panel-lite cred-add">
-        <div class="panel-head"><div><h3>添加账号 / 凭证</h3></div></div>
+        <div class="panel-head"><div><h3>${editing ? "编辑账号 / 凭证" : "添加账号 / 凭证"}</h3></div>${editing ? `<button class="button tiny secondary" data-action="cred-edit-cancel" type="button">取消编辑</button>` : ""}</div>
+        <input type="hidden" id="cred-edit-id" value="${esc(editing ? editing.credential_id : "")}" />
         <div class="form-grid compact">
-          <label>名称<input id="cred-label" placeholder="如：B站主号 Cookie" /></label>
-          <label>站点 / 域名<input id="cred-provider" list="cred-site-list" placeholder="bilibili.com" /></label>
-          <label>用途<select id="cred-scope">${options(["tool", "web", "api", "login"], "web", (v) => ({ tool: "工具", web: "网页 / 账号", api: "API", login: "登录态" }[v] || v))}</select></label>
-          <label class="span-2">密钥 / Cookie 值<textarea id="cred-value" rows="2" placeholder="粘贴密钥或 Cookie；保存后加密，不回显明文"></textarea></label>
+          <label>名称<input id="cred-label" value="${esc(editing ? (editing.label || "") : "")}" placeholder="如：B站主号 Cookie" /></label>
+          <label>站点 / 域名<input id="cred-provider" list="cred-site-list" value="${esc(editing ? (editing.provider || "") : "")}" placeholder="bilibili.com" /></label>
+          <label>用途<select id="cred-scope">${options(["tool", "web", "api", "login"], editing ? (editing.scope || "web") : "web", (v) => ({ tool: "工具", web: "网页 / 账号", api: "API", login: "登录态" }[v] || v))}</select></label>
+          <label class="span-2">密钥 / Cookie 值${editing ? "（留空＝不修改）" : ""}<textarea id="cred-value" rows="2" placeholder="${editing ? "留空则保留原值；填了则覆盖" : "粘贴密钥或 Cookie；保存后加密，不回显明文"}"></textarea></label>
+          <label class="span-2">备注 / 提示（给 Bot 的说明、授权码等）<textarea id="cred-note" rows="2" placeholder="如：仅用于查询；或写入特殊授权码 / 给 Bot 的使用提示">${esc(editing ? (editing.notes || "") : "")}</textarea></label>
         </div>
         <datalist id="cred-site-list">${sites.map((s) => `<option value="${s}"></option>`).join("")}</datalist>
-        <div class="button-row"><button class="button" data-action="save-credential" type="button">加密保存</button></div>
+        <div class="button-row"><button class="button" data-action="save-credential" type="button">${editing ? "保存修改" : "加密保存"}</button></div>
       </div>
       <div class="capability-list cred-list">${(state.credentials || []).map((item) => `
         <div class="list-row cred-row">
           ${credentialFaviconHtml(item.provider || item.label || item.credential_id)}
           <div class="cred-row-main">
             <div class="row-title"><span>${esc(item.label || item.credential_id)}</span>${badge(item.has_value ? "已加密" : "空值", item.has_value ? "ok" : "warn")}</div>
-            <div class="row-meta">${esc(item.credential_id)} · ${esc(item.provider || "-")} · ${esc(item.scope || "tool")}</div>
+            <div class="row-meta">${esc(item.credential_id)} · ${esc(item.provider || "-")} · ${esc(item.scope || "tool")}${item.notes ? " · " + esc(String(item.notes).slice(0, 40)) : ""}</div>
+          </div>
+          <div class="cred-row-ops">
+            <button class="button tiny secondary" data-action="cred-edit" data-id="${esc(item.credential_id)}" type="button">编辑</button>
+            <button class="button tiny danger" data-action="cred-delete" data-id="${esc(item.credential_id)}" type="button">删除</button>
           </div>
         </div>
       `).join("") || `<div class="empty">还没有账号 / 凭证。上面填站点+密钥即可加密保存。</div>`}</div>
@@ -9680,18 +9688,35 @@ document.addEventListener("click", async (event) => {
       await load();
     }
     if (action === "save-credential") {
+      const cid = $("cred-edit-id")?.value || "";
       await api("/api/registry", {
         method: "POST",
         body: {
           kind: "credential",
+          credential_id: cid,
           label: $("cred-label").value,
           provider: $("cred-provider").value,
           scope: $("cred-scope").value,
           value: $("cred-value").value,
+          notes: $("cred-note")?.value || "",
         },
       });
-      setFeedback("凭证已加密保存。");
+      credEditId = "";
+      setFeedback(cid ? "凭证已更新。" : "凭证已加密保存。");
+      showToast(cid ? "凭证已更新" : "凭证已保存", "ok");
       await load();
+    }
+    if (action === "cred-edit") { credEditId = target.dataset.id || ""; render(); }
+    if (action === "cred-edit-cancel") { credEditId = ""; render(); }
+    if (action === "cred-delete") {
+      const cid = target.dataset.id || "";
+      const c = (state.credentials || []).find((x) => x.credential_id === cid);
+      if (c && await confirmModal("删除凭证", `确定删除「${c.label || cid}」？引用它的节点会失效。`, { danger: true, confirmText: "删除" })) {
+        await api("/api/registry", { method: "POST", body: { kind: "credential", op: "delete", credential_id: cid } });
+        if (credEditId === cid) credEditId = "";
+        setFeedback("凭证已删除。");
+        await load();
+      }
     }
     if (action === "save-skill-rules") {
       const rules = [
