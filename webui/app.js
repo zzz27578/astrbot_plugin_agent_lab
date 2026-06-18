@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260618-fix8";
+const AGENT_LAB_WEBUI_BUILD = "20260619-fix9";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -2499,7 +2499,6 @@ function modernDefaultWorkflowNodes() {
   // 主干在中间一行，并行/进化在上排，审批/人工/重试/心跳在下排；节点 340×208，列距 480、行距 380，互不重叠、连线清晰。
   return [
     { id: "entry", title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", description: "统一承接命令、关键词、自然语言、拍一拍、notice、WebUI、插件事件和 webhook。", instruction: "只把命中工作流触发策略和范围规则的事件送入后续节点。", output_variable: "event.message", x: 100, y: 900 },
-    { id: "global_control", title: "全局控制", kind: "guard", stage: "guard", action: "global_control", description: "方案级隔离、汇报、预算和错误阈值。", instruction: "统一应用隔离、工具范围、汇报频率、预算、暂停策略和错误累积阈值。", x: 580, y: 900 },
     { id: "memory_recall", title: "任务记忆读取", kind: "retrieval", stage: "plan", action: "retrieve_memory", description: "按标签或记忆夹读取任务记忆。", instruction: "按标签、记忆夹或 source_task_id 读取与当前方案相关的任务记忆。", x: 1060, y: 520 },
     { id: "plan", title: "计划确认", kind: "state", stage: "plan", action: "plan", description: "把目标拆成可验证步骤。", instruction: "明确完成条件、风险等级、工具范围、验收方式，并约束每轮只推进一个有限工作单元。", x: 1060, y: 900 },
     { id: "parallel_branch", title: "并行分支", kind: "branch", stage: "plan", action: "parallel_branch", description: "拆分互不依赖的小任务。", instruction: "把资料检索、代码阅读、测试准备等互不依赖的小任务拆成并行工作包。", x: 1540, y: 520 },
@@ -2526,8 +2525,7 @@ function modernDefaultWorkflowNodes() {
 
 function modernDefaultWorkflowEdges() {
   return [
-    { from: "entry", to: "global_control", edge_type: "success" },
-    { from: "global_control", to: "memory_recall", edge_type: "success" },
+    { from: "entry", to: "memory_recall", edge_type: "success" },
     { from: "memory_recall", to: "plan", edge_type: "success" },
     { from: "plan", to: "risk_router", edge_type: "success" },
     { from: "plan", to: "parallel_branch", edge_type: "uncertain" },
@@ -5386,7 +5384,11 @@ function workflowCompactBoard() {
 function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOffsetY()) {
   ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
-  const nodes = new Map((currentAgent.workflow_nodes || []).map((item) => [item.id, item]));
+  const nodeArr = currentAgent.workflow_nodes || [];
+  const nodes = new Map(nodeArr.map((item) => [item.id, item]));
+  const REPEL = 16; // 连线靠近节点的排斥外扩（像素）
+  const allBoxes = nodeArr.map((it) => ({ id: it.id, x: Number(it.x || 0) + offsetX - REPEL, y: Number(it.y || 0) + offsetY - REPEL, w: WORKFLOW_NODE_WIDTH + REPEL * 2, h: WORKFLOW_NODE_HEIGHT + REPEL * 2 }));
+  const reduceMotion = (typeof matchMedia === "function") && matchMedia("(prefers-reduced-motion: reduce)").matches;
   const paths = edges.map((edge, index) => {
     const from = nodes.get(edge.from);
     const to = nodes.get(edge.to);
@@ -5395,8 +5397,10 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    const d = workflowLinkPath(start, end);
+    const boxes = allBoxes.filter((b) => b.id !== edge.from && b.id !== edge.to);
+    const d = workflowRouteLink(start, end, boxes);
     const color = workflowEdgeColor(edgeType);
+    const pid = `wflp-${index}`;
     const marker = `workflow-arrow-${edgeType}`;
     const __mid = workflowLinkMidpoint(start, end);
     const midX = __mid.x;
@@ -5405,10 +5409,13 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const labelHtml = showLabel
       ? `<g class="workflow-link-label" transform="translate(${midX} ${midY})"><rect x="-18" y="-9" width="36" height="18" rx="5" fill="#fff" stroke="${color}"></rect><text x="0" y="3" text-anchor="middle" fill="${color}">${esc(workflowPortShortLabel(edgeType))}</text></g>`
       : "";
+    const flow = reduceMotion ? "" : `<g class="link-flow">${[0, 0.5].map((off) => `<path class="link-arrow" d="M -6 -5 L 6 0 L -6 5 L -2 0 Z" fill="${color}"><animateMotion dur="3.4s" begin="-${(off * 3.4).toFixed(2)}s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#${pid}"></mpath></animateMotion></path>`).join("")}</g>`;
     return `
       <path class="workflow-link-hit" d="${d}" data-action="delete-workflow-edge" data-index="${index}"></path>
       <path class="workflow-link-casing" d="${d}" style="--link-color:${color}"></path>
-      <path class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-edge-type="${esc(edgeType)}" style="--link-color:${color};marker-end:url(#${marker})"></path>
+      <path class="workflow-link-channel" d="${d}"></path>
+      <path id="${pid}" class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-edge-type="${esc(edgeType)}" style="--link-color:${color};marker-end:url(#${marker})"></path>
+      ${flow}
       ${labelHtml}
     `;
   }).join("");
@@ -5626,7 +5633,7 @@ function workflowMarkerDefs() {
       ${types.map((type) => {
         const color = workflowEdgeColor(type);
         return `
-          <marker id="workflow-arrow-${type}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <marker id="workflow-arrow-${type}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8.5" markerHeight="8.5" orient="auto-start-reverse">
             <path d="M 0 0 L 10 5 L 0 10 z" fill="${color}"></path>
           </marker>
         `;
@@ -5793,6 +5800,56 @@ function roundedOrthPath(points, r) {
   d += ` L ${last[0]} ${last[1]}`;
   return d;
 }
+// 轴对齐线段是否与任一障碍盒相交（盒已含「靠近排斥」外扩）。
+function workflowSegHitsBoxes(ax, ay, bx, by, boxes) {
+  const x0 = Math.min(ax, bx), x1 = Math.max(ax, bx);
+  const y0 = Math.min(ay, by), y1 = Math.max(ay, by);
+  for (const b of boxes) {
+    if (x1 < b.x || x0 > b.x + b.w || y1 < b.y || y0 > b.y + b.h) continue;
+    return true;
+  }
+  return false;
+}
+function workflowPointsHit(points, boxes) {
+  for (let i = 1; i < points.length; i++) {
+    if (workflowSegHitsBoxes(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1], boxes)) return true;
+  }
+  return false;
+}
+// 连线避让：默认走「出口直出→竖直主干→直入入口」的正交通道；若主干/横段会穿过其它节点盒，
+// 先把主干 midX 横向平移到一条不撞节点的通道；都不行就抬到障碍上方或压到下方绕行；
+// 仍找不到才回退到原始直连（保证不报错、不丢线）。
+function workflowRouteLink(from, to, boxes) {
+  const x1 = Number(from.x || 0), y1 = Number(from.y || 0);
+  const x2 = Number(to.x || 0), y2 = Number(to.y || 0);
+  const exitDir = from.leftExit ? -1 : 1;
+  const entryDir = to.rightEntry ? 1 : -1;
+  const stub = 28;
+  const sx = x1 + exitDir * stub;
+  const ex = x2 + entryDir * stub;
+  const build = (midX) => [[x1, y1], [sx, y1], [midX, y1], [midX, y2], [ex, y2], [x2, y2]];
+  let defMid = (sx + ex) / 2;
+  if (exitDir > 0 && entryDir < 0) defMid = Math.max(sx, Math.min(ex, defMid));
+  if (!boxes || !boxes.length) return roundedOrthPath(build(defMid), 16);
+  if (!workflowPointsHit(build(defMid), boxes)) return roundedOrthPath(build(defMid), 16);
+  // 1) 横向平移主干，找一条空通道（优先靠近默认位置）
+  for (let d = 24; d <= 1600; d += 24) {
+    if (!workflowPointsHit(build(defMid + d), boxes)) return roundedOrthPath(build(defMid + d), 16);
+    if (!workflowPointsHit(build(defMid - d), boxes)) return roundedOrthPath(build(defMid - d), 16);
+  }
+  // 2) 上下绕行：把主干抬到相关障碍上方 / 压到下方再横跨
+  const lo = Math.min(x1, x2, sx, ex), hi = Math.max(x1, x2, sx, ex);
+  const between = boxes.filter((b) => b.x + b.w >= lo && b.x <= hi);
+  if (between.length) {
+    const topY = Math.min(...between.map((b) => b.y)) - 32;
+    const botY = Math.max(...between.map((b) => b.y + b.h)) + 32;
+    for (const ry of [topY, botY]) {
+      const pts = [[x1, y1], [sx, y1], [sx, ry], [ex, ry], [ex, y2], [x2, y2]];
+      if (!workflowPointsHit(pts, boxes)) return roundedOrthPath(pts, 16);
+    }
+  }
+  return roundedOrthPath(build(defMid), 16);
+}
 // 连线=正交管道：从出口先直出一小段，走到中线竖直转弯，再直入入口。比贝塞尔更像传送带/管道，少打结。
 function workflowLinkPath(from, to) {
   const x1 = Number(from.x || 0), y1 = Number(from.y || 0);
@@ -5867,7 +5924,6 @@ function localWorkflowReport() {
   if (!terminalNodes.length) issues.push({ level: "error", message: "缺少真正的出口/归档节点。" });
   if (!guardNodes.length) issues.push({ level: "warn", message: "缺少审批或人工闸门。" });
   if (!actions.has("listen_message")) issues.push({ level: "warn", message: "建议使用统一消息监听入口承接命令、关键词、WebUI、插件事件和 webhook。" });
-  if (currentAgent.isolation_policy?.mode !== "off" && !actions.has("global_control")) issues.push({ level: "warn", message: "隔离/预算/汇报策略建议通过全局控制节点统一生效。" });
   if (!actions.has("save_memory")) issues.push({ level: "warn", message: "缺少任务记忆节点。" });
   if (!actions.has("archive_memory_folder")) issues.push({ level: "warn", message: "建议把任务回流到方案级记忆夹，避免不同方案串记忆。" });
   if (!actions.has("exit_summary")) issues.push({ level: "warn", message: "缺少出口摘要节点。" });

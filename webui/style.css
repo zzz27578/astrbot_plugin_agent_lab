@@ -905,27 +905,38 @@ button.list-row {
   pointer-events: auto;
 }
 
+/* 连接通道：加宽通道，外壁=对应颜色实线，内部=浅色留白露出实壁，中心=细导引线+末端箭头，
+   通道内的流动用稀疏的箭头粒子（.link-arrow）指示方向，远距离也看得清流向。 */
 .workflow-link-casing {
   fill: none;
-  stroke: var(--link-color, rgba(49, 95, 143, 0.6));
-  stroke-width: 7;
+  stroke: var(--link-color, rgba(49, 95, 143, 0.85));
+  stroke-width: 18;            /* 拓宽连接通道 */
   stroke-linecap: round;
   stroke-linejoin: round;
-  opacity: 0.16;
+  opacity: 0.6;                /* 外侧同色实线（不再半透明虚化）*/
+  pointer-events: none;
+}
+.workflow-link-channel {       /* 通道内部留白，露出两侧同色实壁 */
+  fill: none;
+  stroke: #fbfcff;
+  stroke-width: 13;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.97;
   pointer-events: none;
 }
 .workflow-link {
   fill: none;
   stroke: var(--link-color, rgba(49, 95, 143, 0.85));
-  stroke-width: 3.4;
+  stroke-width: 2;             /* 通道中心细导引线（承载末端箭头）*/
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-dasharray: 3 12;
-  animation: belt-flow 0.8s linear infinite;
+  opacity: 0.4;
   pointer-events: none;
 }
-@keyframes belt-flow { to { stroke-dashoffset: -15; } }
-@media (prefers-reduced-motion: reduce) { .workflow-link { animation: none; stroke-dasharray: none; } }
+.link-flow { pointer-events: none; }
+.link-arrow { opacity: 0.96; }
+@media (prefers-reduced-motion: reduce) { .link-arrow { display: none; } }
 
 .workflow-link-hit {
   fill: none;
