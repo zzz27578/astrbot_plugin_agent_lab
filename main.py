@@ -294,6 +294,9 @@ BUILTIN_TOOL_CATALOG = [
     },
 ]
 
+# 由内置工具目录派生的名字集合，用于判断「AstrBot 核心内置工具」（不随插件隔离被关）。
+_BUILTIN_TOOL_NAMES = {str(item.get("name") or "") for item in BUILTIN_TOOL_CATALOG}
+
 BUILTIN_WORKFLOW_MODULE_CATALOG: dict[str, dict[str, Any]] = {
     "agent_role": {
         "kind": "state",
@@ -7517,6 +7520,7 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/cancel", self.api_task_cancel, ["POST"], "Cancel task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/heartbeat", self.api_task_heartbeat, ["POST"], "Toggle heartbeat")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/approval", self.api_task_approval, ["POST"], "Resolve approval")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/delete", self.api_task_delete, ["POST"], "Delete archived task")
 
     def _provider_rows(self) -> list[dict[str, Any]]:
         """列出 AstrBot 已配置的模型提供商，给自定义 API/Agent 直接选用。容错：拿不到返回空。"""
@@ -7872,7 +7876,12 @@ class AgentLabPlugin(Star):
                 ok = self.storage.delete_memory_folder(folder_id)
                 return jsonify({"ok": ok, "memory_folders": self.storage.list_memory_folders(), "memories": self.storage.list_memory_entries()})
             memory_id = str(payload.get("memory_id") or request.args.get("memory_id") or "")
-            return jsonify({"ok": self.storage.delete_memory_entry(memory_id)})
+            if not memory_id:
+                return jsonify({"ok": False, "error": "memory_id is required"})
+            ok = self.storage.delete_memory_entry(memory_id)
+            if not ok:
+                return jsonify({"ok": False, "error": "memory not found"})
+            return jsonify({"ok": True, "message": "memory deleted"})
         return jsonify(
             {
                 "ok": True,
@@ -7983,25 +7992,56 @@ class AgentLabPlugin(Star):
         )
         return jsonify({"ok": True, "message": msg})
 
+    def _umo_for_task_id(self, task_id: str) -> str:
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return ""
+        for task in self.storage.list_tasks():
+            if task.task_id == task_id:
+                return task.umo
+        return ""
+
     async def api_task_cancel(self):
         payload = await request.get_json(force=True, silent=True) or {}
-        event = self._make_cron_event(str(payload.get("umo") or ""), "Agent Lab WebUI cancel")
+        umo = str(payload.get("umo") or "").strip()
+        task_id = str(payload.get("task_id") or "").strip()
+        if not umo and task_id:
+            umo = self._umo_for_task_id(task_id)
+        if not umo:
+            return jsonify({"ok": False, "error": "缺少 umo / task_id，无法定位要停止的任务。"})
+        if self.storage.load_active_task(umo) is None:
+            return jsonify({"ok": False, "error": "该实例没有正在运行的任务（可能已归档或已停止）。"})
+        event = self._make_cron_event(umo, "Agent Lab WebUI cancel")
         if event is None:
-            return jsonify({"ok": False, "error": "cannot create event"})
+            return jsonify({"ok": False, "error": "无法创建停止事件。"})
         msg = await self._finish_task(
             event,
             "cancelled",
             str(payload.get("reason") or "WebUI requested cancel."),
             str(payload.get("memory_candidates") or ""),
         )
-        return jsonify({"ok": True, "message": msg})
+        return jsonify({"ok": True, "message": msg or "任务已停止并归档。"})
+
+    async def api_task_delete(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        task_id = str(payload.get("task_id") or request.args.get("task_id") or "").strip()
+        umo = str(payload.get("umo") or request.args.get("umo") or "").strip()
+        if not task_id:
+            return jsonify({"ok": False, "error": "task_id is required"})
+        ok = self.storage.delete_archive_task(task_id, umo)
+        if not ok:
+            return jsonify({"ok": False, "error": "未找到该归档历史（可能已删除）。"})
+        return jsonify({"ok": True, "message": "归档历史已删除。"})
 
     async def api_task_heartbeat(self):
         payload = await request.get_json(force=True, silent=True) or {}
-        umo = str(payload.get("umo") or "")
-        task = self.storage.load_active_task(umo)
+        umo = str(payload.get("umo") or "").strip()
+        task_id = str(payload.get("task_id") or "").strip()
+        if not umo and task_id:
+            umo = self._umo_for_task_id(task_id)
+        task = self.storage.load_active_task(umo) if umo else None
         if not task:
-            return jsonify({"ok": False, "error": "no active task"})
+            return jsonify({"ok": False, "error": "该实例没有正在运行的任务。"})
         event = self._make_cron_event(umo, "Agent Lab WebUI heartbeat")
         if bool(payload.get("enabled", False)):
             msg = await self._enable_heartbeat(event, task, "webui")
@@ -8095,8 +8135,8 @@ class AgentLabPlugin(Star):
             rows.append(
                 {
                     "name": item["name"],
-                    "active": False,
-                    "effective_active": False,
+                    "active": True,
+                    "effective_active": True,
                     "description": item["description"],
                     "handler_module_path": "astrbot.core.tools",
                     "plugin_name": "",
@@ -8605,9 +8645,30 @@ class AgentLabPlugin(Star):
             overrides[PLUGIN_NAME] = True
         return overrides
 
+    @staticmethod
+    def _is_builtin_core_tool_name(name: str) -> bool:
+        n = str(name or "").strip()
+        if not n:
+            return False
+        if n in _BUILTIN_TOOL_NAMES:
+            return True
+        return n.startswith("astrbot_") or n.startswith("agent_lab_")
+
+    def _is_builtin_core_tool(self, tool: Any) -> bool:
+        if tool is None:
+            return False
+        if self._is_builtin_core_tool_name(getattr(tool, "name", "")):
+            return True
+        module_path = str(getattr(tool, "handler_module_path", "") or "")
+        return module_path.startswith("astrbot.core")
+
     def _tool_available_for_agent(self, tool: Any, disabled_plugins: set[str]) -> bool:
         if not bool(getattr(tool, "active", True)):
             return False
+        # AstrBot 核心内置工具（文件/命令/Python 等）不属于任何可被任务隔离禁用的第三方插件，
+        # 默认全开启、不随插件关闭；只有真正归属第三方插件的工具才受 disabled_plugins 约束。
+        if self._is_builtin_core_tool(tool):
+            return True
         plugin_name = self._tool_plugin_name(tool)
         if plugin_name and plugin_name in disabled_plugins:
             return False
@@ -8621,6 +8682,29 @@ class AgentLabPlugin(Star):
         self._normalize_agent_workflow(spec)
         self._upgrade_default_agent_tools(spec)
         self._sanitize_agent_enabled_tools(spec)
+        self._normalize_agent_approval_policy(spec)
+
+    @staticmethod
+    def _normalize_agent_approval_policy(spec: AgentSpec) -> None:
+        policy = getattr(spec, "approval_policy", None)
+        if policy is None:
+            return
+        sentinel = {"none", "null", "none.", "[]", "[none]", "-", "无"}
+
+        def _clean(values: Any) -> list[str]:
+            out: list[str] = []
+            seen: set[str] = set()
+            for raw in (values or []):
+                item = str(raw or "").strip()
+                if not item or item.lower() in sentinel or item in seen:
+                    continue
+                seen.add(item)
+                out.append(item)
+            return out
+
+        # 把历史遗留的 ["none"] / [""] 等哨兵值规整为真正的空数组。
+        policy.preapproved_scopes = _clean(getattr(policy, "preapproved_scopes", []))
+        policy.require_approval = _clean(getattr(policy, "require_approval", []))
 
     @staticmethod
     def _normalize_agent_entry_settings(spec: AgentSpec) -> None:
@@ -10069,37 +10153,22 @@ class AgentLabPlugin(Star):
         if spec.isolation_policy.tool_mode == "no_external":
             spec.enabled_tools = [NO_EXTERNAL_TOOLS_SENTINEL]
             return
+        internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
         names = []
         seen = set()
         for raw_name in spec.enabled_tools or []:
             name = str(raw_name or "").strip()
-            if not name or name in seen:
+            if not name or name in seen or name in internal_block:
                 continue
+            if name == NO_EXTERNAL_TOOLS_SENTINEL:
+                spec.enabled_tools = [NO_EXTERNAL_TOOLS_SENTINEL]
+                return
             seen.add(name)
             names.append(name)
-
-        if NO_EXTERNAL_TOOLS_SENTINEL in names:
-            spec.enabled_tools = [NO_EXTERNAL_TOOLS_SENTINEL]
-            return
-
-        tmgr = self.context.get_llm_tool_manager()
-        disabled_plugins = self._disabled_plugin_names(spec)
-        internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
-        sanitized = []
-        for name in names:
-            if name in internal_block:
-                continue
-            try:
-                tool = tmgr.get_func(name)
-            except Exception as exc:
-                logger.warning("[AgentLab] cannot resolve tool %s: %s", name, exc)
-                tool = None
-            if tool is not None:
-                if self._tool_available_for_agent(tool, disabled_plugins):
-                    sanitized.append(name)
-                continue
-            sanitized.append(name)
-        spec.enabled_tools = sanitized
+        # 只做去空/去重/去内部哨兵：不再因「所属插件当前被任务隔离禁用」而删掉用户勾选的工具，
+        # 否则在默认 strict 隔离下保存会清空白名单、刷新即恢复默认（用户反馈的「保存无效」根因）。
+        # 运行时 _build_toolset 仍按插件可见性 / 工具 active 实时门控，安全性不变，用户勾选意图被持久化。
+        spec.enabled_tools = names
 
     def _status_text(self, umo: str) -> str:
         task = self.storage.load_active_task(umo)

@@ -149,6 +149,10 @@ class StandaloneWebUIServer:
         async def task_cancel():
             return await self._guard(self.owner.api_task_cancel)
 
+        @app.post("/api/task/delete")
+        async def task_delete():
+            return await self._guard(self.owner.api_task_delete)
+
         @app.post("/api/task/heartbeat")
         async def task_heartbeat():
             return await self._guard(self.owner.api_task_heartbeat)

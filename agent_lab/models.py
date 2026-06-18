@@ -877,9 +877,16 @@ class AgentSpec:
             "astrbot_file_edit_tool",
             "astrbot_execute_shell",
             "astrbot_execute_python",
+            "astrbot_execute_ipython",
+            "astrbot_sandboxed_shell",
+            "astrbot_sandboxed_python",
+            "future_task",
             "agent_lab_read_task_memory",
             "agent_lab_call_custom_api",
+            "agent_lab_recommend_task_patterns",
+            "agent_lab_update_workflow",
             "agent_lab_run_parallel_workflow",
+            "agent_lab_advance_workflow",
         ]
     )
     tool_risk_overrides: dict[str, str] = field(default_factory=dict)

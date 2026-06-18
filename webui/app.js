@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260615-fix7";
+const AGENT_LAB_WEBUI_BUILD = "20260618-fix8";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -10,9 +10,16 @@ const DEFAULT_ENABLED_TOOLS = [
   "astrbot_file_edit_tool",
   "astrbot_execute_shell",
   "astrbot_execute_python",
+  "astrbot_execute_ipython",
+  "astrbot_sandboxed_shell",
+  "astrbot_sandboxed_python",
+  "future_task",
   "agent_lab_read_task_memory",
   "agent_lab_call_custom_api",
+  "agent_lab_recommend_task_patterns",
+  "agent_lab_update_workflow",
   "agent_lab_run_parallel_workflow",
+  "agent_lab_advance_workflow",
 ];
 const GAME_ICON_BASE = "https://raw.githubusercontent.com/Nieobie/Game-Icon-Pack/39dcf2b64947071c762395754ee9a5d3c8975906/svg-v1.0.3";
 const GAME_ICONS = {
@@ -28,6 +35,12 @@ const GAME_ICONS = {
   tool: `${GAME_ICON_BASE}/6.Items/tool-kit.svg`,
   book: `${GAME_ICON_BASE}/6.Items/book.svg`,
   memory: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/memory-card.svg`,
+  play: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/play.svg`,
+  pause: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/pause.svg`,
+  stop: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/stop.svg`,
+  clock: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/clock.svg`,
+  powerSwitch: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/power-switch.svg`,
+  heart: `${GAME_ICON_BASE}/5.Game/heart.svg`,
 };
 
 const WORKFLOW_STAGES = [
@@ -3337,6 +3350,8 @@ function renderNav() {
 // 统一“重绘保焦/保滚动”：render() 在重建 DOM 前记录当前聚焦的表单控件和关键滚动容器位置，
 // 重建后同步恢复。任何重绘都不再丢焦、不再让抽屉滚动条跳回顶端。
 const FOCUS_SCROLL_KEYS = [
+  ".integration-content",
+  ".monitor-runs",
   ".workflow-inspector-drawer .drawer-scroll",
   ".workflow-tool-drawer .drawer-scroll",
   ".workflow-global-drawer .drawer-scroll",
@@ -3350,7 +3365,10 @@ function activeFieldSnapshotGlobal() {
     if (el && el.scrollTop > 0) snap.scrolls.push({ key, top: el.scrollTop });
   });
   const el = document.activeElement;
-  if (el && typeof el.matches === "function" && el.matches("input, textarea, select")) {
+  // 复选框/单选框没有光标且重绘后重新 focus 第一个同类控件会把 overflow 容器滚回顶部
+  // （插件管理勾选后滚动条跳顶的根因），故不为它们记录/恢复焦点，只保留滚动位置。
+  if (el && typeof el.matches === "function" && el.matches("input, textarea, select")
+      && !el.matches('input[type="checkbox"], input[type="radio"]')) {
     let key = "";
     if (el.id) key = `#${(window.CSS && CSS.escape) ? CSS.escape(el.id) : el.id}`;
     else if (el.dataset && el.dataset.action) key = `[data-action="${el.dataset.action}"]`;
@@ -3436,8 +3454,30 @@ function renderLocked() {
   `;
 }
 
-function metric(label, value, note = "") {
-  return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong>${note ? `<div class="row-meta">${esc(note)}</div>` : ""}</div>`;
+function metric(label, value, note = "", icon = "") {
+  const pickedIcon = icon || metricIconForLabel(label);
+  return `
+    <div class="metric icon-metric">
+      <span class="metric-icon" aria-hidden="true">${iconImg(pickedIcon, label)}</span>
+      <span>${esc(label)}</span>
+      <strong>${esc(value)}</strong>
+      ${note ? `<div class="row-meta">${esc(note)}</div>` : ""}
+    </div>
+  `;
+}
+
+function metricIconForLabel(label) {
+  const text = String(label || "").toLowerCase();
+  if (/memory|记忆|璁板繂/.test(text)) return "memory";
+  if (/plugin|tool|插件|工具|鎻掍欢|宸ュ叿/.test(text)) return "tool";
+  if (/heartbeat|schedule|心跳|定时|蹇冭烦|瀹氭椂/.test(text)) return "refresh";
+  if (/message|outbox|消息|待发|娑堟伅/.test(text)) return "copy";
+  if (/task|run|任务|运行|浠诲姟|杩愯/.test(text)) return "gridAdd";
+  return "book";
+}
+
+function iconMetric(icon, label, value, note = "") {
+  return metric(label, value, note, icon);
 }
 
 function badge(text, tone = "") {
@@ -4865,6 +4905,7 @@ function memoryRollbackPanel(selected) {
           <div class="row-meta">${esc(task.task_id)} · 记录 ${task.state_snapshots?.length || 0} · 日志 ${task.progress_log?.length || 0}</div>
           <div class="inline-actions rollback-actions">
             <span class="button secondary tiny" data-action="restore-archive-context" data-id="${esc(task.task_id)}">带入新任务</span>
+            <span class="button danger tiny" data-action="delete-archive" data-id="${esc(task.task_id)}" data-umo="${esc(task.umo || "")}">删除</span>
           </div>
         </button>
       `).join("")}
@@ -6810,6 +6851,10 @@ function readAgentForm() {
   if ($("memory-mode")) currentAgent.memory_policy.mode = $("memory-mode").value;
   if ($("entry-summary-turns")) currentAgent.memory_policy.entry_summary_turns = Number($("entry-summary-turns").value || 24);
   if ($("approval-mode")) currentAgent.approval_policy.mode = $("approval-mode").value;
+  if ($("tool-approval-mode")) currentAgent.approval_policy.mode = $("tool-approval-mode").value;
+  if ($("preapproved-scopes")) currentAgent.approval_policy.preapproved_scopes = linesToList($("preapproved-scopes").value);
+  if ($("require-approval")) currentAgent.approval_policy.require_approval = linesToList($("require-approval").value);
+  if ($("approval-note")) currentAgent.approval_policy.note = $("approval-note").value.trim();
   if ($("heartbeat-mode")) currentAgent.heartbeat_policy.mode = $("heartbeat-mode").value;
   if ($("heartbeat-allowed")) currentAgent.heartbeat_policy.allowed = $("heartbeat-allowed").value === "true";
   if ($("heartbeat-cron")) currentAgent.heartbeat_policy.cron_expression = $("heartbeat-cron").value.trim() || "*/5 * * * *";
@@ -7176,6 +7221,23 @@ function memoryFilterLabel(value) {
   }[value] || value;
 }
 
+function runActiveBadge(active) {
+  const label = active ? "任务活跃" : "已归档";
+  return `<span class="badge ${active ? "ok" : "warn"} icon-badge" title="${esc(label)}">${iconImg(active ? "play" : "stop", label)}<span>${esc(label)}</span></span>`;
+}
+
+function heartbeatBadge(health) {
+  const map = {
+    online: ["heart", "心跳正常", "ok"],
+    idle: ["clock", "等待首跳", "warn"],
+    stale: ["clock", "心跳超时", "warn"],
+    blocked: ["pause", "任务阻塞", "bad"],
+    off: ["pause", "未开心跳", "warn"],
+  };
+  const [ic, label, tone] = map[health?.state] || ["pause", "未知", "warn"];
+  return `<span class="badge ${tone} icon-badge" title="${esc(label)}">${iconImg(ic, label)}<span>${esc(label)}</span></span>`;
+}
+
 function healthLabel(health) {
   return {
     online: "心跳正常",
@@ -7280,8 +7342,8 @@ function renderMonitor() {
           <div class="panel-head">
             <div><p class="card-kicker">详情</p><h2>${selectedRun ? esc(selectedRun.agent_name || selectedRun.task_id) : "运行详情"}</h2></div>
             <div class="inline-actions">
-              <button class="button secondary" data-action="restart-heartbeat" ${selectedRun?.active ? "" : "disabled"} type="button">重启心跳</button>
-              <button class="button danger" data-action="cancel-task" ${selectedRun?.active ? "" : "disabled"} type="button">强制停止</button>
+              <button class="button secondary icon-button-text" data-action="restart-heartbeat" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun?.active ? "" : "disabled"} type="button">${iconImg("powerSwitch", "重启心跳")}<span>重启心跳</span></button>
+              <button class="button danger icon-button-text" data-action="cancel-task" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun?.active ? "" : "disabled"} type="button">${iconImg("stop", "强制停止")}<span>强制停止</span></button>
             </div>
           </div>
           ${selectedRun ? workflowRunDetail(selectedRun) : `<div class="empty">还没有运行实例。在「方案管理」配好入口、进入任务模式后，这里实时显示运行路径、待发消息、阻塞和产物。</div>`}
@@ -7298,7 +7360,7 @@ function workflowRunRows(runs) {
     const selected = run.task_id === selectedTaskId;
     return `
       <button class="list-row ${selected ? "selected" : ""}" data-action="select-task" data-id="${esc(run.task_id)}" type="button">
-        <div class="row-title"><span>${esc(run.agent_name || run.task_id)}</span>${badge(run.active ? "活跃" : "归档", run.active ? "ok" : "warn")}${badge(healthLabel(health), health.tone || "warn")}</div>
+        <div class="row-title"><span>${esc(run.agent_name || run.task_id)}</span>${runActiveBadge(run.active)}${heartbeatBadge(health)}</div>
         <div class="row-meta">${esc(run.task_id)} · 当前节点 ${esc(run.workflow_current_node_id || "-")} · Outbox ${run.outbox_pending || 0}</div>
       </button>
     `;
@@ -7309,7 +7371,7 @@ function workflowRunDetail(run) {
   const health = run.heartbeat || {};
   return `
     <div class="detail-box monitor-summary">
-      <div class="row-title"><span>${esc(run.agent_name || run.task_id)}</span>${badge(taskStatusLabel(run.status), run.active ? "ok" : "warn")}${badge(healthLabel(health), health.tone || "warn")}</div>
+      <div class="row-title"><span>${esc(run.agent_name || run.task_id)}</span>${runActiveBadge(run.active)}${heartbeatBadge(health)}<span class="badge">${esc(taskStatusLabel(run.status))}</span></div>
       <div class="row-meta">当前节点：${esc(run.workflow_current_node_id || "-")} · 来源：${esc(run.source || "-")} · 更新：${esc(run.updated_at || "-")}</div>
       <div class="workflow-path-line">${(run.workflow_path || []).map((id) => `<span>${esc(id)}</span>`).join("") || "<em>暂无路径</em>"}</div>
       <div class="mini-stats">
@@ -7468,6 +7530,7 @@ function pluginPanel() {
 }
 
 function pluginEffective(plugin) {
+  if (!plugin) return true;
   const override = currentAgent?.plugin_overrides?.[plugin.name];
   if (plugin.locked || plugin.name === "astrbot_plugin_agent_lab") return true;
   if ((currentAgent?.plugin_blacklist || []).includes(plugin.name)) return false;
@@ -7486,7 +7549,8 @@ function toolsPanel() {
   let selectedCount = 0;
   rows.forEach((tool) => {
     const plugin = (state.plugins || []).find((item) => item.name === tool.plugin_name);
-    const pluginOn = plugin ? pluginEffective(plugin) : true;
+    const builtin = tool.source === "builtin_catalog" || !tool.plugin_name;
+    const pluginOn = builtin ? true : pluginEffective(plugin);
     const checked = selected.has(tool.name) && !noExternal && pluginOn && tool.active !== false;
     const disabled = !pluginOn || tool.active === false;
     if (!disabled) selectableCount++;
@@ -7505,11 +7569,11 @@ function toolsPanel() {
         </span>
       </label>
     `;
-    const key = tool.plugin_name || tool.plugin_display_name || tool.source || "registered";
+    const key = builtin ? "builtin" : (tool.plugin_name || tool.plugin_display_name || tool.source || "registered");
     if (!sourceGroups.has(key)) {
       sourceGroups.set(key, {
         title: tool.plugin_display_name || tool.plugin_name || (tool.source === "builtin_catalog" ? "AstrBot 内置工具目录" : "未绑定插件的注册工具"),
-        enabled: plugin ? pluginEffective(plugin) : tool.active !== false,
+        enabled: builtin ? true : pluginEffective(plugin),
         rows: [],
       });
     }
@@ -7881,6 +7945,7 @@ function materializedToolSelection() {
   return (state.tools || [])
     .filter((tool) => tool.active !== false)
     .filter((tool) => {
+      if (tool.source === "builtin_catalog" || !tool.plugin_name) return true;
       const plugin = (state.plugins || []).find((item) => item.name === tool.plugin_name);
       return plugin ? pluginEffective(plugin) : true;
     })
@@ -9511,13 +9576,17 @@ document.addEventListener("click", async (event) => {
       await load();
     }
     if (action === "restart-heartbeat") {
-      const task = runnableTask();
-      if (!task) throw new Error("请选择一个正在运行的任务。");
-      if (task.heartbeat?.enabled) {
-        await api("/api/task/heartbeat", { method: "POST", body: { umo: task.umo, enabled: false } });
-      }
-      await api("/api/task/heartbeat", { method: "POST", body: { umo: task.umo, enabled: true } });
-      setFeedback("心跳已重启。");
+      const umo = target.dataset.umo || runnableTask()?.umo || "";
+      const taskId = target.dataset.taskId || "";
+      if (!umo && !taskId) throw new Error("请选择一个正在运行的任务。");
+      const base = {};
+      if (umo) base.umo = umo;
+      if (taskId) base.task_id = taskId;
+      await api("/api/task/heartbeat", { method: "POST", body: { ...base, enabled: false } });
+      const result = await api("/api/task/heartbeat", { method: "POST", body: { ...base, enabled: true } });
+      if (result && result.ok === false) throw new Error(result.error || "重启心跳失败，请确认任务仍在运行。");
+      setFeedback(result.message || "心跳已重启。");
+      showToast(result.message || "心跳已重启。", "ok");
       await load();
     }
     if (action === "finish-task") {
@@ -9528,10 +9597,16 @@ document.addEventListener("click", async (event) => {
       await load();
     }
     if (action === "cancel-task") {
-      const task = runnableTask();
-      if (!task) throw new Error("请选择一个正在运行的任务。");
-      await api("/api/task/cancel", { method: "POST", body: { umo: task.umo, reason: "WebUI 强制停止任务。" } });
-      setFeedback("任务已停止并归档。");
+      const umo = target.dataset.umo || runnableTask()?.umo || "";
+      const taskId = target.dataset.taskId || "";
+      if (!umo && !taskId) throw new Error("请选择一个正在运行的任务。");
+      const body = { reason: "WebUI 强制停止任务。" };
+      if (umo) body.umo = umo;
+      if (taskId) body.task_id = taskId;
+      const result = await api("/api/task/cancel", { method: "POST", body });
+      if (result && result.ok === false) throw new Error(result.error || "停止失败，请确认任务仍在运行。");
+      setFeedback(result.message || "任务已停止并归档。");
+      showToast(result.message || "任务已停止并归档。", "ok");
       await load();
     }
     if (action === "load-task-logs") {
@@ -9594,7 +9669,10 @@ document.addEventListener("click", async (event) => {
       await load();
     }
     if (action === "delete-memory") {
-      await api("/api/memory", { method: "DELETE", body: { memory_id: target.dataset.id } });
+      const item = (state.memories || []).find((row) => row.memory_id === target.dataset.id);
+      if (!item) throw new Error("未找到这条任务记忆，请刷新后重试。");
+      if (!(await confirmModal("删除任务记忆", `确定删除「${item.text || item.memory_id}」？`, { danger: true, confirmText: "删除" }))) return;
+      const result = await api("/api/memory", { method: "DELETE", body: { memory_id: target.dataset.id } });
       setFeedback("记忆条目已删除。");
       await load();
     }
@@ -9636,6 +9714,18 @@ document.addEventListener("click", async (event) => {
       selectedTaskId = target.dataset.id || selectedTaskId;
       route = "tasks";
       render();
+    }
+    if (action === "delete-archive") {
+      const id = target.dataset.id;
+      const task = (state.archives || []).find((item) => item.task_id === id);
+      if (!task) throw new Error("未找到该归档历史，请刷新后重试。");
+      if (!(await confirmModal("删除归档历史", `确定删除归档任务「${task.root_goal || task.task_id}」？此操作不可恢复。`, { danger: true, confirmText: "删除" }))) return;
+      const result = await api("/api/task/delete", { method: "POST", body: { task_id: id, umo: task.umo || "" } });
+      if (result && result.ok === false) throw new Error(result.error || "删除失败。");
+      if (selectedTaskId === id) selectedTaskId = "";
+      setFeedback("归档历史已删除。");
+      showToast("归档历史已删除。", "ok");
+      await load();
     }
     if (action === "restore-archive-context") {
       const task = [...(state.tasks || []), ...(state.archives || [])].find((item) => item.task_id === target.dataset.id);
@@ -9816,6 +9906,7 @@ document.addEventListener("click", async (event) => {
       currentAgent.enabled_tools = (state.tools || [])
         .filter((tool) => tool.active !== false)
         .filter((tool) => {
+          if (tool.source === "builtin_catalog" || !tool.plugin_name) return true;
           const plugin = (state.plugins || []).find((item) => item.name === tool.plugin_name);
           return plugin ? pluginEffective(plugin) : true;
         })

@@ -105,6 +105,28 @@ class AgentLabStorage:
                 self.default_agent_path.unlink()
         return True
 
+    def delete_archive_task(self, task_id: str, umo: str = "") -> bool:
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return False
+        if umo:
+            roots = [self.archives_dir / _safe_hash(umo)]
+        else:
+            roots = [p for p in self.archives_dir.glob("*") if p.is_dir()]
+        removed = False
+        for root in roots:
+            if not root.exists():
+                continue
+            for suffix in (".json", ".md"):
+                target = root / f"{task_id}{suffix}"
+                if target.exists():
+                    try:
+                        target.unlink()
+                        removed = True
+                    except Exception:
+                        pass
+        return removed
+
     def default_agent_id(self) -> str:
         if not self.default_agent_path.exists():
             return ""

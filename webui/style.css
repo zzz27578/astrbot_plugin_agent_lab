@@ -4703,3 +4703,13 @@ input[type="checkbox"] {
 .cred-favicon { width: 26px; height: 26px; border-radius: 6px; flex: 0 0 auto; object-fit: contain; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
 .cred-favicon-empty { display: inline-grid; place-items: center; font-size: 14px; }
 .cred-row-ops { display: flex; gap: 6px; flex: 0 0 auto; }
+
+
+/* ===== 运行监控状态图标徽章 + 带图标按钮（2026-06-18 fix8） ===== */
+.icon-badge { gap: 4px; padding-left: 6px; }
+.icon-badge .game-icon { width: 13px; height: 13px; flex: 0 0 auto; }
+.icon-badge.ok .game-icon { filter: sepia(1) saturate(2.2) hue-rotate(96deg) brightness(0.7); }
+.icon-badge.warn .game-icon { filter: sepia(1) saturate(2.6) hue-rotate(2deg) brightness(0.85); }
+.icon-badge.bad .game-icon { filter: sepia(1) saturate(3) hue-rotate(-20deg) brightness(0.75); }
+.button.icon-button-text { display: inline-flex; align-items: center; gap: 6px; }
+.button.icon-button-text .game-icon { width: 15px; height: 15px; flex: 0 0 auto; }

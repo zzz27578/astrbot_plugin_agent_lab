@@ -10,7 +10,31 @@
   },
   "skill_rules": [],
   "tasks": [],
-  "archives": [],
+  "archives": [
+    {
+      "task_id": "task_archived_1",
+      "umo": "aiocqhttp:GroupMessage:12345",
+      "agent_id": "demo",
+      "agent_name": "已完成的归档任务",
+      "root_goal": "整理周报并发给团队",
+      "status": "completed",
+      "created_at": "2026-06-17 09:00:00",
+      "updated_at": "2026-06-17 10:00:00",
+      "finished_at": "2026-06-17 10:00:00",
+      "state_snapshots": [
+        {
+          "time": "t"
+        }
+      ],
+      "progress_log": [
+        {
+          "time": "t",
+          "kind": "log",
+          "text": "done"
+        }
+      ]
+    }
+  ],
   "custom_apis": [
     {
       "api_id": "weather",
@@ -293,6 +317,55 @@
       "provider_id": "claude",
       "model": "claude-3.7",
       "type": "anthropic"
+    }
+  ],
+  "workflow_runs": [
+    {
+      "task_id": "task_demo_active",
+      "umo": "aiocqhttp:GroupMessage:12345",
+      "agent_name": "演示任务",
+      "active": true,
+      "status": "running",
+      "workflow_current_node_id": "plan_decompose",
+      "outbox_pending": 2,
+      "source": "webui",
+      "updated_at": "2026-06-18 12:00:00",
+      "workflow_path": [
+        "listen_message",
+        "plan_decompose"
+      ],
+      "heartbeat": {
+        "state": "online",
+        "tone": "ok",
+        "message": "心跳正常"
+      },
+      "reports": [],
+      "records": [],
+      "blockers": [],
+      "pending_approvals": []
+    },
+    {
+      "task_id": "task_demo_idle",
+      "umo": "aiocqhttp:GroupMessage:67890",
+      "agent_name": "等待心跳的任务",
+      "active": true,
+      "status": "running",
+      "workflow_current_node_id": "exec_tool",
+      "outbox_pending": 0,
+      "source": "webui",
+      "updated_at": "2026-06-18 11:00:00",
+      "workflow_path": [
+        "listen_message"
+      ],
+      "heartbeat": {
+        "state": "off",
+        "tone": "warn",
+        "message": "未开心跳"
+      },
+      "reports": [],
+      "records": [],
+      "blockers": [],
+      "pending_approvals": []
     }
   ]
 }
