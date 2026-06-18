@@ -81,4 +81,35 @@ http://127.0.0.1:8788
 
 ## 触发策略
 
-可在 WebUI 中为每个 Agent 配置配置触发模�
+可在 WebUI 中为每个 Agent 配置配置触发模式：
+
+- **手动** — 只通过命令或 WebUI 开启
+- **确认** — bot 判断合适时先请求确认（默认）
+- **智能** — 低风险自动进入，高风险确认
+- **自动** — 尽可能使用任务模式，高风险仍需审批
+
+## 配置项
+
+| 配置 | 说明 | 默认 |
+|------|------|------|
+| `standalone_webui_enabled` | 启用独立控制台 | `true` |
+| `standalone_webui_host` | 监听地址 | `127.0.0.1` |
+| `standalone_webui_port` | 端口 | `8788` |
+| `standalone_webui_token` | 访问 Token（公网部署建议设置） | 空 |
+
+## 兼容性
+
+- AstrBot >= 4.16, < 5
+- 默认仅私聊可用
+- Bot 身份自动继承 AstrBot 运行时 Persona 配置
+
+## 自检
+
+```bash
+python -m compileall -q .
+python scripts/smoke_test.py
+```
+
+## 许可证
+
+见 [LICENSE](LICENSE) 文件。

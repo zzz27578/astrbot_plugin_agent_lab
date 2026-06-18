@@ -4,4 +4,10 @@ desc: 为 AstrBot 机器人提供持续任务执行能力——独立记忆空�
 version: v0.1.1
 author: zzz27578 & Codex
 repo: https://github.com/zzz27578/astrbot_plugin_agent_lab
-ast
+astrbot_version: ">=4.16,<5"
+tags:
+  - agent
+  - task-mode
+  - workflow
+  - heartbeat
+  - approval
