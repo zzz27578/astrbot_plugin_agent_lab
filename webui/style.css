@@ -827,12 +827,10 @@ button.list-row {
   border: 1px solid var(--line);
   border-radius: 8px;
   background:
-    linear-gradient(90deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
-    #f3f7fb;
-  background-size: 26px 26px, 26px 26px, 130px 130px, 130px 130px;
+    linear-gradient(90deg, rgba(23, 32, 29, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(23, 32, 29, 0.03) 1px, transparent 1px),
+    #ffffff;
+  background-size: 26px 26px;
   cursor: grab;
 }
 
@@ -1270,11 +1268,10 @@ button.list-row {
   color: var(--ink);
   cursor: pointer;
   font-size: 12px;
-  border-left: 3px solid var(--line-strong);
+  border-left: 3px solid var(--line);
   border-radius: 6px;
-  background: linear-gradient(90deg, rgba(49, 95, 143, 0.06), transparent 70%);
 }
-.workflow-template-group[open] > summary { border-left-color: var(--blue, #315f8f); }
+.workflow-template-group[open] > summary { border-left-color: var(--ink, #17201d); }
 
 .workflow-template-title {
   display: inline-flex;
@@ -1406,16 +1403,14 @@ button.list-row {
   min-height: 34px;
   max-width: 100%;
   padding: 7px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: linear-gradient(180deg, #ffffff, #eef2f5);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #ffffff;
   color: var(--ink);
   cursor: pointer;
   text-align: left;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6), 0 2px 6px -4px rgba(30, 45, 41, 0.3);
-  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
-.toolbox-chip:active { transform: translateY(1px); }
 
 .workflow-material-chip {
   display: grid;
@@ -1591,31 +1586,17 @@ button.list-row {
   z-index: 2;
   width: 340px;
   height: 208px;
-  padding: 14px 18px 12px;
-  background: linear-gradient(180deg, #ffffff 0%, #eef2f5 100%);
+  padding: 16px 18px 14px;
+  background: #ffffff;
   touch-action: none;
   user-select: none;
   cursor: move;
-  border: 1px solid var(--line-strong);
-  border-left: 6px solid var(--node-color, var(--green));
-  border-top: 3px solid var(--node-color, var(--green));
-  border-radius: 10px;
-  box-shadow: 0 6px 18px -8px rgba(30, 45, 41, 0.30), inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--node-color, var(--green));
+  border-radius: 6px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-}
-/* 设施面板顶部的工业角标(铆钉/型号位)——纯装饰 */
-.flow-node::before {
-  content: "";
-  position: absolute;
-  top: 6px;
-  right: 8px;
-  width: 26px;
-  height: 6px;
-  border-radius: 2px;
-  background: repeating-linear-gradient(90deg, var(--node-color, var(--green)) 0 3px, transparent 3px 6px);
-  opacity: 0.5;
+  gap: 6px;
 }
 /* 固定高度，保证连接点圆圈与连线锚点（基于 WORKFLOW_NODE_HEIGHT）严格对齐；超长文本截断 */
 .flow-node > strong {
@@ -1645,10 +1626,12 @@ button.list-row {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin: 2px 0 4px;
-  font-size: 21px;
+  margin: 2px 0 6px;
+  font-family: "Bahnschrift", "DIN Alternate", "HarmonyOS Sans SC", "Inter", "Noto Sans SC", system-ui, sans-serif;
+  font-size: 24px;
   font-weight: 700;
-  line-height: 1.2;
+  line-height: 1.15;
+  letter-spacing: 0.5px;
   color: var(--ink);
 }
 .flow-node > .node-desc, .node .node-desc {
@@ -1761,7 +1744,7 @@ button.list-row {
   border: 2px solid #fff;
   border-radius: 4px;
   background: var(--port-color, var(--node-color, var(--blue)));
-  box-shadow: 0 0 0 1px rgba(23, 32, 29, 0.25), 0 3px 8px rgba(30, 45, 41, 0.28), inset 0 0 0 2px rgba(255, 255, 255, 0.35);
+  box-shadow: 0 0 0 1px rgba(23, 32, 29, 0.18);
   content: "";
   transform: translateY(-50%);
 }
@@ -1863,12 +1846,10 @@ button.list-row {
   z-index: 20;
   overflow: hidden;
   background:
-    linear-gradient(90deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
-    #f3f7fb;
-  background-size: 26px 26px, 26px 26px, 130px 130px, 130px 130px;
+    linear-gradient(90deg, rgba(23, 32, 29, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(23, 32, 29, 0.03) 1px, transparent 1px),
+    #ffffff;
+  background-size: 26px 26px;
 }
 
 .workflow-page-top {
@@ -2047,12 +2028,10 @@ button.list-row {
   border: 0;
   border-radius: 0;
   background:
-    linear-gradient(90deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(49, 95, 143, 0.05) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
-    linear-gradient(180deg, rgba(49, 95, 143, 0.10) 1px, transparent 1px),
-    #f3f7fb;
-  background-size: 26px 26px, 26px 26px, 130px 130px, 130px 130px;
+    linear-gradient(90deg, rgba(23, 32, 29, 0.035) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(23, 32, 29, 0.03) 1px, transparent 1px),
+    #ffffff;
+  background-size: 26px 26px;
   cursor: grab;
 }
 

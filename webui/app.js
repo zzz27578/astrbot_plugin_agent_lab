@@ -5927,12 +5927,8 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
       ${outPortsHtml}
       ${workflowApiBadge(item)}
       <strong class="node-title">${esc(item.title || item.id)}</strong>
-      <p class="node-desc">${esc(item.instruction || item.description || "")}</p>
+      <p class="node-desc">${esc(item.instruction || item.description || workflowActionLabel(item.action || "manual"))}</p>
       ${workflowBlockCardExtra(item)}
-      <div class="node-foot">
-        <b class="runtime-badge ${esc(executorState.tone)}">${esc(executorState.label)}</b>
-        <span class="node-foot-meta">${esc(workflowActionLabel(item.action || "manual"))}${item.output_variable ? ` · ${esc(item.output_variable)}` : ""}</span>
-      </div>
     </article>
   `;
 }
