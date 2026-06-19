@@ -6005,6 +6005,13 @@ function workflowRoutePointsFromHint(routeHint, start, end, boxes, offsetX = 0, 
   if (!hint) return null;
   const stored = hint.points.map((point) => [point[0] + offsetX, point[1] + offsetY]);
   const middle = stored.slice(1, -1);
+  if (Math.abs(start.y - end.y) > WORKFLOW_NODE_HEIGHT && middle.length) {
+    const laneYs = middle.map((point) => point[1]).filter(Number.isFinite);
+    const minY = Math.min(start.y, end.y);
+    const maxY = Math.max(start.y, end.y);
+    const edgeBand = (maxY - minY) * 0.32;
+    if (laneYs.some((y) => Math.abs(y - minY) < edgeBand || Math.abs(maxY - y) < edgeBand)) return null;
+  }
   const pts = workflowNormalizeOrthogonalPoints([[start.x, start.y], ...middle, [end.x, end.y]]);
   if (pts.length < 2 || workflowRouteHits(pts, boxes || [], { allowEndpointStubs: true })) return null;
   return pts;
@@ -6043,7 +6050,10 @@ function workflowRoutePoints(from, to, boxes, options = {}) {
   const ex = x2 + entryDir * stub;
   const obs = boxes || [];
   const hintedY = Number(options.preferredY);
-  const preferredY = Number.isFinite(hintedY) ? hintedY : y2;
+  const gapPreferredY = Math.abs(y1 - y2) > WORKFLOW_NODE_HEIGHT
+    ? Math.round((y1 + y2) / 2)
+    : y2;
+  const preferredY = Number.isFinite(hintedY) ? hintedY : gapPreferredY;
   const preferredX = (sx + ex) / 2;
   const candidates = [];
   const add = (pts) => candidates.push(workflowNormalizeOrthogonalPoints(pts));
@@ -6205,6 +6215,14 @@ function localWorkflowReport() {
   };
 }
 
+function workflowNodeIssueLevel(nodeId) {
+  const id = String(nodeId || "");
+  const issues = Array.isArray(workflowCheckReport?.issues) ? workflowCheckReport.issues : [];
+  const nodeIssues = issues.filter((item) => String(item.node_id || "") === id);
+  if (nodeIssues.some((item) => String(item.level || "") === "error")) return "error";
+  return nodeIssues.length ? "warn" : "";
+}
+
 function edgeText() {
   ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
@@ -6218,6 +6236,7 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
   const color = workflowNodeColor(item);
   const runtime = workflowNodeRuntimeInfo(item);
   const executorState = workflowNodeExecutorState(item);
+  const issueLevel = workflowNodeIssueLevel(item.id);
   const ports = workflowNodePorts(item);
   const inputs = ports.inputs || [];
   const outputs = ports.outputs || [];
@@ -6252,7 +6271,7 @@ function node(item, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOff
     }
   }
   return `
-    <article class="node flow-node ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${workflowNodeHasMultiOut(item) ? "has-multi-out" : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0) + offsetY}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
+    <article class="node flow-node ${selected ? "selected" : ""} ${multiSelected ? "multi-selected" : ""} ${workflowNodeHasMultiOut(item) ? "has-multi-out" : ""} ${issueLevel ? `workflow-node-issue-${issueLevel}` : ""}" style="left:${Number(item.x || 0) + offsetX}px;top:${Number(item.y || 0) + offsetY}px;--node-color:${color}" data-action="select-workflow-node" data-id="${esc(item.id)}" data-kind="${esc(item.kind)}" data-stage="${esc(workflowStage(item))}" role="button" tabindex="0">
       ${inPortHtml}
       ${outPortsHtml}
       ${workflowApiBadge(item)}
@@ -9829,8 +9848,9 @@ document.addEventListener("click", async (event) => {
       const result = await api("/api/workflow/check", { method: "POST", body: { agent: currentAgent } });
       workflowCheckReport = result.workflow || null;
       workflowReportMode = "check";
-      workflowReportOpen = true;
-      setFeedback(workflowCheckReport?.valid ? "工作流检查通过。" : "工作流检查发现需要修正的环节。", workflowCheckReport?.valid ? "normal" : "error");
+      workflowReportOpen = false;
+      const issueCount = (workflowCheckReport?.issues || []).length;
+      setFeedback(workflowCheckReport?.valid ? "工作流检查通过。" : `工作流检查发现 ${issueCount} 处需要修正，问题节点已高亮。`, workflowCheckReport?.valid ? "normal" : "error");
       renderWorkflowStable();
     }
     if (action === "dry-run-workflow") {
