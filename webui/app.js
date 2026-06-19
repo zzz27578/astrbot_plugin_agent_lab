@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260619-fix11";
+const AGENT_LAB_WEBUI_BUILD = "20260619-fix12";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -1383,6 +1383,8 @@ let workflowDrag = null;
 let workflowPan = null;
 let workflowConnection = null;
 let workflowPendingPort = null;
+let workflowPendingWaypoints = []; // 点击连线模式下用左键加的图钉(render坐标)
+let workflowPendingPointer = null; // 点击连线模式下虚线跟随的当前指针(render坐标)
 let workflowZoom = 1;
 let workflowFocusCursor = -1; // 聚焦内容快捷键的循环游标：-1/0=主体内容，1.. 依次聚焦离群节点
 let workflowPanX = 0;
@@ -5389,10 +5391,18 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    start.box = allBoxes.find((b) => b.id === edge.from);
-    end.box = allBoxes.find((b) => b.id === edge.to);
-    const boxes = allBoxes.filter((b) => b.id !== edge.from && b.id !== edge.to);
-    const pts = workflowRoutePoints(start, end, boxes);
+    let pts;
+    if (Array.isArray(edge.waypoints) && edge.waypoints.length) {
+      // 已冻结：连接时定下的路点(逻辑坐标)+随端口移动的两端，拖拽节点不再重新路由，不打结、不变形。
+      pts = [[start.x, start.y], ...edge.waypoints.map((w) => [w[0] + offsetX, w[1] + offsetY]), [end.x, end.y]];
+    } else {
+      start.box = allBoxes.find((b) => b.id === edge.from);
+      end.box = allBoxes.find((b) => b.id === edge.to);
+      const boxes = allBoxes.filter((b) => b.id !== edge.from && b.id !== edge.to);
+      pts = workflowRoutePoints(start, end, boxes);
+      // 连接时按隐形边界路由一次，并冻结中间折点为路点；之后只重锚两端。
+      edge.waypoints = pts.slice(1, -1).map((pp) => [Math.round(pp[0] - offsetX), Math.round(pp[1] - offsetY)]);
+    }
     const d = roundedOrthPath(pts, 16);
     const color = workflowEdgeColor(edgeType);
     const pid = `wflp-${index}`;
@@ -5420,7 +5430,15 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
       </g>
     `;
   }).join("");
-  const preview = workflowConnection ? `<path class="workflow-link-preview" d="${workflowRouteLink(workflowConnection.anchor, workflowConnection.pointer, allBoxes.filter((b) => b.id !== workflowConnection.nodeId))}"></path>` : "";
+  let preview = "";
+  if (workflowConnection) {
+    preview = `<path class="workflow-link-preview" d="${workflowRouteLink(workflowConnection.anchor, workflowConnection.pointer, allBoxes.filter((b) => b.id !== workflowConnection.nodeId))}"></path>`;
+  } else if (workflowPendingPort && workflowPendingPointer) {
+    const a = workflowPendingPort.anchor || { x: 0, y: 0 };
+    const ptsP = [[a.x, a.y], ...workflowPendingWaypoints.map((q) => [q.x, q.y]), [workflowPendingPointer.x, workflowPendingPointer.y]];
+    preview = `<path class="workflow-link-preview" d="${roundedOrthPath(ptsP, 16)}"></path>` +
+      workflowPendingWaypoints.map((q) => `<circle class="workflow-pin" cx="${q.x}" cy="${q.y}" r="4.5"></circle>`).join("");
+  }
   return `
     ${workflowMarkerDefs()}
     ${paths}
@@ -7568,9 +7586,11 @@ function integrationBody() {
   return pluginPanel();
 }
 
+const WORKFLOW_FRAMEWORK_TOOLS = new Set(["agent_lab_enter_mode", "agent_lab_tick"]);
 function pluginToolGroups() {
   const groups = new Map();
   (state.tools || []).forEach((tool) => {
+    if (WORKFLOW_FRAMEWORK_TOOLS.has(tool.name)) return; // 框架内部工具：由系统自动管理，不在白名单 UI 暴露
     const builtin = tool.source === "builtin_catalog" || !tool.plugin_name;
     const key = builtin ? "__builtin__" : tool.plugin_name;
     if (!groups.has(key)) groups.set(key, []);
@@ -8260,7 +8280,7 @@ function workflowCanvasRenderPoint(event) {
   };
 }
 
-function addWorkflowEdge(from, to, edgeType = "success", fromPort = "") {
+function addWorkflowEdge(from, to, edgeType = "success", fromPort = "", pins) {
   ensureWorkflow();
   if (!from || !to || from === to) return false;
   const type = edgeType || "success";
@@ -8270,6 +8290,10 @@ function addWorkflowEdge(from, to, edgeType = "success", fromPort = "") {
   pushWorkflowHistory();
   const edge = { from, to, edge_type: type };
   if (fromPort && fromPort !== "out") edge.from_port = fromPort;
+  if (Array.isArray(pins) && pins.length) {
+    const ox = workflowWorldOffsetX(), oy = workflowWorldOffsetY();
+    edge.waypoints = pins.map((q) => [Math.round(q.x - ox), Math.round(q.y - oy)]);
+  }
   currentAgent.workflow_edges.push(edge);
   workflowCheckReport = null;
   return true;
@@ -8445,13 +8469,16 @@ function workflowPortInfo(portEl) {
   return { nodeId: item.id, port, isIn, edgeType, anchor };
 }
 
-function connectWorkflowPorts(start, target) {
+function connectWorkflowPorts(start, target, pins) {
   if (!start || !target || start.nodeId === target.nodeId) return false;
   // 必须一端是输入口、一端是输出口
   if (start.isIn === target.isIn) return false;
   const outSide = start.isIn ? target : start;
   const inSide = start.isIn ? start : target;
-  return addWorkflowEdge(outSide.nodeId, inSide.nodeId, outSide.edgeType || "success", outSide.port);
+  // 图钉按 start->target 顺序点；若从输入口起点，则反转为 out->in 顺序存储。
+  let wp = Array.isArray(pins) ? pins.slice() : [];
+  if (start.isIn) wp = wp.reverse();
+  return addWorkflowEdge(outSide.nodeId, inSide.nodeId, outSide.edgeType || "success", outSide.port, wp);
 }
 
 function setWorkflowConnectingClass(active) {
@@ -8581,8 +8608,9 @@ document.addEventListener("pointerdown", (event) => {
     event.stopPropagation();
     if (workflowPendingPort) {
       const samePort = workflowPendingPort.nodeId === portInfo.nodeId && workflowPendingPort.port === portInfo.port;
-      const added = !samePort && connectWorkflowPorts(workflowPendingPort, portInfo);
+      const added = !samePort && connectWorkflowPorts(workflowPendingPort, portInfo, workflowPendingWaypoints);
       workflowPendingPort = added || samePort ? null : portInfo;
+      workflowPendingWaypoints = []; workflowPendingPointer = null;
       refreshWorkflowCanvasDom();
       setFeedback(added ? "连线已创建，保存配置后生效。" : samePort ? "已取消连线起点。" : "已切换连线起点。");
       if (added) renderWorkflowStable();
@@ -8636,6 +8664,14 @@ document.addEventListener("pointerdown", (event) => {
   if (event.target.closest(WORKFLOW_CANVAS_BLOCKER_SELECTOR)) return;
   if (event.target.closest("[data-action='delete-workflow-edge']")) return;
   event.preventDefault();
+  if (workflowPendingPort && !workflowScissorMode && !workflowSelectionMode && !workflowSelectionMove) {
+    // 点击连线模式：在空白处左键单点＝加一个图钉，固定之前的虚线，新段从此延伸。
+    const pin = workflowCanvasRenderPoint(event);
+    workflowPendingWaypoints.push(pin);
+    workflowPendingPointer = pin;
+    refreshWorkflowCanvasDom();
+    return;
+  }
   if (workflowScissorMode) {
     const stroke = document.createElement("div");
     stroke.className = "workflow-scissor-trail";
@@ -8700,6 +8736,11 @@ document.addEventListener("pointerdown", (event) => {
 // 滚动与焦点的保持现在统一由 render() 中的 activeFieldSnapshotGlobal/restoreFieldFocusGlobal 完成。
 
 document.addEventListener("pointermove", (event) => {
+  if (workflowPendingPort && !workflowConnection && !workflowPan && !workflowDrag && !workflowGroupDrag && !workflowScissorStroke && !workflowSelectionDrag && !workflowMinimapPan && !workflowTerritoryDrag) {
+    const overCanvas = event.target.closest && event.target.closest(".workflow-canvas-wrap");
+    if (overCanvas) { workflowPendingPointer = workflowCanvasRenderPoint(event); refreshWorkflowCanvasDom(); }
+    return;
+  }
   if (workflowScissorStroke && workflowScissorStroke.pointerId === event.pointerId) {
     const sx = workflowScissorStroke.startX, sy = workflowScissorStroke.startY;
     const left = Math.min(sx, event.clientX), top = Math.min(sy, event.clientY);
@@ -9008,10 +9049,11 @@ document.addEventListener("pointerup", (event) => {
       };
       pending = true;
     }
+    if (pending) { workflowPendingWaypoints = []; workflowPendingPointer = null; }
     workflowConnection = null;
     setWorkflowConnectingClass(false);
     refreshWorkflowCanvasDom();
-    setFeedback(added ? "连线已创建，保存配置后生效。" : pending ? "已选中连线起点，再点另一个节点的相反连接点即可完成。" : "未创建连线：请拖到另一个节点的相反连接点。", added || pending ? "normal" : "error");
+    setFeedback(added ? "连线已创建，保存配置后生效。" : pending ? "已选中连线起点：把鼠标移到画布上虚线会跟随；空白处单击可加图钉(拐点)，再点目标连接点完成。" : "未创建连线：请拖到另一个节点的相反连接点。", added || pending ? "normal" : "error");
     if (added) renderWorkflowStable();
     else if (pending) highlightWorkflowPendingPort();
     return;
@@ -9618,6 +9660,7 @@ document.addEventListener("click", async (event) => {
     if (action === "auto-layout-workflow") {
       readAgentForm();
       pushWorkflowHistory();
+      (currentAgent.workflow_edges || []).forEach((e) => { if (e) delete e.waypoints; });
       autoLayoutWorkflow();
       focusWorkflowStart();
       setFeedback("已按层级自动整理。");

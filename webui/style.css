@@ -2636,23 +2636,27 @@ body[data-route="workflow"] {
 
 .integration-shell {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 14px;
   min-width: 0;
+  height: calc(100vh - 104px);   /* 占满可视高度，让页面本身不再出现第二个滚动条 */
 }
 
 .integration-layout {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
   gap: 14px;
-  align-items: start;
+  align-items: stretch;
+  min-height: 0;
 }
 
 .integration-content {
   min-width: 0;
-  max-height: calc(100vh - 150px);
-  overflow: auto;
-  padding-right: 4px;
+  height: 100%;
+  overflow: auto;            /* 唯一的滚动条：插件/工具内容区 */
+  padding-right: 6px;
 }
+.subnav { align-self: start; }
 
 /* ===== 注册工具页（重做） ===== */
 .tools-page { display: grid; gap: 12px; }
@@ -4756,16 +4760,16 @@ input[type="checkbox"] {
 .bp-io { display: flex; flex-wrap: wrap; gap: 8px; }
 
 /* ===== 插件+工具 合并卡片页 (fix11) ===== */
-.integration-shell > .panel-head { position: sticky; top: 0; z-index: 6; background: var(--panel, #fff); align-items: center; padding-bottom: 10px; }
-.plugin-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
-.plugin-card { display: grid; gap: 9px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; background: #fff; transition: border-color .15s ease; }
+.integration-shell > .panel-head { align-items: center; background: transparent; padding: 0 0 4px; border: none; }
+.plugin-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.plugin-card { display: grid; gap: 11px; padding: 18px 18px; border: 1px solid var(--line); border-radius: 13px; background: #fff; transition: border-color .15s ease; }
 .plugin-card.is-on { border-color: var(--green, #2f7d5b); }   /* 选中=绿色边框，不再淡蓝/淡绿填充 */
 .plugin-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
 .plugin-card-name { display: grid; gap: 2px; min-width: 0; }
-.plugin-card-name strong { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.plugin-card-name small { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-card-name strong { font-size: 17px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-card-name small { color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .plugin-card-mid { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.plugin-card-count { font-size: 12px; color: var(--muted); }
+.plugin-card-count { font-size: 13px; color: var(--muted); }
 .plugin-card-foot { display: flex; justify-content: flex-end; }
 .plugin-card-none { font-size: 12px; color: var(--muted); }
 .plugin-card-fixed { font-size: 11px; color: var(--green, #2f7d5b); border: 1px solid color-mix(in srgb, var(--green,#2f7d5b) 40%, var(--line)); border-radius: 999px; padding: 2px 8px; }
@@ -4793,3 +4797,5 @@ input[type="checkbox"] {
 .tool-row2-main strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-row2-main small { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-row2-main { } .tool-row2 select { font-size: 12px; }
+
+.workflow-pin { fill: #fff; stroke: var(--amber, #a76f19); stroke-width: 2.5; }
