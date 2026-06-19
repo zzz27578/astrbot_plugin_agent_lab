@@ -3260,13 +3260,26 @@ function ensureWorkflow() {
   });
   const ids = new Set(currentAgent.workflow_nodes.map((node) => node.id));
   currentAgent.workflow_edges = currentAgent.workflow_edges
-    .map((edge) => ({
-      ...edge,
-      from: String(edge.from || "").trim(),
-      to: String(edge.to || "").trim(),
-      edge_type: workflowNormalizeEdgeType(String(edge.edge_type || edge.type || "success").trim() || "success"),
-      condition: String(edge.condition || edge.when || "").trim(),
-    }))
+    .map((edge) => {
+      const from = String(edge.from || "").trim();
+      const to = String(edge.to || "").trim();
+      const clean = {
+        from,
+        to,
+        edge_type: workflowNormalizeEdgeType(String(edge.edge_type || edge.type || "success").trim() || "success"),
+        condition: String(edge.condition || edge.when || "").trim(),
+      };
+      const fromPort = String(edge.from_port || edge.source_port || edge.port || "").trim().toLowerCase();
+      const toPort = String(edge.to_port || edge.target_port || "").trim().toLowerCase();
+      const label = String(edge.label || "").trim();
+      const conditionVisual = edge.condition_visual;
+      if (fromPort) clean.from_port = fromPort;
+      if (toPort) clean.to_port = toPort;
+      if (label) clean.label = label;
+      if (conditionVisual && typeof conditionVisual === "object") clean.condition_visual = conditionVisual;
+      else if (typeof conditionVisual === "string" && conditionVisual.trim()) clean.condition_visual = conditionVisual.trim();
+      return clean;
+    })
     .filter((edge) => ids.has(edge.from) && ids.has(edge.to));
   if (!selectedWorkflowNodeId || !ids.has(selectedWorkflowNodeId)) {
     selectedWorkflowNodeId = currentAgent.workflow_nodes[0]?.id || "";
@@ -5408,8 +5421,6 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   const edges = currentAgent.workflow_edges || [];
   const nodeArr = currentAgent.workflow_nodes || [];
   const nodes = new Map(nodeArr.map((item) => [item.id, item]));
-  const REPEL = 30; // 每个节点的隐形领地外扩（像素）：连线只能绕这个范围走，不得穿入
-  const allBoxes = nodeArr.map((it) => ({ id: it.id, x: Number(it.x || 0) + offsetX - REPEL, y: Number(it.y || 0) + offsetY - REPEL, w: WORKFLOW_NODE_WIDTH + REPEL * 2, h: WORKFLOW_NODE_HEIGHT + REPEL * 2 }));
   const reduceMotion = (typeof matchMedia === "function") && matchMedia("(prefers-reduced-motion: reduce)").matches;
   const paths = edges.map((edge, index) => {
     const from = nodes.get(edge.from);
@@ -5419,15 +5430,8 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    let pts;
-    if (Array.isArray(edge.waypoints) && edge.waypoints.length) {
-      // 已冻结：连接时定下的路点(逻辑坐标)+随端口移动的两端，拖拽节点不再重新路由，不打结、不变形。
-      pts = [[start.x, start.y], ...edge.waypoints.map((w) => [w[0] + offsetX, w[1] + offsetY]), [end.x, end.y]];
-    } else {
-      pts = workflowRoutePoints(start, end, allBoxes);
-      // 连接时按隐形边界路由一次，并冻结中间折点为路点；之后只重锚两端、不再重路由。
-      edge.waypoints = pts.slice(1, -1).map((pp) => [Math.round(pp[0] - offsetX), Math.round(pp[1] - offsetY)]);
-    }
+    const routeBoxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY);
+    const pts = workflowRoutePoints(start, end, routeBoxes);
     const d = roundedOrthPath(pts, 16);
     const color = workflowEdgeColor(edgeType);
     const pid = `wflp-${index}`;
@@ -5457,9 +5461,10 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   }).join("");
   let preview = "";
   if (workflowConnection) {
-    // 虚线＝最终管道：按隐形边界路由到当前指针并把折线缓存下来，松手时原样冻结成管道。
-    const pv = workflowRoutePoints(workflowConnection.anchor, workflowConnection.pointer, allBoxes);
-    workflowConnection.previewPts = pv;
+    const target = workflowConnection.hoverTarget || null;
+    const end = target ? target.anchor : workflowConnection.pointer;
+    const previewBoxes = workflowRouteBoxesForEdge(nodeArr, workflowConnection.nodeId, target?.nodeId || "", offsetX, offsetY);
+    const pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, { preferredY: workflowConnection.pointer?.y });
     preview = `<path class="workflow-link-preview" d="${roundedOrthPath(pv, 16)}"></path>`;
   }
   return `
@@ -5858,14 +5863,91 @@ function workflowPointsHit(points, boxes) {
   }
   return false;
 }
-// 与上面相同，但豁免「两端的端口短桩」（首段和末段）：端口必须能从节点边缘伸出/进入，
-// 这就是用户说的「端口前方判定区」。中间所有线段一律不得穿入任何节点的隐形领地。
-function workflowPointsHitMid(points, boxes) {
-  for (let k = 1; k <= points.length - 3; k++) {
-    const a = points[k], b = points[k + 1];
-    if (workflowSegHitsBoxes(a[0], a[1], b[0], b[1], boxes)) return true;
+function workflowConnectionRepel() {
+  return 42;
+}
+
+function workflowPortStub() {
+  return 30;
+}
+
+function workflowConnectionBoxes(nodes, offsetX = 0, offsetY = 0, excludeIds = []) {
+  const repel = workflowConnectionRepel();
+  const excluded = new Set((excludeIds || []).map((id) => String(id)));
+  return (nodes || [])
+    .filter((item) => item && !excluded.has(String(item.id || "")))
+    .map((item) => ({
+      id: item.id,
+      x: Number(item.x || 0) + offsetX - repel,
+      y: Number(item.y || 0) + offsetY - repel,
+      w: WORKFLOW_NODE_WIDTH + repel * 2,
+      h: WORKFLOW_NODE_HEIGHT + repel * 2,
+    }));
+}
+
+function workflowRouteBoxesForEdge(nodes, fromId, toId, offsetX = 0, offsetY = 0) {
+  const excludeIds = [fromId, toId].filter((id) => id !== undefined && id !== null && String(id) !== "");
+  return workflowConnectionBoxes(nodes, offsetX, offsetY, excludeIds);
+}
+
+function workflowSimplifyOrthogonalPoints(points) {
+  const out = [];
+  for (const point of points || []) {
+    const x = Array.isArray(point) ? Number(point[0]) : Number(point?.x);
+    const y = Array.isArray(point) ? Number(point[1]) : Number(point?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const next = [Math.round(x * 10) / 10, Math.round(y * 10) / 10];
+    const last = out[out.length - 1];
+    if (!last || last[0] !== next[0] || last[1] !== next[1]) out.push(next);
+  }
+  if (out.length < 3) return out;
+  const simplified = [out[0]];
+  for (let i = 1; i < out.length - 1; i++) {
+    const a = simplified[simplified.length - 1], b = out[i], c = out[i + 1];
+    if ((a[0] === b[0] && b[0] === c[0]) || (a[1] === b[1] && b[1] === c[1])) continue;
+    simplified.push(b);
+  }
+  simplified.push(out[out.length - 1]);
+  return simplified;
+}
+
+function workflowNormalizeOrthogonalPoints(points) {
+  const src = workflowSimplifyOrthogonalPoints(points);
+  if (src.length < 2) return src;
+  const out = [src[0]];
+  for (let i = 1; i < src.length; i++) {
+    const last = out[out.length - 1];
+    const next = src[i];
+    if (last[0] !== next[0] && last[1] !== next[1]) out.push([next[0], last[1]]);
+    out.push(next);
+  }
+  return workflowSimplifyOrthogonalPoints(out);
+}
+
+function workflowRouteHits(points, boxes) {
+  const pts = workflowNormalizeOrthogonalPoints(points);
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i];
+    if (workflowSegHitsBoxes(a[0], a[1], b[0], b[1], boxes || [])) return true;
   }
   return false;
+}
+
+function workflowAxisCandidateValues(boxes, a, b, axis) {
+  const pad = 28;
+  const values = [a, b, (a + b) / 2];
+  for (const box of boxes || []) {
+    if (axis === "x") values.push(box.x - pad, box.x + box.w + pad);
+    else values.push(box.y - pad, box.y + box.h + pad);
+  }
+  return Array.from(new Set(values.map((value) => Math.round(value)))).filter(Number.isFinite);
+}
+
+function workflowRankCandidates(values, preferred, limit = 18) {
+  return values
+    .filter(Number.isFinite)
+    .sort((a, b) => Math.abs(a - preferred) - Math.abs(b - preferred) || a - b)
+    .slice(0, limit);
 }
 // 连线避让：默认走「出口直出→竖直主干→直入入口」的正交通道；若主干/横段会穿过其它节点盒，
 // 先把主干 midX 横向平移到一条不撞节点的通道；都不行就抬到障碍上方或压到下方绕行；
@@ -5891,35 +5973,51 @@ function workflowPolylineMidpoint(pts) {
 // 正向（出口在入口侧之前）走「Z 形」竖直主干；反向（出口已越过入口，比如目标在左上方）
 // 走「C 形」绕行——先竖直离开出口，再到障碍上方/下方横跨，再竖直落到入口侧，最后正向进入入口，
 // 这样不会出现「线从出口穿过目标又回到入口、看着像出口连出口」的情况。
-function workflowRoutePoints(from, to, boxes) {
+function workflowRoutePoints(from, to, boxes, options = {}) {
   const x1 = Number(from.x || 0), y1 = Number(from.y || 0);
   const x2 = Number(to.x || 0), y2 = Number(to.y || 0);
   const exitDir = from.leftExit ? -1 : 1;
   const entryDir = to.rightEntry ? 1 : -1;
-  const stub = 46; // 必须 > 隐形领地外扩(REPEL)，让端口短桩先冲出自身领地，再在净空里走主干
+  const stub = workflowPortStub();
   const sx = x1 + exitDir * stub;
   const ex = x2 + entryDir * stub;
-  const obs = boxes || []; // 包含所有节点(含起终点本体)作隔离障碍
+  const obs = boxes || [];
+  const hintedY = Number(options.preferredY);
+  const preferredY = Number.isFinite(hintedY) ? hintedY : y2;
+  const preferredX = (sx + ex) / 2;
+  const candidates = [];
+  const add = (pts) => candidates.push(workflowNormalizeOrthogonalPoints(pts));
   const zRoute = (midX) => [[x1, y1], [sx, y1], [midX, y1], [midX, y2], [ex, y2], [x2, y2]];
-  const cRoute = (ry) => [[x1, y1], [sx, y1], [sx, ry], [ex, ry], [ex, y2], [x2, y2]];
-  const hit = (pts) => workflowPointsHitMid(pts, obs); // 端口短桩豁免，中段严格不穿节点
-  const forward = entryDir < 0 ? (sx <= ex) : (sx >= ex);
-  if (forward) {
-    const lo = Math.min(sx, ex), hi = Math.max(sx, ex);
-    const def = (sx + ex) / 2;
-    const cands = [def];
-    for (let d = 22; d <= (hi - lo); d += 22) { if (def + d <= hi) cands.push(def + d); if (def - d >= lo) cands.push(def - d); }
-    for (const m of cands) { if (!hit(zRoute(m))) return zRoute(m); }
+  const cRoute = (laneY) => [[x1, y1], [sx, y1], [sx, laneY], [ex, laneY], [ex, y2], [x2, y2]];
+  const sRoute = (midX, laneY) => [[x1, y1], [sx, y1], [sx, laneY], [midX, laneY], [midX, y2], [ex, y2], [x2, y2]];
+
+  const xLanes = workflowRankCandidates(workflowAxisCandidateValues(obs, sx, ex, "x"), preferredX, 16);
+  const yLanes = workflowRankCandidates(workflowAxisCandidateValues(obs, y1, y2, "y"), preferredY, 18);
+  xLanes.forEach((midX) => add(zRoute(midX)));
+  yLanes.forEach((laneY) => add(cRoute(laneY)));
+  for (const midX of xLanes.slice(0, 10)) {
+    for (const laneY of yLanes.slice(0, 10)) add(sRoute(midX, laneY));
   }
-  // 横向走不通：抬到所有相关领地之上或压到其下绕行（取离起点更近一侧优先）。
-  const lo = Math.min(x1, x2, sx, ex), hi = Math.max(x1, x2, sx, ex);
-  const span = obs.filter((b) => b.x + b.w >= lo && b.x <= hi);
-  const tops = span.map((b) => b.y), bots = span.map((b) => b.y + b.h);
-  const topY = (tops.length ? Math.min(...tops) : Math.min(y1, y2)) - 30;
-  const botY = (bots.length ? Math.max(...bots) : Math.max(y1, y2)) + 30;
-  const cands = Math.abs(topY - y1) <= Math.abs(botY - y1) ? [topY, botY] : [botY, topY];
-  for (const ry of cands) { if (!hit(cRoute(ry))) return cRoute(ry); }
-  return cRoute(cands[0]);
+
+  let best = null;
+  let bestScore = Infinity;
+  for (const pts of candidates) {
+    if (pts.length < 2 || workflowRouteHits(pts, obs)) continue;
+    const bends = Math.max(0, pts.length - 2);
+    const lanePenalty = pts.slice(1, -1).reduce((sum, p) => sum + Math.abs(p[1] - preferredY) * 0.012 + Math.abs(p[0] - preferredX) * 0.003, 0);
+    const score = workflowPolylineLength(pts) + bends * 18 + lanePenalty;
+    if (score < bestScore) {
+      best = pts;
+      bestScore = score;
+    }
+  }
+  if (best) return best;
+
+  const relevant = obs.filter((box) => box.x + box.w >= Math.min(sx, ex) && box.x <= Math.max(sx, ex));
+  const topY = (relevant.length ? Math.min(...relevant.map((box) => box.y)) : Math.min(y1, y2)) - 36;
+  const bottomY = (relevant.length ? Math.max(...relevant.map((box) => box.y + box.h)) : Math.max(y1, y2)) + 36;
+  const fallbackY = Math.abs(topY - preferredY) <= Math.abs(bottomY - preferredY) ? topY : bottomY;
+  return workflowNormalizeOrthogonalPoints(cRoute(fallbackY));
 }
 // 返回路径 d 字符串（保留旧名给预览/小地图用）。
 function workflowRouteLink(from, to, boxes) {
@@ -8309,7 +8407,7 @@ function workflowCanvasRenderPoint(event) {
   };
 }
 
-function addWorkflowEdge(from, to, edgeType = "success", fromPort = "", mids) {
+function addWorkflowEdge(from, to, edgeType = "success", fromPort = "") {
   ensureWorkflow();
   if (!from || !to || from === to) return false;
   const type = edgeType || "success";
@@ -8319,10 +8417,6 @@ function addWorkflowEdge(from, to, edgeType = "success", fromPort = "", mids) {
   pushWorkflowHistory();
   const edge = { from, to, edge_type: type };
   if (fromPort && fromPort !== "out") edge.from_port = fromPort;
-  if (Array.isArray(mids) && mids.length) {
-    const ox = workflowWorldOffsetX(), oy = workflowWorldOffsetY();
-    edge.waypoints = mids.map((q) => [Math.round(q[0] - ox), Math.round(q[1] - oy)]);
-  }
   currentAgent.workflow_edges.push(edge);
   workflowCheckReport = null;
   return true;
@@ -8498,16 +8592,13 @@ function workflowPortInfo(portEl) {
   return { nodeId: item.id, port, isIn, edgeType, anchor };
 }
 
-function connectWorkflowPorts(start, target, previewPts) {
+function connectWorkflowPorts(start, target) {
   if (!start || !target || start.nodeId === target.nodeId) return false;
   // 必须一端是输入口、一端是输出口
   if (start.isIn === target.isIn) return false;
   const outSide = start.isIn ? target : start;
   const inSide = start.isIn ? start : target;
-  // 提交的管道严格等于松手时的虚线：取虚线折线的中间折点为路点（render坐标[x,y]）。
-  let mids = Array.isArray(previewPts) ? previewPts.slice(1, -1) : [];
-  if (start.isIn) mids = mids.slice().reverse(); // 从输入口起点时虚线是 in->out，反转为 out->in 存储
-  return addWorkflowEdge(outSide.nodeId, inSide.nodeId, outSide.edgeType || "success", outSide.port, mids);
+  return addWorkflowEdge(outSide.nodeId, inSide.nodeId, outSide.edgeType || "success", outSide.port);
 }
 
 function setWorkflowConnectingClass(active) {
@@ -8878,6 +8969,12 @@ document.addEventListener("pointermove", (event) => {
     const dy = event.clientY - workflowConnection.startY;
     workflowConnection.moved ||= Math.abs(dx) + Math.abs(dy) > 5;
     workflowConnection.pointer = workflowCanvasRenderPoint(event);
+    const target = workflowPortInfo(portFromPoint(event.clientX, event.clientY));
+    workflowConnection.hoverTarget = target
+      && target.nodeId !== workflowConnection.nodeId
+      && target.isIn !== workflowConnection.isIn
+        ? target
+        : null;
     refreshWorkflowCanvasDom();
     return;
   }
@@ -9043,7 +9140,7 @@ document.addEventListener("pointerup", (event) => {
     let added = false;
     let pending = false;
     if (target) {
-      added = connectWorkflowPorts(start, target, start.previewPts);
+      added = connectWorkflowPorts(start, target);
       if (!added && !start.moved && target.nodeId === start.nodeId && target.port === start.port) {
         workflowPendingPort = {
           nodeId: start.nodeId,
@@ -9674,7 +9771,6 @@ document.addEventListener("click", async (event) => {
     if (action === "auto-layout-workflow") {
       readAgentForm();
       pushWorkflowHistory();
-      (currentAgent.workflow_edges || []).forEach((e) => { if (e) delete e.waypoints; });
       autoLayoutWorkflow();
       focusWorkflowStart();
       setFeedback("已按层级自动整理。");
