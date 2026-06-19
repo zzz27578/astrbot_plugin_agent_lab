@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260619-fix9";
+const AGENT_LAB_WEBUI_BUILD = "20260619-fix10";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -1643,12 +1643,14 @@ function showAppModal(opts = {}) {
     document.querySelector(".app-modal-overlay")?.remove();
     const overlay = document.createElement("div");
     overlay.className = "app-modal-overlay";
-    const fieldsHtml = fields.map((f, i) => `
-      <label class="app-modal-field">
-        <span>${esc(f.label || "")}</span>
-        <input type="text" data-modal-field="${i}" value="${esc(f.value == null ? "" : f.value)}" placeholder="${esc(f.placeholder || "")}" />
-      </label>
-    `).join("");
+    const fieldsHtml = fields.map((f, i) => {
+      if (f.type === "select") {
+        const cur = String(f.value == null ? "" : f.value);
+        const opts = (f.options || []).map(([v, lbl]) => `<option value="${esc(v)}" ${String(v) === cur ? "selected" : ""}>${esc(lbl)}</option>`).join("");
+        return `<label class="app-modal-field"><span>${esc(f.label || "")}</span><select data-modal-field="${i}">${opts}</select></label>`;
+      }
+      return `<label class="app-modal-field"><span>${esc(f.label || "")}</span><input type="text" data-modal-field="${i}" value="${esc(f.value == null ? "" : f.value)}" placeholder="${esc(f.placeholder || "")}" /></label>`;
+    }).join("");
     overlay.innerHTML = `
       <div class="app-modal ${danger ? "is-danger" : ""}" role="dialog" aria-modal="true">
         ${title ? `<div class="app-modal-title">${esc(title)}</div>` : ""}
@@ -2558,6 +2560,21 @@ function modernDefaultWorkflowEdges() {
     { from: "skill_evolution", to: "notify", edge_type: "success" },
     { from: "notify", to: "archive", edge_type: "success" },
   ];
+}
+
+// 内置蓝图（可复用的整套工作流模板）：在「蓝图管理」页和「新建方案」里套用。
+const BUILTIN_BLUEPRINTS = [
+  { id: "long_task", name: "内置 · 长任务编排", desc: "入口→记忆→计划→分流→执行/并行→校验→快照→任务记忆→归档的完整长任务流程。", build: () => ({ nodes: clone(modernDefaultWorkflowNodes()), edges: clone(modernDefaultWorkflowEdges()) }) },
+  { id: "blank", name: "无 · 空白方案", desc: "只放一个消息监听入口，从零开始搭。", build: () => ({ nodes: [{ id: "entry", title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", description: "承接命令、关键词、自然语言、WebUI、插件事件等触发。", instruction: "只把命中触发策略的事件送入后续节点。", x: 240, y: 260 }], edges: [] }) },
+];
+function workflowBlueprintById(id) { return BUILTIN_BLUEPRINTS.find((b) => b.id === id) || null; }
+function workflowBlueprintOptions() { return [["long_task", "内置 · 长任务编排"], ["blank", "无 · 空白方案"]]; }
+function applyBlueprintToDraft(draft, id) {
+  const bp = workflowBlueprintById(id) || workflowBlueprintById("blank");
+  const built = bp.build();
+  draft.workflow_nodes = built.nodes;
+  draft.workflow_edges = built.edges;
+  return draft;
 }
 
 function defaultWorkflowNodes() {
@@ -4212,12 +4229,9 @@ function renderCanvas() {
           <div class="button-row scheme-actions">
             <button class="button" data-action="new-agent" type="button">新建方案</button>
             <button class="button secondary" data-action="duplicate-agent" type="button" ${a.agent_id ? "" : "disabled"}>复制</button>
-            <button class="button secondary" data-action="export-plan" type="button" ${a.agent_id ? "" : "disabled"} title="把这套方案导出成 JSON，便于分享/备份">导出</button>
-            <button class="button secondary" data-action="import-plan" type="button" title="从别人分享的方案 JSON 导入为新方案">导入</button>
-            <button class="button secondary" data-action="reset-default-workflow" type="button" title="用内置最新长任务 Agent 方案覆盖当前画布节点/连线">重置为内置方案</button>
             <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
           </div>
-          <p class="setting-hint-line">导出(打包)＝把当前方案存成 JSON 分享给别人；导入＝把别人分享的方案 JSON 加为新方案。蓝图交流就用这两个。</p>
+          <p class="setting-hint-line">导入 / 导出方案、套用内置蓝图，已移到「插件与集成 → 蓝图管理」页统一管理。</p>
           <div class="list scheme-list">${agentRows()}</div>
         </div>
       </aside>
@@ -5398,25 +5412,32 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
     const boxes = allBoxes.filter((b) => b.id !== edge.from && b.id !== edge.to);
-    const d = workflowRouteLink(start, end, boxes);
+    const pts = workflowRoutePoints(start, end, boxes);
+    const d = roundedOrthPath(pts, 16);
     const color = workflowEdgeColor(edgeType);
     const pid = `wflp-${index}`;
     const marker = `workflow-arrow-${edgeType}`;
-    const __mid = workflowLinkMidpoint(start, end);
-    const midX = __mid.x;
-    const midY = __mid.y;
+    const mid = workflowPolylineMidpoint(pts);
     const showLabel = edgeType !== "success" && edgeType !== "always";
     const labelHtml = showLabel
-      ? `<g class="workflow-link-label" transform="translate(${midX} ${midY})"><rect x="-18" y="-9" width="36" height="18" rx="5" fill="#fff" stroke="${color}"></rect><text x="0" y="3" text-anchor="middle" fill="${color}">${esc(workflowPortShortLabel(edgeType))}</text></g>`
+      ? `<g class="workflow-link-label" transform="translate(${mid.x.toFixed(1)} ${mid.y.toFixed(1)})"><rect x="-18" y="-9" width="36" height="18" rx="5" fill="#fff" stroke="${color}"></rect><text x="0" y="3" text-anchor="middle" fill="${color}">${esc(workflowPortShortLabel(edgeType))}</text></g>`
       : "";
-    const flow = reduceMotion ? "" : `<g class="link-flow">${[0, 0.5].map((off) => `<path class="link-arrow" d="M -6 -5 L 6 0 L -6 5 L -2 0 Z" fill="${color}"><animateMotion dur="3.4s" begin="-${(off * 3.4).toFixed(2)}s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#${pid}"></mpath></animateMotion></path>`).join("")}</g>`;
+    // 流动箭头：恒定速度（时长正比路径长度，长管道不再瞬移），多个小箭头按固定间隔有序流动。
+    const len = Math.max(1, workflowPolylineLength(pts));
+    const SPEED = 64; // px/秒，缓慢匀速
+    const SPACING = 160; // 箭头间隔（像素），间隔大、不密集
+    const dur = Math.max(1.6, len / SPEED);
+    const count = Math.max(1, Math.min(6, Math.round(len / SPACING)));
+    const flow = reduceMotion ? "" : `<g class="link-flow">${Array.from({ length: count }, (_, i) => `<path class="link-arrow" d="M -4 -3.4 L 4 0 L -4 3.4 L -1 0 Z" fill="${color}"><animateMotion dur="${dur.toFixed(2)}s" begin="-${(i * dur / count).toFixed(2)}s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#${pid}"></mpath></animateMotion></path>`).join("")}</g>`;
     return `
-      <path class="workflow-link-hit" d="${d}" data-action="delete-workflow-edge" data-index="${index}"></path>
-      <path class="workflow-link-casing" d="${d}" style="--link-color:${color}"></path>
-      <path class="workflow-link-channel" d="${d}"></path>
-      <path id="${pid}" class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-edge-type="${esc(edgeType)}" style="--link-color:${color};marker-end:url(#${marker})"></path>
-      ${flow}
-      ${labelHtml}
+      <g class="link-group">
+        <path class="workflow-link-hit" d="${d}" data-edge-index="${index}"></path>
+        <path class="workflow-link-casing" d="${d}" style="--link-color:${color}"></path>
+        <path class="workflow-link-channel" d="${d}"></path>
+        <path id="${pid}" class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-edge-type="${esc(edgeType)}" style="--link-color:${color};marker-end:url(#${marker})"></path>
+        ${flow}
+        ${labelHtml}
+      </g>
     `;
   }).join("");
   const preview = workflowConnection ? `<path class="workflow-link-preview" d="${workflowLinkPath(workflowConnection.anchor, workflowConnection.pointer)}"></path>` : "";
@@ -5819,36 +5840,63 @@ function workflowPointsHit(points, boxes) {
 // 连线避让：默认走「出口直出→竖直主干→直入入口」的正交通道；若主干/横段会穿过其它节点盒，
 // 先把主干 midX 横向平移到一条不撞节点的通道；都不行就抬到障碍上方或压到下方绕行；
 // 仍找不到才回退到原始直连（保证不报错、不丢线）。
-function workflowRouteLink(from, to, boxes) {
+// 折线总长 / 沿折线的中点（用于连线标签定位，让标签始终贴在实际管道上）。
+function workflowPolylineLength(pts) {
+  let L = 0;
+  for (let i = 1; i < pts.length; i++) L += Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]);
+  return L;
+}
+function workflowPolylineMidpoint(pts) {
+  let half = workflowPolylineLength(pts) / 2;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i][0] - pts[i - 1][0], dy = pts[i][1] - pts[i - 1][1];
+    const seg = Math.hypot(dx, dy);
+    if (seg >= half) { const t = seg ? half / seg : 0; return { x: pts[i - 1][0] + dx * t, y: pts[i - 1][1] + dy * t }; }
+    half -= seg;
+  }
+  const last = pts[pts.length - 1] || [0, 0];
+  return { x: last[0], y: last[1] };
+}
+// 连线路由（返回折点）：保证从出口侧离开、从入口侧进入，绝不穿过目标节点本体。
+// 正向（出口在入口侧之前）走「Z 形」竖直主干；反向（出口已越过入口，比如目标在左上方）
+// 走「C 形」绕行——先竖直离开出口，再到障碍上方/下方横跨，再竖直落到入口侧，最后正向进入入口，
+// 这样不会出现「线从出口穿过目标又回到入口、看着像出口连出口」的情况。
+function workflowRoutePoints(from, to, boxes) {
   const x1 = Number(from.x || 0), y1 = Number(from.y || 0);
   const x2 = Number(to.x || 0), y2 = Number(to.y || 0);
   const exitDir = from.leftExit ? -1 : 1;
   const entryDir = to.rightEntry ? 1 : -1;
-  const stub = 28;
-  const sx = x1 + exitDir * stub;
-  const ex = x2 + entryDir * stub;
-  const build = (midX) => [[x1, y1], [sx, y1], [midX, y1], [midX, y2], [ex, y2], [x2, y2]];
-  let defMid = (sx + ex) / 2;
-  if (exitDir > 0 && entryDir < 0) defMid = Math.max(sx, Math.min(ex, defMid));
-  if (!boxes || !boxes.length) return roundedOrthPath(build(defMid), 16);
-  if (!workflowPointsHit(build(defMid), boxes)) return roundedOrthPath(build(defMid), 16);
-  // 1) 横向平移主干，找一条空通道（优先靠近默认位置）
-  for (let d = 24; d <= 1600; d += 24) {
-    if (!workflowPointsHit(build(defMid + d), boxes)) return roundedOrthPath(build(defMid + d), 16);
-    if (!workflowPointsHit(build(defMid - d), boxes)) return roundedOrthPath(build(defMid - d), 16);
+  const stub = 30;
+  const sx = x1 + exitDir * stub;   // 出口外侧锚点
+  const ex = x2 + entryDir * stub;  // 入口外侧锚点（普通节点在左侧）
+  const obs = boxes || [];
+  const zRoute = (midX) => [[x1, y1], [sx, y1], [midX, y1], [midX, y2], [ex, y2], [x2, y2]];
+  const cRoute = (ry) => [[x1, y1], [sx, y1], [sx, ry], [ex, ry], [ex, y2], [x2, y2]];
+  const hit = (pts) => workflowPointsHit(pts, obs);
+  // 正向：出口外侧锚点在入口外侧锚点「之前」（按各自方向）。
+  const forward = entryDir < 0 ? (sx <= ex) : (sx >= ex);
+  if (forward) {
+    const lo = Math.min(sx, ex), hi = Math.max(sx, ex);
+    const def = (sx + ex) / 2;
+    const cands = [def];
+    for (let d = 24; d <= (hi - lo); d += 24) { if (def + d <= hi) cands.push(def + d); if (def - d >= lo) cands.push(def - d); }
+    for (const m of cands) { if (!hit(zRoute(m))) return zRoute(m); }
   }
-  // 2) 上下绕行：把主干抬到相关障碍上方 / 压到下方再横跨
+  // 反向 / 正向也被堵：C 形绕行，选一条不撞节点的横跨行（优先靠近两端）。
+  const allY = [y1, y2];
   const lo = Math.min(x1, x2, sx, ex), hi = Math.max(x1, x2, sx, ex);
-  const between = boxes.filter((b) => b.x + b.w >= lo && b.x <= hi);
-  if (between.length) {
-    const topY = Math.min(...between.map((b) => b.y)) - 32;
-    const botY = Math.max(...between.map((b) => b.y + b.h)) + 32;
-    for (const ry of [topY, botY]) {
-      const pts = [[x1, y1], [sx, y1], [sx, ry], [ex, ry], [ex, y2], [x2, y2]];
-      if (!workflowPointsHit(pts, boxes)) return roundedOrthPath(pts, 16);
-    }
-  }
-  return roundedOrthPath(build(defMid), 16);
+  const between = obs.filter((b) => b.x + b.w >= lo && b.x <= hi);
+  const tops = between.length ? between.map((b) => b.y) : allY;
+  const bots = between.length ? between.map((b) => b.y + b.h) : allY;
+  const relTop = Math.min(...allY, ...tops) - 44;
+  const relBot = Math.max(...allY, ...bots) + 44;
+  const cands = [Math.min(y1, y2) - 100, relTop, relBot, Math.max(y1, y2) + 100];
+  for (const ry of cands) { if (!hit(cRoute(ry))) return cRoute(ry); }
+  return zRoute((sx + ex) / 2);
+}
+// 返回路径 d 字符串（保留旧名给预览/小地图用）。
+function workflowRouteLink(from, to, boxes) {
+  return roundedOrthPath(workflowRoutePoints(from, to, boxes), 16);
 }
 // 连线=正交管道：从出口先直出一小段，走到中线竖直转弯，再直入入口。比贝塞尔更像传送带/管道，少打结。
 function workflowLinkPath(from, to) {
@@ -7279,7 +7327,7 @@ function memoryFilterLabel(value) {
 
 function runActiveBadge(active) {
   const label = active ? "任务活跃" : "已归档";
-  return `<span class="badge ${active ? "ok" : "warn"} icon-badge" title="${esc(label)}">${iconImg(active ? "play" : "stop", label)}<span>${esc(label)}</span></span>`;
+  return `<span class="badge ${active ? "ok" : "warn"} icon-badge icon-only" title="${esc(label)}" aria-label="${esc(label)}">${iconImg(active ? "play" : "stop", label)}</span>`;
 }
 
 function heartbeatBadge(health) {
@@ -7291,7 +7339,7 @@ function heartbeatBadge(health) {
     off: ["pause", "未开心跳", "warn"],
   };
   const [ic, label, tone] = map[health?.state] || ["pause", "未知", "warn"];
-  return `<span class="badge ${tone} icon-badge" title="${esc(label)}">${iconImg(ic, label)}<span>${esc(label)}</span></span>`;
+  return `<span class="badge ${tone} icon-badge icon-only" title="${esc(label)}" aria-label="${esc(label)}">${iconImg(ic, label)}</span>`;
 }
 
 function healthLabel(health) {
@@ -7504,6 +7552,7 @@ function renderIntegrations() {
     ["plugins", "插件管理", "控制任务模式可见的插件", (state.plugins || []).length],
     ["tools", "注册工具", "按来源插件折叠工具白名单", (state.tools || []).length],
     ["apis", "自定义接口", "把外部服务注册为受管工具", (state.custom_apis || []).length],
+    ["blueprints", "蓝图管理", "导入导出 + 内置流程蓝图", BUILTIN_BLUEPRINTS.length],
     ["credentials", "凭证库", "统一加密保存接口密钥", (state.credentials || []).length],
   ];
   $("view").innerHTML = `
@@ -7536,16 +7585,25 @@ function integrationBody() {
   if (integrationTab === "apis") return apisPanel();
   if (integrationTab === "credentials") return credentialsPanel();
   if (integrationTab === "skills") return skillsPanel();
-  if (integrationTab === "blueprints") return blueprintsPanel();
+  if (integrationTab === "blueprints") return blueprintManagePanel();
   return pluginPanel();
 }
 
 function pluginPanel() {
+  // 重构：壳层(说明+筛选框)固定不动，列表放在 .plugin-panel-body，勾选/筛选只就地替换 body，
+  // 不触发整页 render()，因此不会重置 .integration-content 的滚动位置（根除"点底部插件滚动条跳顶"）。
+  return `
+    <div class="section-note">
+      这里管理 AstrBot 插件在任务模式里的可见性。AstrBot 全局停用的插件会固定关闭；任务模式只能进一步关闭插件，不能绕过 AstrBot 原生插件管理把它重新启用。
+    </div>
+    <input class="filter-input" data-action="filter-plugins" value="${esc(pluginFilter)}" placeholder="筛选插件名、目录或说明" />
+    <div class="plugin-panel-body">${pluginPanelBody()}</div>
+  `;
+}
+
+function pluginPanelBody() {
   const rows = (state.plugins || []).filter((plugin) =>
-    includesQuery(
-      [plugin.name, plugin.display_name, plugin.desc, plugin.root_dir_name],
-      pluginFilter,
-    )
+    includesQuery([plugin.name, plugin.display_name, plugin.desc, plugin.root_dir_name], pluginFilter)
   );
   const activeRows = rows.filter((plugin) => plugin.activated || plugin.locked);
   const globalOffRows = rows.filter((plugin) => !plugin.activated && !plugin.locked);
@@ -7554,36 +7612,27 @@ function pluginPanel() {
     const globallyOff = !plugin.activated && !self;
     const locked = self || globallyOff;
     const effective = pluginEffective(plugin);
-    const status = self
-      ? ["受保护", "ok"]
-      : globallyOff
-        ? ["全局停用", "bad"]
-        : effective
-        ? ["任务中开启", "ok"]
-        : ["任务中关闭", "warn"];
+    const status = self ? ["受保护", "ok"] : globallyOff ? ["全局停用", "bad"] : effective ? ["任务中开启", "ok"] : ["任务中关闭", "warn"];
     return `
-      <label class="toggle-row ${locked ? "disabled" : ""}">
+      <label class="plugin-line ${locked ? "disabled" : ""} ${effective && !globallyOff ? "is-on" : ""}">
         <input type="checkbox" data-action="toggle-plugin" data-id="${esc(plugin.name)}" ${effective ? "checked" : ""} ${locked ? "disabled" : ""} />
-        <span><strong>${esc(plugin.display_name || plugin.name)}</strong><br /><small>${esc(plugin.name)} · AstrBot 全局：${plugin.activated ? "启用" : "停用"}</small></span>
+        <span class="plugin-line-main"><strong>${esc(plugin.display_name || plugin.name)}</strong><small>${esc(plugin.name)} · AstrBot 全局：${plugin.activated ? "启用" : "停用"}</small></span>
         ${badge(status[0], status[1])}
       </label>
     `;
   };
   return `
-    <div class="section-note">
-      这里管理 AstrBot 插件在任务模式里的可见性。AstrBot 全局停用的插件会固定关闭；任务模式只能进一步关闭插件，不能绕过 AstrBot 原生插件管理把它重新启用。
+    <div class="plugin-section">
+      <div class="plugin-section-head">可用于任务模式的插件 <span>${activeRows.length}</span></div>
+      <div class="plugin-list">${activeRows.map(renderPlugin).join("") || `<div class="empty">没有匹配的启用插件。</div>`}</div>
     </div>
-    <input class="filter-input" data-action="filter-plugins" value="${esc(pluginFilter)}" placeholder="筛选插件名、目录或说明" />
-    <details class="collapse-group" open>
-      <summary>可用于任务模式的插件 <span>${activeRows.length}</span></summary>
-      <div class="capability-list">${activeRows.map(renderPlugin).join("") || `<div class="empty">没有匹配的启用插件。</div>`}</div>
-    </details>
-    <details class="collapse-group">
-      <summary>AstrBot 全局停用的插件 <span>${globalOffRows.length}</span></summary>
-      <div class="capability-list">${globalOffRows.map(renderPlugin).join("") || `<div class="empty">没有匹配的全局停用插件。</div>`}</div>
-    </details>
+    <div class="plugin-section">
+      <div class="plugin-section-head">AstrBot 全局停用的插件 <span>${globalOffRows.length}</span></div>
+      <div class="plugin-list">${globalOffRows.map(renderPlugin).join("") || `<div class="empty">没有匹配的全局停用插件。</div>`}</div>
+    </div>
   `;
 }
+
 
 function pluginEffective(plugin) {
   if (!plugin) return true;
@@ -7883,6 +7932,30 @@ function blueprintManifestTemplate() {
     null,
     2,
   );
+}
+
+function blueprintManagePanel() {
+  const cards = BUILTIN_BLUEPRINTS.map((b) => `
+    <div class="bp-card">
+      <div class="bp-card-main"><strong>${esc(b.name)}</strong><small>${esc(b.desc)}</small></div>
+      <button class="button secondary" data-action="apply-blueprint" data-id="${esc(b.id)}" type="button">套用到当前方案</button>
+    </div>
+  `).join("");
+  return `
+    <div class="section-note">蓝图＝可复用的整套工作流模板。下面是内置蓝图，可一键套用到当前方案；也能把当前方案导出成蓝图 JSON 分享/备份，或导入别人的蓝图为新方案。</div>
+    <div class="bp-section">
+      <div class="bp-section-head">内置蓝图</div>
+      <div class="bp-list">${cards}</div>
+    </div>
+    <div class="bp-section">
+      <div class="bp-section-head">导入 / 导出</div>
+      <div class="bp-io">
+        <button class="button secondary" data-action="export-plan" type="button" ${currentAgent && currentAgent.agent_id ? "" : "disabled"} title="把当前方案导出成 JSON 蓝图">导出当前方案为蓝图</button>
+        <button class="button secondary" data-action="import-plan" type="button" title="从蓝图 JSON 导入为新方案">导入蓝图为新方案</button>
+      </div>
+      <p class="setting-hint-line">导出＝把当前方案存成 JSON 分享/备份；导入＝把别人的蓝图 JSON 加为一个新方案。</p>
+    </div>
+  `;
 }
 
 function blueprintsPanel() {
@@ -9019,17 +9092,41 @@ document.addEventListener("click", async (event) => {
       render();
     }
     if (action === "new-agent") {
-      const inputName = await promptModal("新建方案", "方案名称", "新方案", { placeholder: "给这套流程起个名字" });
-      if (inputName === null) return;
+      const res = await showAppModal({
+        title: "新建方案",
+        fields: [
+          { label: "方案名称", value: "新方案", placeholder: "给这套流程起个名字" },
+          { label: "选择蓝图（可选无）", type: "select", options: workflowBlueprintOptions(), value: "long_task" },
+        ],
+        confirmText: "创建",
+      });
+      if (res === null) return;
+      const [nameVal, bpId] = res;
       const draft = defaultAgentDraft();
       delete draft.agent_id;
-      draft.name = (inputName || "").trim() || "新方案";
+      draft.name = (nameVal || "").trim() || "新方案";
       draft.identity_label_source = "manual";
+      applyBlueprintToDraft(draft, bpId);
       const result = await api("/api/agents", { method: "POST", body: draft });
       selectedAgentId = result.agent?.agent_id || selectedAgentId;
       selectedWorkflowNodeId = "";
-      setFeedback("已创建新方案，可在工作流画布里继续配置。");
+      setFeedback(`已创建新方案${bpId === "blank" ? "（空白）" : "（内置长任务蓝图）"}，可在工作流画布里继续配置。`);
       await load();
+    }
+    if (action === "apply-blueprint") {
+      const bp = workflowBlueprintById(target.dataset.id);
+      if (!bp) return;
+      if (!(await confirmModal("套用蓝图", `用蓝图「${bp.name}」覆盖当前方案「${agentDisplayName(currentAgent)}」的画布节点和连线？触发/范围/审批等其它配置保留，保存方案后生效。`, { danger: true, confirmText: "套用" }))) return;
+      ensureWorkflow();
+      pushWorkflowHistory();
+      const built = bp.build();
+      currentAgent.workflow_nodes = built.nodes;
+      currentAgent.workflow_edges = built.edges;
+      selectedWorkflowNodeId = "";
+      workflowCheckReport = null;
+      setFeedback(`已套用蓝图「${bp.name}」，保存方案后生效。`);
+      showToast(`已套用蓝图：${bp.name}`, "ok");
+      render();
     }
     if (action === "duplicate-agent") {
       if (!currentAgent.agent_id) throw new Error("请先选择一个已保存的方案再复制。");
@@ -9059,19 +9156,6 @@ document.addEventListener("click", async (event) => {
       document.body.appendChild(aEl); aEl.click(); aEl.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1500);
       showToast("方案已打包导出", "ok");
-    }
-    if (action === "reset-default-workflow") {
-      if (await confirmModal("重置为内置长任务方案", "用内置的最新「长任务 Agent」方案覆盖当前画布的节点和连线？触发、生效范围、审批、子Agent 等其它配置保留；保存方案后才生效。", { danger: true, confirmText: "重置画布" })) {
-        ensureWorkflow();
-        pushWorkflowHistory();
-        currentAgent.workflow_nodes = clone(defaultWorkflowNodes());
-        currentAgent.workflow_edges = clone(defaultWorkflowEdges());
-        selectedWorkflowNodeId = "";
-        workflowCheckReport = null;
-        setFeedback("已重置为内置长任务方案，保存后生效。");
-        showToast("已载入内置长任务方案", "ok");
-        render();
-      }
     }
     if (action === "import-plan") {
       const inp = document.createElement("input");
@@ -9947,7 +10031,9 @@ document.addEventListener("click", async (event) => {
       const nextEnabled = !pluginEffective(plugin);
       currentAgent.plugin_overrides[plugin.name] = nextEnabled;
       if (!nextEnabled) removeToolsForPlugin(plugin.name);
-      render();
+      // 只就地刷新插件列表 body，不整页 render()，滚动条不动。
+      const body = document.querySelector(".plugin-panel-body");
+      if (body) body.innerHTML = pluginPanelBody(); else render();
     }
     if (action === "toggle-tool") {
       const selected = new Set((currentAgent.enabled_tools || []).filter((item) => item !== EMPTY_TOOLS_SENTINEL));
@@ -10009,6 +10095,22 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+// 画布连线：双击删除（悬停只高亮自身、双击才删，避免误删）。
+document.addEventListener("dblclick", (event) => {
+  const hit = event.target.closest && event.target.closest(".workflow-link-hit");
+  if (!hit) return;
+  const idx = Number(hit.dataset.edgeIndex);
+  if (!Number.isInteger(idx) || !currentAgent || !Array.isArray(currentAgent.workflow_edges)) return;
+  if (idx < 0 || idx >= currentAgent.workflow_edges.length) return;
+  event.preventDefault();
+  pushWorkflowHistory();
+  currentAgent.workflow_edges.splice(idx, 1);
+  workflowCheckReport = null;
+  workflowDryRunReport = null;
+  setFeedback("已删除连线。");
+  renderWorkflowStable();
+});
+
 document.addEventListener("change", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
@@ -10036,7 +10138,7 @@ document.addEventListener("input", (event) => {
   const action = target.dataset.action;
   // 这些筛选框过去每敲一下就整页 render()+rAF 重新聚焦，会掉焦/丢字（尤其非工作流页根本没还焦点）。
   // 现在统一依赖 render() 内置的同步全局焦点保留，直接 render 即可，焦点和光标都会被保住。
-  if (action === "filter-plugins") { pluginFilter = target.value; render(); return; }
+  if (action === "filter-plugins") { pluginFilter = target.value; const __b = document.querySelector(".plugin-panel-body"); if (__b) { __b.innerHTML = pluginPanelBody(); } else { render(); } return; }
   if (action === "filter-tools") { toolFilter = target.value; render(); return; }
   if (action === "filter-blueprints") { blueprintFilter = target.value; render(); return; }
   if (action === "filter-workflow-materials") { workflowMaterialFilter = target.value; render(); return; }

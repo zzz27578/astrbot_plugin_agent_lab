@@ -722,12 +722,14 @@ button.list-row {
 .badge {
   display: inline-flex;
   align-items: center;
-  min-height: 24px;
-  padding: 3px 8px;
+  min-height: 22px;
+  padding: 2px 9px;
   border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;          /* 防止"已取消"等在窄列里竖排一字一行 */
+  flex: 0 0 auto;
 }
 
 .badge.ok {
@@ -946,13 +948,13 @@ button.list-row {
   pointer-events: stroke;
 }
 
-.workflow-link-hit:hover ~ .workflow-link {
-  stroke: rgba(180, 67, 58, 0.95);
-  stroke-width: 4;
-}
-.workflow-link-hit:hover + .workflow-link-casing {
-  opacity: 0.3;
-}
+/* 悬停高亮只作用于「当前这条」连线（包在 .link-group 里），
+   不再用相邻/通用兄弟选择器误染相交或后续的其它连线；悬停=选中态变红，双击删除。 */
+.link-group:hover { cursor: pointer; }
+.link-group:hover .workflow-link-casing { stroke: #d4453b; opacity: 0.85; }
+.link-group:hover .workflow-link-channel { opacity: 0.4; }
+.link-group:hover .workflow-link { stroke: #d4453b; opacity: 0.95; }
+.link-group:hover .link-arrow { fill: #d4453b; }
 
 .workflow-link-preview {
   fill: none;
@@ -4724,3 +4726,31 @@ input[type="checkbox"] {
 .icon-badge.bad .game-icon { filter: sepia(1) saturate(3) hue-rotate(-20deg) brightness(0.75); }
 .button.icon-button-text { display: inline-flex; align-items: center; gap: 6px; }
 .button.icon-button-text .game-icon { width: 15px; height: 15px; flex: 0 0 auto; }
+
+.badge.icon-only { padding: 3px 5px; gap: 0; min-height: 22px; }
+.badge.icon-only .game-icon { width: 14px; height: 14px; }
+
+/* ===== 插件管理页（重构 fix10：简洁扁平列表，勾选只就地刷新 body，不跳滚动条） ===== */
+.plugin-panel-body { display: grid; gap: 14px; }
+.plugin-section { display: grid; gap: 6px; }
+.plugin-section-head { font-weight: 600; font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 8px; padding: 2px 2px 4px; border-bottom: 1px solid var(--line); }
+.plugin-section-head span { font-size: 12px; background: rgba(127,127,127,.12); border-radius: 6px; padding: 1px 8px; }
+.plugin-list { display: grid; gap: 6px; }
+.plugin-line { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 11px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; background: #fff; cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.plugin-line:hover:not(.disabled) { border-color: var(--accent, #5b8def); }
+.plugin-line.is-on { background: color-mix(in srgb, var(--accent,#5b8def) 6%, #fff); border-color: color-mix(in srgb, var(--accent,#5b8def) 38%, var(--line)); }
+.plugin-line.disabled { opacity: .6; cursor: not-allowed; }
+.plugin-line input { width: 16px; height: 16px; flex: 0 0 auto; }
+.plugin-line-main { display: grid; gap: 2px; min-width: 0; }
+.plugin-line-main strong { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plugin-line-main small { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ===== 蓝图管理页 (fix10) ===== */
+.bp-section { display: grid; gap: 8px; margin-top: 10px; }
+.bp-section-head { font-weight: 600; font-size: 13px; color: var(--muted); padding-bottom: 4px; border-bottom: 1px solid var(--line); }
+.bp-list { display: grid; gap: 8px; }
+.bp-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+.bp-card-main { display: grid; gap: 3px; min-width: 0; }
+.bp-card-main strong { font-size: 13.5px; }
+.bp-card-main small { color: var(--muted); font-size: 12px; }
+.bp-io { display: flex; flex-wrap: wrap; gap: 8px; }
