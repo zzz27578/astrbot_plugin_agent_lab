@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260619-fix13";
+const AGENT_LAB_WEBUI_BUILD = "20260619-fix14";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -5467,7 +5467,23 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const target = workflowConnection.hoverTarget || null;
     const end = workflowConnection.pointer;
     const previewBoxes = workflowRouteBoxesForEdge(nodeArr, workflowConnection.nodeId, target?.nodeId || "", offsetX, offsetY, true);
-    const pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, { preferredY: workflowConnection.pointer?.y });
+    let pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, {
+      preferredY: workflowConnection.pointer?.y,
+      routeFamily: workflowConnection.routeIntent?.family,
+      ySide: workflowConnection.routeIntent?.y_side,
+      xSide: workflowConnection.routeIntent?.x_side,
+    });
+    if (!workflowConnection.routeIntent && workflowConnection.moved) {
+      workflowConnection.routeIntent = workflowRouteIntentFromRenderPoints(pv, workflowConnection.anchor, end);
+      if (workflowConnection.routeIntent) {
+        pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, {
+          preferredY: workflowConnection.pointer?.y,
+          routeFamily: workflowConnection.routeIntent.family,
+          ySide: workflowConnection.routeIntent.y_side,
+          xSide: workflowConnection.routeIntent.x_side,
+        });
+      }
+    }
     workflowConnection.previewPts = pv;
     preview = `<path class="workflow-link-preview" d="${roundedOrthPath(pv, 16)}"></path>`;
   }
@@ -5978,6 +5994,34 @@ function workflowRankCandidates(values, preferred, limit = 18) {
     .slice(0, limit);
 }
 
+function workflowRouteSide(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n === 0) return 0;
+  return n > 0 ? 1 : -1;
+}
+
+function workflowDirectionalLane(values, origin, side, preferred, fallback, limit = 18) {
+  const dir = workflowRouteSide(side);
+  const all = values.filter(Number.isFinite);
+  const matching = dir ? all.filter((value) => workflowRouteSide(value - origin) === dir) : all;
+  const withFallback = matching.length ? matching : [fallback];
+  if (Number.isFinite(fallback)) withFallback.push(fallback);
+  return workflowRankCandidates(Array.from(new Set(withFallback.map((value) => Math.round(value)))), preferred, limit);
+}
+
+function workflowRouteIntentFromRenderPoints(points, start = null, end = null) {
+  const pts = workflowNormalizeOrthogonalPoints(points || []);
+  if (pts.length < 3) return null;
+  const stub = pts[1];
+  const turn = pts[2];
+  const ySide = workflowRouteSide(turn[1] - stub[1]);
+  if (stub[0] === turn[0] && ySide) {
+    return { family: "vertical-first", y_side: ySide, x_side: workflowRouteSide((end?.x ?? pts[pts.length - 1][0]) - stub[0]) };
+  }
+  const xSide = workflowRouteSide(turn[0] - stub[0]) || workflowRouteSide((end?.x ?? pts[pts.length - 1][0]) - (start?.x ?? pts[0][0]));
+  return { family: "horizontal-first", x_side: xSide || 1, y_side: workflowRouteSide((end?.y ?? pts[pts.length - 1][1]) - stub[1]) };
+}
+
 function workflowCleanRouteHint(raw) {
   if (!raw || typeof raw !== "object") return null;
   const rawPoints = Array.isArray(raw.points) ? raw.points : [];
@@ -5987,22 +6031,47 @@ function workflowCleanRouteHint(raw) {
     return Number.isFinite(x) && Number.isFinite(y) ? [Math.round(x * 10) / 10, Math.round(y * 10) / 10] : null;
   }).filter(Boolean);
   if (points.length < 2) return null;
-  return { version: 1, mode: "orthogonal_hint", points: workflowNormalizeOrthogonalPoints(points) };
+  const normalized = workflowNormalizeOrthogonalPoints(points);
+  const inferred = workflowRouteIntentFromRenderPoints(normalized);
+  const rawFamily = String(raw.family || raw.route_family || "").trim();
+  const family = rawFamily === "vertical-first" || rawFamily === "horizontal-first" ? rawFamily : (inferred?.family || "");
+  const ySide = workflowRouteSide(raw.y_side ?? raw.ySide ?? inferred?.y_side);
+  const xSide = workflowRouteSide(raw.x_side ?? raw.xSide ?? inferred?.x_side);
+  const clean = { version: 2, mode: "orthogonal_hint", points: normalized };
+  if (family) clean.family = family;
+  if (ySide) clean.y_side = ySide;
+  if (xSide) clean.x_side = xSide;
+  return clean;
 }
 
-function workflowRouteHintFromRenderPoints(points, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOffsetY()) {
+function workflowRouteHintFromRenderPoints(points, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOffsetY(), intent = null) {
   const clean = workflowCleanRouteHint({
     points: (points || []).map((point) => [
       Number(point?.[0] ?? point?.x ?? 0) - offsetX,
       Number(point?.[1] ?? point?.y ?? 0) - offsetY,
     ]),
   });
+  const inferred = intent || workflowRouteIntentFromRenderPoints(points);
+  if (clean && inferred?.family) {
+    clean.family = inferred.family;
+    const ySide = workflowRouteSide(inferred.y_side);
+    const xSide = workflowRouteSide(inferred.x_side);
+    if (ySide) clean.y_side = ySide;
+    if (xSide) clean.x_side = xSide;
+  }
   return clean;
 }
 
 function workflowRoutePointsFromHint(routeHint, start, end, boxes, offsetX = 0, offsetY = 0) {
   const hint = workflowCleanRouteHint(routeHint);
   if (!hint) return null;
+  if (hint.family) {
+    return workflowRoutePoints(start, end, boxes || [], {
+      routeFamily: hint.family,
+      ySide: hint.y_side,
+      xSide: hint.x_side,
+    });
+  }
   const stored = hint.points.map((point) => [point[0] + offsetX, point[1] + offsetY]);
   const middle = stored.slice(1, -1);
   if (Math.abs(start.y - end.y) > WORKFLOW_NODE_HEIGHT && middle.length) {
@@ -6053,20 +6122,54 @@ function workflowRoutePoints(from, to, boxes, options = {}) {
   const gapPreferredY = Math.abs(y1 - y2) > WORKFLOW_NODE_HEIGHT
     ? Math.round((y1 + y2) / 2)
     : y2;
-  const preferredY = Number.isFinite(hintedY) ? hintedY : gapPreferredY;
-  const preferredX = (sx + ex) / 2;
+  const lockedFamily = String(options.routeFamily || "").trim();
+  const ySide = workflowRouteSide(options.ySide);
+  const xSide = workflowRouteSide(options.xSide);
+  const lockedVertical = lockedFamily === "vertical-first";
+  const lockedHorizontal = lockedFamily === "horizontal-first";
+  const sideGap = Math.max(workflowPortStub() * 2, 72);
+  const directionalPreferredY = ySide
+    ? (ySide > 0
+      ? (y2 >= y1 ? (y1 + y2) / 2 : y1 + sideGap)
+      : (y2 <= y1 ? (y1 + y2) / 2 : y1 - sideGap))
+    : gapPreferredY;
+  const preferredY = Number.isFinite(hintedY) ? hintedY : directionalPreferredY;
+  const preferredXBase = (sx + ex) / 2;
+  const directionalPreferredX = xSide
+    ? (xSide > 0
+      ? (ex >= sx ? preferredXBase : sx + sideGap)
+      : (ex <= sx ? preferredXBase : sx - sideGap))
+    : preferredXBase;
+  const preferredX = directionalPreferredX;
   const candidates = [];
   const add = (pts) => candidates.push(workflowNormalizeOrthogonalPoints(pts));
   const zRoute = (midX) => [[x1, y1], [sx, y1], [midX, y1], [midX, y2], [ex, y2], [x2, y2]];
   const cRoute = (laneY) => [[x1, y1], [sx, y1], [sx, laneY], [ex, laneY], [ex, y2], [x2, y2]];
   const sRoute = (midX, laneY) => [[x1, y1], [sx, y1], [sx, laneY], [midX, laneY], [midX, y2], [ex, y2], [x2, y2]];
 
-  const xLanes = workflowRankCandidates(workflowAxisCandidateValues(obs, sx, ex, "x"), preferredX, 16);
-  const yLanes = workflowRankCandidates(workflowAxisCandidateValues(obs, y1, y2, "y"), preferredY, 18);
-  xLanes.forEach((midX) => add(zRoute(midX)));
-  yLanes.forEach((laneY) => add(cRoute(laneY)));
-  for (const midX of xLanes.slice(0, 10)) {
-    for (const laneY of yLanes.slice(0, 10)) add(sRoute(midX, laneY));
+  const rawXLanes = workflowAxisCandidateValues(obs, sx, ex, "x");
+  const rawYLanes = workflowAxisCandidateValues(obs, y1, y2, "y");
+  const fallbackX = sx + (xSide || workflowRouteSide(ex - sx) || exitDir) * sideGap;
+  const fallbackY = y1 + (ySide || workflowRouteSide(y2 - y1) || 1) * sideGap;
+  const xLanes = lockedHorizontal
+    ? workflowDirectionalLane(rawXLanes, sx, xSide || workflowRouteSide(ex - sx) || exitDir, preferredX, fallbackX, 16)
+    : workflowRankCandidates(rawXLanes, preferredX, 16);
+  const yLanes = lockedVertical
+    ? workflowDirectionalLane(rawYLanes, y1, ySide || workflowRouteSide(y2 - y1) || 1, preferredY, fallbackY, 18)
+    : workflowRankCandidates(rawYLanes, preferredY, 18);
+  if (lockedVertical) {
+    yLanes.forEach((laneY) => add(cRoute(laneY)));
+    for (const midX of xLanes.slice(0, 10)) {
+      for (const laneY of yLanes.slice(0, 10)) add(sRoute(midX, laneY));
+    }
+  } else if (lockedHorizontal) {
+    xLanes.forEach((midX) => add(zRoute(midX)));
+  } else {
+    xLanes.forEach((midX) => add(zRoute(midX)));
+    yLanes.forEach((laneY) => add(cRoute(laneY)));
+    for (const midX of xLanes.slice(0, 10)) {
+      for (const laneY of yLanes.slice(0, 10)) add(sRoute(midX, laneY));
+    }
   }
 
   let best = null;
@@ -6083,11 +6186,14 @@ function workflowRoutePoints(from, to, boxes, options = {}) {
   }
   if (best) return best;
 
+  if (lockedVertical) return workflowNormalizeOrthogonalPoints(cRoute(yLanes[0] ?? fallbackY));
+  if (lockedHorizontal) return workflowNormalizeOrthogonalPoints(zRoute(xLanes[0] ?? fallbackX));
+
   const relevant = obs.filter((box) => box.x + box.w >= Math.min(sx, ex) && box.x <= Math.max(sx, ex));
   const topY = (relevant.length ? Math.min(...relevant.map((box) => box.y)) : Math.min(y1, y2)) - 36;
   const bottomY = (relevant.length ? Math.max(...relevant.map((box) => box.y + box.h)) : Math.max(y1, y2)) + 36;
-  const fallbackY = Math.abs(topY - preferredY) <= Math.abs(bottomY - preferredY) ? topY : bottomY;
-  return workflowNormalizeOrthogonalPoints(cRoute(fallbackY));
+  const bypassY = Math.abs(topY - preferredY) <= Math.abs(bottomY - preferredY) ? topY : bottomY;
+  return workflowNormalizeOrthogonalPoints(cRoute(bypassY));
 }
 // 返回路径 d 字符串（保留旧名给预览/小地图用）。
 function workflowRouteLink(from, to, boxes) {
@@ -8674,11 +8780,15 @@ function workflowPortInfo(portEl) {
 }
 
 function workflowRouteHintForConnection(start, target) {
-  if (!start || !target || !Array.isArray(start.previewPts) || start.previewPts.length < 2) return null;
-  let points = start.previewPts.map((point) => [Number(point[0]), Number(point[1])]);
+  if (!start || !target) return null;
+  const offsetX = workflowWorldOffsetX();
+  const offsetY = workflowWorldOffsetY();
+  let points = Array.isArray(start.previewPts) && start.previewPts.length >= 2
+    ? start.previewPts.map((point) => [Number(point[0]), Number(point[1])])
+    : workflowRoutePoints(start.anchor, target.anchor, workflowRouteBoxesForEdge(currentAgent.workflow_nodes || [], start.nodeId, target.nodeId, offsetX, offsetY, true));
   points[0] = [start.anchor.x, start.anchor.y];
   points[points.length - 1] = [target.anchor.x, target.anchor.y];
-  return workflowRouteHintFromRenderPoints(points);
+  return workflowRouteHintFromRenderPoints(points, offsetX, offsetY, start.routeIntent);
 }
 
 function connectWorkflowPorts(start, target) {

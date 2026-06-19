@@ -1428,10 +1428,10 @@ button.list-row {
 .workflow-material-chip {
   display: grid;
   grid-template-columns: 20px minmax(0, 1fr) auto;
-  align-items: center;
+  align-items: stretch;
   width: 100%;
   min-height: 58px;
-  padding: 8px;
+  padding: 8px 8px 10px;
 }
 
 .toolbox-chip span {
@@ -1461,6 +1461,7 @@ button.list-row {
 
 .toolbox-chip-main {
   display: grid !important;
+  align-content: end;
   min-width: 0;
   gap: 2px;
   padding: 0 !important;
@@ -1599,7 +1600,7 @@ button.list-row {
   z-index: 2;
   width: 340px;
   height: 208px;
-  padding: 34px 22px 14px;
+  padding: 34px 22px 22px;
   background: #ffffff;
   touch-action: none;
   user-select: none;
@@ -1609,7 +1610,7 @@ button.list-row {
   border-radius: 6px;
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: 7px;
 }
 /* 固定高度，保证连接点圆圈与连线锚点（基于 WORKFLOW_NODE_HEIGHT）严格对齐；超长文本截断 */
 .flow-node > strong {
@@ -1637,7 +1638,7 @@ button.list-row {
 .flow-node > .node-title, .node .node-title {
   display: block;
   overflow: hidden;
-  margin: 0 0 10px;
+  margin: auto 0 5px;
   font-family: "Bahnschrift", "DIN Alternate", "HarmonyOS Sans SC", "Inter", "Noto Sans SC", system-ui, sans-serif;
   font-size: 27px;
   font-weight: 900;
@@ -1652,7 +1653,7 @@ button.list-row {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin: 0;
+  margin: 0 0 1px;
   color: var(--muted);
   font-size: 12.5px;
   line-height: 1.45;
