@@ -5432,7 +5432,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    const routeBoxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY);
+    const routeBoxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY, true);
     const pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY)
       || workflowRoutePoints(start, end, routeBoxes);
     const d = roundedOrthPath(pts, 16);
@@ -5466,7 +5466,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   if (workflowConnection) {
     const target = workflowConnection.hoverTarget || null;
     const end = workflowConnection.pointer;
-    const previewBoxes = workflowRouteBoxesForEdge(nodeArr, workflowConnection.nodeId, target?.nodeId || "", offsetX, offsetY);
+    const previewBoxes = workflowRouteBoxesForEdge(nodeArr, workflowConnection.nodeId, target?.nodeId || "", offsetX, offsetY, true);
     const pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, { preferredY: workflowConnection.pointer?.y });
     workflowConnection.previewPts = pv;
     preview = `<path class="workflow-link-preview" d="${roundedOrthPath(pv, 16)}"></path>`;
@@ -5889,8 +5889,23 @@ function workflowConnectionBoxes(nodes, offsetX = 0, offsetY = 0, excludeIds = [
     }));
 }
 
-function workflowRouteBoxesForEdge(nodes, fromId, toId, offsetX = 0, offsetY = 0) {
-  const excludeIds = [fromId, toId].filter((id) => id !== undefined && id !== null && String(id) !== "");
+function workflowRouteBoxesForEdge(nodes, fromId, toId, offsetX = 0, offsetY = 0, includeEndpoints = false) {
+  const endpointIds = new Set([fromId, toId].filter((id) => id !== undefined && id !== null && String(id) !== "").map((id) => String(id)));
+  if (includeEndpoints) {
+    const repel = workflowConnectionRepel();
+    return (nodes || []).filter(Boolean).map((item) => {
+      const isEndpoint = endpointIds.has(String(item.id || ""));
+      const pad = isEndpoint ? 0 : repel;
+      return {
+        id: item.id,
+        x: Number(item.x || 0) + offsetX - pad,
+        y: Number(item.y || 0) + offsetY - pad,
+        w: WORKFLOW_NODE_WIDTH + pad * 2,
+        h: WORKFLOW_NODE_HEIGHT + pad * 2,
+      };
+    });
+  }
+  const excludeIds = Array.from(endpointIds);
   return workflowConnectionBoxes(nodes, offsetX, offsetY, excludeIds);
 }
 
@@ -5908,6 +5923,10 @@ function workflowSimplifyOrthogonalPoints(points) {
   const simplified = [out[0]];
   for (let i = 1; i < out.length - 1; i++) {
     const a = simplified[simplified.length - 1], b = out[i], c = out[i + 1];
+    if (i === 1 || i === out.length - 2) {
+      simplified.push(b);
+      continue;
+    }
     if ((a[0] === b[0] && b[0] === c[0]) || (a[1] === b[1] && b[1] === c[1])) continue;
     simplified.push(b);
   }
@@ -5928,10 +5947,15 @@ function workflowNormalizeOrthogonalPoints(points) {
   return workflowSimplifyOrthogonalPoints(out);
 }
 
-function workflowRouteHits(points, boxes) {
+function workflowRouteHits(points, boxes, options = {}) {
   const pts = workflowNormalizeOrthogonalPoints(points);
   for (let i = 1; i < pts.length; i++) {
     const a = pts[i - 1], b = pts[i];
+    const isEndpointStub = options.allowEndpointStubs
+      && pts.length > 2
+      && (i === 1 || i === pts.length - 1)
+      && Math.hypot(b[0] - a[0], b[1] - a[1]) <= workflowPortStub() + 6;
+    if (isEndpointStub) continue;
     if (workflowSegHitsBoxes(a[0], a[1], b[0], b[1], boxes || [])) return true;
   }
   return false;
@@ -5982,7 +6006,7 @@ function workflowRoutePointsFromHint(routeHint, start, end, boxes, offsetX = 0, 
   const stored = hint.points.map((point) => [point[0] + offsetX, point[1] + offsetY]);
   const middle = stored.slice(1, -1);
   const pts = workflowNormalizeOrthogonalPoints([[start.x, start.y], ...middle, [end.x, end.y]]);
-  if (pts.length < 2 || workflowRouteHits(pts, boxes || [])) return null;
+  if (pts.length < 2 || workflowRouteHits(pts, boxes || [], { allowEndpointStubs: true })) return null;
   return pts;
 }
 // 连线避让：默认走「出口直出→竖直主干→直入入口」的正交通道；若主干/横段会穿过其它节点盒，
@@ -6038,7 +6062,7 @@ function workflowRoutePoints(from, to, boxes, options = {}) {
   let best = null;
   let bestScore = Infinity;
   for (const pts of candidates) {
-    if (pts.length < 2 || workflowRouteHits(pts, obs)) continue;
+    if (pts.length < 2 || workflowRouteHits(pts, obs, { allowEndpointStubs: true })) continue;
     const bends = Math.max(0, pts.length - 2);
     const lanePenalty = pts.slice(1, -1).reduce((sum, p) => sum + Math.abs(p[1] - preferredY) * 0.012 + Math.abs(p[0] - preferredX) * 0.003, 0);
     const score = workflowPolylineLength(pts) + bends * 18 + lanePenalty;
