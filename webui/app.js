@@ -3278,6 +3278,8 @@ function ensureWorkflow() {
       if (label) clean.label = label;
       if (conditionVisual && typeof conditionVisual === "object") clean.condition_visual = conditionVisual;
       else if (typeof conditionVisual === "string" && conditionVisual.trim()) clean.condition_visual = conditionVisual.trim();
+      const routeHint = workflowCleanRouteHint(edge.route_hint);
+      if (routeHint) clean.route_hint = routeHint;
       return clean;
     })
     .filter((edge) => ids.has(edge.from) && ids.has(edge.to));
@@ -5431,7 +5433,8 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
     const routeBoxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY);
-    const pts = workflowRoutePoints(start, end, routeBoxes);
+    const pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY)
+      || workflowRoutePoints(start, end, routeBoxes);
     const d = roundedOrthPath(pts, 16);
     const color = workflowEdgeColor(edgeType);
     const pid = `wflp-${index}`;
@@ -5462,9 +5465,10 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   let preview = "";
   if (workflowConnection) {
     const target = workflowConnection.hoverTarget || null;
-    const end = target ? target.anchor : workflowConnection.pointer;
+    const end = workflowConnection.pointer;
     const previewBoxes = workflowRouteBoxesForEdge(nodeArr, workflowConnection.nodeId, target?.nodeId || "", offsetX, offsetY);
     const pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, { preferredY: workflowConnection.pointer?.y });
+    workflowConnection.previewPts = pv;
     preview = `<path class="workflow-link-preview" d="${roundedOrthPath(pv, 16)}"></path>`;
   }
   return `
@@ -5948,6 +5952,38 @@ function workflowRankCandidates(values, preferred, limit = 18) {
     .filter(Number.isFinite)
     .sort((a, b) => Math.abs(a - preferred) - Math.abs(b - preferred) || a - b)
     .slice(0, limit);
+}
+
+function workflowCleanRouteHint(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const rawPoints = Array.isArray(raw.points) ? raw.points : [];
+  const points = rawPoints.slice(0, 24).map((point) => {
+    const x = Array.isArray(point) ? Number(point[0]) : Number(point?.x);
+    const y = Array.isArray(point) ? Number(point[1]) : Number(point?.y);
+    return Number.isFinite(x) && Number.isFinite(y) ? [Math.round(x * 10) / 10, Math.round(y * 10) / 10] : null;
+  }).filter(Boolean);
+  if (points.length < 2) return null;
+  return { version: 1, mode: "orthogonal_hint", points: workflowNormalizeOrthogonalPoints(points) };
+}
+
+function workflowRouteHintFromRenderPoints(points, offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOffsetY()) {
+  const clean = workflowCleanRouteHint({
+    points: (points || []).map((point) => [
+      Number(point?.[0] ?? point?.x ?? 0) - offsetX,
+      Number(point?.[1] ?? point?.y ?? 0) - offsetY,
+    ]),
+  });
+  return clean;
+}
+
+function workflowRoutePointsFromHint(routeHint, start, end, boxes, offsetX = 0, offsetY = 0) {
+  const hint = workflowCleanRouteHint(routeHint);
+  if (!hint) return null;
+  const stored = hint.points.map((point) => [point[0] + offsetX, point[1] + offsetY]);
+  const middle = stored.slice(1, -1);
+  const pts = workflowNormalizeOrthogonalPoints([[start.x, start.y], ...middle, [end.x, end.y]]);
+  if (pts.length < 2 || workflowRouteHits(pts, boxes || [])) return null;
+  return pts;
 }
 // 连线避让：默认走「出口直出→竖直主干→直入入口」的正交通道；若主干/横段会穿过其它节点盒，
 // 先把主干 midX 横向平移到一条不撞节点的通道；都不行就抬到障碍上方或压到下方绕行；
@@ -8407,7 +8443,7 @@ function workflowCanvasRenderPoint(event) {
   };
 }
 
-function addWorkflowEdge(from, to, edgeType = "success", fromPort = "") {
+function addWorkflowEdge(from, to, edgeType = "success", fromPort = "", routeHint = null) {
   ensureWorkflow();
   if (!from || !to || from === to) return false;
   const type = edgeType || "success";
@@ -8417,6 +8453,8 @@ function addWorkflowEdge(from, to, edgeType = "success", fromPort = "") {
   pushWorkflowHistory();
   const edge = { from, to, edge_type: type };
   if (fromPort && fromPort !== "out") edge.from_port = fromPort;
+  const cleanRouteHint = workflowCleanRouteHint(routeHint);
+  if (cleanRouteHint) edge.route_hint = cleanRouteHint;
   currentAgent.workflow_edges.push(edge);
   workflowCheckReport = null;
   return true;
@@ -8592,13 +8630,25 @@ function workflowPortInfo(portEl) {
   return { nodeId: item.id, port, isIn, edgeType, anchor };
 }
 
+function workflowRouteHintForConnection(start, target) {
+  if (!start || !target || !Array.isArray(start.previewPts) || start.previewPts.length < 2) return null;
+  const outSide = start.isIn ? target : start;
+  const inSide = start.isIn ? start : target;
+  let points = start.previewPts.map((point) => [Number(point[0]), Number(point[1])]);
+  if (start.isIn) points = points.slice().reverse();
+  points[0] = [outSide.anchor.x, outSide.anchor.y];
+  points[points.length - 1] = [inSide.anchor.x, inSide.anchor.y];
+  return workflowRouteHintFromRenderPoints(points);
+}
+
 function connectWorkflowPorts(start, target) {
   if (!start || !target || start.nodeId === target.nodeId) return false;
   // 必须一端是输入口、一端是输出口
   if (start.isIn === target.isIn) return false;
   const outSide = start.isIn ? target : start;
   const inSide = start.isIn ? start : target;
-  return addWorkflowEdge(outSide.nodeId, inSide.nodeId, outSide.edgeType || "success", outSide.port);
+  const routeHint = workflowRouteHintForConnection(start, target);
+  return addWorkflowEdge(outSide.nodeId, inSide.nodeId, outSide.edgeType || "success", outSide.port, routeHint);
 }
 
 function setWorkflowConnectingClass(active) {

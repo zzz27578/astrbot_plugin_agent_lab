@@ -9173,6 +9173,9 @@ class AgentLabPlugin(Star):
             label = str(raw_edge.get("label") or "").strip()
             if label:
                 edge["label"] = label[:120]
+            route_hint = cls._normalize_workflow_route_hint(raw_edge.get("route_hint"))
+            if route_hint:
+                edge["route_hint"] = route_hint
             edges.append(edge)
         if not edges and len(nodes) > 1:
             edges = [
@@ -9512,6 +9515,34 @@ class AgentLabPlugin(Star):
             "always",
         }
         return edge_type if edge_type in valid else "success"
+
+    @staticmethod
+    def _normalize_workflow_route_hint(raw: Any) -> dict[str, Any]:
+        if not isinstance(raw, dict):
+            return {}
+        raw_points = raw.get("points")
+        if not isinstance(raw_points, list):
+            return {}
+        points: list[list[float]] = []
+        for item in raw_points[:24]:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                x_raw, y_raw = item[0], item[1]
+            elif isinstance(item, dict):
+                x_raw, y_raw = item.get("x"), item.get("y")
+            else:
+                continue
+            try:
+                x = round(float(x_raw), 1)
+                y = round(float(y_raw), 1)
+            except Exception:
+                continue
+            if abs(x) > 100000 or abs(y) > 100000:
+                continue
+            if not points or points[-1] != [x, y]:
+                points.append([x, y])
+        if len(points) < 2:
+            return {}
+        return {"version": 1, "mode": "orthogonal_hint", "points": points}
 
     @staticmethod
     def _normalize_retry_policy(raw: Any) -> dict[str, Any]:

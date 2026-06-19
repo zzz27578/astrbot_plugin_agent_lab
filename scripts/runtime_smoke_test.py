@@ -269,13 +269,30 @@ async def main() -> None:
                 "action": "call_api",
             },
         ]
-        workflow_spec.workflow_edges = [{"from": "entry start!", "to": "call/api"}]
+        workflow_spec.workflow_edges = [
+            {
+                "from": "entry start!",
+                "to": "call/api",
+                "route_hint": {"points": [[12.345, 34.56], {"x": 90, "y": 120}]},
+            }
+        ]
         plugin._prepare_agent_spec_for_save(workflow_spec)
         assert workflow_spec.workflow_nodes[0]["id"] == "entry_start"
         assert workflow_spec.workflow_nodes[0]["kind"] == "state"
         assert workflow_spec.workflow_nodes[0]["stage"] == "entry"
         assert workflow_spec.workflow_nodes[0]["x"] == 12
-        assert workflow_spec.workflow_edges == [{"from": "entry_start", "to": "callapi", "edge_type": "success"}]
+        assert workflow_spec.workflow_edges == [
+            {
+                "from": "entry_start",
+                "to": "callapi",
+                "edge_type": "success",
+                "route_hint": {
+                    "version": 1,
+                    "mode": "orthogonal_hint",
+                    "points": [[12.3, 34.6], [90.0, 120.0]],
+                },
+            }
+        ]
         plugin._refresh_summarizer_rules()
         assert plugin.summarizer.config["entry_summary_system_prompt"] == "入口摘要测试规则"
         assert plugin.summarizer.config["exit_summary_system_prompt"] == "出口归档测试规则"
