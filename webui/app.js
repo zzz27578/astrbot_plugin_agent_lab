@@ -8632,23 +8632,17 @@ function workflowPortInfo(portEl) {
 
 function workflowRouteHintForConnection(start, target) {
   if (!start || !target || !Array.isArray(start.previewPts) || start.previewPts.length < 2) return null;
-  const outSide = start.isIn ? target : start;
-  const inSide = start.isIn ? start : target;
   let points = start.previewPts.map((point) => [Number(point[0]), Number(point[1])]);
-  if (start.isIn) points = points.slice().reverse();
-  points[0] = [outSide.anchor.x, outSide.anchor.y];
-  points[points.length - 1] = [inSide.anchor.x, inSide.anchor.y];
+  points[0] = [start.anchor.x, start.anchor.y];
+  points[points.length - 1] = [target.anchor.x, target.anchor.y];
   return workflowRouteHintFromRenderPoints(points);
 }
 
 function connectWorkflowPorts(start, target) {
   if (!start || !target || start.nodeId === target.nodeId) return false;
-  // 必须一端是输入口、一端是输出口
-  if (start.isIn === target.isIn) return false;
-  const outSide = start.isIn ? target : start;
-  const inSide = start.isIn ? start : target;
+  if (start.isIn || !target.isIn) return false;
   const routeHint = workflowRouteHintForConnection(start, target);
-  return addWorkflowEdge(outSide.nodeId, inSide.nodeId, outSide.edgeType || "success", outSide.port, routeHint);
+  return addWorkflowEdge(start.nodeId, target.nodeId, start.edgeType || "success", start.port, routeHint);
 }
 
 function setWorkflowConnectingClass(active) {
@@ -8779,14 +8773,19 @@ document.addEventListener("pointerdown", (event) => {
     if (workflowPendingPort) {
       const samePort = workflowPendingPort.nodeId === portInfo.nodeId && workflowPendingPort.port === portInfo.port;
       const added = !samePort && connectWorkflowPorts(workflowPendingPort, portInfo);
-      workflowPendingPort = added || samePort ? null : portInfo;
+      workflowPendingPort = added || samePort ? null : (portInfo.isIn ? workflowPendingPort : portInfo);
       refreshWorkflowCanvasDom();
-      setFeedback(added ? "连线已创建，保存配置后生效。" : samePort ? "已取消连线起点。" : "已切换连线起点。");
+      setFeedback(added ? "连线已创建，保存配置后生效。" : samePort ? "已取消连线起点。" : portInfo.isIn ? "请从输出连接点连到输入连接点。" : "已切换连线起点。");
       if (added) renderWorkflowStable();
       else highlightWorkflowPendingPort();
       return;
     }
     selectedWorkflowNodeId = portInfo.nodeId;
+    if (portInfo.isIn) {
+      setFeedback("输入连接点只能作为终点，请从输出连接点开始拖拽。", "warn");
+      renderWorkflowStable();
+      return;
+    }
     workflowConnection = {
       nodeId: portInfo.nodeId,
       port: portInfo.port,
@@ -9022,7 +9021,7 @@ document.addEventListener("pointermove", (event) => {
     const target = workflowPortInfo(portFromPoint(event.clientX, event.clientY));
     workflowConnection.hoverTarget = target
       && target.nodeId !== workflowConnection.nodeId
-      && target.isIn !== workflowConnection.isIn
+      && target.isIn
         ? target
         : null;
     refreshWorkflowCanvasDom();
@@ -9189,7 +9188,7 @@ document.addEventListener("pointerup", (event) => {
     const target = workflowPortInfo(targetPort);
     let added = false;
     let pending = false;
-    if (target) {
+    if (target && target.isIn) {
       added = connectWorkflowPorts(start, target);
       if (!added && !start.moved && target.nodeId === start.nodeId && target.port === start.port) {
         workflowPendingPort = {
@@ -9201,6 +9200,8 @@ document.addEventListener("pointerup", (event) => {
         };
         pending = true;
       }
+    } else if (target && !target.isIn) {
+      added = false;
     } else if (!start.moved) {
       workflowPendingPort = {
         nodeId: start.nodeId,
