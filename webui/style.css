@@ -4799,3 +4799,19 @@ input[type="checkbox"] {
 .tool-row2-main { } .tool-row2 select { font-size: 12px; }
 
 .workflow-pin { fill: #fff; stroke: var(--amber, #a76f19); stroke-width: 2.5; }
+
+/* ===== 仪表盘 数据统计面板 (fix13, 真实数据) ===== */
+.stat-metrics-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.stat-metrics-row > div { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2, #f7f9f8); }
+.stat-metrics-row strong { font-size: 20px; font-weight: 800; color: var(--ink, #1b2723); }
+.stat-metrics-row span { font-size: 12px; color: var(--muted); }
+.stat-bars { display: grid; gap: 9px; }
+.stat-bar-row { display: grid; grid-template-columns: 84px 1fr 36px; align-items: center; gap: 10px; }
+.stat-bar-label { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat-bar-track { height: 14px; border-radius: 7px; background: rgba(127,127,127,.12); overflow: hidden; }
+.stat-bar-track i { display: block; height: 100%; border-radius: 7px; background: var(--accent, #5b8def); }
+.stat-bar-track i.ok { background: var(--green, #2f7d5b); }
+.stat-bar-track i.bad { background: var(--red, #b4433a); }
+.stat-bar-track i.run { background: var(--accent, #5b8def); }
+.stat-bar-num { font-size: 13px; font-weight: 700; text-align: right; }
+@media (max-width: 760px){ .stat-metrics-row { grid-template-columns: repeat(2,1fr); } }
