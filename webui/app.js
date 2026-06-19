@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260619-fix10";
+const AGENT_LAB_WEBUI_BUILD = "20260619-fix11";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -1370,6 +1370,7 @@ let selectedTaskId = "";
 let selectedIntegrationId = "";
 let selectedWorkflowNodeId = "";
 let integrationTab = "plugins";
+let pluginToolView = ""; // 插件页里正在管理工具的插件 key（""=插件卡片列表，"__builtin__"=内置工具）
 let liveTimer = null;
 let pluginFilter = "";
 let toolFilter = "";
@@ -1390,7 +1391,7 @@ let workflowCheckReport = null;
 let workflowDryRunReport = null;
 let workflowToolboxOpen = true;
 let workflowInspectorOpen = false;
-let workflowNavCollapsed = true;
+let workflowNavCollapsed = false;
 let workflowTopPinned = false; // 顶栏是否固定常驻
 let workflowContextMenu = null;
 let workflowSuppressClick = false;
@@ -3591,15 +3592,6 @@ function runOverview() {
           </div>
         </div>
       </div>
-      <div class="run-overview-side">
-        <div class="activity-bars">${activityBars(task)}</div>
-        <div class="mini-stats">
-          <span>活跃 ${tasks.length}</span>
-          <span>审批 ${approvals}</span>
-          <span>记忆 ${state.memories?.length || 0}</span>
-          <span>日志 ${task?.progress_log?.length || 0}</span>
-        </div>
-      </div>
     </section>
   `;
 }
@@ -3992,20 +3984,6 @@ function renderDashboard() {
               `;
             }).join('') || `<div class="empty">还没有 Agent 配置。</div>`}
           </div>
-        </div>
-
-        <div class="panel">
-          <div class="panel-head"><div><p class="card-kicker">运行时间分布</p><h2>${selectedStats ? esc(agentDisplayName(currentAgent)) : "全局"}</h2></div></div>
-          <div class="runtime-buckets">
-            ${runtimeBuckets.map(([label, count]) => `
-              <div class="runtime-bucket">
-                <span>${esc(label)}</span>
-                <strong>${count}</strong>
-                <div><i style="width:${Math.min(100, Math.max(8, count * 18))}%"></i></div>
-              </div>
-            `).join("")}
-          </div>
-          <div class="activity-bars dashboard-activity">${activityBars(null, 24)}</div>
         </div>
 
         <div class="panel">
@@ -5400,7 +5378,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   const edges = currentAgent.workflow_edges || [];
   const nodeArr = currentAgent.workflow_nodes || [];
   const nodes = new Map(nodeArr.map((item) => [item.id, item]));
-  const REPEL = 16; // 连线靠近节点的排斥外扩（像素）
+  const REPEL = 30; // 每个节点的隐形领地外扩（像素）：连线只能绕这个范围走，不得穿入
   const allBoxes = nodeArr.map((it) => ({ id: it.id, x: Number(it.x || 0) + offsetX - REPEL, y: Number(it.y || 0) + offsetY - REPEL, w: WORKFLOW_NODE_WIDTH + REPEL * 2, h: WORKFLOW_NODE_HEIGHT + REPEL * 2 }));
   const reduceMotion = (typeof matchMedia === "function") && matchMedia("(prefers-reduced-motion: reduce)").matches;
   const paths = edges.map((edge, index) => {
@@ -5411,6 +5389,8 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
+    start.box = allBoxes.find((b) => b.id === edge.from);
+    end.box = allBoxes.find((b) => b.id === edge.to);
     const boxes = allBoxes.filter((b) => b.id !== edge.from && b.id !== edge.to);
     const pts = workflowRoutePoints(start, end, boxes);
     const d = roundedOrthPath(pts, 16);
@@ -5431,7 +5411,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const flow = reduceMotion ? "" : `<g class="link-flow">${Array.from({ length: count }, (_, i) => `<path class="link-arrow" d="M -4 -3.4 L 4 0 L -4 3.4 L -1 0 Z" fill="${color}"><animateMotion dur="${dur.toFixed(2)}s" begin="-${(i * dur / count).toFixed(2)}s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#${pid}"></mpath></animateMotion></path>`).join("")}</g>`;
     return `
       <g class="link-group">
-        <path class="workflow-link-hit" d="${d}" data-edge-index="${index}"></path>
+        <path class="workflow-link-hit" d="${d}" data-action="delete-workflow-edge" data-index="${index}"></path>
         <path class="workflow-link-casing" d="${d}" style="--link-color:${color}"></path>
         <path class="workflow-link-channel" d="${d}"></path>
         <path id="${pid}" class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-edge-type="${esc(edgeType)}" style="--link-color:${color};marker-end:url(#${marker})"></path>
@@ -5440,7 +5420,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
       </g>
     `;
   }).join("");
-  const preview = workflowConnection ? `<path class="workflow-link-preview" d="${workflowLinkPath(workflowConnection.anchor, workflowConnection.pointer)}"></path>` : "";
+  const preview = workflowConnection ? `<path class="workflow-link-preview" d="${workflowRouteLink(workflowConnection.anchor, workflowConnection.pointer, allBoxes.filter((b) => b.id !== workflowConnection.nodeId))}"></path>` : "";
   return `
     ${workflowMarkerDefs()}
     ${paths}
@@ -5867,32 +5847,32 @@ function workflowRoutePoints(from, to, boxes) {
   const exitDir = from.leftExit ? -1 : 1;
   const entryDir = to.rightEntry ? 1 : -1;
   const stub = 30;
-  const sx = x1 + exitDir * stub;   // 出口外侧锚点
-  const ex = x2 + entryDir * stub;  // 入口外侧锚点（普通节点在左侧）
+  const sx = x1 + exitDir * stub;
+  const ex = x2 + entryDir * stub;
   const obs = boxes || [];
+  // 绕行净空盒 = 障碍 + 源/目标自身的隐形领地，保证 C 形横跨行完全越过目标本体，不再贴边穿过。
+  const clearBoxes = obs.concat([from.box, to.box].filter(Boolean));
   const zRoute = (midX) => [[x1, y1], [sx, y1], [midX, y1], [midX, y2], [ex, y2], [x2, y2]];
   const cRoute = (ry) => [[x1, y1], [sx, y1], [sx, ry], [ex, ry], [ex, y2], [x2, y2]];
   const hit = (pts) => workflowPointsHit(pts, obs);
-  // 正向：出口外侧锚点在入口外侧锚点「之前」（按各自方向）。
   const forward = entryDir < 0 ? (sx <= ex) : (sx >= ex);
   if (forward) {
     const lo = Math.min(sx, ex), hi = Math.max(sx, ex);
     const def = (sx + ex) / 2;
     const cands = [def];
-    for (let d = 24; d <= (hi - lo); d += 24) { if (def + d <= hi) cands.push(def + d); if (def - d >= lo) cands.push(def - d); }
+    for (let d = 22; d <= (hi - lo); d += 22) { if (def + d <= hi) cands.push(def + d); if (def - d >= lo) cands.push(def - d); }
     for (const m of cands) { if (!hit(zRoute(m))) return zRoute(m); }
   }
-  // 反向 / 正向也被堵：C 形绕行，选一条不撞节点的横跨行（优先靠近两端）。
-  const allY = [y1, y2];
+  // C 形绕行：抬到所有相关领地(含源/目标)之上，或压到其下，取离起点更近的一侧优先。
   const lo = Math.min(x1, x2, sx, ex), hi = Math.max(x1, x2, sx, ex);
-  const between = obs.filter((b) => b.x + b.w >= lo && b.x <= hi);
-  const tops = between.length ? between.map((b) => b.y) : allY;
-  const bots = between.length ? between.map((b) => b.y + b.h) : allY;
-  const relTop = Math.min(...allY, ...tops) - 44;
-  const relBot = Math.max(...allY, ...bots) + 44;
-  const cands = [Math.min(y1, y2) - 100, relTop, relBot, Math.max(y1, y2) + 100];
+  const span = clearBoxes.filter((b) => b.x + b.w >= lo && b.x <= hi);
+  const tops = span.map((b) => b.y), bots = span.map((b) => b.y + b.h);
+  const topY = (tops.length ? Math.min(...tops) : Math.min(y1, y2)) - 28;
+  const botY = (bots.length ? Math.max(...bots) : Math.max(y1, y2)) + 28;
+  const cands = Math.abs(topY - y1) <= Math.abs(botY - y1) ? [topY, botY] : [botY, topY];
   for (const ry of cands) { if (!hit(cRoute(ry))) return cRoute(ry); }
-  return zRoute((sx + ex) / 2);
+  // 兜底：仍选离起点近的一侧绕行（即使与远处障碍轻微相交也比直穿目标好）。
+  return cRoute(cands[0]);
 }
 // 返回路径 d 字符串（保留旧名给预览/小地图用）。
 function workflowRouteLink(from, to, boxes) {
@@ -7549,8 +7529,7 @@ function instanceRow(task) {
 function renderIntegrations() {
   const __prevScroll = document.querySelector(".integration-content")?.scrollTop || 0;
   const tabs = [
-    ["plugins", "插件管理", "控制任务模式可见的插件", (state.plugins || []).length],
-    ["tools", "注册工具", "按来源插件折叠工具白名单", (state.tools || []).length],
+    ["plugins", "插件与工具", "开关插件 + 管理各插件的注册工具", (state.plugins || []).length],
     ["apis", "自定义接口", "把外部服务注册为受管工具", (state.custom_apis || []).length],
     ["blueprints", "蓝图管理", "导入导出 + 内置流程蓝图", BUILTIN_BLUEPRINTS.length],
     ["credentials", "凭证库", "统一加密保存接口密钥", (state.credentials || []).length],
@@ -7580,13 +7559,115 @@ function renderIntegrations() {
 }
 
 function integrationBody() {
-  if (integrationTab === "plugins") return pluginPanel();
+  if (integrationTab === "plugins") return pluginUnifiedPanel();
   if (integrationTab === "tools") return toolsPanel();
   if (integrationTab === "apis") return apisPanel();
   if (integrationTab === "credentials") return credentialsPanel();
   if (integrationTab === "skills") return skillsPanel();
   if (integrationTab === "blueprints") return blueprintManagePanel();
   return pluginPanel();
+}
+
+function pluginToolGroups() {
+  const groups = new Map();
+  (state.tools || []).forEach((tool) => {
+    const builtin = tool.source === "builtin_catalog" || !tool.plugin_name;
+    const key = builtin ? "__builtin__" : tool.plugin_name;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(tool);
+  });
+  return groups;
+}
+function refreshPluginBody() {
+  const b = document.querySelector(".plugin-panel-body");
+  if (b) b.innerHTML = pluginToolView ? pluginToolSubpage(pluginToolView) : pluginCardsView();
+  else render();
+}
+function refreshIntegrationBody() {
+  const c = document.querySelector(".integration-content");
+  if (c) c.innerHTML = integrationBody();
+  else render();
+}
+function pluginUnifiedPanel() {
+  return `
+    <div class="section-note">${pluginToolView
+      ? "管理该插件的注册工具：逐个开关它在任务模式可调用的工具。"
+      : "开关插件、并管理每个插件的注册工具。卡片右上角开关＝该插件在任务模式是否可用；点「注册工具」进入它的工具子页。"}</div>
+    ${pluginToolView ? "" : `<input class="filter-input" data-action="filter-plugins" value="${esc(pluginFilter)}" placeholder="筛选插件名 / 目录 / 说明" />`}
+    <div class="plugin-panel-body">${pluginToolView ? pluginToolSubpage(pluginToolView) : pluginCardsView()}</div>
+  `;
+}
+function pluginCardsView() {
+  const groups = pluginToolGroups();
+  const selected = new Set((currentAgent.enabled_tools || []).filter((x) => x !== EMPTY_TOOLS_SENTINEL));
+  const noExternal = (currentAgent.enabled_tools || []).includes(EMPTY_TOOLS_SENTINEL) || currentAgent.isolation_policy?.tool_mode === "no_external";
+  const openedCount = (tools, on) => tools.filter((t) => selected.has(t.name) && t.active !== false && !noExternal && on).length;
+  const makeCard = (key, name, sub, plugin) => {
+    const tools = groups.get(key) || [];
+    const total = tools.length;
+    const isBuiltin = key === "__builtin__";
+    const self = plugin && (plugin.locked || plugin.name === "astrbot_plugin_agent_lab");
+    const globallyOff = plugin && !plugin.activated && !self;
+    const effective = isBuiltin ? true : pluginEffective(plugin);
+    const locked = isBuiltin || self || globallyOff;
+    const opened = openedCount(tools, effective);
+    const toggleHtml = isBuiltin || self
+      ? `<span class="plugin-card-fixed">常开</span>`
+      : `<label class="switch ${locked ? "is-disabled" : ""}"><input type="checkbox" data-action="toggle-plugin" data-id="${esc(plugin.name)}" ${effective ? "checked" : ""} ${locked ? "disabled" : ""} /><i></i></label>`;
+    const statusBadge = isBuiltin ? badge("内置 · 常开", "ok") : self ? badge("受保护", "ok") : globallyOff ? badge("全局停用", "bad") : effective ? badge("任务中开启", "ok") : badge("任务中关闭", "warn");
+    return `
+      <div class="plugin-card ${effective && !globallyOff ? "is-on" : ""}">
+        <div class="plugin-card-top">
+          <div class="plugin-card-name"><strong>${esc(name)}</strong><small>${esc(sub)}</small></div>
+          ${toggleHtml}
+        </div>
+        <div class="plugin-card-mid">${statusBadge}<span class="plugin-card-count">${total ? `已开 ${opened} / 共 ${total} 个工具` : "无注册工具"}</span></div>
+        <div class="plugin-card-foot">
+          ${total ? `<button class="button secondary tiny" data-action="open-plugin-tools" data-id="${esc(key)}" ${effective ? "" : "disabled"} type="button">注册工具 ›</button>` : `<span class="plugin-card-none">无注册工具</span>`}
+        </div>
+      </div>`;
+  };
+  const cards = [];
+  if ((groups.get("__builtin__") || []).length) cards.push(makeCard("__builtin__", "AstrBot 内置工具", "文件 / 命令 / Python 等核心能力 · 默认全开", null));
+  (state.plugins || [])
+    .filter((p) => includesQuery([p.name, p.display_name, p.desc, p.root_dir_name], pluginFilter))
+    .forEach((p) => cards.push(makeCard(p.name, p.display_name || p.name, `${p.name} · AstrBot 全局：${p.activated ? "启用" : "停用"}`, p)));
+  return `<div class="plugin-card-grid">${cards.join("") || `<div class="empty">没有匹配的插件。</div>`}</div>`;
+}
+function pluginToolSubpage(key) {
+  const groups = pluginToolGroups();
+  const tools = groups.get(key) || [];
+  const isBuiltin = key === "__builtin__";
+  const plugin = isBuiltin ? null : (state.plugins || []).find((p) => p.name === key);
+  const name = isBuiltin ? "AstrBot 内置工具" : (plugin && (plugin.display_name || plugin.name)) || key;
+  const selected = new Set((currentAgent.enabled_tools || []).filter((x) => x !== EMPTY_TOOLS_SENTINEL));
+  const noExternal = (currentAgent.enabled_tools || []).includes(EMPTY_TOOLS_SENTINEL) || currentAgent.isolation_policy?.tool_mode === "no_external";
+  const pluginOn = isBuiltin ? true : pluginEffective(plugin);
+  const rows = tools.map((tool) => {
+    const disabled = !pluginOn || tool.active === false;
+    const checked = selected.has(tool.name) && !noExternal && !disabled;
+    const risk = currentAgent.tool_risk_overrides?.[tool.name] || tool.risk || "work";
+    return `
+      <label class="tool-row2 ${disabled ? "is-disabled" : ""} ${checked ? "is-on" : ""}">
+        <span class="switch"><input type="checkbox" data-action="toggle-tool" data-id="${esc(tool.name)}" ${checked ? "checked" : ""} ${disabled ? "disabled" : ""} /><i></i></span>
+        <span class="tool-row2-main"><strong>${esc(tool.name)}</strong><small>${esc(tool.description || tool.plugin_display_name || "注册工具")}</small></span>
+        <select data-action="set-tool-risk" data-id="${esc(tool.name)}" title="风险等级">${options(["safe", "work", "high"], risk, riskLabel)}</select>
+      </label>`;
+  }).join("");
+  const opened = tools.filter((t) => selected.has(t.name) && t.active !== false && !noExternal && pluginOn).length;
+  return `
+    <div class="plugin-subpage">
+      <div class="plugin-subpage-head">
+        <button class="button secondary tiny" data-action="close-plugin-tools" type="button">‹ 返回插件</button>
+        <div class="plugin-subpage-title"><strong>${esc(name)}</strong><small>已开 ${opened} / 共 ${tools.length} 个工具</small></div>
+        <div class="inline-actions">
+          <button class="button secondary tiny" data-action="enable-plugin-tools" data-id="${esc(key)}" ${pluginOn ? "" : "disabled"} type="button">全开</button>
+          <button class="button secondary tiny" data-action="disable-plugin-tools" data-id="${esc(key)}" type="button">全关</button>
+        </div>
+      </div>
+      ${pluginOn ? "" : `<div class="section-note">该插件在任务模式已关闭，工具不可用；先回上一页打开它。</div>`}
+      <div class="tool-row2-list">${rows || `<div class="empty">这个插件没有注册工具。</div>`}</div>
+    </div>`;
 }
 
 function pluginPanel() {
@@ -9075,7 +9156,6 @@ document.addEventListener("click", async (event) => {
   }
   workflowSuppressClick = false;
   if (target.dataset.route) {
-    if (target.dataset.route === "workflow") workflowNavCollapsed = true;
     memoryDetailOpen = false;
     route = target.dataset.route;
     render();
@@ -9881,6 +9961,7 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "integration-tab") {
       integrationTab = target.dataset.id;
+      pluginToolView = "";
       render();
     }
     if (action === "memory-filter") {
@@ -10031,9 +10112,7 @@ document.addEventListener("click", async (event) => {
       const nextEnabled = !pluginEffective(plugin);
       currentAgent.plugin_overrides[plugin.name] = nextEnabled;
       if (!nextEnabled) removeToolsForPlugin(plugin.name);
-      // 只就地刷新插件列表 body，不整页 render()，滚动条不动。
-      const body = document.querySelector(".plugin-panel-body");
-      if (body) body.innerHTML = pluginPanelBody(); else render();
+      refreshPluginBody();
     }
     if (action === "toggle-tool") {
       const selected = new Set((currentAgent.enabled_tools || []).filter((item) => item !== EMPTY_TOOLS_SENTINEL));
@@ -10041,7 +10120,19 @@ document.addEventListener("click", async (event) => {
       else selected.add(target.dataset.id);
       currentAgent.enabled_tools = Array.from(selected).sort();
       currentAgent.isolation_policy.tool_mode = "whitelist";
-      render();
+      if (route === "integrations" && integrationTab === "plugins") refreshPluginBody(); else render();
+    }
+    if (action === "open-plugin-tools") { pluginToolView = target.dataset.id || ""; refreshIntegrationBody(); }
+    if (action === "close-plugin-tools") { pluginToolView = ""; refreshIntegrationBody(); }
+    if (action === "enable-plugin-tools" || action === "disable-plugin-tools") {
+      const key = target.dataset.id || "";
+      const groupTools = (pluginToolGroups().get(key) || []).filter((t) => t.active !== false).map((t) => t.name);
+      const sel = new Set((currentAgent.enabled_tools || []).filter((x) => x !== EMPTY_TOOLS_SENTINEL));
+      if (action === "enable-plugin-tools") groupTools.forEach((n) => sel.add(n));
+      else groupTools.forEach((n) => sel.delete(n));
+      currentAgent.enabled_tools = sel.size ? Array.from(sel).sort() : [EMPTY_TOOLS_SENTINEL];
+      if (sel.size) currentAgent.isolation_policy.tool_mode = "whitelist";
+      refreshPluginBody();
     }
     if (action === "enable-visible-tools") {
       currentAgent.isolation_policy.tool_mode = "whitelist";
@@ -10095,22 +10186,6 @@ document.addEventListener("click", async (event) => {
   }
 });
 
-// 画布连线：双击删除（悬停只高亮自身、双击才删，避免误删）。
-document.addEventListener("dblclick", (event) => {
-  const hit = event.target.closest && event.target.closest(".workflow-link-hit");
-  if (!hit) return;
-  const idx = Number(hit.dataset.edgeIndex);
-  if (!Number.isInteger(idx) || !currentAgent || !Array.isArray(currentAgent.workflow_edges)) return;
-  if (idx < 0 || idx >= currentAgent.workflow_edges.length) return;
-  event.preventDefault();
-  pushWorkflowHistory();
-  currentAgent.workflow_edges.splice(idx, 1);
-  workflowCheckReport = null;
-  workflowDryRunReport = null;
-  setFeedback("已删除连线。");
-  renderWorkflowStable();
-});
-
 document.addEventListener("change", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
@@ -10138,7 +10213,7 @@ document.addEventListener("input", (event) => {
   const action = target.dataset.action;
   // 这些筛选框过去每敲一下就整页 render()+rAF 重新聚焦，会掉焦/丢字（尤其非工作流页根本没还焦点）。
   // 现在统一依赖 render() 内置的同步全局焦点保留，直接 render 即可，焦点和光标都会被保住。
-  if (action === "filter-plugins") { pluginFilter = target.value; const __b = document.querySelector(".plugin-panel-body"); if (__b) { __b.innerHTML = pluginPanelBody(); } else { render(); } return; }
+  if (action === "filter-plugins") { pluginFilter = target.value; refreshPluginBody(); return; }
   if (action === "filter-tools") { toolFilter = target.value; render(); return; }
   if (action === "filter-blueprints") { blueprintFilter = target.value; render(); return; }
   if (action === "filter-workflow-materials") { workflowMaterialFilter = target.value; render(); return; }
