@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260619-fix14";
+const AGENT_LAB_WEBUI_BUILD = "20260619-fix15";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -5433,8 +5433,17 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
     const routeBoxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY, true);
-    const pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY)
-      || workflowRoutePoints(start, end, routeBoxes);
+    let pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY);
+    if (!pts) {
+      const autoPts = workflowRoutePoints(start, end, routeBoxes);
+      if (!edge.route_hint) {
+        const autoHint = workflowRouteHintFromRenderPoints(autoPts, offsetX, offsetY);
+        if (autoHint) edge.route_hint = autoHint;
+        pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY) || autoPts;
+      } else {
+        pts = autoPts;
+      }
+    }
     const d = roundedOrthPath(pts, 16);
     const color = workflowEdgeColor(edgeType);
     const pid = `wflp-${index}`;
@@ -5464,26 +5473,11 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   }).join("");
   let preview = "";
   if (workflowConnection) {
-    const target = workflowConnection.hoverTarget || null;
     const end = workflowConnection.pointer;
-    const previewBoxes = workflowRouteBoxesForEdge(nodeArr, workflowConnection.nodeId, target?.nodeId || "", offsetX, offsetY, true);
-    let pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, {
-      preferredY: workflowConnection.pointer?.y,
-      routeFamily: workflowConnection.routeIntent?.family,
-      ySide: workflowConnection.routeIntent?.y_side,
-      xSide: workflowConnection.routeIntent?.x_side,
-    });
     if (!workflowConnection.routeIntent && workflowConnection.moved) {
-      workflowConnection.routeIntent = workflowRouteIntentFromRenderPoints(pv, workflowConnection.anchor, end);
-      if (workflowConnection.routeIntent) {
-        pv = workflowRoutePoints(workflowConnection.anchor, end, previewBoxes, {
-          preferredY: workflowConnection.pointer?.y,
-          routeFamily: workflowConnection.routeIntent.family,
-          ySide: workflowConnection.routeIntent.y_side,
-          xSide: workflowConnection.routeIntent.x_side,
-        });
-      }
+      workflowConnection.routeIntent = workflowRouteIntentFromDrag(workflowConnection, end);
     }
+    const pv = workflowConnectionPreviewPoints(workflowConnection, end);
     workflowConnection.previewPts = pv;
     preview = `<path class="workflow-link-preview" d="${roundedOrthPath(pv, 16)}"></path>`;
   }
@@ -6020,6 +6014,31 @@ function workflowRouteIntentFromRenderPoints(points, start = null, end = null) {
   }
   const xSide = workflowRouteSide(turn[0] - stub[0]) || workflowRouteSide((end?.x ?? pts[pts.length - 1][0]) - (start?.x ?? pts[0][0]));
   return { family: "horizontal-first", x_side: xSide || 1, y_side: workflowRouteSide((end?.y ?? pts[pts.length - 1][1]) - stub[1]) };
+}
+
+function workflowRouteIntentFromDrag(start, end) {
+  const dx = Number(end?.x || 0) - Number(start?.anchor?.x ?? start?.x ?? 0);
+  const dy = Number(end?.y || 0) - Number(start?.anchor?.y ?? start?.y ?? 0);
+  const family = Math.abs(dy) > Math.abs(dx) ? "vertical-first" : "horizontal-first";
+  return {
+    family,
+    x_side: workflowRouteSide(dx) || (start?.anchor?.leftExit ? -1 : 1),
+    y_side: workflowRouteSide(dy) || 1,
+  };
+}
+
+function workflowConnectionPreviewPoints(start, end) {
+  const x1 = Number(start?.anchor?.x || 0);
+  const y1 = Number(start?.anchor?.y || 0);
+  const x2 = Number(end?.x || 0);
+  const y2 = Number(end?.y || 0);
+  const intent = start?.routeIntent || workflowRouteIntentFromDrag(start, end);
+  const exitDir = start?.anchor?.leftExit ? -1 : 1;
+  const sx = x1 + exitDir * workflowPortStub();
+  const pts = intent.family === "vertical-first"
+    ? [[x1, y1], [sx, y1], [sx, y2], [x2, y2]]
+    : [[x1, y1], [sx, y1], [x2, y1], [x2, y2]];
+  return workflowNormalizeOrthogonalPoints(pts);
 }
 
 function workflowCleanRouteHint(raw) {
