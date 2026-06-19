@@ -1,6 +1,6 @@
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260619-fix15";
+const AGENT_LAB_WEBUI_BUILD = "20260619-fix16";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -6016,6 +6016,49 @@ function workflowRouteIntentFromRenderPoints(points, start = null, end = null) {
   return { family: "horizontal-first", x_side: xSide || 1, y_side: workflowRouteSide((end?.y ?? pts[pts.length - 1][1]) - stub[1]) };
 }
 
+function workflowRouteLaneFromPoints(points, family) {
+  const pts = workflowNormalizeOrthogonalPoints(points || []);
+  if (pts.length < 3) return {};
+  const stub = pts[1];
+  if (family === "vertical-first") {
+    const lane = pts.slice(2, -1).find((point) => point[1] !== stub[1]);
+    return lane ? { lane_y: lane[1] } : {};
+  }
+  if (family === "horizontal-first") {
+    const lane = pts.slice(2, -1).find((point) => point[0] !== stub[0]);
+    return lane ? { lane_x: lane[0] } : {};
+  }
+  return {};
+}
+
+function workflowLockedRoutePoints(start, end, hint = {}) {
+  const x1 = Number(start.x || 0), y1 = Number(start.y || 0);
+  const x2 = Number(end.x || 0), y2 = Number(end.y || 0);
+  const exitDir = start.leftExit ? -1 : 1;
+  const entryDir = end.rightEntry ? 1 : -1;
+  const stub = workflowPortStub();
+  const sx = x1 + exitDir * stub;
+  const ex = x2 + entryDir * stub;
+  const sideGap = Math.max(stub * 2, 72);
+  const xSide = workflowRouteSide(hint.x_side) || workflowRouteSide(ex - sx) || exitDir;
+  const ySide = workflowRouteSide(hint.y_side) || workflowRouteSide(y2 - y1) || 1;
+  if (hint.family === "vertical-first") {
+    let laneY = Number(hint.lane_y);
+    if (!Number.isFinite(laneY)) laneY = y1 + ySide * sideGap;
+    if (ySide > 0 && laneY < y1 + stub) laneY = y1 + stub;
+    if (ySide < 0 && laneY > y1 - stub) laneY = y1 - stub;
+    return workflowNormalizeOrthogonalPoints([[x1, y1], [sx, y1], [sx, laneY], [ex, laneY], [ex, y2], [x2, y2]]);
+  }
+  if (hint.family === "horizontal-first") {
+    let laneX = Number(hint.lane_x);
+    if (!Number.isFinite(laneX)) laneX = sx + xSide * sideGap;
+    if (xSide > 0 && laneX < sx + stub) laneX = sx + stub;
+    if (xSide < 0 && laneX > sx - stub) laneX = sx - stub;
+    return workflowNormalizeOrthogonalPoints([[x1, y1], [sx, y1], [laneX, y1], [laneX, y2], [ex, y2], [x2, y2]]);
+  }
+  return null;
+}
+
 function workflowRouteIntentFromDrag(start, end) {
   const dx = Number(end?.x || 0) - Number(start?.anchor?.x ?? start?.x ?? 0);
   const dy = Number(end?.y || 0) - Number(start?.anchor?.y ?? start?.y ?? 0);
@@ -6056,10 +6099,15 @@ function workflowCleanRouteHint(raw) {
   const family = rawFamily === "vertical-first" || rawFamily === "horizontal-first" ? rawFamily : (inferred?.family || "");
   const ySide = workflowRouteSide(raw.y_side ?? raw.ySide ?? inferred?.y_side);
   const xSide = workflowRouteSide(raw.x_side ?? raw.xSide ?? inferred?.x_side);
+  const lane = workflowRouteLaneFromPoints(normalized, family);
+  const laneX = Number(raw.lane_x ?? raw.laneX ?? lane.lane_x);
+  const laneY = Number(raw.lane_y ?? raw.laneY ?? lane.lane_y);
   const clean = { version: 2, mode: "orthogonal_hint", points: normalized };
   if (family) clean.family = family;
   if (ySide) clean.y_side = ySide;
   if (xSide) clean.x_side = xSide;
+  if (Number.isFinite(laneX)) clean.lane_x = Math.round(laneX * 10) / 10;
+  if (Number.isFinite(laneY)) clean.lane_y = Math.round(laneY * 10) / 10;
   return clean;
 }
 
@@ -6075,8 +6123,11 @@ function workflowRouteHintFromRenderPoints(points, offsetX = workflowWorldOffset
     clean.family = inferred.family;
     const ySide = workflowRouteSide(inferred.y_side);
     const xSide = workflowRouteSide(inferred.x_side);
+    const lane = workflowRouteLaneFromPoints(points, inferred.family);
     if (ySide) clean.y_side = ySide;
     if (xSide) clean.x_side = xSide;
+    if (Number.isFinite(lane.lane_x)) clean.lane_x = Math.round(lane.lane_x * 10) / 10;
+    if (Number.isFinite(lane.lane_y)) clean.lane_y = Math.round(lane.lane_y * 10) / 10;
   }
   return clean;
 }
@@ -6085,11 +6136,7 @@ function workflowRoutePointsFromHint(routeHint, start, end, boxes, offsetX = 0, 
   const hint = workflowCleanRouteHint(routeHint);
   if (!hint) return null;
   if (hint.family) {
-    return workflowRoutePoints(start, end, boxes || [], {
-      routeFamily: hint.family,
-      ySide: hint.y_side,
-      xSide: hint.x_side,
-    });
+    return workflowLockedRoutePoints(start, end, hint);
   }
   const stored = hint.points.map((point) => [point[0] + offsetX, point[1] + offsetY]);
   const middle = stored.slice(1, -1);
@@ -8611,6 +8658,30 @@ function workflowCanvasRenderPoint(event) {
   };
 }
 
+function lockWorkflowEdgeRouteHintsForNode(nodeId = "") {
+  ensureWorkflow();
+  const targetId = String(nodeId || "");
+  const nodeArr = currentAgent.workflow_nodes || [];
+  const nodes = new Map(nodeArr.map((item) => [item.id, item]));
+  const offsetX = workflowWorldOffsetX();
+  const offsetY = workflowWorldOffsetY();
+  (currentAgent.workflow_edges || []).forEach((edge) => {
+    if (edge.route_hint) return;
+    if (targetId && edge.from !== targetId && edge.to !== targetId) return;
+    const from = nodes.get(edge.from);
+    const to = nodes.get(edge.to);
+    if (!from || !to) return;
+    const edgeType = String(edge.edge_type || "success");
+    const fromPort = String(edge.from_port || edgeType);
+    const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
+    const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
+    const boxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY, true);
+    const pts = workflowRoutePoints(start, end, boxes);
+    const hint = workflowRouteHintFromRenderPoints(pts, offsetX, offsetY);
+    if (hint) edge.route_hint = hint;
+  });
+}
+
 function addWorkflowEdge(from, to, edgeType = "success", fromPort = "", routeHint = null) {
   ensureWorkflow();
   if (!from || !to || from === to) return false;
@@ -8981,6 +9052,7 @@ document.addEventListener("pointerdown", (event) => {
   if (nodeEl && canvasEl?.contains(nodeEl)) {
     const item = workflowNodeById(nodeEl.dataset.id);
     if (!item) return;
+    lockWorkflowEdgeRouteHintsForNode(item.id);
     const before = workflowSnapshot();
     selectedWorkflowNodeId = item.id;
     document.querySelectorAll(".flow-node.selected").forEach((node) => node.classList.remove("selected"));
@@ -9019,6 +9091,7 @@ document.addEventListener("pointerdown", (event) => {
     return;
   }
   if (workflowSelectionMove && workflowSelectedNodeIds.size) {
+    Array.from(workflowSelectedNodeIds).forEach((id) => lockWorkflowEdgeRouteHintsForNode(id));
     const base = new Map();
     Array.from(workflowSelectedNodeIds).forEach((id) => {
       const n = workflowNodeById(id);
