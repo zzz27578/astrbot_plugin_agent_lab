@@ -1461,9 +1461,9 @@ button.list-row {
 
 .toolbox-chip-main {
   display: grid !important;
-  align-content: end;
+  align-content: center;
   min-width: 0;
-  gap: 2px;
+  gap: 4px;
   padding: 0 !important;
   border: 0 !important;
   background: transparent !important;
@@ -1489,6 +1489,7 @@ button.list-row {
 
 .toolbox-chip-badges {
   display: grid !important;
+  align-content: center;
   justify-items: end;
   gap: 4px;
   padding: 0 !important;
