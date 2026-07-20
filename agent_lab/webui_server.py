@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from quart import Quart, jsonify, request, send_from_directory
+from quart import Quart, Response, jsonify, request, send_from_directory
 
 
 class StandaloneWebUIServer:
@@ -64,9 +64,16 @@ class StandaloneWebUIServer:
 
         @app.get("/")
         async def index():
-            resp = await send_from_directory(self.static_dir, "index.html")
-            resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-            return resp
+            text = (self.static_dir / "index.html").read_text(encoding="utf-8")
+            text = text.replace(
+                '<meta name="agent-lab-api-base" content="/api/plug/astrbot_plugin_agent_lab" />',
+                '<meta name="agent-lab-api-base" content="/api" />',
+            )
+            return Response(
+                text,
+                content_type="text/html; charset=utf-8",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
 
         @app.get("/app.js")
         async def app_js():
@@ -148,6 +155,18 @@ class StandaloneWebUIServer:
         @app.post("/api/task/cancel")
         async def task_cancel():
             return await self._guard(self.owner.api_task_cancel)
+
+        @app.post("/api/task/pause")
+        async def task_pause():
+            return await self._guard(self.owner.api_task_pause)
+
+        @app.post("/api/task/resume")
+        async def task_resume():
+            return await self._guard(self.owner.api_task_resume)
+
+        @app.post("/api/task/purge")
+        async def task_purge():
+            return await self._guard(self.owner.api_task_purge)
 
         @app.post("/api/task/delete")
         async def task_delete():

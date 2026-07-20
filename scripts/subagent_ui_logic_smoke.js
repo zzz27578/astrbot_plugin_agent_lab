@@ -1,6 +1,6 @@
 // 子Agent 数据逻辑 harness：从 app.js 抽取真实函数源码，注入 stub 运行断言。
 const fs = require("fs");
-const src = fs.readFileSync("webui/app.js", "utf8");
+const src = fs.readFileSync("_dashboard/app.js", "utf8");
 
 function extract(name) {
   const marker = "function " + name + "(";

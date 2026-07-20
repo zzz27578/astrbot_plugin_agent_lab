@@ -1246,10 +1246,16 @@ class AgentSpec:
 class ApprovalRequest:
     approval_id: str = field(default_factory=lambda: new_id("approval"))
     status: str = "pending"  # pending | approved | rejected | expired
+    approval_type: str = "operation"  # operation | finish_override
     operation: str = ""
     reason: str = ""
     impact: str = ""
     rollback: str = ""
+    requested_status: str = ""
+    final_summary: str = ""
+    memory_candidates: str = ""
+    verification_missing: list[str] = field(default_factory=list)
+    allow_incomplete: bool = False
     created_at: str = field(default_factory=now_iso)
     resolved_at: str = ""
     resolved_by: str = ""

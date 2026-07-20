@@ -354,7 +354,7 @@ async def main() -> None:
         ]
         save_spec.plugin_overrides["memory_noise"] = False
         plugin._prepare_agent_spec_for_save(save_spec)
-        assert save_spec.enabled_tools == ["safe_registered_tool", "future_custom_tool"]
+        assert save_spec.enabled_tools == ["memory_noise_search", "safe_registered_tool", "future_custom_tool"]
 
         global_off_plugin = plugin_main.AgentLabPlugin(
             FakeContext(plugin_activation={"memory_noise": False}),
@@ -369,7 +369,7 @@ async def main() -> None:
         assert "memory_noise_search" not in global_off_tool_names
         assert "safe_registered_tool" in global_off_tool_names
         global_off_plugin._prepare_agent_spec_for_save(global_off_spec)
-        assert global_off_spec.enabled_tools == ["safe_registered_tool"]
+        assert global_off_spec.enabled_tools == ["memory_noise_search", "safe_registered_tool"]
 
         start = await plugin._start_task(
             event,
@@ -1440,9 +1440,21 @@ async def main() -> None:
         assert task is not None
         assert task.status == "paused"
         assert task.workflow_data["agent_runtime"]["last_verdict"]["status"] == "finish_blocked"
+        finish_approval = next(
+            item for item in task.approvals
+            if item.get("status") == "pending" and item.get("approval_type") == "finish_override"
+        )
+        plugin._resolve_approval(
+            event.unified_msg_origin, finish_approval["approval_id"], False, "runtime-smoke"
+        )
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
         task.status = "running"
         task.watchdog.needs_user = False
         task.watchdog.paused_reason = ""
+        task.clear_wait()
+        task.last_observation = "archive exists and runtime evidence is present"
+        task.last_confirmed_progress = "archive exists"
         plugin.storage.save_task(task)
 
         async def finish_inside_tick(**kwargs):
@@ -1500,6 +1512,15 @@ async def main() -> None:
         assert "special artifact generated" in finish_verdict["missing"]
         assert "special artifact generated" in blocked_finish
 
+        finish_approval = next(
+            item for item in task.approvals
+            if item.get("status") == "pending" and item.get("approval_type") == "finish_override"
+        )
+        plugin._resolve_approval(
+            event.unified_msg_origin, finish_approval["approval_id"], False, "runtime-smoke"
+        )
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
         task.status = "running"
         task.clear_wait()
         task.last_observation = "special artifact generated and verified"
@@ -1857,6 +1878,71 @@ async def main() -> None:
         assert rerun.changed
         assert retry_task.workflow_current_node_id == "failed"
         assert retry_task.workflow_data["node_outputs"]["retry"]["data"]["route"] == "failed"
+
+    with TemporaryDirectory() as tmp:
+        debug("administrator finish override fixture")
+        plugin_main.StarTools.get_data_dir = staticmethod(
+            lambda plugin_name=None: Path(tmp) / "plugin_data" / (plugin_name or "unknown")
+        )
+        plugin = plugin_main.AgentLabPlugin(
+            FakeContext(), config={"private_only": True, "workflow_admin_ids": "admin-1"}
+        )
+        plugin.guard = FakeGuard()
+        event = FakeEvent()
+        await plugin._start_task(
+            event,
+            goal="finish override smoke",
+            completion_conditions="evidence and report delivered",
+            brief="",
+            request_heartbeat=False,
+            source="runtime_smoke",
+            risk_level="work",
+        )
+        task = plugin.storage.load_active_task(event.unified_msg_origin)
+        assert task is not None
+        task.last_observation = "generic progress without completion evidence"
+        plugin.storage.save_task(task)
+        server = plugin_main.StandaloneWebUIServer(
+            owner=plugin,
+            static_dir=ROOT / "_dashboard",
+            host="127.0.0.1",
+            port=8788,
+            token="",
+        )
+        client = server.app.test_client()
+        blocked_response = await client.post(
+            "/api/task/finish",
+            json={
+                "umo": event.unified_msg_origin,
+                "summary": "administrator reviewed the remaining gap",
+            },
+        )
+        blocked_payload = await blocked_response.get_json()
+        assert blocked_payload["ok"] is False
+        assert blocked_payload["status"] == "paused"
+        assert blocked_payload["approval"]["approval_type"] == "finish_override"
+        approval_id = blocked_payload["approval"]["approval_id"]
+        assert approval_id in blocked_payload["error"]
+        denied = plugin._resolve_approval(event.unified_msg_origin, approval_id, True, "not-admin")
+        assert "workflow_admin_ids" in denied
+        approved_response = await client.post(
+            "/api/task/approval",
+            json={
+                "umo": event.unified_msg_origin,
+                "approval_id": approval_id,
+                "approved": True,
+            },
+        )
+        approved_payload = await approved_response.get_json()
+        assert approved_payload["ok"] is True
+        assert approved_payload["archived"] is True
+        assert plugin.storage.load_active_task(event.unified_msg_origin) is None
+        archived = plugin.storage.list_archives(event.unified_msg_origin)[0]
+        decisions = archived.workflow_data.get("finish_decisions") or []
+        assert decisions and decisions[-1]["approval_id"] == approval_id
+        assert decisions[-1]["approved_by"] == "webui"
+        reports = archived.workflow_data.get("reports") or []
+        assert any(item.get("kind") == "finish_override_report" for item in reports)
 
     with TemporaryDirectory() as tmp:
         debug("third runtime fixture")

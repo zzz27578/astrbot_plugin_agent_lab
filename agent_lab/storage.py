@@ -791,6 +791,17 @@ class AgentLabStorage:
         self._write_json(self.memory_entries_path, kept)
         return True
 
+    def delete_memory_entries_for_task(self, task_id: str) -> int:
+        task_id = str(task_id or "").strip()
+        if not task_id:
+            return 0
+        items = self.list_memory_entries()
+        kept = [item for item in items if str(item.get("source_task_id") or "").strip() != task_id]
+        removed = len(items) - len(kept)
+        if removed:
+            self._write_json(self.memory_entries_path, kept)
+        return removed
+
     def _read_json(self, path: Path) -> dict[str, Any]:
         return json.loads(path.read_text(encoding="utf-8"))
 

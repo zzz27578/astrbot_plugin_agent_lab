@@ -51,6 +51,10 @@ class FakeWebOwner:
     api_task_tick = api_agents
     api_task_finish = api_agents
     api_task_cancel = api_agents
+    api_task_pause = api_agents
+    api_task_resume = api_agents
+    api_task_purge = api_agents
+    api_task_delete = api_agents
     api_task_heartbeat = api_agents
     api_task_approval = api_agents
 
@@ -58,7 +62,7 @@ class FakeWebOwner:
 async def smoke_webui_server() -> None:
     server = StandaloneWebUIServer(
         owner=FakeWebOwner(),
-        static_dir=ROOT / "webui",
+        static_dir=ROOT / "_dashboard",
         host="127.0.0.1",
         port=8788,
         token="secret",
@@ -70,6 +74,9 @@ async def smoke_webui_server() -> None:
     workflow = await client.post("/api/workflow/check", headers={"X-Agent-Lab-Token": "secret"})
     dry_run = await client.post("/api/workflow/dry-run", headers={"X-Agent-Lab-Token": "secret"})
     agents_delete = await client.delete("/api/agents", headers={"X-Agent-Lab-Token": "secret"})
+    pause = await client.post("/api/task/pause", headers={"X-Agent-Lab-Token": "secret"})
+    resume = await client.post("/api/task/resume", headers={"X-Agent-Lab-Token": "secret"})
+    purge = await client.post("/api/task/purge", headers={"X-Agent-Lab-Token": "secret"})
     page = await client.get("/")
     assert denied.status_code == 401
     assert ok.status_code == 200
@@ -77,10 +84,18 @@ async def smoke_webui_server() -> None:
     assert workflow.status_code == 200
     assert dry_run.status_code == 200
     assert agents_delete.status_code == 200
+    assert pause.status_code == 200
+    assert resume.status_code == 200
+    assert purge.status_code == 200
     assert page.status_code == 200
+    page_text = (await page.get_data()).decode("utf-8")
+    assert 'content="/api"' in page_text
+    assert 'content="/api/plug/astrbot_plugin_agent_lab"' not in page_text
 
 
 def main() -> None:
+    assert (ROOT / "_dashboard" / "index.html").exists()
+    assert "agent-lab-api-base" in (ROOT / "_dashboard" / "index.html").read_text(encoding="utf-8")
     asyncio.run(smoke_webui_server())
 
     base_spec = AgentSpec()
@@ -226,6 +241,14 @@ def main() -> None:
         assert store.delete_agent(delete_target.agent_id) is True
         assert store.default_agent_id() != delete_target.agent_id
         assert store.delete_agent("missing") is False
+
+
+    with TemporaryDirectory() as tmp:
+        store = AgentLabStorage(Path(tmp))
+        store.save_memory_entry({"text": "task one", "source_task_id": "task-1"})
+        store.save_memory_entry({"text": "task two", "source_task_id": "task-2"})
+        assert store.delete_memory_entries_for_task("task-1") == 1
+        assert all(item.get("source_task_id") != "task-1" for item in store.list_memory_entries())
 
     print("Agent Lab smoke test passed.")
 

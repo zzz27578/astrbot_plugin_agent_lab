@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="agent-lab-api-base" content="/api/plug/astrbot_plugin_agent_lab" />
+    <title>任务模式控制台</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231b2723'/><circle cx='10' cy='16' r='3' fill='%2316c79a'/><circle cx='22' cy='10' r='3' fill='%2316c79a'/><circle cx='22' cy='22' r='3' fill='%232f9e5f'/><path d='M12.5 14.8 19.5 11M12.5 17.2 19.5 21' stroke='%2316c79a' stroke-width='1.6' fill='none'/></svg>" />
+    <link rel="stylesheet" href="./style.css?v=20260720-v021" />
+  </head>
+  <body>
+    <div class="shell" id="main-app">
+      <!-- 全局状态栏 -->
+      <div id="global-status-bar" class="global-status-bar">
+        <div class="status-left">
+          <span class="status-agent">
+            <strong id="current-agent-name">加载中...</strong>
+            <button id="agent-switcher" class="agent-switcher-btn" title="切换方案">▼</button>
+          </span>
+          <span class="status-indicator">
+            <span id="status-dot" class="status-dot idle"></span>
+            <span id="status-text">空闲</span>
+          </span>
+          <span class="status-task" id="status-task" style="display:none;">
+            任务: <code id="current-task-id">-</code> |
+            已运行: <span id="task-runtime">0s</span>
+          </span>
+        </div>
+        <div class="status-right">
+          <span class="status-actions">
+            <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="打开任务控制台">控制台</button>
+            <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
+          </span>
+          <button id="refresh" type="button" class="status-refresh-btn icon-button" title="刷新数据" aria-label="刷新数据"></button>
+          <button id="settings-btn" type="button" class="status-refresh-btn settings-gear" title="设置">⚙</button>
+        </div>
+      </div>
+
+      <aside class="rail">
+        <div class="brand">
+          <strong>任务模式</strong>
+          <span>AstrBot 任务模式框架 · v0.2.1</span>
+        </div>
+        <nav id="nav" class="nav"></nav>
+        <div class="rail-note">
+          <span>运行时身份来源</span>
+          <strong id="bot-label">等待读取</strong>
+          <small id="bot-source">等待运行时读取</small>
+        </div>
+      </aside>
+
+      <main class="main">
+        <div id="feedback" class="feedback">正在连接 Agent Lab...</div>
+        <section id="view" class="view"></section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js?v=20260720-v021"></script>
+  </body>
+</html>

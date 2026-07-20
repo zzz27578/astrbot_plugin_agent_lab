@@ -1444,6 +1444,12 @@ function esc(value) {
     .replaceAll('"', "&quot;");
 }
 
+function compactText(value, limit = 120) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(1, limit - 1))}…`;
+}
+
 function iconImg(name, label = "") {
   if (name === "refresh") {
     return `<svg class="game-icon" viewBox="0 0 24 24" role="img" aria-label="${esc(label)}" focusable="false"><path d="M12 5a7 7 0 0 1 6.32 4h-2.07a5 5 0 1 0 .9 4.5l1.94.5A7 7 0 1 1 12 5Z" fill="currentColor"/><path d="M18.5 4.2 19.6 9 14.8 8z" fill="currentColor"/></svg>`;
@@ -3288,6 +3294,12 @@ function ensureWorkflow() {
   }
 }
 
+function apiUrl(path) {
+  const configured = document.querySelector('meta[name="agent-lab-api-base"]')?.content?.trim() || "/api";
+  const suffix = String(path || "").startsWith("/api/") ? String(path).slice(4) : String(path || "");
+  return `${configured.replace(/\/$/, "")}${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
+}
+
 async function api(path, options = {}) {
   const headers = { ...(options.headers || {}) };
   const currentToken = token();
@@ -3296,7 +3308,7 @@ async function api(path, options = {}) {
     headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.body);
   }
-  const response = await fetch(path, { ...options, headers });
+  const response = await fetch(apiUrl(path), { ...options, headers });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) {
     throw new Error(data.error || `HTTP ${response.status}`);
@@ -3451,7 +3463,7 @@ function render() {
   if (route === "canvas") renderCanvas();
   if (route === "workflow") renderWorkflowPage();
   if (route === "memory") renderMemoryPage();
-  if (route === "tasks") renderCanvas();
+  if (route === "tasks") renderTasks();
   if (route === "monitor") renderMonitor();
   if (route === "integrations") renderIntegrations();
   if (route === "settings") renderSettingsPage();
@@ -7435,10 +7447,12 @@ function renderTasks() {
           <div class="panel-head">
             <div><p class="card-kicker">任务详情</p><h2>${task ? esc(task.root_goal || task.task_id) : "请选择或创建任务"}</h2></div>
             <div class="inline-actions">
-              <button class="button secondary" data-action="tick-task" ${runnableTask ? "" : "disabled"} type="button">Tick</button>
-              <button class="button secondary" data-action="toggle-heartbeat" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开启心跳"}</button>
-              <button class="button secondary" data-action="finish-task" ${runnableTask ? "" : "disabled"} type="button">完成</button>
-              <button class="button danger" data-action="cancel-task" ${runnableTask ? "" : "disabled"} type="button">取消</button>
+              <button class="button secondary" data-action="tick-task" data-umo="${esc(runnableTask?.umo || "")}" data-task-id="${esc(runnableTask?.task_id || "")}" ${runnableTask ? "" : "disabled"} type="button">Tick</button>
+              <button class="button secondary" data-action="toggle-heartbeat" data-umo="${esc(runnableTask?.umo || "")}" data-task-id="${esc(runnableTask?.task_id || "")}" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.heartbeat?.enabled ? "关闭心跳" : "开启心跳"}</button>
+              <button class="button secondary" data-action="${runnableTask?.status === "paused" ? "resume-task" : "pause-task"}" data-umo="${esc(runnableTask?.umo || "")}" data-task-id="${esc(runnableTask?.task_id || "")}" ${runnableTask ? "" : "disabled"} type="button">${runnableTask?.status === "paused" ? "恢复" : "暂停"}</button>
+              <button class="button secondary" data-action="finish-task" data-umo="${esc(runnableTask?.umo || "")}" data-task-id="${esc(runnableTask?.task_id || "")}" ${runnableTask ? "" : "disabled"} type="button">完成</button>
+              <button class="button danger" data-action="cancel-task" data-umo="${esc(runnableTask?.umo || "")}" data-task-id="${esc(runnableTask?.task_id || "")}" ${runnableTask ? "" : "disabled"} type="button">停止并归档</button>
+              <button class="button danger" data-action="purge-task" data-umo="${esc(task?.umo || "")}" data-task-id="${esc(task?.task_id || "")}" ${task ? "" : "disabled"} type="button">彻底删除</button>
             </div>
           </div>
           ${task ? taskDetail(task) : `<div class="empty">请选择或创建任务。</div>`}
@@ -7721,7 +7735,7 @@ function memoryRows() {
   if (!rows.length) return `<div class="empty">暂无可审查记忆。任务结束后会生成候选，也可以手动保存。</div>`;
   return rows.slice(0, 30).map((item) => `
     <div class="list-row ${item.memory_id === selectedMemoryId ? "selected" : ""}" data-action="select-memory" data-id="${esc(item.memory_id)}" role="button" tabindex="0">
-      <div class="row-title"><span>${esc(item.text)}</span>${badge(memoryFilterLabel(item.status || "candidate"), item.status === "accepted" ? "ok" : "warn")}</div>
+      <div class="row-title"><span title="${esc(item.text || "")}">${esc(compactText(item.text || "", 120))}</span>${badge(memoryFilterLabel(item.status || "candidate"), item.status === "accepted" ? "ok" : "warn")}</div>
       <div class="row-meta">${esc(item.memory_id)} · 夹：${esc(item.folder_name || memoryFolderLabel(item.folder_id))} · Agent：${esc(item.agent_id || "-")} · 来源任务：${esc(item.source_task_id || "-")} · 标签：${esc((item.tags || []).join(", ") || "-")} · ${item.expose_to_normal === false ? "仅任务模式" : "普通模式可读"}</div>
       <div class="inline-actions">
         <button class="button secondary" data-action="accept-memory" data-id="${esc(item.memory_id)}" type="button">保留</button>
@@ -7863,7 +7877,10 @@ function renderMonitor() {
             <div><p class="card-kicker">详情</p><h2>${selectedRun ? esc(selectedRun.agent_name || selectedRun.task_id) : "运行详情"}</h2></div>
             <div class="inline-actions">
               <button class="button secondary icon-button-text" data-action="restart-heartbeat" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun?.active ? "" : "disabled"} type="button">${iconImg("powerSwitch", "重启心跳")}<span>重启心跳</span></button>
-              <button class="button danger icon-button-text" data-action="cancel-task" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun?.active ? "" : "disabled"} type="button">${iconImg("stop", "强制停止")}<span>强制停止</span></button>
+              <button class="button secondary icon-button-text" data-action="${selectedRun?.status === "paused" ? "resume-task" : "pause-task"}" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun?.active ? "" : "disabled"} type="button"><span>${selectedRun?.status === "paused" ? "恢复任务" : "暂停任务"}</span></button>
+              <button class="button secondary icon-button-text" data-action="finish-task" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun?.active ? "" : "disabled"} type="button"><span>完成任务</span></button>
+              <button class="button danger icon-button-text" data-action="cancel-task" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun?.active ? "" : "disabled"} type="button">${iconImg("stop", "强制停止")}<span>停止并归档</span></button>
+              <button class="button danger icon-button-text" data-action="purge-task" data-umo="${esc(selectedRun?.umo || "")}" data-task-id="${esc(selectedRun?.task_id || "")}" ${selectedRun ? "" : "disabled"} type="button"><span>彻底删除</span></button>
             </div>
           </div>
           ${selectedRun ? workflowRunDetail(selectedRun) : `<div class="empty">还没有运行实例。在「方案管理」配好入口、进入任务模式后，这里实时显示运行路径、待发消息、阻塞和产物。</div>`}
@@ -9777,7 +9794,7 @@ document.addEventListener("click", async (event) => {
       if ((state.agents || []).length <= 1) throw new Error("至少需要保留一个任务模式配置。");
       const name = agentDisplayName(currentAgent);
       if (!(await confirmModal("删除方案", `确定删除方案“${name}”？此操作不会删除归档任务和任务记忆。`, { danger: true, confirmText: "删除" }))) return;
-      const result = await api("/api/agents", { method: "DELETE", body: { agent_id: currentAgent.agent_id } });
+      const result = await api("/api/agents", { method: "POST", body: { action: "delete", agent_id: currentAgent.agent_id } });
       if (result.ok === false) throw new Error(result.error || "删除配置失败。");
       selectedAgentId = result.default_agent_id || "";
       setFeedback("任务模式配置已删除。");
@@ -10304,24 +10321,54 @@ document.addEventListener("click", async (event) => {
       showToast(result.message || "心跳已重启。", "ok");
       await load();
     }
+    if (action === "pause-task" || action === "resume-task") {
+      const umo = target.dataset.umo || runnableTask()?.umo || "";
+      const taskId = target.dataset.taskId || "";
+      if (!umo && !taskId) throw new Error("请选择一个正在运行的任务。");
+      const endpoint = action === "pause-task" ? "pause" : "resume";
+      const body = {};
+      if (umo) body.umo = umo;
+      if (taskId) body.task_id = taskId;
+      const result = await api(`/api/task/${endpoint}`, { method: "POST", body });
+      setFeedback(result.message || (endpoint === "pause" ? "任务已暂停。" : "任务已恢复。"));
+      showToast(result.message || (endpoint === "pause" ? "任务已暂停。" : "任务已恢复。"), "ok");
+      await load();
+    }
     if (action === "finish-task") {
       const task = runnableTask();
-      if (!task) throw new Error("请选择一个正在运行的任务。");
-      await api("/api/task/finish", { method: "POST", body: { umo: task.umo, summary: "WebUI 标记完成。" } });
-      setFeedback("任务已完成归档。");
+      const umo = target.dataset.umo || task?.umo || "";
+      if (!umo) throw new Error("请选择一个正在运行的任务。");
+      const defaultSummary = task?.last_confirmed_progress || task?.current_summary || "任务成果已完成并准备归档。";
+      const summary = await promptModal("完成任务", "最终总结", defaultSummary, { placeholder: "说明完成情况、验证结果、遗留风险和报告位置。", confirmText: "提交完成" });
+      if (summary === null) return;
+      const result = await api("/api/task/finish", { method: "POST", body: { umo, summary } });
+      setFeedback(result.message || "任务已完成归档。");
+      showToast(result.message || "任务已完成归档。", "ok");
       await load();
     }
     if (action === "cancel-task") {
       const umo = target.dataset.umo || runnableTask()?.umo || "";
       const taskId = target.dataset.taskId || "";
       if (!umo && !taskId) throw new Error("请选择一个正在运行的任务。");
+      if (!(await confirmModal("停止并归档", "任务会先安全停止、关闭心跳、恢复会话插件，然后以已取消状态归档。", { danger: true, confirmText: "停止并归档" }))) return;
       const body = { reason: "WebUI 强制停止任务。" };
       if (umo) body.umo = umo;
       if (taskId) body.task_id = taskId;
       const result = await api("/api/task/cancel", { method: "POST", body });
-      if (result && result.ok === false) throw new Error(result.error || "停止失败，请确认任务仍在运行。");
       setFeedback(result.message || "任务已停止并归档。");
       showToast(result.message || "任务已停止并归档。", "ok");
+      await load();
+    }
+    if (action === "purge-task") {
+      const selected = selectedTask();
+      const umo = target.dataset.umo || selected?.umo || "";
+      const taskId = target.dataset.taskId || selected?.task_id || "";
+      if (!taskId) throw new Error("请选择要删除的任务。");
+      if (!(await confirmModal("彻底删除任务", "活动任务会先安全停止；随后删除归档文件以及由该任务生成的关联记忆。此操作不可恢复。", { danger: true, confirmText: "停止并删除" }))) return;
+      const result = await api("/api/task/purge", { method: "POST", body: { umo, task_id: taskId, delete_memories: true } });
+      if (selectedTaskId === taskId) selectedTaskId = "";
+      setFeedback(result.message || "任务已彻底删除。");
+      showToast(result.message || "任务已彻底删除。", "ok");
       await load();
     }
     if (action === "load-task-logs") {
@@ -10344,7 +10391,7 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "resolve-approval") {
       const task = selectedTask();
-      await api("/api/task/approval", {
+      const result = await api("/api/task/approval", {
         method: "POST",
         body: {
           umo: target.dataset.umo || task?.umo || "",
@@ -10352,7 +10399,8 @@ document.addEventListener("click", async (event) => {
           approved: target.dataset.approved === "true",
         },
       });
-      setFeedback(target.dataset.approved === "true" ? "审批已通过。" : "审批已拒绝。");
+      setFeedback(result.message || (target.dataset.approved === "true" ? "审批已通过。" : "审批已拒绝。"));
+      showToast(result.message || "审批状态已更新。", "ok");
       await load();
     }
     if (action === "save-memory") {
@@ -10387,7 +10435,7 @@ document.addEventListener("click", async (event) => {
       const item = (state.memories || []).find((row) => row.memory_id === target.dataset.id);
       if (!item) throw new Error("未找到这条任务记忆，请刷新后重试。");
       if (!(await confirmModal("删除任务记忆", `确定删除「${item.text || item.memory_id}」？`, { danger: true, confirmText: "删除" }))) return;
-      const result = await api("/api/memory", { method: "DELETE", body: { memory_id: target.dataset.id } });
+      const result = await api("/api/memory", { method: "POST", body: { action: "delete", memory_id: target.dataset.id } });
       setFeedback("记忆条目已删除。");
       await load();
     }

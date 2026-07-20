@@ -4826,3 +4826,68 @@ input[type="checkbox"] {
 .stat-bar-track i.run { background: var(--accent, #5b8def); }
 .stat-bar-num { font-size: 13px; font-weight: 700; text-align: right; }
 @media (max-width: 760px){ .stat-metrics-row { grid-template-columns: repeat(2,1fr); } }
+
+
+/* ===== v0.2.1 task control and long-memory containment ===== */
+.memory-layout {
+  grid-template-columns: minmax(240px, .8fr) minmax(0, 1.25fr) minmax(260px, .85fr);
+  align-items: start;
+}
+.memory-layout > .panel { min-width: 0; }
+.memory-layout > .panel:first-child .list,
+.memory-layout > .panel:last-child .list {
+  max-height: min(68vh, 720px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.memory-detail {
+  min-width: 0;
+  max-height: calc(100vh - 92px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  align-self: start;
+}
+.memory-content-text {
+  max-height: 320px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.memory-detail-drawer .memory-content-text.large { max-height: 55vh; }
+.memory-detail .panel-head h3,
+.memory-drawer-title {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.memory-list .row-title > span,
+.memory-layout .row-title > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.state-field p {
+  max-height: 180px;
+  overflow: auto;
+  overflow-wrap: anywhere;
+  scrollbar-gutter: stable;
+}
+.console-actions,
+.console-header .inline-actions,
+.monitor-detail .inline-actions { flex-wrap: wrap; }
+@media (max-width: 1450px) {
+  .memory-layout { grid-template-columns: minmax(250px, .75fr) minmax(0, 1.25fr); }
+  .memory-layout > .panel:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 1100px) {
+  .memory-layout { grid-template-columns: minmax(0, 1fr); }
+  .memory-layout > .panel:last-child { grid-column: auto; }
+  .memory-detail { max-height: none; overflow: visible; }
+}
+@media (max-width: 720px) {
+  .memory-content-text { max-height: 260px; }
+  .memory-detail-drawer { width: 100%; }
+}

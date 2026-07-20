@@ -139,11 +139,15 @@ class AgentVerifier:
         data = getattr(task, "workflow_data", {}) if isinstance(getattr(task, "workflow_data", {}), dict) else {}
         node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
         observations = data.get("observations") if isinstance(data.get("observations"), list) else []
+        reports = data.get("reports") if isinstance(data.get("reports"), list) else []
+        records = data.get("records") if isinstance(data.get("records"), list) else []
         has_evidence = bool(
             getattr(task, "last_confirmed_progress", "")
             or getattr(task, "last_observation", "")
             or node_outputs
             or observations
+            or reports
+            or records
             or getattr(task, "parallel_runs", [])
         )
         if not has_evidence:
@@ -183,6 +187,17 @@ class AgentVerifier:
 
     def _finish_evidence_text(self, task: Any, *, final_summary: str = "") -> str:
         data = getattr(task, "workflow_data", {}) if isinstance(getattr(task, "workflow_data", {}), dict) else {}
+        node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
+        observations = data.get("observations") if isinstance(data.get("observations"), list) else []
+        reports = data.get("reports") if isinstance(data.get("reports"), list) else []
+        records = data.get("records") if isinstance(data.get("records"), list) else []
+        structured_markers: list[str] = []
+        if node_outputs or observations or getattr(task, "parallel_runs", []):
+            structured_markers.append('运行证据 observation evidence 验证记录')
+        if reports:
+            structured_markers.append('结构化报告 report 已生成报告')
+        if records:
+            structured_markers.append('审计记录 record')
         parts = [
             final_summary,
             getattr(task, "root_goal", ""),
@@ -191,8 +206,11 @@ class AgentVerifier:
             getattr(task, "next_step", ""),
             getattr(task, "last_observation", ""),
             getattr(task, "exit_summary", ""),
-            data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {},
-            data.get("observations") if isinstance(data.get("observations"), list) else [],
+            node_outputs,
+            observations,
+            reports,
+            records,
+            structured_markers,
             getattr(task, "parallel_runs", []),
             getattr(task, "progress_log", []),
             getattr(task, "state_snapshots", []),
@@ -211,6 +229,9 @@ class AgentVerifier:
             "user accepted",
             "user confirm",
             "user approval",
+            "workflow automation route completed",
+            "automation route completed",
+            "工作流自动化完成",
             "归档",
             "存档",
             "用户验收",
@@ -245,40 +266,25 @@ class AgentVerifier:
         import re
 
         stop_words = {
-            "the",
-            "and",
-            "or",
-            "a",
-            "an",
-            "is",
-            "are",
-            "be",
-            "to",
-            "of",
-            "for",
-            "with",
-            "must",
-            "should",
-            "done",
-            "complete",
-            "completed",
-            "finish",
-            "finished",
-            "pass",
-            "passed",
-            "success",
-            "successful",
-            "通过",
-            "完成",
-            "必须",
-            "应该",
-            "需要",
+            "the", "and", "or", "a", "an", "is", "are", "be", "to", "of", "for", "with",
+            "must", "should", "done", "complete", "completed", "finish", "finished", "pass",
+            "passed", "success", "successful",
+            '通过', '完成', '必须', '应该', '需要', '已经', '已', '进行', '提供', '生成', '输出', '确认',
         }
+        concept_words = (
+            '证据', '报告', '测试', '验证', '归档', '总结', '风险', '改动', '成果', '部署', '文档', '审计', '记录', '验收', '批准',
+        )
+        normalized = re.sub(r"[，。；、和及与或]+", " ", str(text or ""))
+        raw_tokens = re.findall(r"[a-z0-9_./-]{3,}|[\u4e00-\u9fff]{2,}", normalized.lower())
         tokens: list[str] = []
-        for token in re.findall(r"[a-z0-9_./-]{3,}|[\u4e00-\u9fff]{2,}", text):
-            cleaned = token.strip("._-/")
+        for raw in raw_tokens:
+            cleaned = raw.strip("._-/")
+            cleaned = re.sub(r"^(需要|必须|应该|已经|已|请|完成|进行|提供|生成|输出|确认)+", "", cleaned)
             if cleaned and cleaned not in stop_words:
                 tokens.append(cleaned[:80])
+        matched_concepts = [word for word in concept_words if word in text]
+        if matched_concepts:
+            tokens = matched_concepts
         seen: set[str] = set()
         result: list[str] = []
         for token in tokens:

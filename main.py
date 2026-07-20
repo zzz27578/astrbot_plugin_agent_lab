@@ -75,7 +75,7 @@ from .agent_lab.workers import normalize_worker_output, worker_spec_for_node
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.1.1"
+PLUGIN_VERSION = "v0.2.1"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -879,6 +879,8 @@ class AgentLabPlugin(Star):
         reason: str,
         impact: str,
         rollback: str = "",
+        approval_type: str = "operation",
+        requested_status: str = "",
     ) -> str:
         """危险操作前请求用户审批，不要直接执行危险操作。
 
@@ -896,6 +898,17 @@ class AgentLabPlugin(Star):
             reason=reason,
             impact=impact,
             rollback=rollback,
+            approval_type=(
+                "finish_override"
+                if str(approval_type or "").strip().lower() in {"finish", "finish_override", "结束", "完成"}
+                else "operation"
+            ),
+            requested_status=(
+                str(requested_status or "completed").strip().lower()
+                if str(approval_type or "").strip().lower() in {"finish", "finish_override", "结束", "完成"}
+                else ""
+            ),
+            allow_incomplete=str(approval_type or "").strip().lower() in {"finish", "finish_override", "结束", "完成"},
         )
         task.approvals.append(approval.to_dict())
         task.set_wait(
@@ -1406,7 +1419,13 @@ class AgentLabPlugin(Star):
             self.storage.save_task(task)
             return "已关闭当前任务心跳。"
         if cmd == "approve":
-            return self._resolve_approval(event.unified_msg_origin, rest, True, event.get_sender_id())
+            approval_id = rest.strip()
+            msg = self._resolve_approval(event.unified_msg_origin, approval_id, True, event.get_sender_id())
+            if msg.startswith("\u5ba1\u6279\u5df2\u901a\u8fc7"):
+                finished = await self._finish_after_approval(event, approval_id)
+                if finished:
+                    msg = f"{msg}\n{finished}"
+            return msg
         if cmd == "reject":
             return self._resolve_approval(event.unified_msg_origin, rest, False, event.get_sender_id())
         return f"未知命令：{cmd}\n\n{self._help_text()}"
@@ -1687,23 +1706,165 @@ class AgentLabPlugin(Star):
     async def _tick_impl(self, event: AstrMessageEvent, reason: str) -> str:
         return await self.runtime_runner.run_tick(event, reason)
 
+    def _approval_actor_allowed(self, user_id: str) -> bool:
+        actor = str(user_id or "").strip()
+        if actor == "webui":
+            return True
+        admin_ids = set(self._workflow_admin_ids())
+        return bool(actor) and (not admin_ids or actor in admin_ids)
+
+    @staticmethod
+    def _approval_row(task: TaskState, approval_id: str) -> dict[str, Any] | None:
+        approval_id = str(approval_id or "").strip()
+        for item in task.approvals or []:
+            if isinstance(item, dict) and str(item.get("approval_id") or "") == approval_id:
+                return item
+        return None
+
+    def _ensure_finish_approval(
+        self,
+        task: TaskState,
+        *,
+        status: str,
+        final_summary: str,
+        memory_candidates: str,
+        verdict: Any,
+    ) -> ApprovalRequest:
+        for item in task.approvals or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("status") != "pending" or item.get("approval_type") != "finish_override":
+                continue
+            item["requested_status"] = status
+            item["final_summary"] = final_summary
+            item["memory_candidates"] = memory_candidates
+            item["reason"] = str(getattr(verdict, "reason", "") or "finish verification blocked")
+            item["impact"] = "Missing verification: " + ", ".join(getattr(verdict, "missing", []) or [])
+            item["verification_missing"] = list(getattr(verdict, "missing", []) or [])
+            item["allow_incomplete"] = True
+            return ApprovalRequest.from_dict(item)
+        approval = ApprovalRequest(
+            approval_type="finish_override",
+            operation="Approve task finish with verification gaps",
+            reason=str(getattr(verdict, "reason", "") or "Finish verification did not pass."),
+            impact="Missing verification: " + ", ".join(getattr(verdict, "missing", []) or []),
+            rollback="Task will be archived with an explicit administrator override record.",
+            requested_status=status,
+            final_summary=final_summary,
+            memory_candidates=memory_candidates,
+            verification_missing=list(getattr(verdict, "missing", []) or []),
+            allow_incomplete=True,
+        )
+        task.approvals.append(approval.to_dict())
+        return approval
+
+    def _approved_finish_override(
+        self, task: TaskState, approval_id: str, status: str
+    ) -> dict[str, Any] | None:
+        item = self._approval_row(task, approval_id)
+        if not item or item.get("status") != "approved":
+            return None
+        if item.get("approval_type") != "finish_override" or not bool(item.get("allow_incomplete")):
+            return None
+        requested = str(item.get("requested_status") or "completed").strip().lower()
+        if requested and requested != str(status or "completed").strip().lower():
+            return None
+        return item
+
+    @staticmethod
+    def _expire_pending_approvals(task: TaskState, *, reason: str) -> None:
+        for item in task.approvals or []:
+            if isinstance(item, dict) and item.get("status") == "pending":
+                item["status"] = "expired"
+                item["resolved_at"] = now_iso()
+                item["resolved_by"] = reason
+
+    def _record_finish_override(
+        self, task: TaskState, approval: dict[str, Any], *, status: str, final_summary: str
+    ) -> None:
+        data = self._ensure_workflow_data(task)
+        decision = {
+            "time": now_iso(),
+            "kind": "finish_override",
+            "approval_id": approval.get("approval_id") or "",
+            "approved_by": approval.get("resolved_by") or "",
+            "requested_status": status,
+            "missing": list(approval.get("verification_missing") or []),
+            "summary": final_summary,
+            "reason": approval.get("reason") or "",
+        }
+        decisions = data.setdefault("finish_decisions", [])
+        if not isinstance(decisions, list):
+            decisions = []
+        decisions.append(decision)
+        data["finish_decisions"] = decisions[-40:]
+        reports = data.setdefault("reports", [])
+        if not isinstance(reports, list):
+            reports = []
+        reports.append(
+            {
+                "time": decision["time"],
+                "kind": "finish_override_report",
+                "status": status,
+                "summary": final_summary,
+                "evidence": {
+                    "approval_id": decision["approval_id"],
+                    "approved_by": decision["approved_by"],
+                    "waived_missing": decision["missing"],
+                },
+            }
+        )
+        data["reports"] = reports[-40:]
+        task.add_log(
+            "finish_override",
+            f"approval={decision['approval_id']}; approved_by={decision['approved_by']}; missing={decision['missing']}",
+        )
+        task.add_snapshot("finish_override", decision)
+
+    async def _finish_after_approval(self, event: AstrMessageEvent, approval_id: str) -> str:
+        task = self.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            return ""
+        item = self._approval_row(task, approval_id)
+        if not item or item.get("status") != "approved" or item.get("approval_type") != "finish_override":
+            return ""
+        return await self._finish_task(
+            event,
+            str(item.get("requested_status") or "completed"),
+            str(item.get("final_summary") or "Administrator approved task finish."),
+            str(item.get("memory_candidates") or ""),
+            finish_approval_id=approval_id,
+        )
+
     async def _finish_task(
         self,
         event: AstrMessageEvent,
         status: str,
         final_summary: str,
         memory_candidates: str,
+        *,
+        finish_approval_id: str = "",
     ) -> str:
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
+        status = str(status or "completed").strip().lower()
+        approved_override = self._approved_finish_override(task, finish_approval_id, status)
         finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
-        if not finish_verdict.passed:
+        if not finish_verdict.passed and approved_override is None:
+            approval = self._ensure_finish_approval(
+                task,
+                status=status,
+                final_summary=final_summary,
+                memory_candidates=memory_candidates,
+                verdict=finish_verdict,
+            )
             task.status = "paused"
             task.set_wait(
-                wait_reason=finish_verdict.status or "need_user_decision",
+                wait_reason="need_finish_approval",
                 message=finish_verdict.reason,
                 source="verifier_finish",
+                resume_command=f"/agentlab approve {approval.approval_id}",
                 required_input=finish_verdict.missing,
             )
             self.agent_runtime.record_verdict(
@@ -1713,12 +1874,22 @@ class AgentLabPlugin(Star):
                 status=finish_verdict.status,
                 reason=finish_verdict.reason,
                 missing=finish_verdict.missing,
-                next_action=finish_verdict.next_action,
+                next_action="approve_finish_override_or_collect_evidence",
             )
             self.storage.save_task(task)
             missing_text = "、".join(finish_verdict.missing or [])
             suffix = f"；缺少：{missing_text}" if missing_text else ""
-            return f"暂不能完成任务：{finish_verdict.reason}{suffix}"
+            return (
+                f"暂不能完成任务：{finish_verdict.reason}{suffix}\n"
+                f"已创建管理员结束审批：{approval.approval_id}。"
+                f"管理员批准后将自动结束，并在归档报告中记录被豁免的证据缺口。"
+            )
+        if approved_override is not None:
+            self._record_finish_override(
+                task, approved_override, status=status, final_summary=final_summary
+            )
+        self._expire_pending_approvals(task, reason="task_finish")
+        task.clear_wait()
         self._refresh_summarizer_rules()
         exit_summary = await self.summarizer.summarize_exit(event, task, final_summary)
         task.status = status
@@ -1949,9 +2120,13 @@ class AgentLabPlugin(Star):
             return "当前没有 active task。"
         if not approval_id:
             return "请提供 approval_id。"
+        if not self._approval_actor_allowed(user_id):
+            return "无权限处理审批：已配置管理员列表时，仅 workflow_admin_ids 中的管理员可以批准或拒绝。"
         found = False
         for item in task.approvals:
             if item.get("approval_id") == approval_id:
+                if item.get("status") != "pending":
+                    return f"审批已经处理：{approval_id}（{item.get('status') or '-'}）"
                 item["status"] = "approved" if approved else "rejected"
                 item["resolved_at"] = now_iso()
                 item["resolved_by"] = user_id
@@ -6278,6 +6453,7 @@ class AgentLabPlugin(Star):
             final_summary=final_summary,
             memory_candidates=memory_candidates,
             reason="workflow_archive_task_node",
+            finish_approval_id=str(ctx.node.get("finish_approval_id") or ctx.node.get("approval_id") or ""),
         )
         archived = self.storage.load_active_task(ctx.task.umo) is None
         return NodeExecutionResult(
@@ -6300,10 +6476,48 @@ class AgentLabPlugin(Star):
         final_summary: str,
         memory_candidates: list[str] | None = None,
         reason: str = "workflow_archive",
+        finish_approval_id: str = "",
     ) -> str:
         self._normalize_agent_workflow(spec)
         self._ensure_workflow_data(task)
-        task.status = status if status in {"completed", "cancelled", "blocked"} else "completed"
+        status = status if status in {"completed", "cancelled", "blocked"} else "completed"
+        approved_override = self._approved_finish_override(task, finish_approval_id, status)
+        finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
+        if not finish_verdict.passed and approved_override is None:
+            approval = self._ensure_finish_approval(
+                task,
+                status=status,
+                final_summary=final_summary,
+                memory_candidates="\n".join(memory_candidates or []),
+                verdict=finish_verdict,
+            )
+            task.status = "paused"
+            task.set_wait(
+                wait_reason="need_finish_approval",
+                message=finish_verdict.reason,
+                source="workflow_archive_verifier",
+                resume_command=f"/agentlab approve {approval.approval_id}",
+                required_input=finish_verdict.missing,
+            )
+            self.agent_runtime.record_verdict(
+                task,
+                node_id=task.workflow_current_node_id,
+                passed=False,
+                status=finish_verdict.status,
+                reason=finish_verdict.reason,
+                missing=finish_verdict.missing,
+                next_action="approve_finish_override_or_collect_evidence",
+            )
+            self.storage.save_task(task)
+            return (
+                f"Workflow archive blocked: {finish_verdict.reason}; "
+                f"approval={approval.approval_id}; missing={finish_verdict.missing}"
+            )
+        if approved_override is not None:
+            self._record_finish_override(task, approved_override, status=status, final_summary=final_summary)
+        self._expire_pending_approvals(task, reason="workflow_archive")
+        task.clear_wait()
+        task.status = status
         task.exit_summary = str(final_summary or "Workflow archive completed.").strip()
         task.memory_candidates = [str(item).strip() for item in (memory_candidates or []) if str(item).strip()]
         task.finished_at = now_iso()
@@ -7473,13 +7687,19 @@ class AgentLabPlugin(Star):
             return
         host = str(_cfg(self.config, "standalone_webui_host", "127.0.0.1") or "127.0.0.1").strip()
         port = int(_cfg(self.config, "standalone_webui_port", 8788) or 8788)
-        static_dir = Path(__file__).resolve().parent / "webui"
+        static_dir = Path(__file__).resolve().parent / "_dashboard"
+        token = str(_cfg(self.config, "standalone_webui_token", "") or "").strip()
+        if host not in {"127.0.0.1", "localhost", "::1"} and not token:
+            logger.error(
+                "[AgentLab] standalone WebUI refused non-local bind without standalone_webui_token"
+            )
+            return
         self.webui_server = StandaloneWebUIServer(
             owner=self,
             static_dir=static_dir,
             host=host,
             port=port,
-            token="",
+            token=token,
         )
         try:
             await self.webui_server.start()
@@ -7518,6 +7738,9 @@ class AgentLabPlugin(Star):
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/tick", self.api_task_tick, ["POST"], "Tick task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/finish", self.api_task_finish, ["POST"], "Finish task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/cancel", self.api_task_cancel, ["POST"], "Cancel task")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/pause", self.api_task_pause, ["POST"], "Pause task")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/resume", self.api_task_resume, ["POST"], "Resume task")
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/purge", self.api_task_purge, ["POST"], "Stop and delete task")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/heartbeat", self.api_task_heartbeat, ["POST"], "Toggle heartbeat")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/approval", self.api_task_approval, ["POST"], "Resolve approval")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/delete", self.api_task_delete, ["POST"], "Delete archived task")
@@ -7589,6 +7812,15 @@ class AgentLabPlugin(Star):
     async def api_agents(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
+            if str(payload.get("action") or payload.get("op") or "").strip().lower() in {"delete", "remove"}:
+                agent_id = str(payload.get("agent_id") or "").strip()
+                agents = self.storage.list_agents()
+                if len(agents) <= 1:
+                    return jsonify({"ok": False, "error": "cannot delete the last agent"})
+                if not any(item.agent_id == agent_id for item in agents):
+                    return jsonify({"ok": False, "error": "agent not found"})
+                ok = self.storage.delete_agent(agent_id)
+                return jsonify({"ok": ok, "default_agent_id": self.storage.default_agent_id()})
             make_default = bool(payload.pop("_make_default", False))
             incoming_agent_id = str(payload.get("agent_id") or "").strip()
             previous_spec = None
@@ -7868,6 +8100,12 @@ class AgentLabPlugin(Star):
                     reason=str(payload.get("reason") or "webui rejected memory"),
                 )
                 return jsonify({"ok": bool(item), "memory": item})
+            if action in {"delete", "remove"}:
+                memory_id = str(payload.get("memory_id") or "")
+                if not memory_id:
+                    return jsonify({"ok": False, "error": "memory_id is required"})
+                ok = self.storage.delete_memory_entry(memory_id)
+                return jsonify({"ok": ok, "message": "memory deleted" if ok else "memory not found"})
             return jsonify({"ok": True, "memory": self.storage.save_memory_entry(payload)})
         if request.method == "DELETE":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -7981,16 +8219,43 @@ class AgentLabPlugin(Star):
 
     async def api_task_finish(self):
         payload = await request.get_json(force=True, silent=True) or {}
-        event = self._make_cron_event(str(payload.get("umo") or ""), "Agent Lab WebUI finish")
+        umo = str(payload.get("umo") or "").strip()
+        event = self._make_cron_event(umo, "Agent Lab WebUI finish")
         if event is None:
             return jsonify({"ok": False, "error": "cannot create event"})
+        before = self.storage.load_active_task(umo)
+        if before is None:
+            return jsonify({"ok": False, "error": "该实例没有正在运行的任务。"})
         msg = await self._finish_task(
             event,
             str(payload.get("status") or "completed"),
             str(payload.get("summary") or "WebUI requested finish."),
             str(payload.get("memory_candidates") or ""),
+            finish_approval_id=str(payload.get("approval_id") or ""),
         )
-        return jsonify({"ok": True, "message": msg})
+        remaining = self.storage.load_active_task(umo)
+        if remaining is not None and remaining.task_id == before.task_id:
+            pending_finish = next(
+                (
+                    item
+                    for item in remaining.approvals or []
+                    if isinstance(item, dict)
+                    and item.get("status") == "pending"
+                    and item.get("approval_type") == "finish_override"
+                ),
+                None,
+            )
+            return jsonify(
+                {
+                    "ok": False,
+                    "error": msg,
+                    "message": msg,
+                    "status": remaining.status,
+                    "task": self._task_payload(remaining),
+                    "approval": pending_finish,
+                }
+            )
+        return jsonify({"ok": True, "message": msg, "archived": True})
 
     def _umo_for_task_id(self, task_id: str) -> str:
         task_id = str(task_id or "").strip()
@@ -8033,6 +8298,86 @@ class AgentLabPlugin(Star):
             return jsonify({"ok": False, "error": "未找到该归档历史（可能已删除）。"})
         return jsonify({"ok": True, "message": "归档历史已删除。"})
 
+    async def api_task_pause(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        umo = str(payload.get("umo") or "").strip()
+        task_id = str(payload.get("task_id") or "").strip()
+        if not umo and task_id:
+            umo = self._umo_for_task_id(task_id)
+        task = self.storage.load_active_task(umo) if umo else None
+        if not task:
+            return jsonify({"ok": False, "error": "该实例没有正在运行的任务。"})
+        task.status = "paused"
+        task.watchdog.last_decision = "manual_pause"
+        task.set_wait(
+            wait_reason="manual_pause",
+            message=str(payload.get("reason") or "WebUI manual pause."),
+            source="webui",
+            resume_command="WebUI resume",
+        )
+        task.add_log("paused", str(payload.get("reason") or "WebUI manual pause."))
+        task.add_snapshot("manual_pause", {"reason": str(payload.get("reason") or "")})
+        await self._disable_heartbeat(task)
+        self.storage.save_task(task)
+        return jsonify({"ok": True, "message": "任务已暂停。", "task": self._task_payload(task)})
+
+    async def api_task_resume(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        umo = str(payload.get("umo") or "").strip()
+        task_id = str(payload.get("task_id") or "").strip()
+        if not umo and task_id:
+            umo = self._umo_for_task_id(task_id)
+        task = self.storage.load_active_task(umo) if umo else None
+        if not task:
+            return jsonify({"ok": False, "error": "该实例没有可恢复的任务。"})
+        if task.pending_approvals():
+            return jsonify({"ok": False, "error": "任务仍有待审批项，请先处理审批。"})
+        task.status = "running"
+        task.watchdog.paused_reason = ""
+        task.watchdog.last_decision = "manual_resume"
+        task.clear_wait()
+        task.add_log("resumed", str(payload.get("reason") or "WebUI manual resume."))
+        task.add_snapshot("manual_resume", {"reason": str(payload.get("reason") or "")})
+        self.storage.save_task(task)
+        return jsonify({"ok": True, "message": "任务已恢复运行。", "task": self._task_payload(task)})
+
+    async def api_task_purge(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        umo = str(payload.get("umo") or "").strip()
+        task_id = str(payload.get("task_id") or "").strip()
+        if not umo and task_id:
+            umo = self._umo_for_task_id(task_id)
+        task = self.storage.load_active_task(umo) if umo else None
+        if task is not None:
+            task_id = task.task_id
+            event = self._make_cron_event(umo, "Agent Lab WebUI purge")
+            if event is None:
+                return jsonify({"ok": False, "error": "无法创建任务清理事件。"})
+            await self._finish_task(
+                event,
+                "cancelled",
+                str(payload.get("reason") or "WebUI stopped and deleted the task."),
+                "",
+            )
+        if not task_id:
+            return jsonify({"ok": False, "error": "task_id is required"})
+        deleted_archive = self.storage.delete_archive_task(task_id, umo)
+        deleted_memories = (
+            self.storage.delete_memory_entries_for_task(task_id)
+            if bool(payload.get("delete_memories", True))
+            else 0
+        )
+        if not deleted_archive and task is None:
+            return jsonify({"ok": False, "error": "未找到该任务（可能已删除）。"})
+        return jsonify(
+            {
+                "ok": True,
+                "message": "任务已停止并彻底删除。",
+                "deleted_archive": bool(deleted_archive),
+                "deleted_memories": deleted_memories,
+            }
+        )
+
     async def api_task_heartbeat(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "").strip()
@@ -8059,7 +8404,17 @@ class AgentLabPlugin(Star):
         if not umo or not approval_id:
             return jsonify({"ok": False, "error": "umo and approval_id are required"})
         msg = self._resolve_approval(umo, approval_id, approved, "webui")
-        return jsonify({"ok": True, "message": msg})
+        if not msg.startswith("审批已"):
+            return jsonify({"ok": False, "error": msg})
+        finish_message = ""
+        archived = False
+        if approved:
+            event = self._make_cron_event(umo, "Agent Lab WebUI approval")
+            if event is not None:
+                finish_message = await self._finish_after_approval(event, approval_id)
+                archived = self.storage.load_active_task(umo) is None
+        message = msg + (f"\n{finish_message}" if finish_message else "")
+        return jsonify({"ok": True, "message": message, "archived": archived})
 
     def _plugin_rows(self) -> list[dict[str, Any]]:
         rows = []

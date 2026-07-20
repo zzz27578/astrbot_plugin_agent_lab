@@ -17,6 +17,12 @@
     "default": 8788,
     "hint": "默认地址：http://127.0.0.1:8788"
   },
+  "standalone_webui_token": {
+    "type": "string",
+    "description": "独立网页控制台访问 Token",
+    "default": "",
+    "hint": "仅独立 8788 控制台使用；监听非本机地址时必须设置。AstrBot 原生插件页面使用 Dashboard 登录态。"
+  },
   "workflow_admin_ids": {
     "type": "string",
     "description": "管理员 QQ 号",
