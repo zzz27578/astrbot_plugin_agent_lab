@@ -69,7 +69,7 @@
 - 从零重做：清晰的来源插件分组、工具开关、搜索、右侧详情/操作区，有实际操作意义。
 
 ## 批次 J：校验与本地提交
-- 每批：`node --check _dashboard/app.js` + `python -m py_compile main.py`。
+- 每批：`node --check pages/agent-lab/app.js` + `python -m py_compile main.py`。
 - 关键界面用沙盒 headless 截图复核（复用 outputs/preview_webui.sh）。
 - 每批 git 本地提交，提交信息描述该批改动。
 
@@ -89,7 +89,7 @@
 - ✅ 批次I 注册工具页重做（a279df9）：开关式工具卡 + 来源插件分组 + 搜索/计数 + 审批策略独立折叠区；修复点击后滚动跳顶（内容区独立滚动 + 位置还原）。
 - ✅ 批次B（2a285b6）：插件事件入口可勾选来源插件（新增 pluginChecks 字段类型，替代手敲）。
 
-验证：`node --check _dashboard/app.js` 与 `python -m py_compile main.py` 均通过；用 VM + stub DOM 对所有改动过的渲染函数做了运行时冒烟测试，全部 OK；自动整理算法用合成工作流验证分层/圈地/侧链正确。
+验证：`node --check pages/agent-lab/app.js` 与 `python -m py_compile main.py` 均通过；用 VM + stub DOM 对所有改动过的渲染函数做了运行时冒烟测试，全部 OK；自动整理算法用合成工作流验证分层/圈地/侧链正确。
 
 ### 已知未做 / 后续
 - 触发类节点「左侧进入端口」：让插件事件源在连线上接入插件事件入口，属较深的端口/运行时语义改动，未做（沙盒内无法可视化验证，避免引入未测回归）。已用「勾选来源插件」满足主要诉求。

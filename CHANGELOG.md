@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.2 — 2026-07-20
+
+- 修复 AstrBot 最新版无法发现插件 UI：将页面从已废弃的 `_dashboard/` 迁移到最新规范 `pages/agent-lab/index.html`。
+- 接入 `window.AstrBotPluginPage` bridge：GET 使用 `apiGet`、POST 使用 `apiPost`，查询参数从 URL 中解析后通过 bridge 传递。
+- 保留独立 8788 控制台的 fetch 模式，原生页面和独立页面继续共用同一套前端资源。
+- 新增 `scripts/plugin_page_bridge_smoke.js`，验证 state GET、带 query 的 logs GET 和 finish POST 均通过 AstrBot bridge。
+- 更新插件页面入口说明：在 Dashboard 插件管理的 Agent Lab 插件详情中打开 `agent-lab` 页面。
+
 ## v0.2.1 — 2026-07-20
 
 - 统一任务结束协议：普通完成、Bot 主动完成、WebUI 完成和工作流 `archive_task` 现在共用完成校验，不再一边过严、一边绕过 verifier。

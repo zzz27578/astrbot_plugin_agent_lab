@@ -1,3 +1,5 @@
+> 注：AstrBot 最新版已改用 `pages/<page_name>/index.html` 和 `AstrBotPluginPage` bridge。v0.2.1 中 `_dashboard` 的说明已由 v0.2.2 修正。
+
 # Agent Lab v0.2.1 修复与发布报告
 
 - 日期：2026-07-20
@@ -39,6 +41,6 @@
 - `python -m compileall -q .`
 - `python scripts/smoke_test.py`
 - `python scripts/runtime_smoke_test.py`
-- `node --check _dashboard/app.js`
+- `node --check pages/agent-lab/app.js`
 - `node scripts/subagent_ui_logic_smoke.js`
 - 浏览器实测：任务路由、任务操作按钮、长记忆滚动和 1280px 响应式布局。

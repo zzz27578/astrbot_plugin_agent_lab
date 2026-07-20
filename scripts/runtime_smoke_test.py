@@ -1904,7 +1904,7 @@ async def main() -> None:
         plugin.storage.save_task(task)
         server = plugin_main.StandaloneWebUIServer(
             owner=plugin,
-            static_dir=ROOT / "_dashboard",
+            static_dir=ROOT / "pages" / "agent-lab",
             host="127.0.0.1",
             port=8788,
             token="",

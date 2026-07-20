@@ -3300,7 +3300,34 @@ function apiUrl(path) {
   return `${configured.replace(/\/$/, "")}${suffix.startsWith("/") ? suffix : `/${suffix}`}`;
 }
 
+function pluginPageRequest(path) {
+  const url = new URL(String(path || "/api/state"), location.origin);
+  const endpoint = url.pathname.replace(/^\/api\/?/, "");
+  const params = Object.fromEntries(url.searchParams.entries());
+  return { endpoint, params };
+}
+
+function pluginPageBridge() {
+  const bridge = window.AstrBotPluginPage;
+  if (!bridge || typeof bridge.apiGet !== "function" || typeof bridge.apiPost !== "function") return null;
+  return bridge;
+}
+
 async function api(path, options = {}) {
+  const method = String(options.method || "GET").toUpperCase();
+  const bridge = pluginPageBridge();
+  if (bridge) {
+    await bridge.ready();
+    const { endpoint, params } = pluginPageRequest(path);
+    let body = options.body || {};
+    if (typeof body === "string") {
+      try { body = JSON.parse(body); } catch (e) { body = {}; }
+    }
+    if (method === "GET") return await bridge.apiGet(endpoint, params);
+    if (method === "POST") return await bridge.apiPost(endpoint, body);
+    throw new Error(`AstrBot plugin page bridge does not support ${method}.`);
+  }
+
   const headers = { ...(options.headers || {}) };
   const currentToken = token();
   if (currentToken) headers["X-Agent-Lab-Token"] = currentToken;
@@ -3314,6 +3341,15 @@ async function api(path, options = {}) {
     throw new Error(data.error || `HTTP ${response.status}`);
   }
   return data;
+}
+
+function notifyPluginPageLayout() {
+  const bridge = pluginPageBridge();
+  if (!bridge || typeof bridge.requestResize !== "function") return;
+  requestAnimationFrame(() => {
+    const height = Math.max(720, Math.min(document.documentElement.scrollHeight || 720, 1400));
+    bridge.requestResize({ height });
+  });
 }
 
 // 本插件自带工具（agent_lab_* / 本插件注册）默认开启；仅当方案里一个都没启用时才补齐，尊重用户后续的手动取舍。
@@ -3470,6 +3506,7 @@ function render() {
   restoreWorkflowViewport(viewport);
   if (route === "workflow") refreshWorkflowCanvasDom();
   restoreFieldFocusGlobal(__focusSnap);
+  notifyPluginPageLayout();
 }
 
 function syncLiveRefresh() {

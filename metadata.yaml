@@ -1,7 +1,7 @@
 name: astrbot_plugin_agent_lab
 display_name: Agent Lab
 desc: 为 AstrBot 机器人提供持续任务执行能力——独立记忆空间、可视化工作流编排、心跳续跑、安全审批，让 bot 能稳定推进跨轮次的复杂工作。
-version: v0.2.1
+version: v0.2.2
 author: zzz27578 & Codex
 repo: https://github.com/zzz27578/astrbot_plugin_agent_lab
 astrbot_version: ">=4.16,<5"

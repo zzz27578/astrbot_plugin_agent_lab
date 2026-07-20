@@ -9,7 +9,7 @@ const path = require("path");
 
 const HERE = __dirname;
 const REPO = path.resolve(HERE, "../..");
-const WEBUI = path.join(REPO, "_dashboard");
+const WEBUI = path.join(REPO, "pages", "agent-lab");
 const OUT = path.join(REPO, "_preview");
 const CHROME = "/tmp/pw/chromium/chrome-linux/chrome";
 const mock = fs.readFileSync(path.join(HERE, "mockstate.json"), "utf8");

@@ -62,7 +62,7 @@ class FakeWebOwner:
 async def smoke_webui_server() -> None:
     server = StandaloneWebUIServer(
         owner=FakeWebOwner(),
-        static_dir=ROOT / "_dashboard",
+        static_dir=ROOT / "pages" / "agent-lab",
         host="127.0.0.1",
         port=8788,
         token="secret",
@@ -94,8 +94,9 @@ async def smoke_webui_server() -> None:
 
 
 def main() -> None:
-    assert (ROOT / "_dashboard" / "index.html").exists()
-    assert "agent-lab-api-base" in (ROOT / "_dashboard" / "index.html").read_text(encoding="utf-8")
+    assert (ROOT / "pages" / "agent-lab" / "index.html").exists()
+    assert "agent-lab-api-base" in (ROOT / "pages" / "agent-lab" / "index.html").read_text(encoding="utf-8")
+    assert "AstrBotPluginPage" in (ROOT / "pages" / "agent-lab" / "app.js").read_text(encoding="utf-8")
     asyncio.run(smoke_webui_server())
 
     base_spec = AgentSpec()

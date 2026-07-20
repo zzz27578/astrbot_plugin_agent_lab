@@ -4828,7 +4828,7 @@ input[type="checkbox"] {
 @media (max-width: 760px){ .stat-metrics-row { grid-template-columns: repeat(2,1fr); } }
 
 
-/* ===== v0.2.1 task control and long-memory containment ===== */
+/* ===== v0.2.2 task control and long-memory containment ===== */
 .memory-layout {
   grid-template-columns: minmax(240px, .8fr) minmax(0, 1.25fr) minmax(260px, .85fr);
   align-items: start;

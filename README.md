@@ -54,7 +54,7 @@ bot 会进入任务模式，创建任务状态，开始逐步推进。你可以�
 
 ### WebUI 控制台
 
-AstrBot 4.24.2 及以上会自动发现插件内的 `_dashboard` 原生页面，可直接从 Dashboard 左侧「插件」菜单进入 Agent Lab；页面复用 AstrBot 管理员登录态，不需要额外开放端口。
+AstrBot 最新版会自动发现插件内的 `pages/agent-lab/index.html` 原生插件页面。请在 Dashboard 的「插件管理」中打开 Agent Lab 插件详情，然后进入 `agent-lab` 自定义页面。页面通过 AstrBot 注入的 `window.AstrBotPluginPage` bridge 调用后端 API，不依赖 iframe Cookie 或额外端口。
 
 为兼容 AstrBot 4.16–4.24.1，插件仍可启动独立控制台：
 
@@ -62,7 +62,7 @@ AstrBot 4.24.2 及以上会自动发现插件内的 `_dashboard` 原生页面，
 http://127.0.0.1:8788
 ```
 
-独立控制台默认只监听本机。若改为非本机地址，必须配置 `standalone_webui_token`，否则插件会拒绝启动该监听。两种入口共用同一套 `_dashboard` 前端和任务 API。
+独立控制台默认只监听本机。若改为非本机地址，必须配置 `standalone_webui_token`，否则插件会拒绝启动该监听。两种入口共用同一套 `pages/agent-lab` 前端：原生页面使用 AstrBotPluginPage bridge，独立控制台使用 `/api` fetch。
 
 控制台提供仪表盘、任务配置、工作流画布、任务管理、记忆管理、插件与集成等完整操作界面。
 

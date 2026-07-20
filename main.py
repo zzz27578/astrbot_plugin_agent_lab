@@ -75,7 +75,7 @@ from .agent_lab.workers import normalize_worker_output, worker_spec_for_node
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.1"
+PLUGIN_VERSION = "v0.2.2"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -7687,7 +7687,7 @@ class AgentLabPlugin(Star):
             return
         host = str(_cfg(self.config, "standalone_webui_host", "127.0.0.1") or "127.0.0.1").strip()
         port = int(_cfg(self.config, "standalone_webui_port", 8788) or 8788)
-        static_dir = Path(__file__).resolve().parent / "_dashboard"
+        static_dir = Path(__file__).resolve().parent / "pages" / "agent-lab"
         token = str(_cfg(self.config, "standalone_webui_token", "") or "").strip()
         if host not in {"127.0.0.1", "localhost", "::1"} and not token:
             logger.error(
