@@ -20,6 +20,10 @@ class PermissionPolicy:
             return False
         tool_mode = str(getattr(spec.isolation_policy, "tool_mode", "whitelist") or "whitelist")
         selected_tools = set(spec.enabled_tools or [])
+        if "astrbot_sandboxed_shell" in selected_tools:
+            selected_tools.add("astrbot_execute_shell")
+        if "astrbot_sandboxed_python" in selected_tools:
+            selected_tools.add("astrbot_execute_ipython")
         if tool_mode == "no_external" or no_external_sentinel in selected_tools:
             return False
         return tool_mode == "full" or not selected_tools or name in selected_tools

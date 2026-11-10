@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from .hooks import AgentLabRunHooks
 from .models import AgentSpec
-from .prompts import build_task_system_prompt
+from .prompts import build_task_system_prompt, build_tick_prompt
+from .task_control import control, prompt as plan_prompt
 
 
 def _cfg(config: Any, key: str, default: Any = None) -> Any:
@@ -28,11 +30,24 @@ class AgentRuntimeRunner:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.adapter, name)
 
+    def owner_access(self, event):
+        self.adapter._require_task_access(event)
+
     async def run_tick(self, event: Any, reason: str) -> str:
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。可以先 /agentlab start <目标>。"
-        if task.status not in ("running", "paused"):
+        self.owner_access(event)
+        state = control(task)
+        if not state:
+            self.task_control.initialize(task, event, "selected")
+            self.storage.save_task(task)
+            return "旧任务记录已保留，请先补充并批准具体计划，再继续执行。"
+        if state and (not state.get("approved_version") or state.get("approved_version") != state.get("version")):
+            return "请 Bot 先提交具体计划，管理员批准后自动推进。"
+        if state.get("human_paused"):
+            return "任务已由管理员暂停，请明确恢复。"
+        if task.status not in ("running",):
             return f"当前任务状态为 {task.status}，不执行 tick。"
         if task.pending_approvals():
             pending = "\n".join(
@@ -73,6 +88,13 @@ class AgentRuntimeRunner:
             spec = AgentSpec.from_dict(
                 task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
             )
+            state = control(task)
+            current = next((step for step in state.get("steps", []) if step.get("status") != "completed"), None)
+            if current:
+                state["current_step_id"] = current["id"]
+                current["status"] = "running"
+                task.next_step = current["instruction"]
+            self.storage.save_task(task)
             self._normalize_agent_workflow(spec)
             self._sync_agent_runtime(task, spec, reason=f"tick:{reason}")
             self.agent_runtime.record_decision(
@@ -90,7 +112,14 @@ class AgentRuntimeRunner:
                 spec=spec,
                 reason=reason,
             )
-            if runtime_run.changed:
+            active = self.storage.load_active_task(event.unified_msg_origin)
+            if not active or active.task_id != task.task_id:
+                return "任务已在工作流阶段结束。"
+            # Node dispatch may save newer approval/checkpoint data. Never replace
+            # it with the outer tick snapshot.
+            if active.status != "running":
+                task = active
+            elif runtime_run.changed:
                 self.storage.save_task(task)
 
             latest_task = self.storage.load_active_task(event.unified_msg_origin)
@@ -110,7 +139,7 @@ class AgentRuntimeRunner:
                 )
                 self.storage.save_task(task)
                 return f"tick 已暂停：工作流运行时阻塞或等待。\n\n{self._compact_text(runtime_run.summary(), 1800)}"
-            if runtime_run.changed and not runtime_run.needs_react:
+            if runtime_run.changed and not runtime_run.needs_react and not control(task).get("version"):
                 self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
                 self.agent_runtime.record_verdict(
                     task,
@@ -127,41 +156,21 @@ class AgentRuntimeRunner:
             task_log_count_before_tick = len(task.progress_log)
             modules_prompt = self._build_task_extensions_prompt(spec, task=task)
             system_prompt = build_task_system_prompt(spec, task, modules_prompt)
-            prompt = self._workflow_react_prompt(task=task, spec=spec, reason=reason)
-            provider_id = spec.provider_id or await self.context.get_current_chat_provider_id(
-                event.unified_msg_origin
-            )
+            prompt = (build_tick_prompt(task, reason) if control(task).get("workflow") == "none"
+                      else self._workflow_react_prompt(task=task, spec=spec, reason=reason))
+            if control(task).get("workflow") == "none":
+                system_prompt = system_prompt.split("[Workflow]", 1)[0] + "\n" + modules_prompt
+                prompt = "推进当前批准计划的具体步骤。每个工作单元结束调用 agent_lab_checkpoint。全部步骤完成再调用 agent_lab_finish。"
+            system_prompt += plan_prompt(task)
+            provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
             remaining_tool_steps = self._budget_remaining_tools(task)
             if remaining_tool_steps <= 0:
-                self._pause_task_for_budget(task, "本轮工具预算已用尽，未进入 LLM 工具循环。")
-                self.storage.save_task(task)
-                return "tick 已暂停：本轮工具预算已用尽。"
-            resp = await self.context.tool_loop_agent(
-                event=event,
-                chat_provider_id=provider_id,
-                prompt=prompt,
-                system_prompt=system_prompt,
-                tools=self._build_toolset(spec),
-                max_steps=remaining_tool_steps,
-                tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120)),
-                llm_compress_keep_recent=int(_cfg(self.config, "llm_compress_keep_recent", 6)),
-                truncate_turns=int(_cfg(self.config, "truncate_turns", 2)),
-                agent_hooks=AgentLabRunHooks(
-                    self.storage,
-                    task.umo,
-                    task.task_id,
-                    budget_max_tools=remaining_tool_steps,
-                    progress_mode=str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")),
-                    progress_every_tools=int(_cfg(self.config, "agent_mode_progress_every_tools", 3)),
-                    progress_min_interval_seconds=int(
-                        _cfg(self.config, "agent_mode_progress_min_interval_seconds", 45)
-                    ),
-                ),
-                show_tool_use=(
-                    str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")).strip().lower()
-                    in {"astrbot", "native"}
-                ),
-            )
+                return "本轮工具预算已用尽，下轮从检查点继续。"
+            resp = await asyncio.wait_for(self.astrbot_bridge.run(
+                event, task, self._build_toolset(spec), prompt, system_prompt, remaining_tool_steps,
+                AgentLabRunHooks(self.storage, task.umo, task.task_id, budget_max_tools=0,
+                                progress_mode=str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")))),
+                timeout=max(10, int(task.budget.max_seconds_per_tick or 240)))
             text = (getattr(resp, "completion_text", "") or "").strip()
             latest_task = self.storage.load_active_task(event.unified_msg_origin)
             if not latest_task or latest_task.task_id != task.task_id:
@@ -191,8 +200,7 @@ class AgentRuntimeRunner:
                     node_id=runtime_run.react_node_id or task.workflow_current_node_id,
                     payload={"text": task.last_observation},
                 )
-            budget_message = self._consume_token_budget(task, getattr(resp, "usage", None))
-            task.add_token_usage(getattr(resp, "usage", None))
+            budget_message = ""  # Usage committed at each native model/compaction response.
             task.add_log("tick", f"reason={reason}; response={self._compact_text(text, 1200)}")
             task.add_snapshot(
                 "tick",
@@ -226,7 +234,10 @@ class AgentRuntimeRunner:
                 return f"tick 已暂停：{task.watchdog.paused_reason}\n\n{self._compact_text(text, 1800)}"
             return f"tick 完成。\n\n{self._compact_text(text, 1800)}"
         except Exception as exc:
-            task = self.storage.load_active_task(event.unified_msg_origin) or task
+            latest = self.storage.load_active_task(event.unified_msg_origin)
+            if latest is None or latest.task_id != task.task_id:
+                return "任务已结束；停止保存旧执行结果。"
+            task = latest
             count = task.add_blocker(type(exc).__name__, str(exc))
             self._watchdog_after_tick(
                 task,

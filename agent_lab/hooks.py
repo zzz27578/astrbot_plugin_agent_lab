@@ -119,7 +119,7 @@ class AgentLabRunHooks(BaseAgentRunHooks):
             return
         data = task.workflow_data if isinstance(task.workflow_data, dict) else {}
         tick = data.setdefault("tick_budget", {})
-        if isinstance(tick, dict):
+        if isinstance(tick, dict) and self.budget_max_tools:
             tick["tool_calls_used"] = int(tick.get("tool_calls_used") or 0) + 1
             task.budget.tool_calls_used += 1
             if self.budget_max_tools and tick["tool_calls_used"] > self.budget_max_tools:

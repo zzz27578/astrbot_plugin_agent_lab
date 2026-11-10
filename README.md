@@ -1,5 +1,23 @@
 # Agent Lab
 
+## v0.2.3：在原设计上改善 Bot 的任务工具
+
+保留原来的布局、配色、全屏画布、模块、条件/循环、并行和子代理配置。本版没有独立任务模型选择器：主任务使用来源 Bot 当前配置的模型与 Persona，子代理明确配置的覆盖仍有效。
+
+Bot 可用 `agent_lab_workflow_catalog` 按标题和简介找可选流程；没有合适流程时，`agent_lab_enter_mode` 默认 `workflow_mode="none"` 跳过画布，仍然立项并保存具体计划。应用指定方案时传 `workflow_mode="selected"` 和 `agent_id`。WebUI 在原任务入口增加“本次工作流”选择。
+
+立项时可以提供 `plan_json`，否则借用当前 Bot 模型草拟计划。管理员通过原审批按钮或 `/al approve <审批ID>` 批准后，按计划自动续轮。Bot 使用 `agent_lab_checkpoint` 写回具体步骤和工具证据；分析报告可通过 `agent_lab_record_report` 单独存档。任务对话保存在独立原生 conversation，不切换日常会话，也不把整份日志反复注入日常聊天。
+
+管理员途中可让 Bot 调用 `agent_lab_steer` 转交要求，也可 `/al steer <要求>`；`/al pause`、`/al resume` 控制续接。WebUI 原任务详情增加计划修订、引导和未知工具结果核对。服务重载后需核对检查点并明确恢复；模型轮次上限不等于任务结束，审批、错误、无进展或总预算会停止续轮。
+
+管理员范围使用 AstrBot `admins_id` 与插件 `workflow_admin_ids`；默认 `private_only=true` 完全关闭群聊任务入口。独立控制台需要 Token，原生页面使用 Dashboard 登录。主要适配基准为 AstrBot **4.29.4**，最低版本声明相应调整。
+
+定时模块和原节点保留。定时创建任务需配置真实 `schedule_target_umo` 与 `schedule_admin_id`；不再构造虚假会话来源，创建后仍经过本次计划审批。普通长任务的连续执行不靠定时心跳。
+
+审批策略的自然语言范围仍作为提示；若管理员要明确批准某工具在本任务内反复使用，可在原方案的 `preapproved_scopes` 填 `tool:精确工具名`，例如 `tool:astrbot_execute_shell`。计划审批会列出该范围，批准后免重复询问；这会覆盖该工具参数，须在批准前确认边界。没有这种明确范围时，高风险调用按具体参数逐次审批。
+
+本版仅进行了静态源码、JavaScript 语法与接口检查，未启动插件/模型或实际验证手感。详见 [v0.2.3 更新报告](docs/RELEASE_REPORT_v0.2.3.md)。下方原说明保留，若涉及“默认心跳续跑”“归档自动公开记忆”等旧行为，以本段和更新报告为准。
+
 为 AstrBot 机器人提供**持续任务执行**能力的插件。
 
 ## 解决什么问题
@@ -111,7 +129,7 @@ http://127.0.0.1:8788
 
 ## 兼容性
 
-- AstrBot >= 4.16, < 5
+- AstrBot >= 4.29.4, < 5
 - 默认仅私聊可用
 - Bot 身份自动继承 AstrBot 运行时 Persona 配置
 

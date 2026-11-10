@@ -53,7 +53,7 @@ class AstrBotToolExecutor:
             )
         tmgr = self.owner.context.get_llm_tool_manager()
         try:
-            tool = tmgr.get_func(tool_name)
+            tool = self.owner.astrbot_bridge.tool(tool_name)
         except Exception:
             tool = None
         if not tool or not self.owner._tool_available_for_agent(tool, self.owner._disabled_plugin_names(spec)):
@@ -107,26 +107,11 @@ class AstrBotToolExecutor:
                 blocked=True,
                 note="node_executor_tool_permission_blocked",
             )
-        budget_reason = self.owner._consume_tool_budget(task, tool_name)
-        if budget_reason:
-            self.owner._pause_task_for_budget(task, budget_reason)
-            return ToolExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=budget_reason,
-                blocked=True,
-                note="node_executor_tool_budget",
-            )
         try:
-            from astrbot.core.agent.run_context import ContextWrapper
-
-            result = await tool.call(
-                ContextWrapper(
-                    context=event,
-                    tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)),
-                ),
-                **call_args,
-            )
+            result = await self.owner.astrbot_bridge.invoke(event, tool, call_args, task.task_id)
+            latest = self.owner.storage.load_active_task(task.umo)
+            if latest and latest.task_id == task.task_id:
+                task.__dict__.update(latest.__dict__)
         except NotImplementedError:
             return ToolExecutionResult(
                 outcome=f"Tool {tool_name} has no direct callable executor; ReAct/tool-loop is required.",
@@ -134,6 +119,9 @@ class AstrBotToolExecutor:
                 note="node_executor_tool_react_fallback",
             )
         except Exception as exc:
+            latest = self.owner.storage.load_active_task(task.umo)
+            if latest and latest.task_id == task.task_id:
+                task.__dict__.update(latest.__dict__)
             return ToolExecutionResult(
                 ok=False,
                 status="blocked",
@@ -142,6 +130,8 @@ class AstrBotToolExecutor:
                 note="node_executor_tool_error",
             )
         text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        if "status=failed]" in text or "status=unknown]" in text:
+            return ToolExecutionResult(ok=False, blocked=True, status="blocked", outcome=text[:2400])
         return ToolExecutionResult(
             outcome=self.owner._compact_text(text, 1000) or f"Tool {tool_name} completed.",
             data={

@@ -4891,3 +4891,33 @@ input[type="checkbox"] {
   .memory-content-text { max-height: 260px; }
   .memory-detail-drawer { width: 100%; }
 }
+
+
+/* v0.2.3: keep the existing palette/layout, make state transitions readable. */
+:root { --motion-fast: 140ms; --motion-normal: 220ms; --motion-ease: cubic-bezier(.2,.8,.2,1); }
+.button, .workflow-dock-button, .workflow-material-chip, .nav-item, .list-row {
+  transition: background-color var(--motion-fast), border-color var(--motion-fast), color var(--motion-fast), box-shadow var(--motion-normal), transform var(--motion-fast) var(--motion-ease);
+}
+.button:not(:disabled):hover, .workflow-dock-button:not(:disabled):hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(47,125,91,.14); }
+.button:not(:disabled):active, .workflow-dock-button:not(:disabled):active { transform: translateY(0) scale(.97); }
+.button:focus-visible, .workflow-dock-button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; }
+[aria-busy="true"] { cursor: progress; opacity: .7; }
+.flow-node { transition: box-shadow 180ms, border-color 180ms; }
+.flow-node:hover { box-shadow: 0 10px 26px rgba(47,125,91,.18); }
+.node-port { transition: filter 140ms; }
+.node-port:hover { filter: drop-shadow(0 0 4px var(--green)); }
+.link-group.is-selected .workflow-link { stroke-width: 4; filter: drop-shadow(0 0 3px var(--green)); }
+.workflow-link-hit { cursor: pointer; stroke-width: 16px; }
+.workflow-link-preview { stroke: var(--green); stroke-width: 2.5; stroke-dasharray: 7 4; animation: al-flow 700ms linear infinite; pointer-events: none; }
+.workflow-inspector-drawer, .workflow-tool-drawer, .app-modal { animation: al-panel-in 220ms var(--motion-ease) both; }
+.feedback { transition: background-color 200ms, border-color 200ms; }
+.task-plan-steps { padding-left: 24px; }
+.task-plan-steps li { padding: 12px; border-left: 2px solid var(--line); margin: 8px 0; border-radius: 0 8px 8px 0; }
+.task-plan-steps .is-current { border-color: var(--green); background: var(--panel-2); }
+.task-plan-card details { margin-top: 16px; }
+.task-plan-card pre { max-height: 160px; overflow: auto; white-space: pre-wrap; }
+@keyframes al-panel-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes al-flow { to { stroke-dashoffset: -22; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

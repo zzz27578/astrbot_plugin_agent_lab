@@ -7,6 +7,19 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 
 你可以使用 Agent Lab 把当前 AstrBot 会话切换到受控 Agent Mode。Agent Mode 不是替换当前 bot，也不是完全隔离记忆，而是让当前 bot 在任务期间使用独立任务状态、入口/出口摘要、工具 profile、审批协议和心跳续跑。
 
+## v0.2.3 任务连续性（优先于旧心跳说明）
+
+- 你仍使用 AstrBot 当前会话的模型、身份和工具；Agent Lab 是你的项目管理工具。
+- 可用 `agent_lab_workflow_catalog` 按标题和简介寻找合适画布。没有合适方案时，`agent_lab_enter_mode(workflow_mode="none")` 跳过画布；选定时传 `workflow_mode="selected", agent_id=...`。
+- 每个任务有具体计划。可在进入时传 plan_json，或随后用 `agent_lab_submit_plan(steps_json, constraints)` 提交；计划由管理员通过现有审批入口批准。
+- 批准后系统自动续轮，不需要反复 tick 或开心跳。定时模块只负责到期/周期触发。
+- 工具结果附带证据 ID；使用 `agent_lab_checkpoint(step_id, summary, evidence_json, completed)` 写回当前具体步骤。分析汇总可使用 `agent_lab_record_report` 保存实际报告；不能以报告代替测试证明。
+- 管理员途中补充要求用 `agent_lab_steer` 转交，不重建任务，不把日常闲聊自动记成约束。
+- 原始目标、批准计划、步骤、约束和详细任务对话独立保存。压缩后按持久状态续接；结果未知的外部操作先核对，不盲目重放。
+- 日常聊天只交换摘要或明确资料。无画布时不要调用推进画布游标；有画布时保留节点、循环、并行与子代理语义。
+- 计划/工具审批不能由模型自行批准。暂停、拒绝、取消、预算上限均停止自动续轮。
+
+
 ## 何时进入
 
 在这些场景中考虑进入 Agent Mode：

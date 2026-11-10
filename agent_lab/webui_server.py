@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from quart import Quart, Response, jsonify, request, send_from_directory
+from quart import Quart, Response, g, jsonify, request, send_from_directory
 
 
 class StandaloneWebUIServer:
@@ -87,6 +87,12 @@ class StandaloneWebUIServer:
             resp.headers["Cache-Control"] = "no-cache"
             return resp
 
+        @app.get("/ui-runtime.js")
+        async def ui_runtime():
+            resp = await send_from_directory(self.static_dir, "ui-runtime.js")
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
         @app.get("/api/health")
         async def health():
             return jsonify({"ok": True, "name": "Agent Lab", "auth": bool(self.token)})
@@ -144,6 +150,10 @@ class StandaloneWebUIServer:
         async def task_start():
             return await self._guard(self.owner.api_task_start)
 
+        @app.post("/api/task/control")
+        async def task_control():
+            return await self._guard(self.owner.api_task_control)
+
         @app.post("/api/task/tick")
         async def task_tick():
             return await self._guard(self.owner.api_task_tick)
@@ -183,11 +193,12 @@ class StandaloneWebUIServer:
     async def _guard(self, handler: Callable[[], Awaitable[Any]]) -> Any:
         if not self._authorized():
             return jsonify({"ok": False, "error": "unauthorized"}), 401
+        g.agent_lab_web_admin = True
         return await handler()
 
     def _authorized(self) -> bool:
         if not self.token:
-            return True
+            return False
         header = request.headers.get("Authorization", "")
         if header.startswith("Bearer ") and header.removeprefix("Bearer ").strip() == self.token:
             return True

@@ -7,7 +7,6 @@ import json
 import re
 import random
 import shutil
-import subprocess
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -25,7 +24,7 @@ except Exception:  # pragma: no cover - optional AstrBot component surface.
     Comp = None
 
 try:
-    from quart import jsonify, request
+    from quart import jsonify, request, g, has_request_context
 except Exception:  # pragma: no cover - AstrBot dashboard provides quart.
     jsonify = None
     request = None
@@ -72,10 +71,14 @@ from .agent_lab.tool_executor import AstrBotToolExecutor
 from .agent_lab.verifier import AgentVerifier
 from .agent_lab.webui_server import StandaloneWebUIServer
 from .agent_lab.workers import normalize_worker_output, worker_spec_for_node
+from .agent_lab.task_control import TaskControl, control as task_control, prompt as task_plan_prompt
+from .agent_lab.astrbot_bridge import AstrBotBridge
+from .agent_lab.web_api import admin_api
+from .agent_lab.node_policy import execute_with_policy
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.2"
+PLUGIN_VERSION = "v0.2.3"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -575,6 +578,8 @@ class AgentLabPlugin(Star):
         self.verifier = AgentVerifier()
         self.api_executor = CustomApiExecutor(self)
         self.tool_executor = AstrBotToolExecutor(self)
+        self.task_control = TaskControl(self)
+        self.astrbot_bridge = AstrBotBridge(self)
         self.node_executors = NodeExecutorRegistry()
         self._register_node_executors()
         self._workflow_schedule_jobs: dict[str, str] = {}
@@ -594,6 +599,7 @@ class AgentLabPlugin(Star):
         self._register_web_apis()
 
     async def initialize(self):
+        self.task_control.recover()
         self._sync_default_agent_identity()
         self._sync_agent_mode_skill()
         await self._rehydrate_heartbeats()
@@ -615,6 +621,7 @@ class AgentLabPlugin(Star):
         logger.info("[AgentLab] initialized")
 
     async def terminate(self):
+        await self.task_control.stop()
         await self._disable_workflow_schedules()
         await self._stop_webui_server()
         logger.info("[AgentLab] terminated")
@@ -622,22 +629,100 @@ class AgentLabPlugin(Star):
     def _cfg_value(self, key: str, default: Any = None) -> Any:
         return _cfg(self.config, key, default)
 
+    def _require_task_access(self, event: AstrMessageEvent) -> None:
+        if _bool_cfg(self.config, "private_only", True) and not event.is_private_chat():
+            raise PermissionError("Agent Lab 已关闭群聊入口，请使用管理员私聊。")
+        ids = set(self._workflow_admin_ids())
+        cfg = self._context_config(event.unified_msg_origin) or {}
+        ids.update(self._clean_string_list(_cfg(cfg, "admins_id", [])))
+        trusted_web = event.get_extra("agent_lab_web_admin", False)
+        if not trusted_web and str(event.get_sender_id()) not in ids:
+            raise PermissionError("任务工具仅限 AstrBot 管理员或明确授权的管理员。")
+        event.role = "admin"
+
+    @filter.llm_tool(name="agent_lab_workflow_catalog")
+    async def agent_lab_workflow_catalog(self, event: AstrMessageEvent) -> str:
+        """按标题和简介查看可选流程；没有合适的方案时直接不应用画布。"""
+        self._require_task_access(event)
+        rows = [{"id": spec.agent_id, "title": spec.name, "description": spec.description[:500]}
+                for spec in self.storage.list_agents() if spec.enabled and self._workflow_scope_allows_event(spec, event)[0]]
+        return json.dumps({"workflows": rows, "none": "可不应用画布，直接提交本次任务计划"}, ensure_ascii=False)
+
+    @filter.llm_tool(name="agent_lab_submit_plan")
+    async def agent_lab_submit_plan(self, event: AstrMessageEvent, steps_json: str, constraints: str = "") -> str:
+        """提交/修订当前任务的具体计划，管理员批准后继续。不要代替管理员批准。
+
+        Args:
+            steps_json(string): JSON数组，每步包含id、title、instruction，修订时保留已完成步骤。
+            constraints(string): 必须保留的用户要求，每行一项。
+        """
+        self._require_task_access(event)
+        return self.task_control.submit_plan(event, steps_json, constraints)
+
+    @filter.llm_tool(name="agent_lab_checkpoint")
+    async def agent_lab_checkpoint(self, event: AstrMessageEvent, step_id: str, summary: str, evidence_json: str = "[]", completed: bool = False) -> str:
+        """保存当前计划步骤的位置和执行证据，压缩后可直接续接。
+
+        Args:
+            step_id(string): 当前计划步骤ID。
+            summary(string): 本步骤实际进展和遗留事项。
+            evidence_json(string): 成功工具返回的证据ID的JSON数组。
+            completed(boolean): 本步骤是否已完成。
+        """
+        self._require_task_access(event)
+        return self.task_control.checkpoint(event, step_id, summary, evidence_json, completed)
+
+    @filter.llm_tool(name="agent_lab_steer")
+    async def agent_lab_steer(self, event: AstrMessageEvent, message: str) -> str:
+        """将管理员途中补充的要求存入当前任务，下一决策边界生效。
+
+        Args:
+            message(string): 管理员补充要求或纠正。
+        """
+        self._require_task_access(event)
+        return self.task_control.steer(event.unified_msg_origin, message)
+
+    @filter.llm_tool(name="agent_lab_record_report")
+    async def agent_lab_record_report(self, event: AstrMessageEvent, report: str) -> str:
+        """保存当前步骤的实际分析报告。它证明报告已保存，不代表测试或外部操作成功。
+
+        Args:
+            report(string): 已分析出的结论、依据、未验证事项。
+        """
+        task = self.astrbot_bridge.check(event)
+        state = task_control(task)
+        if not report.strip() or len(report) > 30000:
+            return "报告应为1–30000字符。"
+        identifier = new_id("report")
+        self.storage.append_task_memory_observation(task, {"id": identifier, "report": report, "step_id": state.get("current_step_id")})
+        state.setdefault("journal", []).append({"id": identifier, "name": "report", "status": "completed",
+            "step_id": state.get("current_step_id"), "plan_version": state.get("version"), "result": report[:2000],
+            "fingerprint": hashlib.sha256(report.encode()).hexdigest()})
+        self.storage.save_task(task)
+        return f"报告已保存，证据 ID：{identifier}。报告内容不是实际测试通过证明。"
+
     @filter.command("agentlab")
     async def agentlab_command(self, event: AstrMessageEvent):
         """Agent Lab 控制台命令：status/start/tick/finish/cancel/heartbeat/approve。"""
-        if False and not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
+        if not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
             yield event.plain_result("Agent Lab 第一版仅允许私聊使用，避免群聊误触发和权限风险。")
             return
-        result = await self._handle_command(event, _message_tail(event, "agentlab"))
+        try:
+            result = await self._handle_command(event, _message_tail(event, "agentlab"))
+        except (ValueError, PermissionError) as exc:
+            result = str(exc)
         yield event.plain_result(result)
 
     @filter.command("al")
     async def al_command(self, event: AstrMessageEvent):
         """Agent Lab 短命令。"""
-        if False and not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
+        if not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
             yield event.plain_result("Agent Lab 第一版仅允许私聊使用。")
             return
-        result = await self._handle_command(event, _message_tail(event, "al"))
+        try:
+            result = await self._handle_command(event, _message_tail(event, "al"))
+        except (ValueError, PermissionError) as exc:
+            result = str(exc)
         yield event.plain_result(result)
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
@@ -656,6 +741,8 @@ class AgentLabPlugin(Star):
         user_confirmed: bool = False,
         need_heartbeat: bool = False,
         agent_id: str = "",
+        workflow_mode: str = "none",
+        plan_json: str = "",
     ) -> str:
         """进入 AstrBot 任务模式，创建任务状态。
 
@@ -665,12 +752,15 @@ class AgentLabPlugin(Star):
             risk_level(string): low/work/high。涉及文件写入、命令、部署、删除、密钥时至少为 work/high。
             user_confirmed(boolean): 用户是否明确同意进入任务模式或授权当前风险等级。
             need_heartbeat(boolean): 是否需要为长任务开启心跳。
-            agent_id(string): 可选 AgentSpec ID。为空时使用默认 Agent。
+            agent_id(string): 可选流程方案 ID，可先通过 agent_lab_workflow_catalog 查看标题和简介。
+            workflow_mode(string): none不应用画布，selected应用agent_id方案。默认none。
+            plan_json(string): 可选具体计划JSON数组，包含id/title/instruction；未提供时随后调用agent_lab_submit_plan。
         """
+        self._require_task_access(event)
         spec = self.storage.get_agent(agent_id or None)
-        if not spec.enabled:
+        if workflow_mode == "selected" and not spec.enabled:
             return "当前方案未启用。请先在任务模式网页控制台启用，或选择另一个方案。"
-        if spec.trigger_mode in ("manual", "confirm") and not user_confirmed:
+        if workflow_mode == "selected" and spec.trigger_mode in ("manual", "confirm") and not user_confirmed:
             return (
                 "需要先向用户确认：是否进入任务模式？请说明将创建任务状态、"
                 "按任务规则管理上下文，并在危险操作前请求审批。"
@@ -684,6 +774,8 @@ class AgentLabPlugin(Star):
             source="tool",
             risk_level=risk_level,
             agent_id=agent_id,
+            workflow_mode=workflow_mode,
+            plan_json=plan_json,
         )
 
     @filter.llm_tool(name="agent_lab_read_state")
@@ -693,6 +785,7 @@ class AgentLabPlugin(Star):
         Args:
             format(string): summary 或 markdown。summary 返回短摘要，markdown 返回完整任务存档。
         """
+        self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
@@ -707,6 +800,7 @@ class AgentLabPlugin(Star):
         runtime_summary = self.agent_runtime.summary(task)
         return (
             f"task_id: {task.task_id}\n"
+            f"{task_plan_prompt(task)}\n"
             f"status: {task.status}\n"
             f"root_goal: {task.root_goal}\n"
             f"completion_conditions: {task.completion_conditions}\n"
@@ -730,6 +824,7 @@ class AgentLabPlugin(Star):
         Args:
             format(string): summary 或 json。summary 给模型快速复盘，json 返回结构化摘要。
         """
+        self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
@@ -762,9 +857,12 @@ class AgentLabPlugin(Star):
             note(string): 补充说明，如为什么选择这个分支。
             status(string): completed/running/skipped/blocked。
         """
+        self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
+        if task_control(task).get("workflow") == "none":
+            return "本任务未应用画布；请使用 agent_lab_checkpoint 更新具体计划步骤。"
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
         self._normalize_agent_workflow(spec)
         result = self._advance_task_workflow(
@@ -802,6 +900,7 @@ class AgentLabPlugin(Star):
             blocker(string): 当前阻塞点；没有则留空。
             need_heartbeat(boolean): 是否建议开启心跳。
         """
+        self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
@@ -819,7 +918,7 @@ class AgentLabPlugin(Star):
             if count >= task.heartbeat.max_repeated_failures:
                 task.status = "blocked"
                 await self._disable_heartbeat(task)
-        elif status in ("running", "paused", "blocked", "completed"):
+        elif status in ("paused", "blocked"):
             task.status = status
         if need_heartbeat and not task.heartbeat.enabled and task.heartbeat.allowed:
             # Record the recommendation; user/tool can call agent_lab_set_heartbeat.
@@ -869,6 +968,7 @@ class AgentLabPlugin(Star):
     @filter.llm_tool(name="agent_lab_tick")
     async def agent_lab_tick(self, event: AstrMessageEvent, reason: str = "tool") -> str:
         """推进当前任务模式任务一轮。执行前必须确认没有待审批危险操作。"""
+        self._require_task_access(event)
         return await self._tick(event, reason=reason)
 
     @filter.llm_tool(name="agent_lab_request_approval")
@@ -890,6 +990,7 @@ class AgentLabPlugin(Star):
             impact(string): 影响范围。
             rollback(string): 可回滚方案。
         """
+        self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task，无法记录审批。"
@@ -940,6 +1041,7 @@ class AgentLabPlugin(Star):
         reason: str = "",
     ) -> str:
         """为当前任务开启或关闭心跳。长任务可开启；普通短任务不要滥用。"""
+        self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
@@ -957,6 +1059,7 @@ class AgentLabPlugin(Star):
         memory_candidates: str = "",
     ) -> str:
         """任务达到完成条件后归档并退出任务模式。"""
+        self._require_task_access(event)
         return await self._finish_task(
             event,
             status="completed",
@@ -979,6 +1082,7 @@ class AgentLabPlugin(Star):
             status(string): accepted/candidate/rejected/all，默认只读 accepted。
             limit(string): 返回条数上限，默认 8。
         """
+        self._require_task_access(event)
         query = str(query or "").strip().lower()
         status = str(status or "accepted").strip().lower()
         try:
@@ -1036,6 +1140,7 @@ class AgentLabPlugin(Star):
             query(string): Current task goal, keywords, or desired outcome.
             limit(string): Maximum number of patterns, default 5.
         """
+        self._require_task_access(event)
         query = str(query or "").strip()
         if not query:
             active_task = self.storage.load_active_task(event.unified_msg_origin)
@@ -1070,6 +1175,7 @@ class AgentLabPlugin(Star):
             body_json(string): 可选 JSON 对象或数组，作为非 GET 请求体。
             headers_json(string): 可选 JSON 对象，作为本次调用的额外请求头。
         """
+        self._require_task_access(event)
         result, api_spec, message = await self._call_registered_custom_api(
             api_id,
             query_json=query_json,
@@ -1116,9 +1222,12 @@ class AgentLabPlugin(Star):
             api_payloads_json(string): 可选 JSON 对象，按 node_id 配置 API query/body/headers。
             max_concurrency(string): 并发上限，默认 3，最大 6。
         """
+        self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
+        if task_control(task).get("workflow") == "none":
+            return "本任务未选画布方案；并行工作包属于画布能力，请明确选用方案后使用。"
         if task.pending_approvals():
             return "存在待审批操作，先处理审批再运行并行工作流。"
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
@@ -1187,6 +1296,7 @@ class AgentLabPlugin(Star):
             ref_type(string): 可选引用类型：plugin/api/tool/skill。
             ref_id(string): 可选引用 ID，例如 plugin_name、api_id、tool_name、skill_name。
         """
+        self._require_task_access(event)
         operation = str(operation or "check").strip().lower()
         spec = self.storage.get_agent(agent_id or None)
         self._normalize_agent_workflow(spec)
@@ -1330,29 +1440,25 @@ class AgentLabPlugin(Star):
     async def inject_agent_lab_policy(self, event: AstrMessageEvent, req: ProviderRequest):
         if not _bool_cfg(self.config, "inject_agent_mode_policy", True):
             return
-        if False and not event.is_private_chat() and _bool_cfg(self.config, "private_only", True):
+        try:
+            self._require_task_access(event)
+        except PermissionError:
+            if req.func_tool:
+                for tool in list(req.func_tool.tools):
+                    if tool.name.startswith("agent_lab_"):
+                        req.func_tool.remove_tool(tool.name)
             return
         spec = self.storage.get_agent()
         task = self.storage.load_active_task(event.unified_msg_origin)
         if task:
-            spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or spec.to_dict())
-            modules_prompt = "\n\n".join(
-                part
-                for part in (
-                    self._build_task_extensions_prompt(spec, task=task),
-                    self._build_exposed_task_memory_prompt(),
-                )
-                if part.strip()
-            )
-            req.system_prompt += "\n\n" + build_task_system_prompt(
-                spec, task, modules_prompt
-            )
+            req.system_prompt += "\n[Agent Lab] 当前来源有独立任务 " + task.task_id + "。日常聊天不接管后台执行；查进度用agent_lab_read_state，补充要求用agent_lab_steer。未提交计划时用agent_lab_submit_plan。"
         else:
             if not spec.enabled:
                 return
-            memory_prompt = self._build_exposed_task_memory_prompt()
+            memory_prompt = self._build_exposed_task_memory_prompt(event.unified_msg_origin)
             pattern_prompt = self._build_task_pattern_prompt(event.message_str)
             req.system_prompt += "\n\n" + build_agent_mode_policy(spec)
+            req.system_prompt += "\n[任务工具使用补充] Agent Lab是当前Bot的项目管理工具。主模型沿用当前会话。用agent_lab_workflow_catalog按标题和简介选择可选画布，无合适方案则workflow_mode=none跳过；先立项并提交具体计划，由管理员批准。批准后系统续轮，不需反复催促tick；定时仅用于等待或定点任务。"
             if pattern_prompt:
                 req.system_prompt += "\n\n" + pattern_prompt
             if memory_prompt:
@@ -1360,12 +1466,36 @@ class AgentLabPlugin(Star):
             await self._maybe_trigger_message_monitor(event, mode="llm_request")
 
     async def _handle_command(self, event: AstrMessageEvent, tail: str) -> str:
+        self._require_task_access(event)
         if not tail or tail in ("help", "帮助"):
             return self._help_text()
         cmd, _, rest = tail.partition(" ")
         cmd = cmd.lower().strip()
         rest = rest.strip()
 
+        if cmd in {"steer", "引导"}:
+            return self.task_control.steer(event.unified_msg_origin, rest)
+        if cmd in {"plan", "计划"}:
+            return self.task_control.submit_plan(event, rest)
+        if cmd in {"resume", "恢复"}:
+            task = self.task_control.load(event.unified_msg_origin)
+            state = task_control(task)
+            if task.pending_approvals() or state.get("approved_version", 0) != state.get("version", 0) or not state.get("version"):
+                return "请先提交并批准当前计划。"
+            if any(row.get("status") in {"started", "unknown"} for row in state.get("journal", [])):
+                return "工具结果未知，请在任务页核对后恢复。"
+            state["human_paused"] = False
+            task.status = "running"
+            task.clear_wait()
+            self.storage.save_task(task)
+            self.task_control.schedule(event)
+            return "已从检查点恢复自动续接。"
+        if cmd in {"pause", "暂停"}:
+            task = self.task_control.load(event.unified_msg_origin)
+            task_control(task)["human_paused"] = True
+            task.status = "paused"
+            self.storage.save_task(task)
+            return "已暂停；当前外部操作可能仍在收尾，不再派发新操作。"
         if cmd in ("status", "状态"):
             return self._status_text(event.unified_msg_origin)
         if cmd in ("runtime", "运行时"):
@@ -1401,6 +1531,7 @@ class AgentLabPlugin(Star):
                 source="command",
                 risk_level="work",
                 agent_id="",
+                workflow_mode="none",
             )
         if cmd in ("tick", "继续"):
             return await self._tick(event, reason="command")
@@ -1425,6 +1556,7 @@ class AgentLabPlugin(Star):
                 finished = await self._finish_after_approval(event, approval_id)
                 if finished:
                     msg = f"{msg}\n{finished}"
+            self.task_control.schedule(event)
             return msg
         if cmd == "reject":
             return self._resolve_approval(event.unified_msg_origin, rest, False, event.get_sender_id())
@@ -1444,17 +1576,22 @@ class AgentLabPlugin(Star):
         trigger_payload: dict[str, Any] | None = None,
         auto_run: bool = False,
         skip_scope_check: bool = False,
+        workflow_mode: str = "selected",
+        plan_json: str = "",
     ) -> str:
+        self._require_task_access(event)
+        if workflow_mode not in {"none", "selected"}:
+            raise ValueError("workflow_mode 必须为 none 或 selected")
         umo = event.unified_msg_origin
         if self.storage.load_active_task(umo):
             return "当前会话已有 active task。请先 /agentlab finish 或 /agentlab cancel。"
 
         spec = self.storage.get_agent(agent_id or None)
-        if not spec.enabled:
+        if workflow_mode == "selected" and not spec.enabled:
             return "当前方案未启用。请先在任务模式网页控制台启用后再进入任务模式。"
         self._normalize_agent_workflow(spec)
         allowed, reason = self._workflow_scope_allows_event(spec, event)
-        if not allowed:
+        if workflow_mode == "selected" and not allowed:
             return f"当前工作流未在此会话范围启用：{reason}"
         runtime_identity = await self._current_bot_identity_for_event(event)
         effective_agent_name = (
@@ -1465,12 +1602,7 @@ class AgentLabPlugin(Star):
         profile_agent = spec.to_dict()
         profile_agent["name"] = effective_agent_name
         profile_agent["runtime_identity"] = runtime_identity
-        if spec.isolation_policy.mode == "off":
-            session_plugin_snapshot = {}
-        else:
-            session_plugin_snapshot = await self.guard.apply_overrides(
-                umo, self._effective_session_plugin_overrides(spec)
-            )
+        session_plugin_snapshot = {}
         self._refresh_summarizer_rules()
         entry_summary = await self.summarizer.summarize_entry(
             event, goal, brief, policy=self._as_plain_dict(spec.memory_policy)
@@ -1496,12 +1628,14 @@ class AgentLabPlugin(Star):
             profile_snapshot={
                 "agent": profile_agent,
                 "session_plugin_snapshot": session_plugin_snapshot,
-                "restore_session_plugins": bool(spec.isolation_policy.restore_on_exit),
+                "restore_session_plugins": False,
             },
             heartbeat=spec.heartbeat_policy,
             budget=TaskBudget.from_dict(getattr(spec.default_task_budget, "__dict__", None)),
         )
-        self._initialize_task_workflow(task, spec, source=source)
+        self.task_control.initialize(task, event, workflow_mode)
+        if workflow_mode == "selected":
+            self._initialize_task_workflow(task, spec, source=source)
         if trigger_payload:
             data = self._ensure_workflow_data(task)
             data["trigger_payload"] = trigger_payload
@@ -1551,24 +1685,19 @@ class AgentLabPlugin(Star):
                 event, task, reason="start_request"
             )
         runtime_text = ""
-        if auto_run:
-            self._budget_before_tick(task, source or "workflow_trigger")
-            runtime_run = await self._run_workflow_runtime(
-                event=event,
-                task=task,
-                spec=spec,
-                reason=source or "workflow_trigger",
-            )
-            if self.storage.load_active_task(umo):
-                self.storage.save_task(task)
-            if runtime_run.changed:
-                runtime_text = f"\n- workflow_runtime: {self._compact_text(runtime_run.summary(), 500)}"
+        if plan_json.strip():
+            runtime_text = "\n" + self.task_control.submit_plan(event, plan_json)
+        else:
+            try:
+                runtime_text = "\n" + await self.task_control.propose(event, task.task_id)
+            except Exception as exc:
+                runtime_text = "\n计划草拟未完成：" + str(exc) + "。Bot可调用agent_lab_submit_plan提交，任务不会提前执行。"
         return (
             f"已进入任务模式。\n"
             f"- task_id: {task.task_id}\n"
             f"- 方案: {effective_agent_name}\n"
             f"- 状态文件: {self.storage.task_markdown_path(umo, task.task_id)}\n"
-            f"- 下一步: /agentlab tick\n"
+            f"- 下一步: 提交具体计划并由管理员批准；批准后自动续接。\n"
             f"{runtime_text}"
             f"{heartbeat_text}"
         )
@@ -1601,6 +1730,10 @@ class AgentLabPlugin(Star):
         return str(result.get("message") or "Workflow triggered.")
 
     async def _maybe_trigger_message_monitor(self, event: AstrMessageEvent, mode: str = "native") -> None:
+        try:
+            self._require_task_access(event)
+        except PermissionError:
+            return
         if not event or self.storage.load_active_task(event.unified_msg_origin):
             return
         text = str(getattr(event, "message_str", "") or "").strip()
@@ -1709,9 +1842,10 @@ class AgentLabPlugin(Star):
     def _approval_actor_allowed(self, user_id: str) -> bool:
         actor = str(user_id or "").strip()
         if actor == "webui":
-            return True
+            return bool(has_request_context() and (getattr(g, "username", None) or getattr(g, "agent_lab_web_admin", False)))
         admin_ids = set(self._workflow_admin_ids())
-        return bool(actor) and (not admin_ids or actor in admin_ids)
+        admin_ids.update(self._clean_string_list(_cfg(self._context_config(), "admins_id", [])))
+        return bool(actor) and actor in admin_ids
 
     @staticmethod
     def _approval_row(task: TaskState, approval_id: str) -> dict[str, Any] | None:
@@ -1849,6 +1983,9 @@ class AgentLabPlugin(Star):
         if not task:
             return "当前没有 active task。"
         status = str(status or "completed").strip().lower()
+        state = task_control(task)
+        if status == "completed" and state.get("steps") and any(step.get("status") != "completed" for step in state["steps"]):
+            return "本次批准计划仍有未完成步骤。请保存步骤证据，或明确取消任务。"
         approved_override = self._approved_finish_override(task, finish_approval_id, status)
         finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
         if not finish_verdict.passed and approved_override is None:
@@ -1890,6 +2027,9 @@ class AgentLabPlugin(Star):
             )
         self._expire_pending_approvals(task, reason="task_finish")
         task.clear_wait()
+        task.status = "paused"
+        task_control(task)["human_paused"] = True
+        self.storage.save_task(task)
         self._refresh_summarizer_rules()
         exit_summary = await self.summarizer.summarize_exit(event, task, final_summary)
         task.status = status
@@ -2006,19 +2146,27 @@ class AgentLabPlugin(Star):
         result = await self._tick(event, reason="heartbeat")
         logger.info("[AgentLab] heartbeat result for %s: %s", task.task_id, result[:500])
 
-    def _make_cron_event(self, umo: str, message: str):
+    def _make_cron_event(self, umo: str, message: str, actor_id: str = ""):
         try:
             from astrbot.core.cron.events import CronMessageEvent
             from astrbot.core.platform.message_session import MessageSession
 
             session = MessageSession.from_str(umo)
-            return CronMessageEvent(
-                context=self.context,
-                session=session,
-                message=message,
-                extras={"agent_lab_heartbeat": True},
-                message_type=session.message_type,
+            event = CronMessageEvent(
+                context=self.context, session=session, message=message,
+                extras={"agent_lab_heartbeat": True}, message_type=session.message_type,
             )
+            task = self.storage.load_active_task(umo)
+            state = task_control(task) if task else {}
+            event.message_obj.sender.user_id = str(state.get("owner_id") or actor_id or "")
+            if has_request_context() and (getattr(g, "username", None) or getattr(g, "agent_lab_web_admin", False)):
+                event.set_extra("agent_lab_web_admin", True)
+                event.message_obj.sender.user_id = str(state.get("owner_id") or "webui")
+            elif state.get("web_admin"):
+                event.set_extra("agent_lab_web_admin", True)
+            self._require_task_access(event)
+            return event
+
         except Exception as exc:
             logger.warning("[AgentLab] cannot create cron event: %s", exc)
             return None
@@ -2093,11 +2241,13 @@ class AgentLabPlugin(Star):
         agent_id = str(payload.get("agent_id") or "").strip()
         spec = self.storage.get_agent(agent_id or None)
         trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
-        umo = str(
-            payload.get("umo")
-            or f"aiocqhttp:FriendMessage:agent_lab_schedule_{agent_id}_{int(time.time() * 1000)}"
-        ).strip()
-        event = self._make_cron_event(umo, f"Agent Lab workflow schedule: {spec.name or agent_id}")
+        umo = str(payload.get("umo") or _cfg(self.config, "schedule_target_umo", "")
+                  or next(iter(spec.workflow_scope.umo_allowlist or []), "")).strip()
+        actor_id = str(_cfg(self.config, "schedule_admin_id", "") or "").strip()
+        if not umo or not actor_id:
+            logger.warning("[AgentLab] 定时方案 %s 需要真实 schedule_target_umo 和 schedule_admin_id，未创建虚假会话。", agent_id)
+            return
+        event = self._make_cron_event(umo, f"Agent Lab workflow schedule: {spec.name or agent_id}", actor_id=actor_id)
         if event is None:
             logger.warning("[AgentLab] workflow schedule skipped; cannot create event for %s", agent_id)
             return
@@ -2107,12 +2257,14 @@ class AgentLabPlugin(Star):
             text=str(payload.get("description") or trigger.description or f"scheduled workflow {agent_id}"),
             data=dict(payload),
         )
-        await self._trigger_workflow_from_payload(
+        result = await self._trigger_workflow_from_payload(
             event=event,
             source="schedule",
             payload=trigger_payload,
             agent_id=agent_id,
         )
+
+        await event.send(MessageChain().message(str(result.get("message") or result.get("error") or "定时任务未创建")))
 
     def _resolve_approval(self, umo: str, approval_id: str, approved: bool, user_id: str) -> str:
         task = self.storage.load_active_task(umo)
@@ -2127,6 +2279,7 @@ class AgentLabPlugin(Star):
             if item.get("approval_id") == approval_id:
                 if item.get("status") != "pending":
                     return f"审批已经处理：{approval_id}（{item.get('status') or '-'}）"
+                self.task_control.approval(task, item, approved)
                 item["status"] = "approved" if approved else "rejected"
                 item["resolved_at"] = now_iso()
                 item["resolved_by"] = user_id
@@ -2136,7 +2289,7 @@ class AgentLabPlugin(Star):
             return f"未找到审批请求：{approval_id}"
         if approved:
             task.clear_wait()
-            if task.status == "paused":
+            if task.status == "paused" and not task_control(task).get("human_paused"):
                 task.status = "running"
             task.watchdog.last_decision = "approval_approved"
         else:
@@ -2179,6 +2332,10 @@ class AgentLabPlugin(Star):
         tmgr = self.context.get_llm_tool_manager()
         internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
         essential = {
+            "agent_lab_checkpoint",
+            "agent_lab_record_report",
+            "agent_lab_submit_plan",
+            "agent_lab_steer",
             "agent_lab_read_state",
             "agent_lab_read_runtime",
             "agent_lab_read_task_memory",
@@ -2200,7 +2357,7 @@ class AgentLabPlugin(Star):
             toolset = ToolSet()
             for name in essential:
                 try:
-                    tool = tmgr.get_func(name)
+                    tool = self.astrbot_bridge.tool(name)
                 except Exception:
                     tool = None
                 if tool:
@@ -2209,6 +2366,10 @@ class AgentLabPlugin(Star):
 
         if tool_mode == "full" or not spec.enabled_tools:
             toolset = tmgr.get_full_tool_set()
+            for name in ("astrbot_file_read_tool", "astrbot_grep_tool", "astrbot_file_write_tool", "astrbot_file_edit_tool", "astrbot_execute_shell", "astrbot_execute_python", "astrbot_execute_ipython"):
+                tool = self.astrbot_bridge.tool(name)
+                if tool:
+                    toolset.add_tool(tool)
             for name in internal_block:
                 try:
                     toolset.remove_tool(name)
@@ -2221,7 +2382,7 @@ class AgentLabPlugin(Star):
                 ):
                     toolset.remove_tool(tool.name)
             for name in essential:
-                tool = tmgr.get_func(name)
+                tool = self.astrbot_bridge.tool(name)
                 if tool:
                     toolset.add_tool(tool)
             return toolset
@@ -2234,7 +2395,7 @@ class AgentLabPlugin(Star):
             if name in internal_block:
                 continue
             try:
-                tool = tmgr.get_func(name)
+                tool = self.astrbot_bridge.tool(name)
             except Exception as exc:
                 logger.warning("[AgentLab] cannot resolve tool %s: %s", name, exc)
                 continue
@@ -2242,7 +2403,7 @@ class AgentLabPlugin(Star):
                 toolset.add_tool(tool)
         for name in essential:
             try:
-                tool = tmgr.get_func(name)
+                tool = self.astrbot_bridge.tool(name)
             except Exception:
                 tool = None
             if tool:
@@ -2637,6 +2798,8 @@ class AgentLabPlugin(Star):
             self.agent_runtime.update_resume(task, reason=reason)
 
     def _progress_hash(self, task: TaskState) -> str:
+        if task_control(task).get("version"):
+            return TaskControl.fingerprint(task)
         data = self._ensure_workflow_data(task)
         payload = {
             "status": task.status,
@@ -2852,79 +3015,7 @@ class AgentLabPlugin(Star):
         )
 
     async def _execute_node_with_policy(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
-        retry_policy = ctx.node.get("retry_policy") if isinstance(ctx.node.get("retry_policy"), dict) else {}
-        try:
-            max_attempts = max(1, min(int(retry_policy.get("max_attempts") or 1), 8))
-        except Exception:
-            max_attempts = 1
-        backoff = str(retry_policy.get("backoff") or "none").strip().lower()
-        if backoff not in {"none", "linear", "exponential"}:
-            backoff = "none"
-        try:
-            timeout_seconds = int(ctx.node.get("timeout_seconds") or 0)
-        except Exception:
-            timeout_seconds = 0
-        timeout_seconds = max(0, min(timeout_seconds, 600))
-        last_result: NodeExecutionResult | None = None
-        for attempt in range(1, max_attempts + 1):
-            try:
-                coro = self.node_executors.execute(ctx)
-                result = await asyncio.wait_for(coro, timeout=timeout_seconds) if timeout_seconds else await coro
-            except asyncio.TimeoutError:
-                result = NodeExecutionResult(
-                    node_id=str(ctx.node.get("id") or ""),
-                    ok=False,
-                    status="blocked",
-                    outcome=f"Node timed out after {timeout_seconds}s.",
-                    blocked=True,
-                    advance=False,
-                    note="node_executor_timeout",
-                )
-            except Exception as exc:
-                result = NodeExecutionResult(
-                    node_id=str(ctx.node.get("id") or ""),
-                    ok=False,
-                    status="blocked",
-                    outcome=f"{type(exc).__name__}: {exc}",
-                    blocked=True,
-                    advance=False,
-                    note="node_executor_error",
-                )
-            result.attempts = attempt
-            last_result = result
-            if result.ok and not result.blocked:
-                break
-            if attempt >= max_attempts:
-                break
-            data = self._ensure_workflow_data(ctx.task)
-            retries = data.setdefault("node_retries", [])
-            if isinstance(retries, list):
-                retries.append(
-                    {
-                        "time": now_iso(),
-                        "node_id": str(ctx.node.get("id") or ""),
-                        "attempt": attempt,
-                        "max_attempts": max_attempts,
-                        "reason": result.outcome or result.note,
-                    }
-                )
-                data["node_retries"] = retries[-80:]
-            delay = 0.0
-            if backoff == "linear":
-                delay = min(2.0, 0.2 * attempt)
-            elif backoff == "exponential":
-                delay = min(3.0, 0.2 * (2 ** (attempt - 1)))
-            if delay:
-                await asyncio.sleep(delay)
-        return last_result or NodeExecutionResult(
-            node_id=str(ctx.node.get("id") or ""),
-            ok=False,
-            status="blocked",
-            outcome="Node executor did not produce a result.",
-            blocked=True,
-            advance=False,
-            note="node_executor_missing_result",
-        )
+        return await execute_with_policy(self, ctx)
 
     def _loop_guard_before_node(self, task: TaskState, node: dict[str, Any]) -> str:
         data = self._ensure_workflow_data(task)
@@ -3438,9 +3529,9 @@ class AgentLabPlugin(Star):
         if layer in {"private_task_memory", "candidate_memory"}:
             return same_scope, same_scope
         if layer in {"accepted_memory", "archive_summary"}:
-            return status == "accepted" and exposed, False
+            return status == "accepted" and exposed and source_umo == umo, False
         if exposed and status == "accepted":
-            return True, False
+            return source_umo == umo, False
         return same_scope, same_scope
 
     def _memory_entry_row(
@@ -3878,7 +3969,7 @@ class AgentLabPlugin(Star):
             "Do not execute actions. Use route=uncertain when evidence is insufficient."
         )
         provider_ids: list[str] = []
-        provider_id = str(ctx.spec.provider_id or "").strip()
+        provider_id = ""  # Primary nodes inherit the source bot; explicit subagent overrides are separate.
         if provider_id:
             provider_ids.append(provider_id)
         try:
@@ -4393,7 +4484,7 @@ class AgentLabPlugin(Star):
         if output_mode in {"json", "route"}:
             system_prompt += " Return one JSON object only."
         provider_ids: list[str] = []
-        provider_id = str(ctx.spec.provider_id or "").strip()
+        provider_id = ""  # Primary nodes inherit the source bot; explicit subagent overrides are separate.
         if provider_id:
             provider_ids.append(provider_id)
         try:
@@ -4578,7 +4669,10 @@ class AgentLabPlugin(Star):
                 data={"route": "success", "session": session},
                 note="node_executor_identity_reference",
             )
-        if action in {"session_check", "refresh_session"}:
+        if action == "refresh_session":
+            return NodeExecutionResult(ok=False, status="blocked", blocked=True, advance=False,
+                outcome="刷新会话需要绑定实际刷新 API/工具；当前仅保存凭证引用，不代表令牌已刷新。", note="session_refresh_requires_executor")
+        if action in {"session_check"}:
             session = sessions.get(session_id) if isinstance(sessions.get(session_id), dict) else {}
             has_credential = bool(credential_id and self.storage.get_credential_secret(credential_id))
             has_reference = bool(session or has_credential or ctx.node.get("profile_path") or ctx.node.get("cookie_domain"))
@@ -4710,176 +4804,42 @@ class AgentLabPlugin(Star):
         return text
 
     async def _execute_file_operation_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
-        operation = str(ctx.node.get("operation") or ctx.node.get("edit_mode") or "read").strip().lower()
-        tool_name = "astrbot_file_read_tool" if operation == "read" else "astrbot_file_edit_tool"
-        risk = "safe" if operation == "read" else "work"
-        gate = self._node_builtin_tool_allowed(
-            ctx.spec,
-            ctx.node,
-            tool_name,
-            capability="file",
-            risk=risk,
-        )
-        if gate:
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=gate,
-                blocked=True,
-                advance=False,
-                note="node_executor_file_not_allowed",
-            )
-        budget_reason = self._consume_tool_budget(ctx.task, tool_name)
-        if budget_reason:
-            self._pause_task_for_budget(ctx.task, budget_reason)
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=budget_reason,
-                blocked=True,
-                advance=False,
-                note="node_executor_file_budget",
-            )
-        path, reason = self._sandbox_node_path(
-            ctx.task,
-            ctx.node.get("path") or ctx.node.get("input_path") or ctx.node.get("output_path") or "",
-        )
-        if reason or path is None:
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=reason,
-                blocked=True,
-                advance=False,
-                note="node_executor_file_path_blocked",
-            )
-        path.parent.mkdir(parents=True, exist_ok=True)
+        operation = str(ctx.node.get("operation") or ctx.node.get("edit_mode") or "read").lower()
+        path = str(self._resolve_workflow_template(ctx.task, ctx.node.get("path") or ctx.node.get("input_path") or ctx.node.get("output_path") or ""))
+        if not path:
+            return NodeExecutionResult(ok=False, blocked=True, advance=False, outcome="文件节点需要路径。")
         if operation == "read":
-            if not path.exists():
-                return NodeExecutionResult(
-                    ok=False,
-                    status="blocked",
-                    outcome=f"File does not exist: {path.name}",
-                    blocked=True,
-                    advance=False,
-                    note="node_executor_file_missing",
-                )
-            text = path.read_text(encoding="utf-8", errors="replace")
-            data = {"path": str(path), "content": self._compact_text(text, 12000), "bytes": path.stat().st_size}
-            outcome = f"File read: {path.name}"
+            name, arguments = "astrbot_file_read_tool", {"path": path}
         elif operation in {"write", "replace"}:
-            content = self._node_json_value(ctx.task, ctx.node, "content", "text", "value")
-            path.write_text(str(content or ""), encoding="utf-8")
-            data = {"path": str(path), "operation": operation, "bytes": path.stat().st_size}
-            outcome = f"File written: {path.name}"
+            name, arguments = "astrbot_file_write_tool", {"path": path, "content": str(self._node_json_value(ctx.task, ctx.node, "content", "text", "value") or "")}
         elif operation == "append":
-            content = self._node_json_value(ctx.task, ctx.node, "content", "text", "value")
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(str(content or ""))
-            data = {"path": str(path), "operation": operation, "bytes": path.stat().st_size}
-            outcome = f"File appended: {path.name}"
+            content = str(self._node_json_value(ctx.task, ctx.node, "content", "text", "value") or "")
+            code = "from pathlib import Path\np = Path(" + repr(path) + ")\np.parent.mkdir(parents=True, exist_ok=True)\nwith p.open('a', encoding='utf-8') as f: f.write(" + repr(content) + ")"
+            return await self._execute_code_exec_node(NodeExecutionContext(event=ctx.event, task=ctx.task, spec=ctx.spec,
+                node={**ctx.node, "code": code, "language": "python"}, outgoing=ctx.outgoing, next_candidates=ctx.next_candidates, reason=ctx.reason))
         else:
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=f"Unsupported file operation: {operation}",
-                blocked=True,
-                advance=False,
-                note="node_executor_file_operation_blocked",
-            )
-        return NodeExecutionResult(
-            outcome=outcome,
-            next_node_id=self._single_next(ctx.outgoing),
-            data=data,
-            needs_react=len(ctx.outgoing) > 1,
-            advance=len(ctx.outgoing) <= 1,
-            note="node_executor_file",
-        )
+            return NodeExecutionResult(ok=False, blocked=True, advance=False, outcome="不支持的文件操作：" + operation)
+        result = await self.tool_executor.call(event=ctx.event, task=ctx.task, spec=ctx.spec, node=ctx.node, tool_name=name, call_args=arguments)
+        return NodeExecutionResult(ok=result.ok, blocked=result.blocked, outcome=result.outcome, data=result.data,
+            advance=result.ok and not result.blocked, next_node_id=self._single_next(ctx.outgoing), note="native_file_executor")
 
     async def _execute_code_exec_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
-        language = str(ctx.node.get("language") or "python").strip().lower()
-        tool_name = "astrbot_sandboxed_python" if language in {"py", "python"} else "astrbot_sandboxed_shell"
-        gate = self._node_builtin_tool_allowed(
-            ctx.spec,
-            ctx.node,
-            tool_name,
-            capability="code",
-            risk="high",
-        )
-        if gate:
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=gate,
-                blocked=True,
-                advance=False,
-                note="node_executor_code_not_allowed",
-            )
-        budget_reason = self._consume_tool_budget(ctx.task, tool_name)
-        if budget_reason:
-            self._pause_task_for_budget(ctx.task, budget_reason)
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=budget_reason,
-                blocked=True,
-                advance=False,
-                note="node_executor_code_budget",
-            )
+        language = str(ctx.node.get("language") or "python").lower()
+        runtime = _cfg(self._context_config(ctx.task.umo), "provider_settings", {}).get("computer_use_runtime", "none")
         code = str(self._node_json_value(ctx.task, ctx.node, "code", "script", "command") or "")
-        if not code.strip():
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome="code_exec requires code/script/command.",
-                blocked=True,
-                advance=False,
-                note="node_executor_code_missing",
-            )
-        try:
-            timeout_seconds = max(1, min(int(ctx.node.get("timeout_seconds") or 10), 60))
-        except Exception:
-            timeout_seconds = 10
-        workspace = self.storage.sandbox_workspace_dir
-        workspace.mkdir(parents=True, exist_ok=True)
-        if language in {"py", "python"}:
-            cmd = ["python", "-c", code]
-        elif language in {"shell", "powershell", "pwsh"}:
-            cmd = ["powershell", "-NoProfile", "-Command", code]
+        if language in {"python", "py"}:
+            name = "astrbot_execute_python" if runtime == "local" else "astrbot_execute_ipython"
+            arguments = {"code": code, "timeout": int(ctx.node.get("timeout_seconds") or 30)}
+        elif language in {"shell", "powershell", "pwsh", "bash"}:
+            name = "astrbot_execute_shell"
+            arguments = {"command": code, "timeout": int(ctx.node.get("timeout_seconds") or 30)}
         else:
-            return NodeExecutionResult(
-                ok=False,
-                status="blocked",
-                outcome=f"Unsupported code language: {language}",
-                blocked=True,
-                advance=False,
-                note="node_executor_code_language_blocked",
-            )
-        completed = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            cwd=str(workspace),
-            capture_output=True,
-            text=True,
-            timeout=timeout_seconds,
-        )
-        ok = completed.returncode == 0
-        data = {
-            "language": language,
-            "exit_code": completed.returncode,
-            "stdout": self._compact_text(completed.stdout or "", 4000),
-            "stderr": self._compact_text(completed.stderr or "", 4000),
-            "workspace": str(workspace),
-        }
-        return NodeExecutionResult(
-            ok=ok,
-            status="completed" if ok else "blocked",
-            outcome=f"Code execution exit_code={completed.returncode}.",
-            next_node_id=self._single_next(ctx.outgoing) if ok else "",
-            data=data,
-            blocked=not ok,
-            note="node_executor_code",
-        )
+            return NodeExecutionResult(ok=False, blocked=True, advance=False, outcome="不支持的代码语言。")
+        result = await self.tool_executor.call(event=ctx.event, task=ctx.task, spec=ctx.spec,
+              node=ctx.node, tool_name=name, call_args=arguments)
+        return NodeExecutionResult(ok=result.ok, blocked=result.blocked, outcome=result.outcome,
+            data=result.data, advance=result.ok and not result.blocked, needs_react=result.needs_react,
+            next_node_id=self._single_next(ctx.outgoing), note="native_code_executor")
 
     async def _execute_memory_filter_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         data = self._ensure_workflow_data(ctx.task)
@@ -6296,7 +6256,7 @@ class AgentLabPlugin(Star):
 
     async def _generate_workflow_reply(self, ctx: NodeExecutionContext, prompt: str) -> tuple[str, str]:
         provider_ids: list[str] = []
-        provider_id = str(ctx.spec.provider_id or "").strip()
+        provider_id = ""  # Primary nodes inherit the source bot; explicit subagent overrides are separate.
         if provider_id:
             provider_ids.append(provider_id)
         try:
@@ -6436,6 +6396,11 @@ class AgentLabPlugin(Star):
         return "Workflow outbox " + "; ".join(parts)
 
     async def _execute_archive_task_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
+        plan = task_control(ctx.task)
+        if plan.get("steps") and any(step.get("status") != "completed" for step in plan["steps"]):
+            return NodeExecutionResult(needs_react=True, advance=False,
+                outcome="画布到达出口，但具体计划仍待核对。请 Bot 核查工具记录并保存当前步骤检查点，全部步骤完成后归档。",
+                note="archive_waits_for_task_plan")
         final_summary = str(
             ctx.node.get("final_summary")
             or ctx.node.get("summary")
@@ -6481,6 +6446,9 @@ class AgentLabPlugin(Star):
         self._normalize_agent_workflow(spec)
         self._ensure_workflow_data(task)
         status = status if status in {"completed", "cancelled", "blocked"} else "completed"
+        state = task_control(task)
+        if status == "completed" and state.get("steps") and any(step.get("status") != "completed" for step in state["steps"]):
+            return "本次批准计划仍有未完成步骤。请保存步骤证据，或明确取消任务。"
         approved_override = self._approved_finish_override(task, finish_approval_id, status)
         finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
         if not finish_verdict.passed and approved_override is None:
@@ -6576,6 +6544,9 @@ class AgentLabPlugin(Star):
         reason: str,
     ) -> WorkflowRuntimeRun:
         runtime_run = WorkflowRuntimeRun()
+        if task_control(task).get("workflow") == "none":
+            runtime_run.needs_react = True
+            return runtime_run
         self._ensure_workflow_data(task)
         for _ in range(self.workflow_runtime.max_auto_steps):
             decision = self.workflow_runtime.inspect(spec, task)
@@ -6659,6 +6630,15 @@ class AgentLabPlugin(Star):
                     reason=reason,
                 )
                 result = await self._execute_node_with_policy(ctx)
+                latest = self.storage.load_active_task(task.umo)
+                if latest is None or latest.task_id != task.task_id:
+                    runtime_run.terminal = True
+                    return runtime_run
+                if latest.status != "running" or task_control(latest).get("version") != task_control(task).get("version"):
+                    task.__dict__.update(latest.__dict__)
+                    runtime_run.blocked = True
+                    return runtime_run
+                task.workflow_data["task_control"] = task_control(latest)
                 if result.ok and not result.blocked:
                     output_reason = self._validate_node_output_schema(decision.node, result)
                     if output_reason:
@@ -7171,6 +7151,14 @@ class AgentLabPlugin(Star):
             note="agent_lab_run_parallel_workflow",
             status="completed" if run["ok"] else "blocked",
         )
+        latest = self.storage.load_active_task(task.umo)
+        if latest and latest.task_id == task.task_id:
+            task.workflow_data["task_control"] = task_control(latest)
+            task.approvals = latest.approvals
+            task.budget = latest.budget
+            task.token_usage = latest.token_usage
+            if latest.status != "running":
+                task.status, task.wait, task.watchdog = latest.status, latest.wait, latest.watchdog
         return run
 
     def _resolve_parallel_branch_id(
@@ -7253,6 +7241,7 @@ class AgentLabPlugin(Star):
                     node_for_call,
                     base,
                     api_payload=api_payload,
+                    event=event,
                 )
             return await self._run_parallel_agent_worker(
                 event=event,
@@ -7273,6 +7262,7 @@ class AgentLabPlugin(Star):
         base: dict[str, Any],
         *,
         api_payload: Any = None,
+        event: AstrMessageEvent | None = None,
     ) -> dict[str, Any]:
         api_id = str(node.get("api_id") or node.get("ref_id") or "").strip()
         if not api_id:
@@ -7280,12 +7270,19 @@ class AgentLabPlugin(Star):
             base["summary"] = base["error"]
             return base
         query_json, body_json, headers_json = self._parallel_api_payload_json(api_payload)
-        result, api_spec, message = await self._call_registered_custom_api(
-            api_id,
-            query_json=query_json,
-            body_json=body_json,
-            headers_json=headers_json,
-        )
+        if event is not None:
+            tool = self.astrbot_bridge.tool(CUSTOM_API_TOOL_NAME, event)
+            text = await self.astrbot_bridge.invoke(event, tool, {"api_id": api_id,
+                "query_json": query_json, "body_json": body_json, "headers_json": headers_json})
+            result = json.loads(text.rsplit("\n[任务工具证据 ID:", 1)[0])
+            api_spec, message = {"api_id": api_id}, ""
+        else:
+            result, api_spec, message = await self._call_registered_custom_api(
+                api_id,
+                query_json=query_json,
+                body_json=body_json,
+                headers_json=headers_json,
+            )
         if message:
             base["error"] = message
             base["summary"] = message
@@ -7351,46 +7348,23 @@ class AgentLabPlugin(Star):
         )
         await self._lane_rate_throttle(owner)
         prompt = self._parallel_worker_prompt(task, node, shared_instruction)
-        resp = await self.context.tool_loop_agent(
-            event=event,
-            chat_provider_id=provider_id,
-            prompt=prompt,
-            system_prompt=system_prompt,
-            tools=self._build_parallel_worker_toolset(
-                spec,
-                node,
-                owner_tools=(set(lane_tools) if (owner and owner.enabled_tools) else None),
-            ),
-            max_steps=max(1, min(int(_cfg(self.config, "parallel_worker_max_steps", 6) or 6), 12)),
-            tool_call_timeout=int(_cfg(self.config, "tool_call_timeout", 120)),
-            llm_compress_keep_recent=int(_cfg(self.config, "llm_compress_keep_recent", 4)),
-            truncate_turns=int(_cfg(self.config, "truncate_turns", 2)),
-            agent_hooks=AgentLabRunHooks(
-                self.storage,
-                task.umo,
-                task.task_id,
-                budget_max_tools=max(1, min(int(_cfg(self.config, "parallel_worker_max_steps", 6) or 6), 12)),
-                progress_mode=str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")),
-                progress_every_tools=int(_cfg(self.config, "agent_mode_progress_every_tools", 3)),
-                progress_min_interval_seconds=int(
-                    _cfg(self.config, "agent_mode_progress_min_interval_seconds", 45)
-                ),
-            ),
-            show_tool_use=(
-                str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")).strip().lower()
-                in {"astrbot", "native"}
-            ),
+        resp = await self.astrbot_bridge.run(
+            event, task, self._build_parallel_worker_toolset(spec, node, owner_tools=set(lane_tools)),
+            prompt, system_prompt + task_plan_prompt(task),
+            max(1, min(int(_cfg(self.config, "parallel_worker_max_steps", 6) or 6), 12)),
+            AgentLabRunHooks(self.storage, task.umo, task.task_id, budget_max_tools=0),
+            lane=str(node.get("id") or "worker"), provider_id=owner_provider,
         )
         text = (getattr(resp, "completion_text", "") or "").strip()
-        task.add_token_usage(getattr(resp, "usage", None))
-        base.update(
-            {
-                "ok": True,
-                "status": "completed",
-                "summary": self._compact_text(text, 600) or "工作包已完成。",
-                "details": self._compact_text(text, 2200),
-            }
-        )
+        try:
+            parsed = self._parse_detector_json(text)
+        except Exception:
+            parsed = {}
+        ok = bool(parsed.get("status") in {"completed", "success"} and parsed.get("summary") and parsed.get("evidence"))
+        base.update({"ok": ok, "status": "completed" if ok else "blocked",
+            "summary": str(parsed.get("summary") or text or "工作包未提交可验证结果。")[:600],
+            "details": text[:2200], "evidence": parsed.get("evidence", []),
+            "error": "" if ok else "工作包没有明确完成状态与证据，需主Bot检查。"})
         return base
 
     def _parallel_worker_prompt(
@@ -7417,7 +7391,7 @@ class AgentLabPlugin(Star):
                 f"- node_prompt: {node.get('prompt') or '-'}",
                 f"- shared_instruction: {shared_instruction or '-'}",
                 "",
-                "输出必须包含：结论、证据/工具结果、风险、需要主 Agent 合并的字段。",
+                '仅输出JSON：{"status":"completed或blocked","summary":"结论","evidence":["证据/工具结果引用"],"risks":[],"next_recommendation":"建议"}。不能把无法完成当成功。',
                 "不要修改工作流，不要归档任务；由主 Agent 统一合并、校验和退出。",
             ]
         )
@@ -7447,7 +7421,7 @@ class AgentLabPlugin(Star):
 
         if kind == "tool" and tool_name:
             try:
-                tool = tmgr.get_func(tool_name)
+                tool = self.astrbot_bridge.tool(tool_name)
             except Exception:
                 tool = None
             add_if_allowed(tool)
@@ -7472,7 +7446,7 @@ class AgentLabPlugin(Star):
                 }:
                     continue
                 try:
-                    tool = tmgr.get_func(name)
+                    tool = self.astrbot_bridge.tool(name)
                 except Exception:
                     tool = None
                 add_if_allowed(tool)
@@ -7520,9 +7494,11 @@ class AgentLabPlugin(Star):
         query = str(query or "").strip()
         return self.pattern_library.prompt_for(query, limit=3, exclude_task_id=exclude_task_id)
 
-    def _build_exposed_task_memory_prompt(self) -> str:
+    def _build_exposed_task_memory_prompt(self, umo: str = "") -> str:
         rows = []
         for item in reversed(self.storage.list_memory_entries()):
+            if not umo or item.get("source_umo") != umo:
+                continue
             if str(item.get("status") or "candidate").strip().lower() != "accepted":
                 continue
             if not bool(item.get("expose_to_normal", True)):
@@ -7689,7 +7665,7 @@ class AgentLabPlugin(Star):
         port = int(_cfg(self.config, "standalone_webui_port", 8788) or 8788)
         static_dir = Path(__file__).resolve().parent / "pages" / "agent-lab"
         token = str(_cfg(self.config, "standalone_webui_token", "") or "").strip()
-        if host not in {"127.0.0.1", "localhost", "::1"} and not token:
+        if not token:
             logger.error(
                 "[AgentLab] standalone WebUI refused non-local bind without standalone_webui_token"
             )
@@ -7723,6 +7699,7 @@ class AgentLabPlugin(Star):
     def _register_web_apis(self) -> None:
         if jsonify is None:
             return
+        self.context.register_web_api(f"/{PLUGIN_NAME}/task/control", self.api_task_control, ["POST"], "Task plan and steering")
         self.context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "Agent Lab state")
         self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST", "DELETE"], "Agent specs")
         self.context.register_web_api(f"/{PLUGIN_NAME}/workflow/check", self.api_workflow_check, ["GET", "POST"], "Check Agent workflow")
@@ -7769,6 +7746,40 @@ class AgentLabPlugin(Star):
                 continue
         return rows
 
+    @admin_api
+    async def api_task_control(self):
+        payload = await request.get_json(force=True, silent=True) or {}
+        umo = str(payload.get("umo") or "")
+        task = self.task_control.load(umo, str(payload.get("task_id") or ""))
+        event = self._make_cron_event(umo, "Agent Lab task control")
+        if event is None:
+            return jsonify({"ok": False, "error": "管理员身份或会话来源不可用"})
+        action = str(payload.get("action") or "")
+        if action == "plan":
+            if int(payload.get("expected_version", -1)) != int(task_control(task).get("version", 0)):
+                raise ValueError("计划版本已更新，请刷新后重新核对草稿。")
+            message = self.task_control.submit_plan(event, str(payload.get("steps_json") or "[]"), str(payload.get("constraints") or ""))
+        elif action == "steer":
+            message = self.task_control.steer(umo, str(payload.get("message") or ""), task.task_id)
+        elif action == "reconcile":
+            state = task_control(task)
+            if task.status == "running":
+                raise ValueError("先暂停任务再核对。")
+            row = next((r for r in state.get("journal", []) if r["id"] == payload.get("call_id")), None)
+            outcome = payload.get("outcome")
+            if not row or row.get("status") not in {"unknown", "started"} or outcome not in {"completed", "failed", "not_started"}:
+                raise ValueError("未知工具记录或核对结论无效。")
+            note = str(payload.get("message") or "").strip()
+            if not note:
+                raise ValueError("请填写核对依据。")
+            row.update(status=outcome, reconciliation=note, resolved_by="webui")
+            self.storage.save_task(task)
+            message = "已记录核对结果，请明确恢复任务。"
+        else:
+            raise ValueError("未知任务操作。")
+        return jsonify({"ok": True, "message": message})
+
+    @admin_api
     async def api_state(self):
         self._sync_default_agent_identity()
         return jsonify(
@@ -7809,6 +7820,7 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_agents(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -7864,6 +7876,7 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_workflow_check(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -7876,6 +7889,7 @@ class AgentLabPlugin(Star):
         self._normalize_agent_workflow(spec)
         return jsonify({"ok": True, "workflow": self._workflow_report(spec)})
 
+    @admin_api
     async def api_workflow_dry_run(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -7895,8 +7909,15 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_workflow_trigger(self):
         payload = await request.get_json(force=True, silent=True) or {}
+        if payload.get("simulate"):
+            spec = self.storage.get_agent(str(payload.get("agent_id") or ""))
+            report = self._workflow_report(spec)
+            return jsonify({"ok": True, "triggered": False, "simulated": True, "workflow": report,
+                            "message": "静态模拟完成，没有创建任务或执行节点。"})
+
         source = str(payload.get("source") or "manual_webui").strip()
         agent_id = str(payload.get("agent_id") or "").strip()
         text = str(payload.get("text") or payload.get("message") or payload.get("event_name") or source).strip()
@@ -7921,6 +7942,7 @@ class AgentLabPlugin(Star):
         )
         return jsonify(result)
 
+    @admin_api
     async def api_workflow_webhook(self):
         payload = await request.get_json(force=True, silent=True) or {}
         view_args = getattr(request, "view_args", None) or {}
@@ -7955,6 +7977,7 @@ class AgentLabPlugin(Star):
         )
         return jsonify(result)
 
+    @admin_api
     async def api_workflow_runs(self):
         agent_id = str(request.args.get("agent_id") or "").strip()
         status_filter = str(request.args.get("status") or "all").strip().lower()
@@ -8030,6 +8053,7 @@ class AgentLabPlugin(Star):
             "archive_path": task.archive_path,
         }
 
+    @admin_api
     async def api_modules(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -8050,6 +8074,7 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_registry(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -8073,6 +8098,7 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_memory(self):
         if request.method == "POST":
             payload = await request.get_json(force=True, silent=True) or {}
@@ -8128,6 +8154,7 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_task_logs(self):
         umo = str(request.args.get("umo") or "")
         task_id = str(request.args.get("task_id") or "")
@@ -8190,6 +8217,7 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_task_start(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "")
@@ -8198,6 +8226,7 @@ class AgentLabPlugin(Star):
         event = self._make_cron_event(umo, "Agent Lab WebUI start")
         if event is None:
             return jsonify({"ok": False, "error": "cannot create event"})
+        before = self.storage.load_active_task(umo)
         text = await self._start_task(
             event,
             goal=str(payload.get("goal") or "WebUI task"),
@@ -8207,18 +8236,40 @@ class AgentLabPlugin(Star):
             source="webui",
             risk_level=str(payload.get("risk_level") or "work"),
             agent_id=str(payload.get("agent_id") or ""),
+            workflow_mode=str(payload.get("workflow_mode") or "selected"),
+            plan_json=str(payload.get("plan_json") or ""),
         )
-        return jsonify({"ok": True, "message": text})
+        created = self.storage.load_active_task(umo)
+        ok = before is None and created is not None
+        return jsonify({"ok": ok, "message": text, "error": "" if ok else text})
 
+    @admin_api
     async def api_task_tick(self):
         payload = await request.get_json(force=True, silent=True) or {}
+        requested_id = str(payload.get("task_id") or "")
+        if requested_id:
+            payload["umo"] = str(payload.get("umo") or self._umo_for_task_id(requested_id))
+            current = self.storage.load_active_task(payload["umo"])
+            if current is None or current.task_id != requested_id:
+                return jsonify({"ok": False, "error": "任务已切换或结束，请刷新。"})
         event = self._make_cron_event(str(payload.get("umo") or ""), "Agent Lab WebUI tick")
         if event is None:
             return jsonify({"ok": False, "error": "cannot create event"})
-        return jsonify({"ok": True, "message": await self._tick(event, "webui")})
+        before = self.storage.load_active_task(event.unified_msg_origin)
+        if before is None or before.status != "running" or before.pending_approvals():
+            return jsonify({"ok": False, "error": "任务尚未运行或等待审批，请先处理计划/暂停状态。"})
+        result = await self.service.run_tick(event, reason="webui")
+        return jsonify({"ok": True, "message": result.message, "status": result.status})
 
+    @admin_api
     async def api_task_finish(self):
         payload = await request.get_json(force=True, silent=True) or {}
+        requested_id = str(payload.get("task_id") or "")
+        if requested_id:
+            payload["umo"] = str(payload.get("umo") or self._umo_for_task_id(requested_id))
+            current = self.storage.load_active_task(payload["umo"])
+            if current is None or current.task_id != requested_id:
+                return jsonify({"ok": False, "error": "任务已切换或结束，请刷新。"})
         umo = str(payload.get("umo") or "").strip()
         event = self._make_cron_event(umo, "Agent Lab WebUI finish")
         if event is None:
@@ -8266,8 +8317,15 @@ class AgentLabPlugin(Star):
                 return task.umo
         return ""
 
+    @admin_api
     async def api_task_cancel(self):
         payload = await request.get_json(force=True, silent=True) or {}
+        requested_id = str(payload.get("task_id") or "")
+        if requested_id:
+            payload["umo"] = str(payload.get("umo") or self._umo_for_task_id(requested_id))
+            current = self.storage.load_active_task(payload["umo"])
+            if current is None or current.task_id != requested_id:
+                return jsonify({"ok": False, "error": "任务已切换或结束，请刷新。"})
         umo = str(payload.get("umo") or "").strip()
         task_id = str(payload.get("task_id") or "").strip()
         if not umo and task_id:
@@ -8287,6 +8345,7 @@ class AgentLabPlugin(Star):
         )
         return jsonify({"ok": True, "message": msg or "任务已停止并归档。"})
 
+    @admin_api
     async def api_task_delete(self):
         payload = await request.get_json(force=True, silent=True) or {}
         task_id = str(payload.get("task_id") or request.args.get("task_id") or "").strip()
@@ -8298,6 +8357,7 @@ class AgentLabPlugin(Star):
             return jsonify({"ok": False, "error": "未找到该归档历史（可能已删除）。"})
         return jsonify({"ok": True, "message": "归档历史已删除。"})
 
+    @admin_api
     async def api_task_pause(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "").strip()
@@ -8305,8 +8365,11 @@ class AgentLabPlugin(Star):
         if not umo and task_id:
             umo = self._umo_for_task_id(task_id)
         task = self.storage.load_active_task(umo) if umo else None
+        if task and task_id and task.task_id != task_id:
+            return jsonify({"ok": False, "error": "当前任务与选择的 ID 不一致，请刷新。"})
         if not task:
             return jsonify({"ok": False, "error": "该实例没有正在运行的任务。"})
+        task_control(task)["human_paused"] = True
         task.status = "paused"
         task.watchdog.last_decision = "manual_pause"
         task.set_wait(
@@ -8321,6 +8384,7 @@ class AgentLabPlugin(Star):
         self.storage.save_task(task)
         return jsonify({"ok": True, "message": "任务已暂停。", "task": self._task_payload(task)})
 
+    @admin_api
     async def api_task_resume(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "").strip()
@@ -8328,10 +8392,18 @@ class AgentLabPlugin(Star):
         if not umo and task_id:
             umo = self._umo_for_task_id(task_id)
         task = self.storage.load_active_task(umo) if umo else None
+        if task and task_id and task.task_id != task_id:
+            return jsonify({"ok": False, "error": "当前任务与选择的 ID 不一致，请刷新。"})
         if not task:
             return jsonify({"ok": False, "error": "该实例没有可恢复的任务。"})
         if task.pending_approvals():
             return jsonify({"ok": False, "error": "任务仍有待审批项，请先处理审批。"})
+        state = task_control(task)
+        if state and (not state.get("approved_version") or state.get("approved_version") != state.get("version")):
+            return jsonify({"ok": False, "error": "请先提交并批准当前任务计划。"})
+        if any(row.get("status") in {"unknown", "started"} for row in state.get("journal", [])):
+            return jsonify({"ok": False, "error": "请先核对未知工具结果。"})
+        state["human_paused"] = False
         task.status = "running"
         task.watchdog.paused_reason = ""
         task.watchdog.last_decision = "manual_resume"
@@ -8339,8 +8411,12 @@ class AgentLabPlugin(Star):
         task.add_log("resumed", str(payload.get("reason") or "WebUI manual resume."))
         task.add_snapshot("manual_resume", {"reason": str(payload.get("reason") or "")})
         self.storage.save_task(task)
+        event = self._make_cron_event(umo, "Agent Lab resume")
+        if event:
+            self.task_control.schedule(event)
         return jsonify({"ok": True, "message": "任务已恢复运行。", "task": self._task_payload(task)})
 
+    @admin_api
     async def api_task_purge(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "").strip()
@@ -8348,6 +8424,8 @@ class AgentLabPlugin(Star):
         if not umo and task_id:
             umo = self._umo_for_task_id(task_id)
         task = self.storage.load_active_task(umo) if umo else None
+        if task is not None and task_id and task.task_id != task_id:
+            task = None
         if task is not None:
             task_id = task.task_id
             event = self._make_cron_event(umo, "Agent Lab WebUI purge")
@@ -8378,6 +8456,7 @@ class AgentLabPlugin(Star):
             }
         )
 
+    @admin_api
     async def api_task_heartbeat(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "").strip()
@@ -8385,6 +8464,8 @@ class AgentLabPlugin(Star):
         if not umo and task_id:
             umo = self._umo_for_task_id(task_id)
         task = self.storage.load_active_task(umo) if umo else None
+        if task and task_id and task.task_id != task_id:
+            return jsonify({"ok": False, "error": "当前任务与选择的 ID 不一致，请刷新。"})
         if not task:
             return jsonify({"ok": False, "error": "该实例没有正在运行的任务。"})
         event = self._make_cron_event(umo, "Agent Lab WebUI heartbeat")
@@ -8396,6 +8477,7 @@ class AgentLabPlugin(Star):
             msg = "heartbeat disabled"
         return jsonify({"ok": True, "message": msg})
 
+    @admin_api
     async def api_task_approval(self):
         payload = await request.get_json(force=True, silent=True) or {}
         umo = str(payload.get("umo") or "")
@@ -8413,6 +8495,7 @@ class AgentLabPlugin(Star):
             if event is not None:
                 finish_message = await self._finish_after_approval(event, approval_id)
                 archived = self.storage.load_active_task(umo) is None
+                self.task_control.schedule(event)
         message = msg + (f"\n{finish_message}" if finish_message else "")
         return jsonify({"ok": True, "message": message, "archived": archived})
 
@@ -9378,8 +9461,6 @@ class AgentLabPlugin(Star):
     @classmethod
     def _normalize_agent_workflow(cls, spec: AgentSpec) -> None:
         raw_nodes = spec.workflow_nodes if isinstance(spec.workflow_nodes, list) else []
-        if not raw_nodes:
-            raw_nodes = AgentSpec().workflow_nodes
 
         used_ids: set[str] = set()
         id_map: dict[str, str] = {}
@@ -9532,12 +9613,6 @@ class AgentLabPlugin(Star):
             if route_hint:
                 edge["route_hint"] = route_hint
             edges.append(edge)
-        if not edges and len(nodes) > 1:
-            edges = [
-                {"from": nodes[index]["id"], "to": nodes[index + 1]["id"], "edge_type": "success"}
-                for index in range(len(nodes) - 1)
-            ]
-
         spec.workflow_nodes = nodes
         spec.workflow_edges = edges
         cls._sync_workflow_trigger_from_nodes(spec)
@@ -10650,7 +10725,7 @@ class AgentLabPlugin(Star):
             if not item:
                 return f"未找到记忆：{memory_id}"
             return f"已拒绝记忆：{item['memory_id']}。"
-        rows = self.storage.list_memory_entries()
+        rows = [item for item in self.storage.list_memory_entries() if item.get("source_umo") == event.unified_msg_origin]
         lines = []
         for item in reversed(rows[-20:]):
             tags = ",".join(str(tag) for tag in (item.get("tags") or [])[:5])

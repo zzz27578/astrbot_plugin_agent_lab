@@ -200,10 +200,8 @@ class AgentVerifier:
             structured_markers.append('审计记录 record')
         parts = [
             final_summary,
-            getattr(task, "root_goal", ""),
             getattr(task, "current_summary", ""),
             getattr(task, "last_confirmed_progress", ""),
-            getattr(task, "next_step", ""),
             getattr(task, "last_observation", ""),
             getattr(task, "exit_summary", ""),
             node_outputs,

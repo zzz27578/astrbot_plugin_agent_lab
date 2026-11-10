@@ -231,15 +231,18 @@ class AgentRuntime:
         plan = runtime.get("plan") if isinstance(runtime.get("plan"), dict) else {}
         steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
         current = str(task.workflow_current_node_id or "").strip()
-        path = [str(item or "") for item in (task.workflow_path or [])]
+        last_events = {}
+        for event in task.workflow_events:
+            last_events[str(event.get("node_id") or "")] = event
         for step in steps:
             if not isinstance(step, dict):
                 continue
             node_id = str(step.get("node_id") or "").strip()
             if current and node_id == current:
-                step["status"] = "done" if task.status in {"completed", "cancelled"} else "running"
-            elif node_id in path and step.get("status") != "blocked":
-                step["status"] = "done"
+                step["status"] = "done" if task.status == "completed" else "blocked" if task.status in {"blocked", "paused", "cancelled"} else "running"
+            elif node_id in last_events:
+                status = last_events[node_id].get("status")
+                step["status"] = "done" if status == "completed" else "blocked" if status in {"blocked", "failed"} else "skipped" if status == "skipped" else "pending"
             elif step.get("status") == "running":
                 step["status"] = "pending"
         if plan:

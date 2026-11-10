@@ -34,10 +34,10 @@ class AgentLabService:
 
     async def run_tick(self, event: Any, *, reason: str) -> TickResult:
         message = await self.adapter._tick_impl(event, reason)
-        status = "paused" if "暂停" in message else "ok"
-        if "失败" in message:
-            status = "failed"
-        return TickResult(message=message, status=status)
+        task = self.adapter.storage.load_active_task(event.unified_msg_origin)
+        status = task.status if task else "completed"
+        return TickResult(message=message, status=status, task_id=task.task_id if task else "",
+                          paused=status in {"paused", "blocked"})
 
     def check_health(self) -> HealthStatus:
         checks: list[dict[str, Any]] = []

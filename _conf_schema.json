@@ -21,13 +21,13 @@
     "type": "string",
     "description": "独立网页控制台访问 Token",
     "default": "",
-    "hint": "仅独立 8788 控制台使用；监听非本机地址时必须设置。AstrBot 原生插件页面使用 Dashboard 登录态。"
+    "hint": "独立控制台所有监听地址都必须配置Token；原生页面使用Dashboard登录身份。"
   },
   "workflow_admin_ids": {
     "type": "string",
     "description": "管理员 QQ 号",
     "default": "",
-    "hint": "多个 QQ 号可用逗号或换行分隔；仅在工作流生效范围启用“仅管理员可触发”时使用。"
+    "hint": "额外授权的管理员ID，逗号或换行分隔；与AstrBot admins_id合并。空值不代表公开授权。"
   },
   "inject_agent_mode_policy": {
     "type": "bool",
@@ -100,5 +100,23 @@
     "description": "并行分支默认并发上限",
     "default": 3,
     "hint": "未指派子Agent 的并行工作包共享的默认并发；上限 6。子Agent 泳道用各自的并发上限。"
+  },
+  "private_only": {
+    "type": "bool",
+    "description": "完全关闭群聊任务入口",
+    "default": true,
+    "hint": "默认仅管理员私聊和已登录的控制台可操作。"
+  },
+  "schedule_target_umo": {
+    "type": "string",
+    "description": "定时模块的真实会话来源",
+    "default": "",
+    "hint": "填写真实UMO，或使用方案范围中第一个UMO白名单；不再创建虚假的QQ会话。"
+  },
+  "schedule_admin_id": {
+    "type": "string",
+    "description": "定时模块发起管理员ID",
+    "default": "",
+    "hint": "执行时重新检查该ID是否仍属于AstrBot或插件管理员；定时立项仍需计划审批。"
   }
 }

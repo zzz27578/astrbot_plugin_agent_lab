@@ -1,6 +1,7 @@
+import { safeSession, preserveForm, restoreForm } from "./ui-runtime.js?v=023";
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20260619-fix16";
+const AGENT_LAB_WEBUI_BUILD = "20261110-v023";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -1610,7 +1611,7 @@ function fieldVal(id) { const el = document.getElementById(id); return el ? el.v
 function token() {
   return (
     new URLSearchParams(location.search).get("token")
-    || sessionStorage.getItem("agent_lab_token")
+    || safeSession.getItem("agent_lab_token")
     || ""
   );
 }
@@ -1811,6 +1812,7 @@ function restoreWorkflowUiSnapshot(snapshot = null) {
 }
 
 function renderWorkflowStable() {
+  selectedWorkflowEdge = -1;
   // render() 现在已全局保持焦点与滚动位置，直接复用即可（不再需要单独的 rAF 兜底）。
   render();
 }
@@ -3230,19 +3232,10 @@ function migrateWorkflowNodeShape(node = {}) {
 
 function ensureWorkflow() {
   currentAgent = ensureAgent(currentAgent || {});
-  if (!Array.isArray(currentAgent.workflow_nodes) || !currentAgent.workflow_nodes.length) {
+  if (!Array.isArray(currentAgent.workflow_nodes)) {
     currentAgent.workflow_nodes = defaultWorkflowNodes();
   }
-  if (!Array.isArray(currentAgent.workflow_edges) || !currentAgent.workflow_edges.length) {
-    currentAgent.workflow_edges = defaultWorkflowEdges();
-  }
-  const legacyIds = new Set(["entry", "entry_gate", "context_bridge", "isolation_gate", "memory_recall", "plan", "risk_router", "parallel_branch", "parallel_research", "parallel_verify", "execute", "api_call", "transform", "approval", "human_handoff", "validation", "retry_loop", "checkpoint", "task_memory", "heartbeat", "notify", "archive"]);
-  if (
-    currentAgent.workflow_nodes.some((node) => ["entry_gate", "context_bridge", "isolation_gate"].includes(String(node.id || "")))
-    && currentAgent.workflow_nodes.length <= legacyIds.size
-    && currentAgent.workflow_nodes.every((node) => legacyIds.has(String(node.id || "")))
-  ) {
-    currentAgent.workflow_nodes = defaultWorkflowNodes();
+  if (!Array.isArray(currentAgent.workflow_edges)) {
     currentAgent.workflow_edges = defaultWorkflowEdges();
   }
   currentAgent.workflow_nodes = currentAgent.workflow_nodes.map((rawNode, index) => {
@@ -3270,6 +3263,7 @@ function ensureWorkflow() {
       const from = String(edge.from || "").trim();
       const to = String(edge.to || "").trim();
       const clean = {
+        ...edge,
         from,
         to,
         edge_type: workflowNormalizeEdgeType(String(edge.edge_type || edge.type || "success").trim() || "success"),
@@ -3301,14 +3295,14 @@ function apiUrl(path) {
 }
 
 function pluginPageRequest(path) {
-  const url = new URL(String(path || "/api/state"), location.origin);
+  const url = new URL(String(path || "/api/state"), "https://agent-lab.invalid");
   const endpoint = url.pathname.replace(/^\/api\/?/, "");
   const params = Object.fromEntries(url.searchParams.entries());
   return { endpoint, params };
 }
 
 function pluginPageBridge() {
-  const bridge = window.AstrBotPluginPage;
+  const bridge = window.AstrBotPluginView || window.AstrBotPluginPage;
   if (!bridge || typeof bridge.apiGet !== "function" || typeof bridge.apiPost !== "function") return null;
   return bridge;
 }
@@ -3323,8 +3317,13 @@ async function api(path, options = {}) {
     if (typeof body === "string") {
       try { body = JSON.parse(body); } catch (e) { body = {}; }
     }
-    if (method === "GET") return await bridge.apiGet(endpoint, params);
-    if (method === "POST") return await bridge.apiPost(endpoint, body);
+    let result;
+    if (method === "GET") result = await bridge.apiGet(endpoint, params);
+    else if (method === "POST") result = await bridge.apiPost(endpoint, body);
+    if (result !== undefined) {
+      if (result.ok === false || result.status === "error") throw new Error(result.error || result.message || "操作没有完成");
+      return result;
+    }
     throw new Error(`AstrBot plugin page bridge does not support ${method}.`);
   }
 
@@ -3370,6 +3369,8 @@ function ensureOwnPluginToolsEnabled() {
 }
 
 async function load(options = {}) {
+  const draft = options.silent ? preserveForm(document.getElementById("view")) : [];
+  const draftRoute = route, draftTaskId = selectedTaskId;
   try {
     state = await api("/api/state");
     const agents = state.agents || [];
@@ -3398,6 +3399,7 @@ async function load(options = {}) {
 
     if (!options.silent) setFeedback("已连接独立控制台。");
     render();
+    if (draftRoute === route && draftTaskId === selectedTaskId) restoreForm(draft);
   } catch (error) {
     setFeedback(`连接失败：${error.message}`, "error");
     renderLocked();
@@ -4119,7 +4121,7 @@ function agentRows() {
               ${badge(agent.enabled === false ? "停用" : "启用", agent.enabled === false ? "bad" : "ok")}
             </span>
           </div>
-          <div class="row-meta">${esc(agent.agent_id)} · 触发：${esc(triggerLabel(agent.trigger_mode || "confirm"))} · 模型供应商：${esc(agent.provider_id || "当前会话")}</div>
+          <div class="row-meta">${esc(agent.agent_id)} · 触发：${esc(triggerLabel(agent.trigger_mode || "confirm"))} · 主 Bot 模型：继承当前会话</div>
           <div class="mini-stats">
             <span>运行 ${stats.active}</span>
             <span>触发 ${stats.triggers}</span>
@@ -4339,7 +4341,7 @@ function renderCanvas() {
             <label class="span-2">任务目标<textarea id="goal" rows="2">请把当前任务作为任务模式管理起来。</textarea></label>
             <label class="span-2">完成条件<input id="completion" value="${esc((a.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
             <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
-            <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
+            <label class="span-2">本次工作流<select id="task-workflow-mode"><option value="none">不应用画布 · Bot 按任务计划推进</option><option value="selected">应用当前方案的画布</option></select></label><label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />启用方案的定时唤醒（无需靠它连续推进）</label>
           </div>
           ${taskPatternSuggestions()}
           <div class="button-row">
@@ -5467,8 +5469,8 @@ function workflowCompactBoard() {
   `;
 }
 
+let workflowPathCache = new Map();
 function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWorldOffsetY()) {
-  ensureWorkflow();
   const edges = currentAgent.workflow_edges || [];
   const nodeArr = currentAgent.workflow_nodes || [];
   const nodes = new Map(nodeArr.map((item) => [item.id, item]));
@@ -5481,9 +5483,15 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    const routeBoxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY, true);
-    const pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY)
-      || workflowRoutePoints(start, end, routeBoxes);
+    const key = JSON.stringify([edge, start, end]);
+    let pts = workflowDrag ? workflowPathCache.get(key) : null;
+    if (!pts) {
+      const routeBoxes = workflowDrag ? [] : workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY, true);
+      pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY)
+        || workflowRoutePoints(start, end, routeBoxes);
+      workflowPathCache.set(key, pts);
+      if (workflowPathCache.size > 1500) workflowPathCache.clear();
+    }
     const d = roundedOrthPath(pts, 16);
     const color = workflowEdgeColor(edgeType);
     const pid = `wflp-${index}`;
@@ -5499,10 +5507,10 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const SPACING = 160; // 箭头间隔（像素），间隔大、不密集
     const dur = Math.max(1.6, len / SPEED);
     const count = Math.max(1, Math.min(6, Math.round(len / SPACING)));
-    const flow = reduceMotion ? "" : `<g class="link-flow">${Array.from({ length: count }, (_, i) => `<path class="link-arrow" d="M -4 -3.4 L 4 0 L -4 3.4 L -1 0 Z" fill="${color}"><animateMotion dur="${dur.toFixed(2)}s" begin="-${(i * dur / count).toFixed(2)}s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#${pid}"></mpath></animateMotion></path>`).join("")}</g>`;
+    const flow = (reduceMotion || workflowDrag || !workflowConnection) ? "" : `<g class="link-flow">${Array.from({ length: count }, (_, i) => `<path class="link-arrow" d="M -4 -3.4 L 4 0 L -4 3.4 L -1 0 Z" fill="${color}"><animateMotion dur="${dur.toFixed(2)}s" begin="-${(i * dur / count).toFixed(2)}s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#${pid}"></mpath></animateMotion></path>`).join("")}</g>`;
     return `
       <g class="link-group">
-        <path class="workflow-link-hit" d="${d}" data-action="delete-workflow-edge" data-index="${index}"></path>
+        <path class="workflow-link-hit" d="${d}" data-action="select-workflow-edge" data-index="${index}"></path>
         <path class="workflow-link-casing" d="${d}" style="--link-color:${color}"></path>
         <path class="workflow-link-channel" d="${d}"></path>
         <path id="${pid}" class="workflow-link" d="${d}" data-from="${esc(edge.from)}" data-to="${esc(edge.to)}" data-edge-type="${esc(edgeType)}" style="--link-color:${color};marker-end:url(#${marker})"></path>
@@ -7469,7 +7477,7 @@ function renderTasks() {
             <label class="span-2">任务目标<textarea id="goal" rows="2">请把当前任务作为任务模式管理起来。</textarea></label>
             <label class="span-2">完成条件<input id="completion" value="${esc((currentAgent.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
             <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
-            <label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />进入后立即开心跳</label>
+            <label class="span-2">本次工作流<select id="task-workflow-mode"><option value="none">不应用画布 · Bot 按任务计划推进</option><option value="selected">应用当前方案的画布</option></select></label><label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />启用方案的定时唤醒（无需靠它连续推进）</label>
           </div>
           ${taskPatternSuggestions()}
           <div class="button-row">
@@ -7527,6 +7535,24 @@ function runnableTask() {
   return activeTask() || (route === "monitor" ? (state.tasks || [])[0] || null : null);
 }
 
+function taskControlDetail(task) {
+  const plan = task.workflow_data?.task_control || { version: 0, approved_version: 0, steps: [], workflow: "selected" };
+  const editable = !task.finished_at && !["completed", "cancelled"].includes(task.status);
+  const unknown = (plan.journal || []).filter(row => ["unknown", "started"].includes(row.status));
+  return `<section class="detail-box task-plan-card">
+    <div class="panel-head"><h3>本次任务计划</h3>${badge(`v${plan.version || 0} · 已批准 v${plan.approved_version || 0}`, "info")}</div>
+    <p class="row-meta">${plan.workflow === "none" ? "未应用画布 · Bot 按具体计划推进" : "应用当前任务快照中的画布方案"} · ${plan.human_paused ? "管理员已暂停" : "批准后自动续接"}</p>
+    <ol class="task-plan-steps">${(plan.steps || []).map(step => `<li class="${step.id === plan.current_step_id ? "is-current" : ""}"><strong>${esc(step.title)}</strong> ${badge(step.status)}<p>${esc(step.instruction)}</p><small>${esc(step.summary || "")}</small></li>`).join("") || "<li>等待 Bot 提交具体计划</li>"}</ol>
+    ${editable ? `<label>途中补充要求<textarea id="task-guidance" placeholder="例如：保留现有配置格式，优先排查工具调用。" rows="2"></textarea></label>
+      <button class="button secondary" data-action="steer-task">交给 Bot 下轮读取</button>
+      <details><summary>人工修订计划（新版本需要重新审批）</summary>
+        <textarea id="task-plan-json" data-plan-version="${Number(plan.version || 0)}" rows="7">${esc(JSON.stringify((plan.steps || []).map(({id,title,instruction}) => ({id,title,instruction})), null, 2))}</textarea>
+        <button class="button secondary" data-action="submit-task-plan">提交计划修订</button></details>` : ""}
+    ${unknown.map(row => `<div class="note warning"><strong>${esc(row.name || "工具")} 的结果待核对</strong><pre>${esc(JSON.stringify(row.arguments || {}, null, 2))}</pre>
+      <button class="button secondary" data-action="reconcile-task-call" data-id="${esc(row.id)}">核对实际结果</button></div>`).join("")}
+  </section>`;
+}
+
 function taskDetail(task) {
   const health = task.heartbeat_health || {};
   const pendingApprovals = (task.approvals || []).filter((item) => item.status === "pending");
@@ -7553,6 +7579,7 @@ function taskDetail(task) {
       ${stateField("下一步", task.next_step)}
       ${stateField("最近观察", task.last_observation)}
     </div>
+    ${taskControlDetail(task)}
     ${taskBudgetDetail(task)}
     ${taskWorkflowDetail(task)}
     ${taskParallelRunsDetail(task)}
@@ -7690,6 +7717,7 @@ function taskParallelRunsDetail(task) {
 }
 
 function taskWorkflowDetail(task) {
+  if (task.workflow_data?.task_control?.workflow === "none") return `<div class="detail-box">本任务没有应用画布；按上方具体计划与检查点继续。</div>`;
   const spec = ensureAgent(clone(task.profile_snapshot?.agent || currentAgent || {}));
   const nodes = spec.workflow_nodes || [];
   const edges = spec.workflow_edges || [];
@@ -8665,12 +8693,26 @@ function removeToolsForPlugin(pluginName) {
   currentAgent.enabled_tools = kept.length ? Array.from(new Set(kept)).sort() : [EMPTY_TOOLS_SENTINEL];
 }
 
+let nodeIndexSource = null, nodeIndexLength = -1, nodeIndex = new Map();
 function workflowNodeById(id) {
-  ensureWorkflow();
-  return currentAgent.workflow_nodes.find((item) => item.id === id);
+  const nodes = currentAgent?.workflow_nodes || [];
+  if (nodes !== nodeIndexSource || nodes.length !== nodeIndexLength) {
+    nodeIndexSource = nodes; nodeIndexLength = nodes.length;
+    nodeIndex = new Map(nodes.map(item => [item.id, item]));
+  }
+  return nodeIndex.get(id);
 }
 
-function refreshWorkflowCanvasDom() {
+let canvasFrame = 0, canvasRefreshMode = "view", selectedWorkflowEdge = -1;
+function refreshWorkflowCanvasDom(mode = "geometry") {
+  if (mode === "geometry" || canvasRefreshMode !== "geometry") canvasRefreshMode = mode;
+  if (!canvasFrame) canvasFrame = requestAnimationFrame(() => {
+    canvasFrame = 0;
+    const next = canvasRefreshMode; canvasRefreshMode = "view";
+    flushWorkflowCanvasDom(next);
+  });
+}
+function flushWorkflowCanvasDom(mode) {
   const svg = document.querySelector(".workflow-links");
   if (!svg) return;
   const size = workflowCanvasSize();
@@ -8691,6 +8733,21 @@ function refreshWorkflowCanvasDom() {
     canvas.dataset.worldOffsetY = String(offsetY);
     canvas.classList.toggle("is-connecting", Boolean(workflowConnection || workflowPendingPort));
   }
+  const percentage = document.querySelector(".workflow-zoom-pct");
+  if (percentage) percentage.textContent = `${Math.round(workflowZoom * 100)}%`;
+  if (mode === "view") return;
+  if (mode === "preview" && workflowConnection) {
+    const from = workflowNodeById(workflowConnection.nodeId);
+    if (from) {
+      const start = workflowNodeOutAnchor(from, workflowConnection.port || "success", offsetX, offsetY);
+      const end = workflowConnection.pointer;
+      let path = svg.querySelector(".workflow-link-preview");
+      if (!path) { path = document.createElementNS("http://www.w3.org/2000/svg", "path"); path.classList.add("workflow-link-preview"); svg.appendChild(path); }
+      const bend = Math.max(48, Math.abs(end.x - start.x) * 0.5);
+      path.setAttribute("d", `M ${start.x} ${start.y} C ${start.x+bend} ${start.y} ${end.x-bend} ${end.y} ${end.x} ${end.y}`);
+    }
+    return;
+  }
   for (const el of document.querySelectorAll(".flow-node")) {
     const item = workflowNodeById(el.dataset.id);
     if (!item) continue;
@@ -8700,11 +8757,22 @@ function refreshWorkflowCanvasDom() {
   svg.setAttribute("width", String(size.width));
   svg.setAttribute("height", String(size.height));
   svg.setAttribute("viewBox", `0 0 ${size.width} ${size.height}`);
-  svg.innerHTML = workflowLinksSvg(offsetX, offsetY);
+  const nextMarkup = workflowLinksSvg(offsetX, offsetY);
+  const oldGroups = [...svg.querySelectorAll(".link-group")];
+  const template = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  template.innerHTML = nextMarkup;
+  const newGroups = [...template.querySelectorAll(".link-group")];
+  if (oldGroups.length === newGroups.length && svg.querySelector("defs")) {
+    newGroups.forEach((group, index) => {
+      if (oldGroups[index].innerHTML !== group.innerHTML) oldGroups[index].replaceWith(group);
+    });
+    svg.querySelectorAll(".workflow-link-preview").forEach(el => el.remove());
+  } else svg.innerHTML = nextMarkup;
+  svg.querySelectorAll(".link-group").forEach((el, index) => el.classList.toggle("is-selected", index === selectedWorkflowEdge));
   const __pct = document.querySelector(".workflow-zoom-pct");
   if (__pct) __pct.textContent = `${Math.round(workflowZoom * 100)}%`;
   const minimap = document.querySelector(".workflow-minimap");
-  if (minimap && !workflowMinimapPan && !workflowMinimapResize) minimap.outerHTML = workflowMinimap(size);
+  if (minimap && !workflowDrag && !workflowPan && !workflowMinimapPan && !workflowMinimapResize) minimap.outerHTML = workflowMinimap(size);
 }
 
 // 剪刀工具几何辅助：把 SVG 用户坐标点转成屏幕(client)坐标；判断点到线段的距离。
@@ -9106,6 +9174,7 @@ document.addEventListener("pointerdown", (event) => {
       return;
     }
   }
+  if (event.target.closest(".flow-node")) selectedWorkflowEdge = -1;
   const portEl = event.target.closest(".node-port");
   if (portEl && document.querySelector(".workflow-canvas")?.contains(portEl)) {
     const portInfo = workflowPortInfo(portEl);
@@ -9173,7 +9242,7 @@ document.addEventListener("pointerdown", (event) => {
   const wrapEl = event.target.closest(".workflow-canvas-wrap");
   if (!wrapEl || !document.querySelector(".workflow-main-canvas")?.contains(wrapEl)) return;
   if (event.target.closest(WORKFLOW_CANVAS_BLOCKER_SELECTOR)) return;
-  if (event.target.closest("[data-action='delete-workflow-edge']")) return;
+  if (event.target.closest("[data-action='delete-workflow-edge'],[data-action='select-workflow-edge']")) return;
   event.preventDefault();
   if (workflowScissorMode) {
     const stroke = document.createElement("div");
@@ -9368,7 +9437,7 @@ document.addEventListener("pointermove", (event) => {
       && target.isIn
         ? target
         : null;
-    refreshWorkflowCanvasDom();
+    refreshWorkflowCanvasDom("preview");
     return;
   }
   if (workflowPan && workflowPan.pointerId === event.pointerId) {
@@ -9388,7 +9457,7 @@ document.addEventListener("pointermove", (event) => {
     const minPanY = viewportHeight / 2 - worldRenderHeight;
     workflowPanX = clamp(desiredPanX, minPanX, maxPanX);
     workflowPanY = clamp(desiredPanY, minPanY, maxPanY);
-    refreshWorkflowCanvasDom();
+    refreshWorkflowCanvasDom("view");
     return;
   }
   if (!workflowDrag || workflowDrag.pointerId !== event.pointerId) return;
@@ -9592,8 +9661,8 @@ document.addEventListener("wheel", (event) => {
   if (!wrapEl || route !== "workflow") return;
   event.preventDefault();
   const oldZoom = workflowZoom;
-  const delta = event.deltaY > 0 ? -0.08 : 0.08;
-  const nextZoom = clamp(oldZoom + delta, 0.15, 1.8);
+  const pixels = event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 300 : 1);
+  const nextZoom = clamp(oldZoom * Math.exp(-pixels * 0.0015), 0.15, 1.8);
   if (nextZoom === oldZoom) return;
   const rect = wrapEl.getBoundingClientRect();
   const localX = event.clientX - rect.left;
@@ -9603,7 +9672,7 @@ document.addEventListener("wheel", (event) => {
   workflowZoom = nextZoom;
   workflowPanX = localX - worldX * nextZoom;
   workflowPanY = localY - worldY * nextZoom;
-  refreshWorkflowCanvasDom();
+  refreshWorkflowCanvasDom("view");
 }, { passive: false });
 
 document.addEventListener("contextmenu", (event) => {
@@ -9684,6 +9753,7 @@ document.addEventListener("pointercancel", (event) => {
   removeWorkflowDragGhost();
 });
 
+const pendingActions = new Set();
 document.addEventListener("click", async (event) => {
   if (event.target.closest(".node-port")) {
     event.preventDefault();
@@ -9709,7 +9779,33 @@ document.addEventListener("click", async (event) => {
     render();
     return;
   }
+  const mutation = /^(save-|start-task|tick-task|pause-task|resume-task|finish-task|cancel-task|purge-task|approve|reject|steer-task|submit-task-plan|reconcile-task-call|simulate-trigger|make-default)/.test(action || "");
+  if (mutation && pendingActions.has(action)) return;
+  if (mutation) { pendingActions.add(action); target.disabled = true; target.setAttribute("aria-busy", "true"); }
   try {
+    if (action === "steer-task" || action === "submit-task-plan" || action === "reconcile-task-call") {
+      const task = selectedTask();
+      if (!task) throw new Error("请选择任务。");
+      const body = { umo: task.umo, task_id: task.task_id };
+      if (action === "steer-task") {
+        body.action = "steer"; body.message = $("task-guidance").value.trim();
+        if (!body.message) throw new Error("请填写要补充的要求。");
+      } else if (action === "submit-task-plan") {
+        body.action = "plan"; body.steps_json = $("task-plan-json").value;
+        body.expected_version = Number($("task-plan-json").dataset.planVersion || 0);
+        if (!Array.isArray(JSON.parse(body.steps_json))) throw new Error("计划必须是步骤数组。");
+      } else {
+        const values = await showAppModal({ title: "核对工具结果", fields: [
+          { label: "实际结果", type: "select", value: "failed", options: [["failed", "已失败"], ["completed", "已完成"], ["not_started", "确认未执行"]] },
+          { label: "核对依据", value: "", placeholder: "实际文件、日志或外部系统结果" },
+        ] });
+        if (!values) return;
+        body.action = "reconcile"; body.call_id = target.dataset.id;
+        body.outcome = values[0]; body.message = values[1];
+      }
+      const result = await api("/api/task/control", { method: "POST", body });
+      setFeedback(result.message); await load();
+    }
     if (action === "select-agent") {
       selectedAgentId = target.dataset.id;
       currentAgent = ensureAgent(clone((state.agents || []).find((item) => item.agent_id === selectedAgentId)));
@@ -10279,6 +10375,11 @@ document.addEventListener("click", async (event) => {
       workflowDryRunReport = null;
       renderWorkflowStable();
     }
+    if (action === "select-workflow-edge") {
+      selectedWorkflowEdge = Number(target.dataset.index);
+      document.querySelectorAll(".link-group").forEach((el, index) => el.classList.toggle("is-selected", index === selectedWorkflowEdge));
+      setFeedback("已选中连线。按 Delete 删除，或在连线面板编辑条件；删除可撤销。");
+    }
     if (action === "delete-workflow-edge") {
       readAgentForm();
       pushWorkflowHistory();
@@ -10311,9 +10412,10 @@ document.addEventListener("click", async (event) => {
           heartbeat: $("task-start-heartbeat")?.checked || false,
           risk_level: $("task-risk-level")?.value || "work",
           agent_id: currentAgent.agent_id,
+          workflow_mode: $("task-workflow-mode")?.value || "none",
         },
       });
-      setFeedback("任务已创建。");
+      setFeedback("已立项。请 Bot 提交具体计划并由管理员批准。");
       await load();
     }
     if (action === "simulate-trigger") {
@@ -10324,17 +10426,18 @@ document.addEventListener("click", async (event) => {
           agent_id: currentAgent.agent_id,
           source: "manual",
           text: "测试触发",
+          simulate: true,
         },
       });
       if (result.ok === false) throw new Error(result.error || "触发失败。");
-      setFeedback(result.triggered ? "触发成功。" : "未触发（可能不满足触发条件）。");
+      setFeedback(result.message || (result.triggered ? "触发成功。" : "未满足触发条件。"));
       await load();
     }
     if (action === "tick-task") {
       const task = runnableTask();
       if (!task) throw new Error("请选择一个正在运行的任务。");
-      await api("/api/task/tick", { method: "POST", body: { umo: task.umo } });
-      setFeedback("已推进一轮。");
+      const result = await api("/api/task/tick", { method: "POST", body: { umo: task.umo, task_id: task.task_id } });
+      setFeedback(result.message || "已推进一轮。");
       await load();
     }
     if (action === "toggle-heartbeat") {
@@ -10378,7 +10481,7 @@ document.addEventListener("click", async (event) => {
       const defaultSummary = task?.last_confirmed_progress || task?.current_summary || "任务成果已完成并准备归档。";
       const summary = await promptModal("完成任务", "最终总结", defaultSummary, { placeholder: "说明完成情况、验证结果、遗留风险和报告位置。", confirmText: "提交完成" });
       if (summary === null) return;
-      const result = await api("/api/task/finish", { method: "POST", body: { umo, summary } });
+      const result = await api("/api/task/finish", { method: "POST", body: { umo, task_id: task?.task_id, summary } });
       setFeedback(result.message || "任务已完成归档。");
       showToast(result.message || "任务已完成归档。", "ok");
       await load();
@@ -10763,6 +10866,8 @@ document.addEventListener("click", async (event) => {
     }
   } catch (error) {
     setFeedback(error.message, "error");
+  } finally {
+    if (mutation) { pendingActions.delete(action); target.disabled = false; target.removeAttribute("aria-busy"); }
   }
 });
 
@@ -10822,9 +10927,9 @@ async function bootWithCurrentToken() {
 
 function initAuth() {
   const initialToken = new URLSearchParams(location.search).get("token")
-    || sessionStorage.getItem("agent_lab_token")
+    || safeSession.getItem("agent_lab_token")
     || "";
-  if (initialToken) sessionStorage.setItem("agent_lab_token", initialToken);
+  if (initialToken) safeSession.setItem("agent_lab_token", initialToken);
   bootWithCurrentToken().catch((error) => {
     setFeedback(isAuthError(error) ? "接口拒绝访问，请检查后端访问配置。" : `连接失败：${error.message}`, "error");
   });
@@ -10854,6 +10959,21 @@ document.addEventListener("DOMContentLoaded", () => {
   document.addEventListener("keydown", (event) => {
     if (route !== "workflow") return;
     if (document.activeElement?.matches?.(WORKFLOW_FIELD_SELECTOR)) return;
+    if (event.key === "Escape") {
+      selectedWorkflowEdge = -1; workflowConnection = null; workflowPendingPort = null;
+      refreshWorkflowCanvasDom(); return;
+    }
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedWorkflowEdge >= 0) {
+      event.preventDefault();
+      if (currentAgent.workflow_edges[selectedWorkflowEdge]) {
+        pushWorkflowHistory();
+        currentAgent.workflow_edges.splice(selectedWorkflowEdge, 1);
+        selectedWorkflowEdge = -1;
+        workflowCheckReport = null; workflowDryRunReport = null;
+        renderWorkflowStable();
+      }
+      return;
+    }
     if (event.key === "f" || event.key === "F") {
       event.preventDefault();
       const btn = document.querySelector('[data-action="workflow-focus-content"]');

@@ -30,6 +30,18 @@ class CustomApiExecutor:
         api_spec = self.owner.storage.get_custom_api(api_id)
         if not api_spec:
             return {}, {}, f"未找到已注册自定义 API：{api_id}"
+        if not api_spec.get("url") and api_spec.get("provider_id"):
+            try:
+                body = self.parse_json_object(body_json, "body_json")
+                prompt = str(body.get("prompt") or "").strip()
+                if not prompt:
+                    return {}, api_spec, "模型集成需要 body_json.prompt，不需要复制地址或密钥。"
+                response = await self.owner.context.llm_generate(chat_provider_id=str(api_spec["provider_id"]),
+                    prompt=prompt, system_prompt=str(body.get("system_prompt") or ""))
+                return {"ok": True, "status": 200, "body": response.completion_text,
+                        "provider_id": api_spec["provider_id"]}, api_spec, ""
+            except Exception as exc:
+                return {}, api_spec, f"模型集成调用失败：{exc}"
         if not api_spec.get("url"):
             return {}, api_spec, f"自定义 API {api_id} 未配置 URL。"
 

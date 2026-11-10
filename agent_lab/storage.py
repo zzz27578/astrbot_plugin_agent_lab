@@ -196,7 +196,7 @@ class AgentLabStorage:
         payload = task.to_dict()
         self._write_json(self.task_path(task.umo, task.task_id), payload)
         self._write_text(self.task_markdown_path(task.umo, task.task_id), self.render_markdown(task))
-        if active:
+        if active and task.status not in {"completed", "cancelled"} and not task.archive_path:
             self._write_json(self.active_task_path(task.umo), payload)
 
     def append_task_memory_observation(self, task: TaskState, payload: dict[str, Any]) -> None:
@@ -249,13 +249,13 @@ class AgentLabStorage:
                     "text": task.exit_summary,
                     "source_task_id": task.task_id,
                     "source_umo": task.umo,
-                    "status": "accepted",
+                    "status": "candidate",
                     "kind": "task_archive_summary",
                     "layer": "archive_summary",
                     "brief": task.exit_summary[:240],
                     "detail_path": str(self.task_memory_summary_path(task.umo, task.task_id)),
                     "tags": ["task", "archive", "summary", task.agent_id or "agent"],
-                    "expose_to_normal": True,
+                    "expose_to_normal": False,
                 }
             )
         for item in task.memory_candidates:
@@ -511,6 +511,14 @@ class AgentLabStorage:
         lines.extend(["", "## Exit Summary", task.exit_summary or "-"])
         lines.extend(["", "## Memory Candidates"])
         lines.extend([f"- {item}" for item in task.memory_candidates] or ["- none"])
+        plan = (task.workflow_data or {}).get("task_control") or {}
+        if plan:
+            lines.extend(["", "## Approved Task Plan",
+                          f"Version: {plan.get('version', 0)}; approved: {plan.get('approved_version', 0)}",
+                          f"Current step: {plan.get('current_step_id') or '-'}; workflow: {plan.get('workflow')}"])
+            lines.extend(f"- [{step.get('status')}] {step.get('id')}: {step.get('title')}\n  {step.get('instruction')}\n  Evidence: {step.get('evidence', [])}"
+                         for step in plan.get("steps", []))
+            lines.extend(["", "## Task Constraints", *[f"- {text}" for text in plan.get("constraints", [])]])
         lines.append("")
         return "\n".join(lines)
 

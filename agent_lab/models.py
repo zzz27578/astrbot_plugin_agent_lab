@@ -1195,13 +1195,7 @@ class AgentSpec:
             "archive",
         }
         current_ids = {str(item.get("id") or "") for item in self.workflow_nodes or [] if isinstance(item, dict)}
-        if current_ids and current_ids.issubset(legacy_ids) and {
-            "entry_gate",
-            "context_bridge",
-            "isolation_gate",
-        }.intersection(current_ids):
-            self.workflow_nodes = default_workflow_nodes()
-            self.workflow_edges = default_workflow_edges()
+        # Existing user workflows are never replaced merely because their IDs match a legacy template.
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
