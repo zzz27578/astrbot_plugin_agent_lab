@@ -1,4 +1,4 @@
-
+import {safeSession} from './ui-runtime.js?v=025';
 const icon = (name, size = 18) => {
   const shapes = {
     folder: '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
@@ -17,12 +17,13 @@ const icon = (name, size = 18) => {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shapes[name] || shapes.task}</svg>`;
 };
 const labels = {running:"执行中",paused:"已暂停",blocked:"待处理",completed:"已交付",cancelled:"已停止",pending:"待审批",approved:"已批准",consumed:"已使用",rejected:"已拒绝",expired:"已失效"};
-const bytes = n => n < 1024 ? `${n || 0} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;
+export const bytes = value => {const n=Number(value)||0;return n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;};
 
 export class ProjectUI {
   constructor({api, esc, open, refresh, modal, notify, workflow}) {
     Object.assign(this, {api, esc, open, refresh, modal, notify, workflow});
     this.data = {projects:[]}; this.projectId = ""; this.taskId = ""; this.detail = null;
+    this.allData={projects:[]};this.identities=[];this.identityId=safeSession.getItem('agent_lab_bot_scope')||'*';
     this.expanded = new Set(); this.tab = "tasks"; this.search = ""; this.busy = false;
     this.drafts = new Map();
     this.selectionVersion = 0;
@@ -44,11 +45,19 @@ export class ProjectUI {
     });
   }
   setData(data) {
-    this.data = data || {projects:[]};
+    this.allData=data||{projects:[]};this.identities=this.allData.identities||[];
+    this.filterIdentity();
+  }
+  filterIdentity(){
+    const projects=(this.allData.projects||[]).filter(p=>this.identityId==='*'||(this.identityId==='unbound'?!p.platform_id:p.platform_id===this.identityId));
+    this.data={...this.allData,projects,total_bytes:projects.reduce((n,p)=>n+(p.bytes||0),0),cache_bytes:projects.reduce((n,p)=>n+(p.cache_bytes||0),0)};
     if (this.projectId && !this.data.projects.some(p => p.project_id === this.projectId)) {
       this.projectId = ""; this.taskId = ""; this.detail = null;
     }
   }
+  selectIdentity(id){this.identityId=id;this.projectId='';this.taskId='';this.detail=null;this.tab='tasks';++this.selectionVersion;this.filterIdentity();}
+  identityLabel(){return this.identityId==='*'?'全部机器人':this.identityId==='unbound'?'未分配来源':this.identities.find(b=>b.platform_id===this.identityId)?.label||this.identityId;}
+  projectBotName(project){return this.identities.find(b=>b.platform_id===project.platform_id)?.label||project.platform_id||'未分配来源';}
   sidebar() {
     const e = this.esc;
     return `<div class="project-tree-head"><span>项目</span><button data-project-action="create" title="新建项目" aria-label="新建项目">${icon("plus",16)}</button></div>
@@ -56,22 +65,23 @@ export class ProjectUI {
       ${this.data.projects.map(p => `<div class="project-tree-group" role="treeitem" aria-expanded="${this.expanded.has(p.project_id)}">
         <div class="project-tree-row ${this.projectId===p.project_id?"selected":""}">
           <button class="project-chevron ${this.expanded.has(p.project_id)?"open":""}" data-project-action="expand" data-project-id="${e(p.project_id)}" aria-label="展开或收起 ${e(p.title)}">${icon("arrow",13)}</button>
-          <button class="project-tree-title" data-project-action="select" data-project-id="${e(p.project_id)}">${icon("folder",16)}<span>${e(p.title)}</span><small>${p.tasks.length}</small></button>
+          <button class="project-tree-title" data-project-action="select" data-project-id="${e(p.project_id)}" title="${e(this.projectBotName(p))} · ${e(p.platform_id||'未绑定')} · ${e(p.title)}">${icon("folder",16)}<span>${e(p.title)}</span><small>${p.tasks.length}</small></button>
         </div><div class="project-tree-children ${this.expanded.has(p.project_id)?"open":""}" role="group"><div>
           ${p.tasks.slice(0,30).map(t => `<button class="project-tree-task ${this.taskId===t.task_id?"selected":""}" data-project-action="task" data-project-id="${e(p.project_id)}" data-task-id="${e(t.task_id)}"><span class="project-dot ${e(t.status)}"></span><span>${e(t.title)}</span>${t.question_count?'<span class="project-needs-input">?</span>':""}</button>`).join("")}
           ${p.tasks.length>30?`<button data-project-action="select" data-project-id="${e(p.project_id)}">查看全部 ${p.tasks.length} 个任务</button>`:""}
         </div></div></div>`).join("") || `<p class="project-tree-empty">让 Bot 创建项目，相关任务会在这里归档。</p>`}</div>
-        <button class="project-storage-link" data-project-action="home">${icon("storage",15)}<span>记录文件</span><strong>${bytes(this.data.total_bytes)}</strong></button>`;
+        `;
   }
+  footer(){return `<button class="project-storage-link" data-project-action="storage">${icon('storage',16)}<span>存储与清理</span><strong>${bytes(this.data.total_bytes)}</strong></button>`;}
   render(container) {
     this.container = container;
     const p = this.data.projects.find(p => p.project_id===this.projectId);
     const e = this.esc;
     container.innerHTML = `<div class="project-workspace">
       <header class="project-header"><div><p class="project-eyebrow">AGENT LAB / PROJECTS</p>
-        <h1>${p?e(p.title):"让任务有归处"}</h1><p>${p?`${e(p.category)} · ${p.tasks.length} 个任务 · 记录 ${bytes(p.bytes)}`:"项目、计划与记忆放在一起，日常聊天保持轻盈。"}</p></div>
+        <h1>${p?e(p.title):this.tab==='storage'?'存储与清理':"项目"}</h1><p>${p?`${e(this.projectBotName(p))} · ${e(p.category)} · ${p.tasks.length} 个任务 · 记录 ${bytes(p.bytes)}`:`${e(this.identityLabel())} · 计划、记录和项目记忆，一处整理。`}</p></div>
         <div class="project-header-actions"><button class="button secondary" data-project-action="refresh">刷新</button><button class="button" data-project-action="${p?"new-task":"create"}" data-project-id="${e(p?.project_id||"")}">${icon("plus",16)}${p?"新建任务":"新建项目"}</button></div></header>
-      ${p?this.renderProject(p):this.renderOverview()}
+      ${p?this.renderProject(p):this.tab==='storage'?this.renderStorage():this.renderOverview()}
     </div>`;
     if (this.busy) container.querySelectorAll("button").forEach(b => { b.disabled = true; });
     container.querySelectorAll("input[id],textarea[id]").forEach(el=>{
@@ -81,15 +91,16 @@ export class ProjectUI {
   }
   renderOverview() {
     const e=this.esc, projects=this.data.projects;
-    return `<div class="project-hero-strip"><div>${icon("folder",24)}<strong>${projects.length}</strong><span>项目目录</span></div><div>${icon("task",24)}<strong>${projects.reduce((n,p)=>n+p.tasks.length,0)}</strong><span>独立任务</span></div><div>${icon("storage",24)}<strong>${bytes(this.data.cache_bytes)}</strong><span>可清理日志缓存</span></div></div>
+    return `<div class="project-hero-strip"><div><strong>${projects.length}</strong><span>项目</span></div><div><strong>${projects.reduce((n,p)=>n+p.tasks.length,0)}</strong><span>任务记录</span></div><div><strong>${bytes(this.data.cache_bytes)}</strong><span>日志缓存</span></div></div>
       <label class="project-search">${icon("search")}<input id="project-search" placeholder="查找项目或分类…" value="${e(this.search)}" /></label>
-      <div class="project-folder-grid">${projects.map((p,i)=>`<article class="project-folder-card" data-search-text="${e((p.title+" "+p.category).toLowerCase())}" style="--entry-delay:${Math.min(i*35,210)}ms">
-        <button class="project-folder-open" data-project-action="select" data-project-id="${e(p.project_id)}"><span class="project-folder-icon">${icon("folder",28)}</span><span class="project-category">${e(p.category)}</span><h2>${e(p.title)}</h2><p>${e(p.summary||"还没有项目摘要。Bot 完成工作后会写交接记录。")}</p><footer><span>${p.tasks.length} 个任务</span><span>${bytes(p.bytes)} ${icon("arrow",14)}</span></footer></button>
+      <div class="project-folder-grid">${projects.map((p,i)=>`<article class="project-folder-card" ${!(p.title+" "+p.category).toLowerCase().includes(this.search.toLowerCase())?"hidden":""} data-search-text="${e((p.title+" "+p.category).toLowerCase())}" style="--entry-delay:${Math.min(i*35,210)}ms">
+        <button class="project-folder-open" data-project-action="select" data-project-id="${e(p.project_id)}"><span class="project-folder-icon">${icon("folder",28)}</span><span class="project-category">${e(p.category)}</span><h2>${e(p.title)}</h2><p>${e(p.summary||"还没有项目摘要。Bot 完成工作后会写交接记录。")}</p><footer><span>${e(this.projectBotName(p))} · ${p.tasks.length} 个任务</span><span>${bytes(p.bytes)} ${icon("arrow",14)}</span></footer></button>
         </article>`).join("") || `<div class="project-empty"><span>${icon("folder",40)}</span><h2>从一件具体的事开始</h2><p>对 Bot 说“为这个插件建一个项目”，或手动创建目录。</p><button class="button" data-project-action="create">创建第一个项目</button></div>`}</div>`;
   }
+  renderStorage(){const e=this.esc;return `<section class="storage-overview"><div class="storage-explanation"><h2>${bytes(this.data.total_bytes)}</h2><p>当前机器人范围内的项目记录文件。任务对话的内容大小在清理预览中另列，数据库文件不会按此数值立刻收缩。</p></div><div class="storage-project-list">${this.data.projects.map(p=>`<button data-project-action="storage-project" data-project-id="${e(p.project_id)}"><span>${icon('folder')}<strong>${e(p.title)}</strong></span><span>${p.tasks.length} 个任务</span><span>${bytes(p.bytes)}</span><span>查看与清理 ${icon('arrow',14)}</span></button>`).join('')||'<div class="empty">当前范围没有项目记录。</div>'}</div></section>`;}
   renderProject(p) {
     const e=this.esc, task = this.detail?.task;
-    const tabs=[["tasks","任务"],["memory","摘要与存储"],["workflows","方案"],["tools","开发保护"]];
+    const tabs=[["tasks","任务"],["memory","摘要与存储"],["workflows","预案"],["tools","开发保护"]];
     return `<div class="project-toolbar"><nav>${tabs.map(([id,label])=>`<button class="${this.tab===id?"active":""}" data-project-action="tab" data-tab="${id}">${label}</button>`).join("")}</nav><button class="project-text-button" data-project-action="rename" data-project-id="${e(p.project_id)}">编辑分类</button></div>
       ${this.tab==="tasks"?`<div class="project-task-layout"><section class="project-task-list">${p.tasks.map(t=>`<button class="project-task-row ${t.task_id===this.taskId?"selected":""}" data-project-action="task" data-task-id="${e(t.task_id)}" data-project-id="${e(p.project_id)}"><span class="project-dot ${e(t.status)}"></span><div><strong>${e(t.title)}</strong><p>${e(t.summary||"等待 Bot 记录进展")}</p><small>${e(labels[t.status]||t.status)} · ${bytes(t.bytes)}${t.question_count?" · 等待回答":""}</small></div>${icon("arrow",15)}</button>`).join("")||'<div class="project-empty"><h3>这个项目还没有任务</h3><p>新任务与以往记录分开，交接时只引用摘要。</p></div>'}</section>
       <section class="project-task-detail">${task&&p.tasks.some(t=>t.task_id===task.task_id)?this.renderTask(task):'<div class="project-empty"><h3>选择一个任务</h3><p>查看计划、待回答问题、记录和存储明细。</p></div>'}</section></div>`:""}
@@ -98,7 +109,7 @@ export class ProjectUI {
         <label class="project-check"><input type="checkbox" id="project-daily-share" ${p.share_with_daily?"checked":""}/> 日常聊天仅注入本项目最多 800 字摘要</label><button class="button secondary" data-project-action="sharing">保存互通设置</button>
         <div class="project-clean-actions"><button class="button secondary" data-project-action="cleanup" data-mode="cache">${icon("storage",16)}预览清理缓存</button><button class="button secondary" data-project-action="cleanup" data-mode="history">删除项目任务历史…</button><button class="button danger" data-project-action="cleanup" data-mode="project">删除项目…</button></div>
         <p class="project-hint">缓存清理保留计划、证据编号和摘要。历史/项目删除会删除对应记录、记忆与任务对话；不会删除开发源码目录。原生对话大小在清理预览中单独计算。所有项目共用的索引与历史记忆文件共 ${bytes(this.data.shared_metadata_bytes)}，不重复分摊到每个项目。</p></section>`:""}
-      ${this.tab==="workflows"?`<section class="project-memory-panel"><h2>这个项目的常用方案</h2><p class="project-hint">Bot 按标题和简介选择。没有合适方案可以略过，不影响任务立项。</p><div class="project-workflow-list">${(this.agents||[]).map(a=>`<label><input type="checkbox" name="project-workflow" value="${e(a.agent_id)}" ${(p.workflow_ids||[]).includes(a.agent_id)?"checked":""}/><span><strong>${e(a.name||a.agent_id)}</strong><small>${e(a.description||"暂无简介")}</small></span><button type="button" class="project-text-button" data-project-action="workflow" data-agent-id="${e(a.agent_id)}">${icon("flow",16)}打开画布</button></label>`).join("")}</div><button class="button" data-project-action="save-workflows">保存项目方案关联</button></section>`:""}
+      ${this.tab==="workflows"?`<section class="project-memory-panel"><h2>这个项目的常用预案</h2><p class="project-hint">Bot 按标题和简介选择。没有合适预案可以略过，不影响任务立项。</p><div class="project-workflow-list">${(this.agents||[]).map(a=>`<label><input type="checkbox" name="project-workflow" value="${e(a.agent_id)}" ${(p.workflow_ids||[]).includes(a.agent_id)?"checked":""}/><span><strong>${e(a.name||a.agent_id)}</strong><small>${e(a.description||"暂无简介")}</small></span><button type="button" class="project-text-button" data-project-action="workflow" data-agent-id="${e(a.agent_id)}">${icon("flow",16)}打开画布</button></label>`).join("")}</div><button class="button" data-project-action="save-workflows">保存项目预案关联</button></section>`:""}
       ${this.tab==="tools"?this.renderDeveloperTools():""}`;
   }
   renderDeveloperTools() {
@@ -141,7 +152,9 @@ export class ProjectUI {
   async action(button) {
     const action=button.dataset.projectAction;
     if(this.busy)return;
-    if(action==="home"){this.projectId="";this.taskId="";this.open();return;}
+    if(action==="home"){this.projectId="";this.taskId="";this.tab='tasks';this.open();return;}
+    if(action==='storage'){this.projectId='';this.taskId='';this.tab='storage';this.open();return;}
+    if(action==='storage-project'){this.projectId=button.dataset.projectId;this.taskId='';this.tab='memory';this.open();return;}
     if(action==="expand"){
       const id=button.dataset.projectId;
       this.expanded.has(id)?this.expanded.delete(id):this.expanded.add(id);
@@ -159,16 +172,17 @@ export class ProjectUI {
       if(action==="task"){this.projectId=button.dataset.projectId;await this.showTask(button.dataset.taskId);}
       else if(action==="refresh"){await this.refresh();if(this.taskId)await this.showTask(this.taskId);}
       else if(action==="create") {
-        const values=await this.modal({title:"新建项目",fields:[{label:"项目名称",value:"",placeholder:"例如：Agent Lab 插件"},{label:"类型",value:"插件开发"},{label:"来源 UMO（可选，Bot创建时自动填写）",value:""}]});
+        const selected=this.identities.find(b=>b.platform_id===this.identityId);
+        const values=await this.modal({title:"新建项目",message:`当前查看身份：${this.identityLabel()}。项目会绑定来源中的平台实例；留空可稍后由 Bot 立项时绑定。`,fields:[{label:"项目名称",value:"",placeholder:"例如：Agent Lab 插件"},{label:"类型",value:"插件开发"},{label:"来源 UMO",value:selected?.sessions?.[0]?.umo||""}]});
         if(!values)return;
-        const p=await this.request("create_project",{title:values[0],category:values[1],umo:values[2]});
+        const p=await this.request("create_project",{title:values[0],category:values[1],umo:values[2],platform_id:selected?.platform_id||''});
         this.projectId=p.project_id;this.expanded.add(p.project_id);this.taskId="";await this.refresh();
       } else if(action==="rename") {
         const p=this.data.projects.find(p=>p.project_id===this.projectId);
         const values=await this.modal({title:"整理项目",fields:[{label:"名称",value:p.title},{label:"类型",value:p.category}]});
         if(!values)return;await this.request("update_project",{title:values[0],category:values[1]});await this.refresh();
       } else if(action==="move") {
-        const choices=this.data.projects.filter(p=>!p.source_umo||p.source_umo===this.detail.task.umo).map(p=>[p.project_id,p.title]);
+        const choices=this.data.projects.filter(p=>(!p.source_umo||p.source_umo===this.detail.task.umo)&&(!p.platform_id||p.platform_id===this.detail.task.umo.split(":")[0])).map(p=>[p.project_id,p.title]);
         const values=await this.modal({title:"整理任务归属",fields:[{label:"目标项目",type:"select",value:this.projectId,options:choices}]});
         if(!values)return;await this.request("move_task",{project_id:values[0]});this.projectId=values[0];this.expanded.add(this.projectId);await this.refresh();await this.showTask(this.taskId);
       } else if(action==="new-task") {

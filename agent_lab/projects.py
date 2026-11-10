@@ -14,6 +14,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 from .models import TaskState, new_id, now_iso
 from .task_control import control
+from .identities import source_platform
 
 
 TERMINAL = {"completed", "cancelled"}
@@ -57,16 +58,18 @@ class Projects:
             raise ValueError("项目编号无效。")
         return self.root / project_id / "SUMMARY.md"
 
-    def create(self, title, category="项目", source_umo="", owner_id=""):
+    def create(self, title, category="项目", source_umo="", owner_id="", platform_id=""):
         title = str(title).strip()
         if not title or len(title) > 100:
             raise ValueError("项目名称需要1–100字符。")
         data = self.index()
-        existing = next((p for p in data["projects"] if p["title"] == title and p.get("source_umo") == source_umo), None)
+        platform_id = source_platform(source_umo) or str(platform_id or "")
+        existing = next((p for p in data["projects"] if p["title"] == title and p.get("source_umo") == source_umo
+                         and (source_platform(p.get("source_umo")) or p.get("platform_id", "")) == platform_id), None)
         if existing:
             return existing
         row = {"project_id": new_id("project"), "title": title, "category": str(category or "项目")[:40],
-               "source_umo": source_umo, "owner_id": owner_id, "created_at": now_iso(), "updated_at": now_iso(),
+               "source_umo": source_umo, "platform_id": platform_id, "owner_id": owner_id, "created_at": now_iso(), "updated_at": now_iso(),
                "summary": "", "share_with_daily": False, "workflow_ids": []}
         data["projects"].append(row)
         self.write(data)
@@ -100,6 +103,8 @@ class Projects:
         row = self.project(project_id)
         if row.get("source_umo") and row["source_umo"] != umo:
             raise ValueError("该项目属于其他会话来源，请在对应会话中选择。")
+        if row.get("platform_id") and row["platform_id"] != source_platform(umo):
+            raise ValueError("该项目属于另一机器人实例，不能从当前 Bot 选择。")
         data = self.index()
         data["selected"][umo] = project_id
         self.write(data)
@@ -117,6 +122,8 @@ class Projects:
             project_id = row["project_id"]
         row = self.project(project_id)
         if project_id in self.cleaning_projects: raise ValueError("项目正在清理，请稍后添加任务。")
+        if row.get("platform_id") and row["platform_id"] != source_platform(task.umo):
+            raise ValueError("项目的机器人实例与任务来源不一致。")
         if row.get("source_umo") and row["source_umo"] != task.umo:
             raise ValueError("项目和任务来源不一致。")
         data = self.index()
@@ -124,7 +131,7 @@ class Projects:
         if not row.get("source_umo"):
             for project in data["projects"]:
                 if project["project_id"] == project_id:
-                    project.update(source_umo=task.umo, owner_id=control(task).get("owner_id", ""), updated_at=now_iso())
+                    project.update(source_umo=task.umo, platform_id=source_platform(task.umo), owner_id=control(task).get("owner_id", ""), updated_at=now_iso())
         control(task)["project_id"] = project_id
         data["tasks"][task.task_id] = {"project_id": project_id, "umo": task.umo}
         data["selected"][task.umo] = project_id
@@ -291,14 +298,14 @@ class Projects:
         if project.get("source_umo") != umo or not project.get("share_with_daily"): return ""
         return str(project.get("summary") or "")[:800]
 
-    def task_paths(self, task):
+    def task_paths(self, task, index=None):
         paths = {self.storage.task_path(task.umo, task.task_id), self.storage.task_markdown_path(task.umo, task.task_id),
                  self.storage.archive_task_json_path(task.umo, task.task_id), self.storage.archive_task_markdown_path(task.umo, task.task_id)}
         directory = self.storage.session_dir(task.umo) / f"task_{task.task_id}" / "task_memory"
         if directory.exists(): paths.update(p for p in directory.rglob("*") if p.is_file())
         active = self.storage.active_task_path(task.umo)
         if active.exists() and self.storage._read_json(active).get("task_id") == task.task_id: paths.add(active)
-        meta = self.index()["tasks"].get(task.task_id, {})
+        meta = (index if index is not None else self.index())["tasks"].get(task.task_id, {})
         if meta.get("project_id"):
             paths.add(self.summary_path(meta["project_id"]).parent / f"{task.task_id}.summary.md")
         return sorted(p for p in paths if p.is_file() and self.safe_path(p))
@@ -318,22 +325,24 @@ class Projects:
     def catalog(self):
         data = self.index()
         tasks = self.all_tasks()
+        active_ids = {umo: (active.task_id if (active := self.storage.load_active_task(umo)) else "") for umo in {t.umo for t in tasks.values()}}
         rows = []
         for project in data["projects"]:
             children = []
             for task_id, meta in data["tasks"].items():
                 if meta["project_id"] != project["project_id"] or task_id not in tasks: continue
                 task = tasks[task_id]
-                paths = self.task_paths(task)
+                paths = self.task_paths(task, data)
                 cache = sum(file_size(p) for p in paths if p.suffix == ".jsonl")
                 children.append({"task_id": task_id, "umo": task.umo, "title": task.root_goal[:160], "status": task.status,
                     "updated_at": task.updated_at, "summary": (task.exit_summary or task.current_summary)[:350],
                     "bytes": sum(file_size(p) for p in paths), "cache_bytes": cache,
-                    "selected": bool((current := self.storage.load_active_task(task.umo)) and current.task_id == task_id),
+                    "selected": active_ids.get(task.umo) == task_id,
                     "question_count": len([q for q in control(task).get("questions", []) if q.get("status") == "pending"])})
             summary = self.summary_path(project["project_id"])
             summary_bytes = file_size(summary)
-            rows.append({**project, "tasks": sorted(children, key=lambda t:t["updated_at"], reverse=True),
+            rows.append({**project, "platform_id": source_platform(project.get("source_umo")) or project.get("platform_id", ""),
+                "tasks": sorted(children, key=lambda t:t["updated_at"], reverse=True),
                 "bytes": sum(t["bytes"] for t in children) + summary_bytes, "cache_bytes": sum(t["cache_bytes"] for t in children),
                 "summary_bytes": summary_bytes, "storage_path": str(summary.parent.relative_to(self.storage.root))})
         fence_bytes = sum(file_size(p) for p in (self.storage.root / "ended").glob("*.json"))

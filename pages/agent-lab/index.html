@@ -6,8 +6,9 @@
     <meta name="agent-lab-api-base" content="/api" />
     <title>任务模式控制台</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231b2723'/><circle cx='10' cy='16' r='3' fill='%2316c79a'/><circle cx='22' cy='10' r='3' fill='%2316c79a'/><circle cx='22' cy='22' r='3' fill='%232f9e5f'/><path d='M12.5 14.8 19.5 11M12.5 17.2 19.5 21' stroke='%2316c79a' stroke-width='1.6' fill='none'/></svg>" />
-    <link rel="stylesheet" href="./style.css?v=20261110-v024" />
-    <link rel="stylesheet" href="./workspace.css?v=20261110-v024" />
+    <link rel="stylesheet" href="./style.css?v=20261111-v025" />
+    <link rel="stylesheet" href="./workspace.css?v=20261111-v025" />
+    <link rel="stylesheet" href="./theme.css?v=20261111-v025" />
   </head>
   <body>
     <div class="shell" id="main-app">
@@ -15,8 +16,8 @@
       <div id="global-status-bar" class="global-status-bar">
         <div class="status-left">
           <span class="status-agent">
-            <strong id="current-agent-name">加载中...</strong>
-            <button id="agent-switcher" class="agent-switcher-btn" title="切换方案">▼</button>
+            <span class="identity-indicator" aria-hidden="true"></span><strong id="current-agent-name">加载中...</strong><code id="identity-instance"></code>
+            <button id="agent-switcher" class="agent-switcher-btn" aria-label="机器人身份设置" title="机器人身份设置">▼</button>
           </span>
           <span class="status-indicator">
             <span id="status-dot" class="status-dot idle"></span>
@@ -29,25 +30,20 @@
         </div>
         <div class="status-right">
           <span class="status-actions">
-            <button id="status-pause-btn" class="status-action-btn" style="display:none;" title="打开任务控制台">控制台</button>
             <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
           </span>
           <button id="refresh" type="button" class="status-refresh-btn icon-button" title="刷新数据" aria-label="刷新数据"></button>
-          <button id="settings-btn" type="button" class="status-refresh-btn settings-gear" title="设置">⚙</button>
+          <button id="settings-btn" type="button" class="status-refresh-btn settings-gear" title="身份与集成设置" aria-label="设置">⚙</button>
         </div>
       </div>
 
       <aside class="rail">
         <div class="brand">
           <strong>Agent Lab</strong>
-          <span>Bot 的项目与任务 · v0.2.4</span>
+          <span>Bot 的项目与任务 · v0.2.5</span>
         </div>
         <nav id="nav" class="nav"></nav>
-        <div class="rail-note">
-          <span>运行时身份来源</span>
-          <strong id="bot-label">等待读取</strong>
-          <small id="bot-source">等待运行时读取</small>
-        </div>
+        <div id="rail-storage" class="rail-bottom"></div>
       </aside>
 
       <main class="main">
@@ -56,6 +52,6 @@
       </main>
     </div>
 
-    <script type="module" src="./app.js?v=20261110-v024"></script>
+    <script type="module" src="./app.js?v=20261111-v025"></script>
   </body>
 </html>

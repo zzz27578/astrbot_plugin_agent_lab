@@ -1,0 +1,12 @@
+{
+  "name": "agent-lab-ui-checks",
+  "version": "0.2.5",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "check": "node browser-check.mjs"
+  },
+  "dependencies": {"@xyflow/system": "0.0.74"},
+  "devDependencies": {"esbuild": "0.25.5", "playwright-core": "1.56.1"}
+}

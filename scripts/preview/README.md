@@ -20,4 +20,4 @@ LD_LIBRARY_PATH=/tmp/pw/libs node scripts/preview/preview.js workflow   # 只拍
 
 ## 注意
 - 必须用 http（内嵌服务器），不能 file://（浏览器禁止 file:// 下 fetch /api）。
-- 外部图标(GAME_ICONS 来自 github raw)在沙盒被 abort，会显示为破图，属正常；真机有网即正常。
+- v0.2.5 已改用本地 SVG 图标。当前沙箱 iframe 交互验收优先使用 [scripts/ui](../ui/README.md)，本目录保留原始画布数据与旧预览脚本。

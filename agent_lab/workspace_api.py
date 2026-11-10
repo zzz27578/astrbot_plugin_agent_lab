@@ -5,6 +5,7 @@ from quart import g, jsonify, request
 
 from .task_control import control
 from .web_api import admin_api
+from .identities import identity_rows, source_platform
 
 
 class WorkspaceAPI:
@@ -15,7 +16,8 @@ class WorkspaceAPI:
     async def handle(self):
         projects = self.owner.projects
         if request.method == "GET":
-            return jsonify({"ok": True, **await asyncio.to_thread(projects.catalog)})
+            catalog = await asyncio.to_thread(projects.catalog)
+            return jsonify({"ok": True, **catalog, "identities": identity_rows(self.owner, catalog["projects"])})
         payload = await request.get_json(silent=True) or {}
         if not isinstance(payload, dict): raise ValueError("请求必须是对象。")
         action = str(payload.get("action") or "")
@@ -25,7 +27,11 @@ class WorkspaceAPI:
         if action == "create_project":
             umo = str(payload.get("umo") or "")
             if umo and self.owner._make_cron_event(umo, "Project create") is None: raise ValueError("会话来源不可用。")
-            result = projects.create(payload.get("title", ""), payload.get("category", "项目"), umo, actor)
+            platform_id = str(payload.get("platform_id") or source_platform(umo))
+            known = {row["platform_id"] for row in identity_rows(self.owner, projects.index()["projects"]) if row["known"]}
+            if platform_id and platform_id not in known: raise ValueError("机器人实例当前不可用，请在设置中重新选择。")
+            if umo and platform_id != source_platform(umo): raise ValueError("会话来源与选择的机器人不一致。")
+            result = projects.create(payload.get("title", ""), payload.get("category", "项目"), umo, actor, platform_id)
         elif action == "update_project":
             result = projects.update(project_id, payload)
         elif action == "detail":

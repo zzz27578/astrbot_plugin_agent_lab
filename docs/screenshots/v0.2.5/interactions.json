@@ -1,0 +1,60 @@
+{
+  "checks": [
+    "home fills available content width",
+    "old identity footer removed",
+    "storage anchored to sidebar bottom",
+    "no direct integrations or old all-schemes navigation",
+    "settings uses identical content bounds",
+    "top-left identity includes instance",
+    "projects filtered by exact bot instance",
+    "project creation carries chosen bot and source",
+    "project deletion confirms exact preview token",
+    "same adapter different bot shows different project",
+    "project identity and status agree across bots in all scope",
+    "status view opens the exact displayed task",
+    "integration settings content aligned",
+    "credential page responds",
+    "presets align with home",
+    "preset description persisted to actual API payload",
+    "preset duplication preserves original graph metadata",
+    "preset delete keeps original presets",
+    "original right-side vertical tool dock preserved",
+    "original material panel width and right offset preserved",
+    "port drag creates a real edge",
+    "undo restores edge count",
+    "redo restores created edge",
+    "selecting edge and Delete removes only edge",
+    "edge delete can be undone",
+    "node drag updates position",
+    "canvas save persists geometry and full node metadata",
+    "administrator delivery button invokes exact selected task",
+    "bottom storage opens storage view",
+    "cleanup cancel does not issue cache delete request",
+    "project search remains applied after navigation",
+    "preset search remains applied after navigation",
+    "repeated routes retain identical boundaries",
+    "no root animation replay",
+    "reduced-motion preference respected",
+    "sandboxed browser console has no uncaught errors"
+  ],
+  "errors": [],
+  "perf": [
+    {
+      "name": "first_render_ms",
+      "value": 181
+    },
+    {
+      "name": "drag_24_events_ms_including_150ms_settle",
+      "value": 325
+    },
+    {
+      "name": "long_tasks_count",
+      "value": 1
+    },
+    {
+      "name": "max_long_task_ms",
+      "value": 104
+    }
+  ],
+  "requests": 26
+}

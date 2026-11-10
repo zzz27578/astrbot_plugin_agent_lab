@@ -1,8 +1,10 @@
-import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=024";
-import { ProjectUI } from "./project-ui.js?v=024";
+import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=025";
+import { ProjectUI } from "./project-ui.js?v=025";
+import { Navigation, settingsIcon } from "./navigation.js?v=025";
+import {getBezierPath, getSmoothStepPath, Position} from "./vendor/connectors.js?v=025";
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20261110-v024";
+const AGENT_LAB_WEBUI_BUILD = "20261111-v025";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -23,28 +25,6 @@ const DEFAULT_ENABLED_TOOLS = [
   "agent_lab_run_parallel_workflow",
   "agent_lab_advance_workflow",
 ];
-const GAME_ICON_BASE = "https://raw.githubusercontent.com/Nieobie/Game-Icon-Pack/39dcf2b64947071c762395754ee9a5d3c8975906/svg-v1.0.3";
-const GAME_ICONS = {
-  menu: `${GAME_ICON_BASE}/1.UI/menu-open.svg`,
-  gridAdd: `${GAME_ICON_BASE}/1.UI/grid-add.svg`,
-  pointer: `${GAME_ICON_BASE}/3.Editing%20Tools/select.svg`,
-  select: `${GAME_ICON_BASE}/3.Editing%20Tools/select.svg`,
-  copy: `${GAME_ICON_BASE}/3.Editing%20Tools/copy.svg`,
-  trash: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/trash.svg`,
-  undo: `${GAME_ICON_BASE}/3.Editing%20Tools/undo.svg`,
-  redo: `${GAME_ICON_BASE}/3.Editing%20Tools/redo.svg`,
-  refresh: `${GAME_ICON_BASE}/3.Editing%20Tools/redo.svg`,
-  tool: `${GAME_ICON_BASE}/6.Items/tool-kit.svg`,
-  book: `${GAME_ICON_BASE}/6.Items/book.svg`,
-  memory: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/memory-card.svg`,
-  play: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/play.svg`,
-  pause: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/pause.svg`,
-  stop: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/stop.svg`,
-  clock: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/clock.svg`,
-  powerSwitch: `${GAME_ICON_BASE}/2.Media%20%26%20Technology/power-switch.svg`,
-  heart: `${GAME_ICON_BASE}/5.Game/heart.svg`,
-};
-
 const WORKFLOW_STAGES = [
   ["entry", "入口", "压缩上下文"],
   ["plan", "计划", "拆解任务"],
@@ -1225,10 +1205,8 @@ const WORKFLOW_NODE_TEMPLATES = [
 ];
 
 const sections = [
-  ["projects", "项目与任务", "目录"],
-  ["workflow", "工作流画布", "可选流程"],
-  ["canvas", "全部方案", "方案库"],
-  ["integrations", "插件与集成", "开发工具"],
+  ["projects", "项目", "项目与任务"],
+  ["presets", "工作流预案", "Bot 的可选流程"],
 ];
 
 // 全局状态对象
@@ -1244,13 +1222,18 @@ const globalState = {
 
 // 更新全局状态栏
 function updateStatusBar() {
-  const agentName = route === "projects" ? (state?.runtime?.bot_label || "AstrBot") : globalState.currentAgent ? agentDisplayName(globalState.currentAgent) : "未选择";
+  const shownProject=route==="projects"?projectUI.data.projects.find(p=>p.project_id===projectUI.projectId):null;
+  const rows=(shownProject?[shownProject]:projectUI.data.projects).flatMap(p=>p.tasks||[]).filter(t=>!['completed','cancelled'].includes(t.status));
+  const scoped=rows.find(t=>t.task_id===projectUI.taskId)||rows.find(t=>t.status==="running")||rows.find(t=>t.selected);
+  globalState.activeTask=scoped?{...(state?.tasks||[]).find(t=>t.task_id===scoped.task_id),...scoped}:null;
+  globalState.status=!scoped?"idle":scoped.question_count?"waiting":scoped.status==="running"?"running":scoped.status==="blocked"?"error":"paused";
+  const agentName = shownProject ? projectUI.projectBotName(shownProject) : projectUI.identityLabel();
+  if($("identity-instance"))$("identity-instance").textContent=shownProject?(shownProject.platform_id||"未绑定"):projectUI.identityId==="*"?"全部实例":projectUI.identityId;
   const statusDot = $('status-dot');
   const statusText = $('status-text');
   const statusTask = $('status-task');
   const tokenCurrent = $('token-current');
   const tokenFill = $('token-progress-fill');
-  const pauseBtn = $('status-pause-btn');
   const viewBtn = $('status-view-btn');
 
   const currentAgentName = $('current-agent-name');
@@ -1259,7 +1242,7 @@ function updateStatusBar() {
   // 更新状态指示
   if (!statusDot || !statusText) return;
   statusDot.className = `status-dot ${globalState.status}`;
-  const statusLabels = { idle: '空闲', running: '执行中', waiting: '等待审批', error: '出错' };
+  const statusLabels = { idle: '空闲', running: '执行中', waiting: '等待确认', error: '待处理', paused: '已暂停' };
   statusText.textContent = statusLabels[globalState.status] || '未知';
 
   // 更新任务信息
@@ -1268,12 +1251,10 @@ function updateStatusBar() {
     const currentTaskId = $('current-task-id');
     const taskRuntime = $('task-runtime');
     if (currentTaskId) currentTaskId.textContent = shortId(globalState.activeTask.task_id || '-');
-    if (taskRuntime) taskRuntime.textContent = formatRuntime(globalState.taskRuntime);
-    if (pauseBtn) pauseBtn.style.display = '';
+    if (taskRuntime) taskRuntime.textContent = globalState.status === "running" ? formatRuntime(activeTaskRuntimeSeconds(globalState.activeTask)) : "—";
     if (viewBtn) viewBtn.style.display = '';
   } else if (statusTask) {
     statusTask.style.display = 'none';
-    if (pauseBtn) pauseBtn.style.display = 'none';
     if (viewBtn) viewBtn.style.display = 'none';
   }
 
@@ -1389,7 +1370,7 @@ let workflowPanX = 0;
 let workflowPanY = 0;
 let workflowCheckReport = null;
 let workflowDryRunReport = null;
-let workflowToolboxOpen = window.innerWidth >= 760;
+let workflowToolboxOpen = true;
 let workflowInspectorOpen = false;
 let workflowNavCollapsed = window.innerWidth < 1100;
 let workflowTopPinned = true; // 顶栏是否固定常驻
@@ -1432,19 +1413,48 @@ let workflowHistoryFuture = [];
 let workflowDragGhostEl = null;
 let workflowMaterialChipDrag = null; // 指针拖拽素材到画布的状态（比原生 HTML5 drag 更稳）
 
-const projectUI = new ProjectUI({
-  api, esc, modal: showAppModal, notify: setFeedback,
-  refresh: () => load({silent:true}),
-  open: (switchRoute=true) => { if(switchRoute) { route="projects"; render(); } else renderNav(); },
-  workflow: id => { selectedAgentId=id; currentAgent=ensureAgent(clone((state.agents||[]).find(a=>a.agent_id===id))); route="workflow"; workflowViewportInitialized=false; render(); },
+function openPreset(id) {
+  const agent=(state.agents||[]).find(a=>a.agent_id===id);
+  if(!agent)return setFeedback("预案不存在，请刷新。","error");
+  selectedAgentId=id;currentAgent=ensureAgent(clone(agent));route="workflow";workflowViewportInitialized=false;render();
+}
+const projectUI = new ProjectUI({api,esc,modal:showAppModal,notify:setFeedback,
+  refresh:()=>load({silent:true}),
+  open:(switchRoute=true)=>{if(switchRoute){route="projects";render();}else renderNav();},
+  workflow:openPreset,
 });
-let materialSide = safeSession.getItem("agent_lab_material_side") || "right";
-let materialWidth = Math.max(230, Math.min(440, Number(safeSession.getItem("agent_lab_material_width")) || 292));
-let panelResize = null;
+let presetBusy = false;
+async function presetMutation(kind,id="") {
+  if(presetBusy)return;
+  presetBusy=true;
+  document.querySelectorAll("[data-nav-action$='preset']").forEach(el=>el.disabled=true);
+  try {
+    const original=(state.agents||[]).find(a=>a.agent_id===id);
+    if(kind==="delete"){
+      if(!await confirmModal("删除工作流预案",`删除「${original?.name||id}」？已运行任务保留原预案快照。`,{danger:true}))return;
+      await api("/api/agents",{method:"POST",body:{action:"delete",agent_id:id}});
+    }else{
+      const fields=await showAppModal({title:kind==="edit"?"预案用途":kind==="duplicate"?"复制预案":"新建工作流预案",fields:[
+        {label:"名称",value:kind==="duplicate"?`${original?.name||"预案"} 副本`:original?.name||"",placeholder:"例如：插件故障排查"},
+        {label:"适用于什么任务",value:original?.description||"",placeholder:"让 Bot 根据这段简介决定是否选用"}]});
+      if(!fields)return;if(!fields[0])throw Error("请填写预案名称。");
+      const draft=original?clone(original):defaultAgentDraft();
+      if(kind!=="edit")delete draft.agent_id;
+      draft.name=fields[0];draft.description=fields[1];draft.identity_label_source="manual";
+      const result=await api("/api/agents",{method:"POST",body:draft});
+      selectedAgentId=result.agent.agent_id;
+    }
+    await load();route="presets";render();setFeedback("预案已保存。Bot 可按用途选择。" );
+  }catch(error){setFeedback(error.message,"error");}
+  finally {presetBusy=false;document.querySelectorAll("[data-nav-action$='preset']").forEach(el=>el.disabled=false);}
+}
+const navigation = new Navigation({esc,projectUI,render,
+  openWorkflow:openPreset,newPreset:()=>presetMutation("new"),savePreset:id=>presetMutation("edit",id),
+  duplicatePreset:id=>presetMutation("duplicate",id),deletePreset:id=>presetMutation("delete",id),renderIntegrations,
+});
 function applyEmbeddedPanels() {
   const page=document.querySelector(".workflow-page");
   if(!page)return;
-  page.classList.toggle("material-left", materialSide === "left");
   page.querySelectorAll(".workflow-inspector-drawer .drawer-head").forEach(head => {
     if(head.querySelector(".embedded-close"))return;
     const panel=head.closest(".workflow-inspector-drawer");
@@ -1452,8 +1462,12 @@ function applyEmbeddedPanels() {
     close.dataset.action=workflowGlobalOpen&&panel.classList.contains("workflow-global-drawer")?"close-workflow-global":workflowSubAgentOpen&&panel.classList.contains("workflow-global-drawer")?"close-workflow-subagents":"close-workflow-inspector";
     head.appendChild(close);
   });
-  const maxWidth=Math.max(230, Math.min(440, page.clientWidth*.45));
-  page.style.setProperty("--drawer-width", `${Math.min(materialWidth,maxWidth)}px`);
+  // Keep the original drawer box; only inset its scroll content below a wrapped toolbar.
+  const drawer=page.querySelector('.workflow-tool-drawer'), toolbar=page.querySelector('.workflow-page-top');
+  if(drawer&&toolbar&&workflowToolboxOpen){
+    const overlap=Math.max(0,toolbar.getBoundingClientRect().bottom-drawer.getBoundingClientRect().top);
+    drawer.style.paddingTop=`${Math.ceil(overlap)}px`;
+  }
 }
 function setMaterialOpen(open) {
   workflowToolboxOpen=open;
@@ -1461,11 +1475,12 @@ function setMaterialOpen(open) {
   page?.classList.toggle("toolbox-open",open);page?.classList.toggle("toolbox-closed",!open);
   const toggle=document.querySelector('[data-action="toggle-workflow-toolbox"]');
   toggle?.classList.toggle("active",open);toggle?.setAttribute("aria-expanded",String(open));
+  if(open)applyEmbeddedPanels();
 }
 async function animatePanelClose(selector) {
   const panel=document.querySelector(selector);
   if(!panel||matchMedia("(prefers-reduced-motion: reduce)").matches||!panel.animate)return;
-  try { await panel.animate([{opacity:1,transform:"translateY(0)"},{opacity:0,transform:"translateY(8px)"}],{duration:140,easing:"ease-in",fill:"forwards"}).finished; } catch {}
+  try { await panel.animate([{opacity:1},{opacity:0}],{duration:140,easing:"ease-in",fill:"forwards"}).finished; } catch {}
 }
 
 function retireTimingUi() {
@@ -1473,32 +1488,6 @@ function retireTimingUi() {
   document.querySelectorAll('#task-start-heartbeat,[id^="heartbeat-"]').forEach(el=>el.closest("label")?.remove());
   document.querySelectorAll('.heartbeat-chart').forEach(el=>el.remove());
 }
-document.addEventListener("pointerdown",event=>{
-  const handle=event.target.closest(".workflow-panel-resizer");
-  if(!handle)return;
-  event.preventDefault();event.stopImmediatePropagation();
-  panelResize={pointerId:event.pointerId,start:event.clientX,width:materialWidth};
-  handle.setPointerCapture(event.pointerId);
-  document.querySelector(".workflow-page")?.classList.add("resizing-panel");
-},true);
-document.addEventListener("pointermove",event=>{
-  if(!panelResize||panelResize.pointerId!==event.pointerId)return;
-  event.preventDefault();event.stopImmediatePropagation();
-  materialWidth=Math.max(230,Math.min(440,panelResize.width+(event.clientX-panelResize.start)*(materialSide==="left"?1:-1)));
-  applyEmbeddedPanels();
-},true);
-function releasePanel(event) {
-  if(!panelResize||panelResize.pointerId!==event.pointerId)return;
-  panelResize=null;safeSession.setItem("agent_lab_material_width",materialWidth);
-  document.querySelector(".workflow-page")?.classList.remove("resizing-panel");
-}
-document.addEventListener("pointerup",releasePanel,true);
-document.addEventListener("pointercancel",releasePanel,true);
-document.addEventListener("keydown",event=>{
-  if(event.target.matches(".workflow-panel-resizer")&&["ArrowLeft","ArrowRight"].includes(event.key)) {
-    event.preventDefault();materialWidth=Math.max(230,Math.min(440,materialWidth+(event.key==="ArrowRight"?16:-16)));applyEmbeddedPanels();safeSession.setItem("agent_lab_material_width",materialWidth);
-  }
-});
 document.addEventListener("change",event=>{
   if(event.target.id!=="canvas-density")return;
   const wrap=document.querySelector(".workflow-canvas-wrap");
@@ -1528,19 +1517,14 @@ function compactText(value, limit = 120) {
 }
 
 function iconImg(name, label = "") {
+  if(name!=="refresh") {
+    const paths={pointer:'M4 3l15 9-7 2-3 7z',copy:'M9 3h11v14H9z M4 7v14h11',trash:'M4 6h16 M9 6V3h6v3 M6 6l1 15h10l1-15 M10 10v7 M14 10v7',undo:'M8 5 3 10l5 5 M4 10h10a6 6 0 0 1 0 12',redo:'m16 5 5 5-5 5 M20 10H10a6 6 0 0 0 0 12',plus:'M12 4v16 M4 12h16',book:'M3 4h7l2 2 2-2h7v16h-7l-2 2-2-2H3z M12 6v16',tool:'M14 4a6 6 0 0 0-7 8l-5 6 4 4 6-5a6 6 0 0 0 8-7l-4 3-4-4z',memory:'M5 3h14v18H5z M8 7h8 M8 11h8 M8 15h5',gridAdd:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M17 13v9 M13 17h9'};
+    return `<svg class="game-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="${esc(label)}"><path d="${paths[name]||paths.gridAdd}"/></svg>`;
+  }
   if (name === "refresh") {
     return `<svg class="game-icon" viewBox="0 0 24 24" role="img" aria-label="${esc(label)}" focusable="false"><path d="M12 5a7 7 0 0 1 6.32 4h-2.07a5 5 0 1 0 .9 4.5l1.94.5A7 7 0 1 1 12 5Z" fill="currentColor"/><path d="M18.5 4.2 19.6 9 14.8 8z" fill="currentColor"/></svg>`;
   }
-  if (name === "pointer") {
-    return `
-      <svg class="game-icon workflow-pointer-icon" viewBox="0 0 24 24" role="img" aria-label="${esc(label)}" focusable="false">
-        <path d="M5.2 3.8 18.6 12l-6.1 1.4 3.5 5.8-2.8 1.7-3.5-5.8-4.5 4.4V3.8Z" fill="currentColor"/>
-      </svg>
-    `;
-  }
-  const src = GAME_ICONS[name];
-  if (!src) return "";
-  return `<img class="game-icon" src="${esc(src)}" alt="${esc(label)}" loading="lazy" />`;
+
 }
 
 function workflowMaterialIcon(kind, refType = "") {
@@ -3449,6 +3433,16 @@ async function load(options = {}) {
   const draftRoute = route, draftTaskId = selectedTaskId;
   const workspaceBefore = JSON.stringify(projectUI.data);
   try {
+    if(options.silent && route === "projects" && state) {
+      const workspace=await api("/api/workspace");
+      projectUI.setData(workspace);
+      if(workspaceBefore===JSON.stringify(projectUI.data)) return;
+      if(projectUI.taskId) {
+        const response=await api("/api/workspace",{method:"POST",body:{action:"detail",task_id:projectUI.taskId}});
+        projectUI.detail=response.result;
+      }
+      render();return;
+    }
     const [nextState, workspace] = await Promise.all([api("/api/state"), api("/api/workspace")]);
     state = nextState;
     projectUI.setData(workspace);
@@ -3468,13 +3462,13 @@ async function load(options = {}) {
     if (!selectedTaskId || !tasks.some((item) => item.task_id === selectedTaskId)) {
       selectedTaskId = tasks[0]?.task_id || "";
     }
-    $("bot-label").textContent = state.runtime?.bot_label || "等待读取";
-    $("bot-source").textContent = identitySourceLabel(state.runtime?.bot_label_source);
+
 
     // 更新全局状态
     globalState.currentAgent = currentAgent;
     const activeTasks = (state.tasks || []).filter((task) => !task.finished_at && !["completed", "cancelled"].includes(task.status));
-    globalState.activeTask = activeTasks[0] || null;
+    const scope=projectUI.identityId;
+    globalState.activeTask = activeTasks.find(task=>scope==="*"||task.umo?.split(":")[0]===scope) || null;
     globalState.taskRuntime = activeTaskRuntimeSeconds(globalState.activeTask);
     if (activeTasks.some((task) => pendingApprovalCount(task))) globalState.status = "waiting";
     else globalState.status = globalState.activeTask ? "running" : "idle";
@@ -3509,7 +3503,11 @@ function renderNav() {
   }
   let tree = document.getElementById("project-sidebar");
   if (!tree && nav) { tree = document.createElement("div"); tree.id = "project-sidebar"; nav.after(tree); }
-  if (tree) tree.innerHTML = projectUI.sidebar();
+  if (tree) { const scroll=tree.scrollTop;tree.innerHTML=projectUI.sidebar();tree.scrollTop=scroll; }
+  if ($("rail-storage")) $("rail-storage").innerHTML=projectUI.footer();
+  if ($("current-agent-name")) $("current-agent-name").textContent=projectUI.identityLabel();
+  if ($("identity-instance")) $("identity-instance").textContent=projectUI.identityId==="*"?"全部实例":projectUI.identityId;
+  $("settings-btn")?.classList.toggle("active",route==="settings");
   const found = sections.find(([id]) => id === route) || sections[0];
   if ($("section-title")) $("section-title").textContent = found[1];
   if ($("section-kicker")) $("section-kicker").textContent = found[2];
@@ -3578,6 +3576,9 @@ function restoreFieldFocusGlobal(snap) {
   }
 }
 function render() {
+  if(route==="canvas")route="presets";
+  if(route==="integrations"){route="settings";navigation.settingsTab="integrations";}
+
   const __focusSnap = activeFieldSnapshotGlobal();
   const viewport = route === "workflow" && workflowViewportInitialized ? workflowViewportSnapshot() : null;
   document.body.dataset.route = route;
@@ -3588,17 +3589,18 @@ function render() {
   syncLiveRefresh();
   if (route === "projects") projectUI.render($("view"));
   if (route === "dashboard") renderDashboard();
-  if (route === "canvas") renderCanvas();
+  if (route === "presets") navigation.renderPresets($("view"),state.agents||[]);
   if (route === "workflow") renderWorkflowPage();
   if (route === "memory") renderMemoryPage();
   if (route === "tasks") renderTasks();
   if (route === "monitor") renderMonitor();
   if (route === "integrations") renderIntegrations();
-  if (route === "settings") renderSettingsPage();
+  if (route === "settings") navigation.renderSettings($("view"));
   applyEmbeddedPanels();
   retireTimingUi();
   restoreWorkflowViewport(viewport);
   if (route === "workflow") refreshWorkflowCanvasDom();
+  updateStatusBar();
   restoreFieldFocusGlobal(__focusSnap);
   notifyPluginPageLayout();
 }
@@ -3611,10 +3613,10 @@ function syncLiveRefresh() {
   if (["projects", "dashboard", "tasks", "monitor"].includes(route)) {
     liveTimer = setInterval(() => {
       // 任意路由下只要用户正在输入/选择，就跳过这次静默刷新，避免 render() 重建 DOM 把焦点和未保存输入冲掉。
-      const editing = document.activeElement?.matches?.("input, textarea, select");
+      const editing = document.activeElement?.matches?.("input, textarea, select") || document.querySelector(".app-modal-overlay") || projectUI.busy;
       if (editing) return;
       if (["projects", "dashboard", "tasks", "monitor"].includes(route)) load({ silent: true });
-    }, 5000);
+    }, 10000);
   }
 }
 
@@ -4002,19 +4004,6 @@ function taskRuntimeMonitorPanel(task) {
   `;
 }
 
-function settingsExportPayload() {
-  return {
-    agent: currentAgent || {},
-    workflow: workflowData(),
-    memory_count: state.memories?.length || 0,
-    integrations: {
-      custom_apis: state.custom_apis?.length || 0,
-      credentials: state.credentials?.length || 0,
-      modules: (state.integrations || state.modules || []).length,
-    },
-  };
-}
-
 function agentPolicyOverview() {
   const agent = ensureAgent(currentAgent || {});
   const cards = [
@@ -4034,40 +4023,6 @@ function agentPolicyOverview() {
           <small>${esc(note)}</small>
         </div>
       `).join("")}
-    </section>
-  `;
-}
-
-function renderSettingsPage() {
-  currentAgent = ensureAgent(currentAgent || {});
-  const webui = state.webui || {};
-  $("view").innerHTML = `
-    <section class="settings-page">
-      <div class="panel-head">
-        <div><p class="card-kicker">设置</p><h2>插件配置、模块状态、导入导出</h2></div>
-        <button class="button" data-action="save-agent" type="button">保存当前配置</button>
-      </div>
-      <section class="grid three">
-        <div class="panel">
-          <div class="panel-head"><div><p class="card-kicker">插件配置</p><h3>网页控制台</h3></div></div>
-          <div class="state-fields single">
-            ${stateField("控制台地址", webui.url || "-")}
-            ${stateField("运行状态", webui.standalone ? "独立控制台在线" : "独立控制台未启动")}
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><div><p class="card-kicker">模块配置</p><h3>运行能力</h3></div></div>
-          <div class="state-fields single">
-            ${stateField("工具目录", `${state.tools?.length || 0} 个工具`)}
-            ${stateField("多视角/验证", `${(state.integrations || state.modules || []).length} 个蓝图模块`)}
-            ${stateField("沙箱/外部接口", `${state.custom_apis?.length || 0} 个接口 / ${state.credentials?.length || 0} 个凭证`)}
-          </div>
-        </div>
-        <div class="panel">
-          <div class="panel-head"><div><p class="card-kicker">导入/导出</p><h3>当前草稿</h3></div></div>
-          <textarea rows="10" readonly>${esc(JSON.stringify(settingsExportPayload(), null, 2))}</textarea>
-        </div>
-      </section>
     </section>
   `;
 }
@@ -4374,93 +4329,6 @@ function taskPatternBriefText(pattern) {
   ].filter(Boolean).join("\n");
 }
 
-function renderCanvas() {
-  currentAgent = ensureAgent(currentAgent || {});
-  ensureWorkflow();
-  const a = currentAgent;
-  const agents = state.agents || [];
-  const task = selectedTask();
-  const runnableTask = activeTask();
-  const liveTask = runnableTask || (state.tasks || [])[0] || null;
-  const activeRows = state.tasks || [];
-  const archivedRows = state.archives || [];
-  const longTask = workflowHeartbeatOn(a);
-  $("view").innerHTML = `
-    <section class="scheme-page">
-      <aside class="scheme-sidebar">
-        <div class="panel scheme-list-panel">
-          <div class="panel-head">
-            <div><h2>流程方案</h2></div>
-          </div>
-          <div class="button-row scheme-actions">
-            <button class="button" data-action="new-agent" type="button">新建方案</button>
-            <button class="button secondary" data-action="duplicate-agent" type="button" ${a.agent_id ? "" : "disabled"}>复制</button>
-            <button class="button danger" data-action="delete-agent" type="button" ${(agents.length <= 1 || !a.agent_id) ? "disabled" : ""}>删除方案</button>
-          </div>
-          <p class="setting-hint-line">导入 / 导出方案、套用内置蓝图，已移到「插件与集成 → 蓝图管理」页统一管理。</p>
-          <div class="list scheme-list">${agentRows()}</div>
-        </div>
-      </aside>
-
-      <main class="scheme-main">
-        <section class="panel scheme-hero">
-          <div class="panel-head">
-            <div>
-              <p class="card-kicker">当前方案</p>
-              <h2>${esc(agentDisplayName(a))}</h2>
-            </div>
-            <div class="inline-actions">
-              <button class="button secondary" data-action="rename-agent" type="button" ${a.agent_id ? "" : "disabled"}>重命名</button>
-              <button class="button" data-route="workflow" type="button">在画布编辑这个方案</button>
-            </div>
-          </div>
-          <div class="module-meta">
-            ${badge(a.enabled === false ? "已停用" : "已启用", a.enabled === false ? "bad" : "ok")}
-            ${badge(longTask ? "长任务·可续跑" : "事件/静态自动化", "info")}
-            ${badge(triggerLabel(a.trigger_mode || "confirm"))}
-            ${badge(`${a.workflow_nodes?.length || 0} 节点 / ${a.workflow_edges?.length || 0} 连线`)}
-          </div>
-          <p class="setting-hint-line">是否全局应用、入口方式、生效范围（群聊/私聊、黑白名单）等，现在都在<a data-route="workflow" class="inline-link">工作流画布</a>里用节点设置。这里只管方案的新建、切换和运行情况。</p>
-        </section>
-
-        <section class="panel task-entry-panel">
-          <div class="panel-head">
-            <div><p class="card-kicker">手动入口</p><h2>用这个方案进入任务模式</h2></div>
-          </div>
-          <div class="form-grid task-entry-grid">
-            <label>会话 UMO<input id="umo" placeholder="aiocqhttp:FriendMessage:123456" /></label>
-            <label>风险级别<select id="task-risk-level">${labeledOptions(["low", "work", "high"], "work", (value) => ({ low: "低风险", work: "工作风险", high: "高风险" }[value] || value))}</select></label>
-            <label class="span-2">任务目标<textarea id="goal" rows="2">请把当前任务作为任务模式管理起来。</textarea></label>
-            <label class="span-2">完成条件<input id="completion" value="${esc((a.entry_policy.default_completion_conditions || ["用户验收通过"]).join("；"))}" /></label>
-            <label class="span-2">入口补充<textarea id="brief" rows="2"></textarea></label>
-            <label class="span-2">本次工作流<select id="task-workflow-mode"><option value="none">不应用画布 · Bot 按任务计划推进</option><option value="selected">应用当前方案的画布</option></select></label><label class="check-line span-2"><input id="task-start-heartbeat" type="checkbox" />启用方案的定时唤醒（无需靠它连续推进）</label>
-          </div>
-          ${taskPatternSuggestions()}
-          <div class="button-row">
-            <button class="button" data-action="start-task" type="button">进入任务模式</button>
-            <button class="button secondary" data-action="simulate-trigger" type="button">模拟触发</button>
-          </div>
-        </section>
-
-        <section class="panel scheme-run-overview">
-          <div class="panel-head">
-            <div><p class="card-kicker">运行概览</p><h2>本方案运行情况</h2></div>
-            <button class="button secondary" data-route="monitor" type="button">去运行监控看详情</button>
-          </div>
-          <div class="mini-stats">
-            <span>活跃任务 ${activeRows.length}</span>
-            <span>归档 ${archivedRows.length}</span>
-            <span>${liveTask ? ("当前：" + esc(liveTask.root_goal || liveTask.task_id)) : "当前无运行任务"}</span>
-          </div>
-          ${activeRows.length
-            ? `<div class="task-list scheme-task-list">${taskConsoleRows(activeRows.slice(0, 5))}</div>`
-            : `<div class="empty">还没有运行中的任务。配好上面的入口后点「进入任务模式」开始；任务记录与产物都在 <a data-route="monitor" class="inline-link">运行监控</a> 查看。</div>`}
-        </section>
-      </main>
-    </section>
-  `;
-}
-
 function workflowViewportSnapshot() {
   return {
     x: workflowPanX,
@@ -4732,8 +4600,6 @@ function renderWorkflowPage() {
       </header>
       ${workflowRightDock(report)}
       <aside class="workflow-tool-drawer">
-        <div class="workflow-panel-head"><strong>添加素材</strong><div><button data-action="material-side">移至${materialSide === "right" ? "左侧" : "右侧"}</button><button data-action="material-collapse" title="收起素材">收起</button></div></div>
-        <div class="workflow-panel-resizer" role="separator" aria-label="调整素材面板宽度" aria-orientation="vertical" tabindex="0"></div>
         <div class="drawer-scroll">${workflowToolbox()}</div>
       </aside>
       ${workflowInspectorOpen ? `
@@ -5568,7 +5434,6 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   const edges = currentAgent.workflow_edges || [];
   const nodeArr = currentAgent.workflow_nodes || [];
   const nodes = new Map(nodeArr.map((item) => [item.id, item]));
-  const reduceMotion = (typeof matchMedia === "function") && matchMedia("(prefers-reduced-motion: reduce)").matches;
   const paths = edges.map((edge, index) => {
     const from = nodes.get(edge.from);
     const to = nodes.get(edge.to);
@@ -5577,31 +5442,28 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    const key = JSON.stringify([edge, start, end]);
-    let pts = workflowDrag ? workflowPathCache.get(key) : null;
-    if (!pts) {
-      const routeBoxes = workflowDrag ? [] : workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY, true);
-      pts = workflowRoutePointsFromHint(edge.route_hint, start, end, routeBoxes, offsetX, offsetY)
-        || workflowRoutePoints(start, end, routeBoxes);
-      workflowPathCache.set(key, pts);
-      if (workflowPathCache.size > 1500) workflowPathCache.clear();
+    let pts = null;
+    if(edge.route_hint) {
+      const key=JSON.stringify([edge,start,end]);
+      pts=workflowDrag?workflowPathCache.get(key):null;
+      if(!pts){
+        const boxes=workflowDrag?[]:workflowRouteBoxesForEdge(nodeArr,from.id,to.id,offsetX,offsetY,true);
+        pts=workflowRoutePointsFromHint(edge.route_hint,start,end,boxes,offsetX,offsetY)||workflowRoutePoints(start,end,boxes);
+        workflowPathCache.set(key,pts);
+        if(workflowPathCache.size>1500)workflowPathCache.clear();
+      }
     }
-    const d = roundedOrthPath(pts, 16);
+    const generated = getSmoothStepPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:from.kind==="loop"?Position.Left:Position.Right,targetPosition:to.kind==="loop"?Position.Top:Position.Left,borderRadius:16,offset:28});
+    const d = edge.route_hint ? roundedOrthPath(pts,16) : generated[0];
     const color = workflowEdgeColor(edgeType);
     const pid = `wflp-${index}`;
     const marker = `workflow-arrow-${edgeType}`;
-    const mid = workflowPolylineMidpoint(pts);
+    const mid = edge.route_hint ? workflowPolylineMidpoint(pts) : {x:generated[1],y:generated[2]};
     const showLabel = edgeType !== "success" && edgeType !== "always";
     const labelHtml = showLabel
       ? `<g class="workflow-link-label" transform="translate(${mid.x.toFixed(1)} ${mid.y.toFixed(1)})"><rect x="-18" y="-9" width="36" height="18" rx="5" fill="#fff" stroke="${color}"></rect><text x="0" y="3" text-anchor="middle" fill="${color}">${esc(workflowPortShortLabel(edgeType))}</text></g>`
       : "";
-    // 流动箭头：恒定速度（时长正比路径长度，长管道不再瞬移），多个小箭头按固定间隔有序流动。
-    const len = Math.max(1, workflowPolylineLength(pts));
-    const SPEED = 64; // px/秒，缓慢匀速
-    const SPACING = 160; // 箭头间隔（像素），间隔大、不密集
-    const dur = Math.max(1.6, len / SPEED);
-    const count = Math.max(1, Math.min(6, Math.round(len / SPACING)));
-    const flow = (reduceMotion || workflowDrag || !workflowConnection) ? "" : `<g class="link-flow">${Array.from({ length: count }, (_, i) => `<path class="link-arrow" d="M -4 -3.4 L 4 0 L -4 3.4 L -1 0 Z" fill="${color}"><animateMotion dur="${dur.toFixed(2)}s" begin="-${(i * dur / count).toFixed(2)}s" repeatCount="indefinite" rotate="auto" keyPoints="0;1" keyTimes="0;1" calcMode="linear"><mpath href="#${pid}"></mpath></animateMotion></path>`).join("")}</g>`;
+    const flow = ""; // Static geometry; only the active connection preview animates.
     return `
       <g class="link-group">
         <path class="workflow-link-hit" d="${d}" data-action="select-workflow-edge" data-index="${index}"></path>
@@ -5621,7 +5483,9 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     }
     const pv = workflowConnectionPreviewPoints(workflowConnection, end);
     workflowConnection.previewPts = pv;
-    preview = `<path class="workflow-link-preview" d="${roundedOrthPath(pv, 16)}"></path>`;
+    const start=workflowConnection.anchor;
+    const curve=start?getBezierPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:Position.Right,targetPosition:Position.Left,curvature:.3})[0]:roundedOrthPath(pv,16);
+    preview = `<path class="workflow-link-preview" d="${curve}"></path>`;
   }
   return `
     ${workflowMarkerDefs()}
@@ -8149,7 +8013,7 @@ function renderIntegrations() {
   $("view").innerHTML = `
     <section class="integration-shell">
       <div class="panel-head">
-        <div><h2>插件与集成</h2></div>
+        <div><h2>插件与集成</h2><p class="row-meta">当前预案：${esc(currentAgent?.name || "未选择")} · 工具选择保存到预案，Bot 身份由任务来源决定。</p></div>
         <button class="button" data-action="save-agent" type="button">保存当前配置</button>
       </div>
       <div class="integration-layout">
@@ -8837,8 +8701,7 @@ function flushWorkflowCanvasDom(mode) {
       const end = workflowConnection.pointer;
       let path = svg.querySelector(".workflow-link-preview");
       if (!path) { path = document.createElementNS("http://www.w3.org/2000/svg", "path"); path.classList.add("workflow-link-preview"); svg.appendChild(path); }
-      const bend = Math.max(48, Math.abs(end.x - start.x) * 0.5);
-      path.setAttribute("d", `M ${start.x} ${start.y} C ${start.x+bend} ${start.y} ${end.x-bend} ${end.y} ${end.x} ${end.y}`);
+      path.setAttribute("d", getBezierPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:Position.Right,targetPosition:Position.Left,curvature:.3})[0]);
     }
     return;
   }
@@ -9104,11 +8967,18 @@ function focusWorkflowStart() {
   const offsetX = workflowWorldOffsetX();
   const offsetY = workflowWorldOffsetY();
   workflowPanX = first ? Math.round(48 - (Number(first.x || 0) + offsetX) * workflowZoom) : 80;
-  workflowPanY = first ? Math.round(60 - (Number(first.y || 0) + offsetY) * workflowZoom) : 120;
+  workflowPanY = first ? Math.round(150 - (Number(first.y || 0) + offsetY) * workflowZoom) : 120;
 }
 
 function portFromPoint(clientX, clientY) {
-  return document.elementFromPoint(clientX, clientY)?.closest(".node-port") || null;
+  const direct=document.elementFromPoint(clientX,clientY)?.closest(".node-port");
+  if(direct)return direct;
+  let nearest=null,distance=15;
+  for(const port of document.querySelectorAll(".node-port-in")) {
+    const box=port.getBoundingClientRect();const d=Math.hypot(clientX-(box.x+box.width/2),clientY-(box.y+box.height/2));
+    if(d<distance){distance=d;nearest=port;}
+  }
+  return nearest;
 }
 
 function workflowPortInfo(portEl) {
@@ -9870,6 +9740,10 @@ document.addEventListener("click", async (event) => {
   if (target.dataset.route) {
     memoryDetailOpen = false;
     route = target.dataset.route;
+    if(route === "projects") {
+      projectUI.projectId="";projectUI.taskId="";projectUI.detail=null;projectUI.tab="tasks";
+      ++projectUI.selectionVersion;
+    }
     render();
     return;
   }
@@ -9900,10 +9774,6 @@ document.addEventListener("click", async (event) => {
       const result = await api("/api/task/control", { method: "POST", body });
       setFeedback(result.message); await load();
     }
-    if (action === "material-side") {
-      materialSide=materialSide==="right"?"left":"right";safeSession.setItem("agent_lab_material_side",materialSide);renderWorkflowStable();
-    }
-    if (action === "material-collapse") setMaterialOpen(false);
     if (action === "select-agent") {
       selectedAgentId = target.dataset.id;
       currentAgent = ensureAgent(clone((state.agents || []).find((item) => item.agent_id === selectedAgentId)));
@@ -11040,18 +10910,21 @@ function initAuth() {
 document.addEventListener("DOMContentLoaded", () => {
   const refreshBtn = $("refresh");
   if (refreshBtn) refreshBtn.innerHTML = iconImg("refresh", "刷新");
+  if ($("settings-btn")) $("settings-btn").innerHTML=settingsIcon;
   $("refresh")?.addEventListener("click", load);
   $("agent-switcher")?.addEventListener("click", () => {
-    route = "canvas";
+    navigation.settingsTab="identity";
+    route = "settings";
     render();
   });
   $("status-view-btn")?.addEventListener("click", () => {
-    route = "projects";
-    render();
-  });
-  $("status-pause-btn")?.addEventListener("click", () => {
-    route = "projects";
-    render();
+    if(projectUI.busy)return;
+    const taskId=globalState.activeTask?.task_id;
+    const project=projectUI.data.projects.find(p=>p.tasks.some(t=>t.task_id===taskId));
+    if(!project)return;
+    projectUI.projectId=project.project_id;
+    projectUI.expanded.add(project.project_id);
+    void projectUI.showTask(taskId).catch(error=>setFeedback(error.message,"error"));
   });
   $("settings-btn")?.addEventListener("click", () => {
     route = "settings";

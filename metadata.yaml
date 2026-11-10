@@ -1,7 +1,7 @@
 name: astrbot_plugin_agent_lab
 display_name: Agent Lab
 desc: Bot 的项目工作台：独立任务、项目摘要、过滤互通、反问与管理员接管，可调整的全屏画布。
-version: v0.2.4
+version: v0.2.5
 author: zzz27578 & Codex
 repo: https://github.com/zzz27578/astrbot_plugin_agent_lab
 astrbot_version: ">=4.29.4,<5"

@@ -113,6 +113,18 @@ class StandaloneWebUIServer:
         async def workspace_css():
             return await send_from_directory(self.static_dir, "workspace.css")
 
+        @app.get("/navigation.js")
+        async def navigation():
+            return await send_from_directory(self.static_dir, "navigation.js")
+
+        @app.get("/theme.css")
+        async def theme():
+            return await send_from_directory(self.static_dir, "theme.css")
+
+        @app.get("/vendor/<path:filename>")
+        async def vendor(filename):
+            return await send_from_directory(self.static_dir / "vendor", filename)
+
         @app.route("/api/agents", methods=["GET", "POST", "DELETE"])
         async def agents():
             return await self._guard(self.owner.api_agents)

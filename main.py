@@ -80,7 +80,7 @@ from .agent_lab.workspace_api import WorkspaceAPI
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.4"
+PLUGIN_VERSION = "v0.2.5"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"

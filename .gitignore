@@ -15,3 +15,4 @@ build/
 
 # 本地前端预览截图(headless chromium)
 _preview/
+scripts/ui/node_modules/

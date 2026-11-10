@@ -16,13 +16,13 @@ for name in re.findall(r'register_web_api\([^\n]*self\.(api_\w+)', text):
     assert any(ast.unparse(decorator) == "admin_api" for decorator in methods[name].decorator_list), name
 config = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8"))
 assert config["private_only"]["default"] is True
-assert 'version: v0.2.4' in (root / "metadata.yaml").read_text(encoding="utf-8")
-assert 'PLUGIN_VERSION = "v0.2.4"' in text
+assert 'version: v0.2.5' in (root / "metadata.yaml").read_text(encoding="utf-8")
+assert 'PLUGIN_VERSION = "v0.2.5"' in text
 assert len(list((root / "modules").glob("*.json"))) == 5
 for source in (root / "modules").glob("*.json"):
     json.loads(source.read_text(encoding="utf-8"))
 page = root / "pages" / "agent-lab"
-assert all((page / name).exists() for name in ["index.html", "app.js", "style.css", "ui-runtime.js", "project-ui.js", "workspace.css"])
+assert all((page / name).exists() for name in ["index.html", "app.js", "style.css", "ui-runtime.js", "project-ui.js", "workspace.css", "navigation.js", "theme.css", "vendor/connectors.js"])
 js = (page / "app.js").read_text(encoding="utf-8")
 assert "sessionStorage." not in js
 assert "function taskControlDetail(" in js
@@ -44,7 +44,7 @@ checks = {
     "project_summary_bounded": 'limit=3500' in projects and 'project["source_umo"] != task.umo' in projects,
     "late_writes_fenced": 'if self.ended_path(task.task_id).exists():' in storage and 'if not self.owner.storage.ended_path(task.task_id).exists():' in bridge,
     "question_has_explicit_answer": 'def ask(' in (root / "agent_lab" / "task_control.py").read_text(encoding="utf-8") and 'action == "answer"' in workspace_api and 'data-project-action="answer"' in project_ui,
-    "embedded_canvas_initial_scale": '|| .72' in js and 'material-side' in js and 'workflow-panel-resizer' in js,
+    "embedded_canvas_initial_scale": '|| .72' in js and 'function setMaterialOpen(' in js and 'workflow-panel-resizer' not in js,
     "project_actions_are_authenticated": '@admin_api' in workspace_api and 'self.workspace_api.handle' in text,
 }
 for name, passed in checks.items():
@@ -54,4 +54,4 @@ for action in api_actions:
     assert f'"{action}"' in workspace_api, f"Missing project API operation {action}"
 print(f"Static review passed: {len(sources)} Python files, API decorators, JSON configuration, original modules and canvas assets.")
 print(f"Project contract evidence: {sum(checks.values())}/{len(checks)} source-level assertions passed.")
-print("No AstrBot instance, plugin import, model, tool, or browser was executed.")
+print("This script checks source only; runtime and browser checks are separate under scripts/ui.")
