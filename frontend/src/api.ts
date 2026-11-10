@@ -1,3 +1,5 @@
+import { safeSessionGet, safeSessionSet } from "./storage";
+
 type Bridge = {
   ready?: () => Promise<unknown>;
   apiGet: (
@@ -26,17 +28,26 @@ export function bridge(): Bridge | undefined {
   return window.AstrBotPluginView || window.AstrBotPluginPage;
 }
 export function getToken() {
+  // Native plugin views have an opaque origin and authenticate via the parent
+  // bridge. Even reading window.sessionStorage there throws SecurityError.
+  if (bridge()) return "";
   return (
     new URLSearchParams(location.search).get("token") ||
-    sessionStorage.getItem("agent_lab_token") ||
+    safeSessionGet("agent_lab_token") ||
     ""
   );
 }
 export function saveToken(token: string) {
-  sessionStorage.setItem("agent_lab_token", token.trim());
-  const url = new URL(location.href);
-  url.searchParams.delete("token");
-  history.replaceState({}, "", url);
+  if (bridge()) return;
+  safeSessionSet("agent_lab_token", token.trim());
+  try {
+    const url = new URL(location.href);
+    url.searchParams.delete("token");
+    history.replaceState({}, "", url);
+  } catch {
+    // Restricted frames may also forbid history changes. Authentication stays
+    // available through the in-memory token when browser storage is blocked.
+  }
 }
 export async function api<T>(path: string, body?: unknown): Promise<T> {
   const current = bridge();

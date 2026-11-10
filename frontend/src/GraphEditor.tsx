@@ -1,3 +1,4 @@
+import { safeSessionGet, safeSessionSet, safeSessionRemove } from "./storage";
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
@@ -150,7 +151,7 @@ export function GraphEditor({
   const [graph, setGraph] = useState(() => {
     if (editable && draftKey) {
       try {
-        const saved = sessionStorage.getItem(`agent_lab_draft:${draftKey}`);
+        const saved = safeSessionGet(`agent_lab_draft:${draftKey}`);
         if (saved) return normalizeGraph(JSON.parse(saved));
       } catch {
         /* Keep the server snapshot if a draft is unavailable. */
@@ -173,9 +174,7 @@ export function GraphEditor({
   const [selected, setSelected] = useState("");
   const [dirty, setDirty] = useState(() => {
     try {
-      return (
-        !!draftKey && !!sessionStorage.getItem(`agent_lab_draft:${draftKey}`)
-      );
+      return !!draftKey && !!safeSessionGet(`agent_lab_draft:${draftKey}`);
     } catch {
       return false;
     }
@@ -191,10 +190,7 @@ export function GraphEditor({
   useEffect(() => {
     if (!editable || !draftKey || !dirty || draggingRef.current) return;
     try {
-      sessionStorage.setItem(
-        `agent_lab_draft:${draftKey}`,
-        JSON.stringify(graph),
-      );
+      safeSessionSet(`agent_lab_draft:${draftKey}`, JSON.stringify(graph));
     } catch {
       /* A full browser store never prevents editing. */
     }
@@ -265,7 +261,7 @@ export function GraphEditor({
     draggingRef.current = false;
     if (editable && draftKey) {
       try {
-        sessionStorage.setItem(
+        safeSessionSet(
           `agent_lab_draft:${draftKey}`,
           JSON.stringify(graphRef.current),
         );
@@ -483,7 +479,7 @@ export function GraphEditor({
                     });
                     setDirty(false);
                     if (draftKey)
-                      sessionStorage.removeItem(`agent_lab_draft:${draftKey}`);
+                      safeSessionRemove(`agent_lab_draft:${draftKey}`);
                   } catch (e) {
                     setError((e as Error).message);
                   }

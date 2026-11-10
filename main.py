@@ -24,7 +24,7 @@ from .agent_lab.storage import AgentLabStorage
 from .agent_lab.webui_server import StandaloneWebUIServer
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.3.0"
+PLUGIN_VERSION = "v0.3.1"
 
 
 def string_list(value: Any) -> list[str]:
@@ -111,7 +111,7 @@ class AgentLabPlugin(Star):
                     port=int(self._cfg_value("standalone_webui_port", 8788)), token=token,
                 )
                 await self.webui_server.start()
-        logger.info("[AgentLab] v0.3.0 initialized; interrupted tasks require explicit review/resume.")
+        logger.info(f"[AgentLab] {PLUGIN_VERSION} initialized; interrupted tasks require explicit review/resume.")
 
     async def terminate(self):
         self._closing = True

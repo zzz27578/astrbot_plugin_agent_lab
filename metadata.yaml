@@ -1,7 +1,7 @@
 name: astrbot_plugin_agent_lab
 display_name: Agent Lab
 desc: 管理员长任务工作台：批准计划、独立任务会话、持久进度、自动续接、途中引导和可视化编排。
-version: v0.3.0
+version: v0.3.1
 author: zzz27578 & Codex
 repo: https://github.com/zzz27578/astrbot_plugin_agent_lab
 astrbot_version: ">=4.29.4,<5"

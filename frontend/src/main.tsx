@@ -1,3 +1,5 @@
+import { safeSessionGet, safeSessionSet, safeSessionRemove } from "./storage";
+import { StartupBoundary } from "./StartupBoundary";
 import React, {
   useCallback,
   useEffect,
@@ -217,7 +219,7 @@ function App() {
   const [templateName, setTemplateName] = useState("");
   const [templateDescription, setTemplateDescription] = useState("");
   const [editorKey, setEditorKey] = useState(0);
-  const [token, setToken] = useState(getToken());
+  const [token, setToken] = useState(getToken);
   const [registry, setRegistry] = useState<{
     custom_apis?: Record<string, unknown>[];
     credentials?: Record<string, unknown>[];
@@ -412,7 +414,7 @@ function App() {
     let metadata: { name?: string; description?: string } = {};
     try {
       metadata = JSON.parse(
-        sessionStorage.getItem(
+        safeSessionGet(
           `agent_lab_template_meta:${value?.template_id || "new"}`,
         ) || "{}",
       );
@@ -426,7 +428,7 @@ function App() {
   useEffect(() => {
     if (!template) return;
     try {
-      sessionStorage.setItem(
+      safeSessionSet(
         `agent_lab_template_meta:${template.template_id || "new"}`,
         JSON.stringify({
           name: templateName,
@@ -884,7 +886,7 @@ function App() {
                           disabled={!!busy}
                           onClick={() => {
                             if (editingPlan)
-                              sessionStorage.removeItem(
+                              safeSessionRemove(
                                 `agent_lab_draft:task:${task.task_id}:${editingVersion}`,
                               );
                             if (!editingPlan)
@@ -904,9 +906,7 @@ function App() {
                         <button
                           disabled={!!busy}
                           onClick={() => {
-                            sessionStorage.removeItem(
-                              "agent_lab_draft:template:new",
-                            );
+                            safeSessionRemove("agent_lab_draft:template:new");
                             openTemplate({
                               template_id: "",
                               name: `${task.title || "任务"}流程`,
@@ -1946,4 +1946,8 @@ function CreateTask({
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <StartupBoundary>
+    <App />
+  </StartupBoundary>,
+);

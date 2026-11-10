@@ -8,10 +8,44 @@
       content="/api/plug/astrbot_plugin_agent_lab"
     />
     <title>Agent Lab · 任务工作台</title>
-    <script type="module" crossorigin src="./assets/index-BM0VlQTT.js"></script>
+    <script type="module" crossorigin src="./assets/index-DLtuCcTP.js"></script>
     <link rel="stylesheet" crossorigin href="./assets/index-BFKv3Atp.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <p
+        id="agent-lab-loading"
+        role="status"
+        style="padding: 24px; font-family: sans-serif"
+      >
+        正在加载 Agent Lab…
+      </p>
+      <noscript>Agent Lab 需要启用 JavaScript 才能打开工作台。</noscript>
+    </div>
+    <script>
+      (() => {
+        const loading = document.getElementById("agent-lab-loading");
+        window.addEventListener(
+          "error",
+          (event) => {
+            if (
+              loading &&
+              loading.isConnected &&
+              (event.target instanceof HTMLScriptElement || event.error)
+            ) {
+              loading.textContent =
+                "Agent Lab 前端加载失败。请重新打开插件页面；若仍失败，请查看浏览器控制台的资源或脚本错误。";
+            }
+          },
+          true,
+        );
+        window.setTimeout(() => {
+          if (loading && loading.isConnected) {
+            loading.textContent =
+              "Agent Lab 尚未完成加载。请检查浏览器控制台是否有脚本加载或执行错误。";
+          }
+        }, 15000);
+      })();
+    </script>
   </body>
 </html>
