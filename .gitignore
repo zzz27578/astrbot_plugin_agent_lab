@@ -15,8 +15,3 @@ build/
 
 # 本地前端预览截图(headless chromium)
 _preview/
-
-# Frontend dependencies and local compiler caches
-frontend/node_modules/
-frontend/*.tsbuildinfo
-frontend/.vite/

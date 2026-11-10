@@ -1,13 +1,13 @@
 name: astrbot_plugin_agent_lab
 display_name: Agent Lab
-desc: 管理员长任务工作台：批准计划、独立任务会话、持久进度、自动续接、途中引导和可视化编排。
-version: v0.3.1
+desc: 为 AstrBot 机器人提供持续任务执行能力——独立记忆空间、可视化工作流编排、心跳续跑、安全审批，让 bot 能稳定推进跨轮次的复杂工作。
+version: v0.2.2
 author: zzz27578 & Codex
 repo: https://github.com/zzz27578/astrbot_plugin_agent_lab
-astrbot_version: ">=4.29.4,<5"
+astrbot_version: ">=4.16,<5"
 tags:
   - agent
   - task-mode
   - workflow
-  - harness
+  - heartbeat
   - approval

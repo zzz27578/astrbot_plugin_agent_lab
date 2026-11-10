@@ -1,84 +1,196 @@
-"""Optional authenticated static console; the native Dashboard is preferred."""
 from __future__ import annotations
 
 import asyncio
-import secrets
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
-from quart import Quart, Response, g, jsonify, request, send_from_directory
+from quart import Quart, Response, jsonify, request, send_from_directory
 
 
 class StandaloneWebUIServer:
-    def __init__(self, *, owner: Any, static_dir: Path, host: str, port: int, token: str = ""):
-        if not str(token).strip():
-            raise ValueError("Standalone console requires an administrator access token")
-        self.owner, self.static_dir = owner, Path(static_dir)
-        self.host, self.port, self.token = host, int(port), str(token).strip()
-        self.url = f"http://{host}:{port}"
+    """Small Quart server for the standalone Agent Lab console."""
+
+    def __init__(
+        self,
+        *,
+        owner: Any,
+        static_dir: Path,
+        host: str,
+        port: int,
+        token: str = "",
+    ) -> None:
+        self.owner = owner
+        self.static_dir = Path(static_dir)
+        self.host = host
+        self.port = int(port)
+        self.token = str(token or "").strip()
+        self.url = f"http://{self.host}:{self.port}"
         self._shutdown_event: asyncio.Event | None = None
-        self._task: asyncio.Task | None = None
+        self._task: asyncio.Task[None] | None = None
         self.app = Quart("astrbot_agent_lab_webui")
-        self.app.config["MAX_CONTENT_LENGTH"] = 2 * 1024 * 1024
         self._wire_routes()
 
-    async def start(self):
+    async def start(self) -> None:
         if self._task and not self._task.done():
             return
         self._shutdown_event = asyncio.Event()
-        self._task = asyncio.create_task(self.app.run_task(
-            host=self.host, port=self.port, shutdown_trigger=self._shutdown_event.wait))
+        self._task = asyncio.create_task(
+            self.app.run_task(
+                host=self.host,
+                port=self.port,
+                shutdown_trigger=self._shutdown_event.wait,
+            )
+        )
         await asyncio.sleep(0.05)
         if self._task.done():
             await self._task
 
-    async def stop(self):
+    async def stop(self) -> None:
         if self._shutdown_event:
             self._shutdown_event.set()
-        if self._task:
+        if not self._task:
+            return
+        try:
+            await asyncio.wait_for(self._task, timeout=5)
+        except asyncio.TimeoutError:
+            self._task.cancel()
             try:
-                await asyncio.wait_for(self._task, 5)
-            except asyncio.TimeoutError:
-                self._task.cancel()
-                await asyncio.gather(self._task, return_exceptions=True)
+                await self._task
+            except asyncio.CancelledError:
+                pass
 
-    def _wire_routes(self):
+    def _wire_routes(self) -> None:
         app = self.app
-
-        @app.before_request
-        async def authenticate():
-            if not request.path.startswith("/api/"):
-                return None
-            header = request.headers.get("Authorization", "")
-            supplied = header.removeprefix("Bearer ") if header.startswith("Bearer ") else request.headers.get("X-Agent-Lab-Token", "")
-            if not secrets.compare_digest(supplied, self.token):
-                return jsonify({"ok": False, "error": "管理员 Token 无效"}), 401
-            g.agent_lab_authenticated = True
-            return None
 
         @app.get("/")
         async def index():
-            html = (self.static_dir / "index.html").read_text(encoding="utf-8")
-            html = html.replace('content="/api/plug/astrbot_plugin_agent_lab"', 'content="/api"')
-            return Response(html, content_type="text/html; charset=utf-8", headers={"Cache-Control": "no-store"})
+            text = (self.static_dir / "index.html").read_text(encoding="utf-8")
+            text = text.replace(
+                '<meta name="agent-lab-api-base" content="/api/plug/astrbot_plugin_agent_lab" />',
+                '<meta name="agent-lab-api-base" content="/api" />',
+            )
+            return Response(
+                text,
+                content_type="text/html; charset=utf-8",
+                headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+            )
 
-        @app.get("/assets/<path:filename>")
-        async def assets(filename: str):
-            return await send_from_directory(self.static_dir / "assets", filename)
+        @app.get("/app.js")
+        async def app_js():
+            resp = await send_from_directory(self.static_dir, "app.js")
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
+
+        @app.get("/style.css")
+        async def style_css():
+            resp = await send_from_directory(self.static_dir, "style.css")
+            resp.headers["Cache-Control"] = "no-cache"
+            return resp
 
         @app.get("/api/health")
         async def health():
-            return jsonify({"ok": True, "name": "Agent Lab", "auth": True})
+            return jsonify({"ok": True, "name": "Agent Lab", "auth": bool(self.token)})
 
-        handlers = {
-            "harness/state": (self.owner.api_harness_state, ["GET"]),
-            "harness/task": (self.owner.api_harness_task, ["GET"]),
-            "harness/create": (self.owner.api_harness_create, ["POST"]),
-            "harness/action": (self.owner.api_harness_action, ["POST"]),
-            "harness/template": (self.owner.api_harness_template, ["POST"]),
-            "harness/events": (self.owner.api_harness_events, ["GET"]),
-            "harness/memory": (self.owner.api_harness_memory, ["GET", "POST"]),
-            "registry": (self.owner.api_registry, ["GET", "POST"]),
-        }
-        for path, (handler, methods) in handlers.items():
-            app.add_url_rule("/api/" + path, endpoint=path.replace("/", "_"), view_func=handler, methods=methods)
+        @app.get("/api/state")
+        async def state():
+            return await self._guard(self.owner.api_state)
+
+        @app.route("/api/agents", methods=["GET", "POST", "DELETE"])
+        async def agents():
+            return await self._guard(self.owner.api_agents)
+
+        @app.route("/api/workflow/check", methods=["GET", "POST"])
+        async def workflow_check():
+            return await self._guard(self.owner.api_workflow_check)
+
+        @app.route("/api/workflow/dry-run", methods=["GET", "POST"])
+        async def workflow_dry_run():
+            return await self._guard(self.owner.api_workflow_dry_run)
+
+        @app.post("/api/workflow/trigger")
+        async def workflow_trigger():
+            return await self._guard(self.owner.api_workflow_trigger)
+
+        @app.route("/api/workflow/webhook", methods=["POST"])
+        @app.route("/api/workflow/webhook/<path:webhook_path>", methods=["POST"])
+        async def workflow_webhook(webhook_path: str = ""):
+            return await self._guard(self.owner.api_workflow_webhook)
+
+        @app.get("/api/workflow/runs")
+        async def workflow_runs():
+            return await self._guard(self.owner.api_workflow_runs)
+
+        @app.route("/api/integrations", methods=["GET", "POST"])
+        async def integrations():
+            return await self._guard(self.owner.api_modules)
+
+        @app.route("/api/modules", methods=["GET", "POST"])
+        async def modules():
+            return await self._guard(self.owner.api_modules)
+
+        @app.route("/api/registry", methods=["GET", "POST"])
+        async def registry():
+            return await self._guard(self.owner.api_registry)
+
+        @app.route("/api/memory", methods=["GET", "POST", "DELETE"])
+        async def memory():
+            return await self._guard(self.owner.api_memory)
+
+        @app.get("/api/task/logs")
+        async def task_logs():
+            return await self._guard(self.owner.api_task_logs)
+
+        @app.post("/api/task/start")
+        async def task_start():
+            return await self._guard(self.owner.api_task_start)
+
+        @app.post("/api/task/tick")
+        async def task_tick():
+            return await self._guard(self.owner.api_task_tick)
+
+        @app.post("/api/task/finish")
+        async def task_finish():
+            return await self._guard(self.owner.api_task_finish)
+
+        @app.post("/api/task/cancel")
+        async def task_cancel():
+            return await self._guard(self.owner.api_task_cancel)
+
+        @app.post("/api/task/pause")
+        async def task_pause():
+            return await self._guard(self.owner.api_task_pause)
+
+        @app.post("/api/task/resume")
+        async def task_resume():
+            return await self._guard(self.owner.api_task_resume)
+
+        @app.post("/api/task/purge")
+        async def task_purge():
+            return await self._guard(self.owner.api_task_purge)
+
+        @app.post("/api/task/delete")
+        async def task_delete():
+            return await self._guard(self.owner.api_task_delete)
+
+        @app.post("/api/task/heartbeat")
+        async def task_heartbeat():
+            return await self._guard(self.owner.api_task_heartbeat)
+
+        @app.post("/api/task/approval")
+        async def task_approval():
+            return await self._guard(self.owner.api_task_approval)
+
+    async def _guard(self, handler: Callable[[], Awaitable[Any]]) -> Any:
+        if not self._authorized():
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+        return await handler()
+
+    def _authorized(self) -> bool:
+        if not self.token:
+            return True
+        header = request.headers.get("Authorization", "")
+        if header.startswith("Bearer ") and header.removeprefix("Bearer ").strip() == self.token:
+            return True
+        if request.headers.get("X-Agent-Lab-Token", "").strip() == self.token:
+            return True
+        return request.args.get("token", "").strip() == self.token

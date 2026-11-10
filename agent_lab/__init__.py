@@ -1,11 +1,34 @@
-"""Agent Lab task harness and legacy data schema.
+"""Core runtime modules for AstrBot Agent Lab."""
 
-Legacy runtime modules remain readable for migration/reference but are not
-imported or registered by the v0.3 plugin entry point.
-"""
-from .harness_engine import HarnessEngine
-from .harness_store import HarnessConflict, HarnessStore
-from .models import AgentSpec, TaskState
+from .models import AgentSpec, ApprovalRequest, HeartbeatPolicy, TaskState
+from .api_executor import CustomApiExecutor
 from .storage import AgentLabStorage
+from .agent_runtime import AgentRuntime
+from .memory_manager import MemoryManager
+from .memory_orchestrator import AgentMemoryOrchestrator
+from .pattern_library import TaskPatternLibrary
+from .policy import PermissionPolicy
+from .runtime_runner import AgentRuntimeRunner
+from .service import AgentLabService, TickResult
+from .tool_executor import AstrBotToolExecutor
+from .verifier import AgentVerifier, VerificationResult
 
-__all__ = ["HarnessEngine", "HarnessStore", "HarnessConflict", "AgentLabStorage", "AgentSpec", "TaskState"]
+__all__ = [
+    "AgentSpec",
+    "AgentLabStorage",
+    "AgentRuntime",
+    "AgentLabService",
+    "AgentMemoryOrchestrator",
+    "AgentVerifier",
+    "AgentRuntimeRunner",
+    "ApprovalRequest",
+    "AstrBotToolExecutor",
+    "CustomApiExecutor",
+    "HeartbeatPolicy",
+    "MemoryManager",
+    "PermissionPolicy",
+    "TaskState",
+    "TaskPatternLibrary",
+    "TickResult",
+    "VerificationResult",
+]
