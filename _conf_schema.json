@@ -1,104 +1,22 @@
 {
-  "standalone_webui_enabled": {
-    "type": "bool",
-    "description": "启用独立网页控制台",
-    "default": true,
-    "hint": "开启后可通过浏览器管理任务模式方案和工作流画布。"
-  },
-  "standalone_webui_host": {
-    "type": "string",
-    "description": "网页控制台监听地址",
-    "default": "127.0.0.1",
-    "hint": "建议保持 127.0.0.1。只有在可信网络中才改为 0.0.0.0。"
-  },
-  "standalone_webui_port": {
-    "type": "int",
-    "description": "网页控制台端口",
-    "default": 8788,
-    "hint": "默认地址：http://127.0.0.1:8788"
-  },
-  "standalone_webui_token": {
-    "type": "string",
-    "description": "独立网页控制台访问 Token",
-    "default": "",
-    "hint": "仅独立 8788 控制台使用；监听非本机地址时必须设置。AstrBot 原生插件页面使用 Dashboard 登录态。"
-  },
-  "workflow_admin_ids": {
-    "type": "string",
-    "description": "管理员 QQ 号",
-    "default": "",
-    "hint": "多个 QQ 号可用逗号或换行分隔；仅在工作流生效范围启用“仅管理员可触发”时使用。"
-  },
-  "inject_agent_mode_policy": {
-    "type": "bool",
-    "description": "注入任务模式触发规则",
-    "default": true,
-    "hint": "允许机器人根据自然语言判断是否进入已配置的任务模式方案。"
-  },
-  "install_agent_mode_skill": {
-    "type": "bool",
-    "description": "同步任务模式技能规则",
-    "default": true,
-    "hint": "把入口、审批、心跳和归档约定同步到 AstrBot 技能。"
-  },
-  "entry_summary_turns": {
-    "type": "int",
-    "description": "入口摘要保留轮数",
-    "default": 24,
-    "hint": "进入任务模式时，用最近多少轮对话生成任务摘要。"
-  },
-  "fallback_summary_provider_id": {
-    "type": "string",
-    "description": "摘要模型供应商 ID",
-    "default": "",
-    "hint": "留空则使用当前会话模型。"
-  },
-  "tool_call_timeout": {
-    "type": "int",
-    "description": "工具调用超时（秒）",
-    "default": 120,
-    "hint": "单次工具调用最长等待时间。"
-  },
-  "max_seconds_per_tick": {
-    "type": "int",
-    "description": "单轮最长运行时间（秒）",
-    "default": 240,
-    "hint": "超过后任务会暂停，避免单轮执行过久。"
-  },
-  "max_total_ticks": {
-    "type": "int",
-    "description": "任务最大推进轮数",
-    "default": 120,
-    "hint": "限制一次任务模式运行的总推进次数。"
-  },
-  "max_total_tool_calls": {
-    "type": "int",
-    "description": "任务最大工具调用次数",
-    "default": 240,
-    "hint": "限制整个任务期间的工具或接口调用总数。"
-  },
-  "max_total_tokens": {
-    "type": "int",
-    "description": "任务最大令牌预算",
-    "default": 240000,
-    "hint": "限制整个任务期间累计使用的模型令牌。"
-  },
-  "global_max_concurrent_ticks": {
-    "type": "int",
-    "description": "全局同时推进的任务轮数上限",
-    "default": 3,
-    "hint": "跨任务的 tick 总并发闸；心跳一起醒时排队，避免惊群。建议 2-6。"
-  },
-  "heartbeat_jitter_seconds": {
-    "type": "int",
-    "description": "心跳错峰抖动（秒）",
-    "default": 8,
-    "hint": "心跳唤醒前随机延迟 0~N 秒，避免多任务同秒同时推进。0=不抖动。"
-  },
-  "workflow_parallel_concurrency": {
-    "type": "int",
-    "description": "并行分支默认并发上限",
-    "default": 3,
-    "hint": "未指派子Agent 的并行工作包共享的默认并发；上限 6。子Agent 泳道用各自的并发上限。"
-  }
+  "disable_group_tasks": {"type":"bool","description":"完全关闭群聊入口","default":true,"hint":"关闭群聊命令、自然语言工具和群任务通知；只允许管理员私聊及控制台。"},
+  "workflow_admin_ids": {"type":"string","description":"额外授权的管理员 ID","default":"","hint":"逗号或换行分隔。与 AstrBot admins_id 合并；不会将普通请求者自动授权。"},
+  "harness_provider_id": {"type":"string","description":"默认任务模型 ID","default":"","hint":"留空使用来源会话模型；Dashboard 无来源时使用全局默认模型。请设置模型正确的上下文窗口大小。"},
+  "harness_default_execution_mode": {"type":"string","description":"默认执行模式","default":"sandbox","options":["sandbox","direct"],"hint":"必须与来源 AstrBot 配置的 computer_use_runtime（sandbox/local）一致；不会自动降级。"},
+  "harness_default_workspace": {"type":"string","description":"直接修改模式默认工作目录","default":"","hint":"现有目录的绝对路径。留空使用任务专属工作目录。沙盒模式请保持空。"},
+  "harness_allowed_tools": {"type":"string","description":"允许在任务中选择的第三方工具","default":"","hint":"逗号或换行分隔精确工具名；仅 direct 模式。原生文件/执行工具和已注册 API 单独管理。"},
+  "harness_preapproved_tools": {"type":"string","description":"任务目录内免逐次审批的文件工具","default":"","hint":"可填 astrbot_file_write_tool、astrbot_file_edit_tool。只读与任务报告默认免批；命令、Python、API 和第三方工具仍需精确审批。"},
+  "harness_max_concurrent_tasks": {"type":"int","description":"同时执行任务数","default":1,"hint":"1–8。相同直接修改目录会串行，避免互相覆盖。"},
+  "harness_max_rounds": {"type":"int","description":"每任务最多推进轮数","default":80},
+  "harness_model_turns_per_step": {"type":"int","description":"每次步骤推进的模型轮数","default":8,"hint":"单次达到上限会保存记录继续排队，总任务预算不重置。"},
+  "harness_max_tool_calls": {"type":"int","description":"每任务工具调用总上限","default":240},
+  "harness_max_tokens": {"type":"int","description":"每任务令牌预算","default":240000,"hint":"每次模型调用后计入，包括压缩；下一次调用前检查，单次请求可能超过剩余额度。"},
+  "harness_max_repeated_errors": {"type":"int","description":"相同错误连续重试上限","default":3},
+  "harness_max_no_progress": {"type":"int","description":"连续无有效进展上限","default":3},
+  "harness_step_timeout_seconds": {"type":"int","description":"单次步骤推进超时（秒）","default":300},
+  "tool_call_timeout": {"type":"int","description":"单个工具超时（秒）","default":120,"hint":"超时或取消后结果不确定的调用需要在工作台核对后恢复。"},
+  "standalone_webui_enabled": {"type":"bool","description":"启用独立控制台","default":false,"hint":"推荐使用 AstrBot 原生插件页面。启用独立控制台必须设置 Token。"},
+  "standalone_webui_host": {"type":"string","description":"独立控制台监听地址","default":"127.0.0.1"},
+  "standalone_webui_port": {"type":"int","description":"独立控制台端口","default":8788},
+  "standalone_webui_token": {"type":"string","description":"独立控制台管理员 Token","default":"","hint":"所有独立 API 均需认证；Token 只保存在当前浏览器标签会话。原生页面使用 Dashboard 登录身份。"}
 }
