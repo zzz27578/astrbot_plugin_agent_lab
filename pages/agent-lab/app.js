@@ -1,7 +1,8 @@
-import { safeSession, preserveForm, restoreForm } from "./ui-runtime.js?v=023";
+import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=024";
+import { ProjectUI } from "./project-ui.js?v=024";
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20261110-v023";
+const AGENT_LAB_WEBUI_BUILD = "20261110-v024";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -1224,12 +1225,10 @@ const WORKFLOW_NODE_TEMPLATES = [
 ];
 
 const sections = [
-  ["dashboard", "仪表盘", "总览"],
-  ["workflow", "工作流画布", "拼流程"],
-  ["canvas", "方案管理", "管方案"],
-  ["monitor", "运行监控", "看运行"],
-  ["memory", "任务记忆", "查记忆"],
-  ["integrations", "插件与集成", "管工具"],
+  ["projects", "项目与任务", "目录"],
+  ["workflow", "工作流画布", "可选流程"],
+  ["canvas", "全部方案", "方案库"],
+  ["integrations", "插件与集成", "开发工具"],
 ];
 
 // 全局状态对象
@@ -1245,7 +1244,7 @@ const globalState = {
 
 // 更新全局状态栏
 function updateStatusBar() {
-  const agentName = globalState.currentAgent ? agentDisplayName(globalState.currentAgent) : "未选择";
+  const agentName = route === "projects" ? (state?.runtime?.bot_label || "AstrBot") : globalState.currentAgent ? agentDisplayName(globalState.currentAgent) : "未选择";
   const statusDot = $('status-dot');
   const statusText = $('status-text');
   const statusTask = $('status-task');
@@ -1364,7 +1363,7 @@ function stopRuntimeTimer() {
 }
 
 let state = null;
-let route = "dashboard";
+let route = "projects";
 let currentAgent = null;
 let selectedAgentId = "";
 let selectedTaskId = "";
@@ -1384,16 +1383,16 @@ let workflowDrag = null;
 let workflowPan = null;
 let workflowConnection = null;
 let workflowPendingPort = null;
-let workflowZoom = 1;
+let workflowZoom = Math.max(.45, Math.min(1, Number(safeSession.getItem("agent_lab_canvas_zoom")) || .72));
 let workflowFocusCursor = -1; // 聚焦内容快捷键的循环游标：-1/0=主体内容，1.. 依次聚焦离群节点
 let workflowPanX = 0;
 let workflowPanY = 0;
 let workflowCheckReport = null;
 let workflowDryRunReport = null;
-let workflowToolboxOpen = true;
+let workflowToolboxOpen = window.innerWidth >= 760;
 let workflowInspectorOpen = false;
-let workflowNavCollapsed = false;
-let workflowTopPinned = false; // 顶栏是否固定常驻
+let workflowNavCollapsed = window.innerWidth < 1100;
+let workflowTopPinned = true; // 顶栏是否固定常驻
 let workflowContextMenu = null;
 let workflowSuppressClick = false;
 let workflowReportOpen = false;
@@ -1432,6 +1431,83 @@ let workflowHistoryPast = [];
 let workflowHistoryFuture = [];
 let workflowDragGhostEl = null;
 let workflowMaterialChipDrag = null; // 指针拖拽素材到画布的状态（比原生 HTML5 drag 更稳）
+
+const projectUI = new ProjectUI({
+  api, esc, modal: showAppModal, notify: setFeedback,
+  refresh: () => load({silent:true}),
+  open: (switchRoute=true) => { if(switchRoute) { route="projects"; render(); } else renderNav(); },
+  workflow: id => { selectedAgentId=id; currentAgent=ensureAgent(clone((state.agents||[]).find(a=>a.agent_id===id))); route="workflow"; workflowViewportInitialized=false; render(); },
+});
+let materialSide = safeSession.getItem("agent_lab_material_side") || "right";
+let materialWidth = Math.max(230, Math.min(440, Number(safeSession.getItem("agent_lab_material_width")) || 292));
+let panelResize = null;
+function applyEmbeddedPanels() {
+  const page=document.querySelector(".workflow-page");
+  if(!page)return;
+  page.classList.toggle("material-left", materialSide === "left");
+  page.querySelectorAll(".workflow-inspector-drawer .drawer-head").forEach(head => {
+    if(head.querySelector(".embedded-close"))return;
+    const panel=head.closest(".workflow-inspector-drawer");
+    const close=document.createElement("button");close.className="embedded-close";close.type="button";close.textContent="关闭";
+    close.dataset.action=workflowGlobalOpen&&panel.classList.contains("workflow-global-drawer")?"close-workflow-global":workflowSubAgentOpen&&panel.classList.contains("workflow-global-drawer")?"close-workflow-subagents":"close-workflow-inspector";
+    head.appendChild(close);
+  });
+  const maxWidth=Math.max(230, Math.min(440, page.clientWidth*.45));
+  page.style.setProperty("--drawer-width", `${Math.min(materialWidth,maxWidth)}px`);
+}
+function setMaterialOpen(open) {
+  workflowToolboxOpen=open;
+  const page=document.querySelector(".workflow-page");
+  page?.classList.toggle("toolbox-open",open);page?.classList.toggle("toolbox-closed",!open);
+  const toggle=document.querySelector('[data-action="toggle-workflow-toolbox"]');
+  toggle?.classList.toggle("active",open);toggle?.setAttribute("aria-expanded",String(open));
+}
+async function animatePanelClose(selector) {
+  const panel=document.querySelector(selector);
+  if(!panel||matchMedia("(prefers-reduced-motion: reduce)").matches||!panel.animate)return;
+  try { await panel.animate([{opacity:1,transform:"translateY(0)"},{opacity:0,transform:"translateY(8px)"}],{duration:140,easing:"ease-in",fill:"forwards"}).finished; } catch {}
+}
+
+function retireTimingUi() {
+  document.querySelectorAll('[data-action="toggle-heartbeat"],[data-action="restart-heartbeat"],[data-action="heartbeat-on"],[data-action="heartbeat-off"],[data-action="purge-task"],[data-action="delete-task"]').forEach(el=>el.remove());
+  document.querySelectorAll('#task-start-heartbeat,[id^="heartbeat-"]').forEach(el=>el.closest("label")?.remove());
+  document.querySelectorAll('.heartbeat-chart').forEach(el=>el.remove());
+}
+document.addEventListener("pointerdown",event=>{
+  const handle=event.target.closest(".workflow-panel-resizer");
+  if(!handle)return;
+  event.preventDefault();event.stopImmediatePropagation();
+  panelResize={pointerId:event.pointerId,start:event.clientX,width:materialWidth};
+  handle.setPointerCapture(event.pointerId);
+  document.querySelector(".workflow-page")?.classList.add("resizing-panel");
+},true);
+document.addEventListener("pointermove",event=>{
+  if(!panelResize||panelResize.pointerId!==event.pointerId)return;
+  event.preventDefault();event.stopImmediatePropagation();
+  materialWidth=Math.max(230,Math.min(440,panelResize.width+(event.clientX-panelResize.start)*(materialSide==="left"?1:-1)));
+  applyEmbeddedPanels();
+},true);
+function releasePanel(event) {
+  if(!panelResize||panelResize.pointerId!==event.pointerId)return;
+  panelResize=null;safeSession.setItem("agent_lab_material_width",materialWidth);
+  document.querySelector(".workflow-page")?.classList.remove("resizing-panel");
+}
+document.addEventListener("pointerup",releasePanel,true);
+document.addEventListener("pointercancel",releasePanel,true);
+document.addEventListener("keydown",event=>{
+  if(event.target.matches(".workflow-panel-resizer")&&["ArrowLeft","ArrowRight"].includes(event.key)) {
+    event.preventDefault();materialWidth=Math.max(230,Math.min(440,materialWidth+(event.key==="ArrowRight"?16:-16)));applyEmbeddedPanels();safeSession.setItem("agent_lab_material_width",materialWidth);
+  }
+});
+document.addEventListener("change",event=>{
+  if(event.target.id!=="canvas-density")return;
+  const wrap=document.querySelector(".workflow-canvas-wrap");
+  const cx=(wrap?.clientWidth||600)/2,cy=(wrap?.clientHeight||500)/2;
+  const x=(cx-workflowPanX)/workflowZoom,y=(cy-workflowPanY)/workflowZoom;
+  workflowZoom=Number(event.target.value);workflowPanX=cx-x*workflowZoom;workflowPanY=cy-y*workflowZoom;
+  safeSession.setItem("agent_lab_canvas_zoom",workflowZoom);refreshWorkflowCanvasDom("view");
+});
+window.addEventListener("resize",applyEmbeddedPanels);
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value || {}));
@@ -3311,15 +3387,15 @@ async function api(path, options = {}) {
   const method = String(options.method || "GET").toUpperCase();
   const bridge = pluginPageBridge();
   if (bridge) {
-    await bridge.ready();
+    await boundedRequest(bridge.ready(), 15000);
     const { endpoint, params } = pluginPageRequest(path);
     let body = options.body || {};
     if (typeof body === "string") {
       try { body = JSON.parse(body); } catch (e) { body = {}; }
     }
     let result;
-    if (method === "GET") result = await bridge.apiGet(endpoint, params);
-    else if (method === "POST") result = await bridge.apiPost(endpoint, body);
+    if (method === "GET") result = await boundedRequest(bridge.apiGet(endpoint, params));
+    else if (method === "POST") result = await boundedRequest(bridge.apiPost(endpoint, body));
     if (result !== undefined) {
       if (result.ok === false || result.status === "error") throw new Error(result.error || result.message || "操作没有完成");
       return result;
@@ -3334,7 +3410,7 @@ async function api(path, options = {}) {
     headers["Content-Type"] = "application/json";
     options.body = JSON.stringify(options.body);
   }
-  const response = await fetch(apiUrl(path), { ...options, headers });
+  const response = await boundedRequest(fetch(apiUrl(path), { ...options, headers }));
   const data = await response.json().catch(() => ({}));
   if (!response.ok || data.ok === false) {
     throw new Error(data.error || `HTTP ${response.status}`);
@@ -3369,10 +3445,19 @@ function ensureOwnPluginToolsEnabled() {
 }
 
 async function load(options = {}) {
-  const draft = options.silent ? preserveForm(document.getElementById("view")) : [];
+  const draft = options.silent && route !== "projects" ? preserveForm(document.getElementById("view")) : [];
   const draftRoute = route, draftTaskId = selectedTaskId;
+  const workspaceBefore = JSON.stringify(projectUI.data);
   try {
-    state = await api("/api/state");
+    const [nextState, workspace] = await Promise.all([api("/api/state"), api("/api/workspace")]);
+    state = nextState;
+    projectUI.setData(workspace);
+    projectUI.agents = state.agents || [];
+    projectUI.tools = state.tools || [];
+    if (projectUI.detail?.task) {
+      const updated = [...(state.tasks||[]),...(state.archives||[])].find(t=>t.task_id===projectUI.taskId);
+      if (updated) projectUI.detail.task = updated;
+    }
     const agents = state.agents || [];
     if (!selectedAgentId || !agents.some((item) => item.agent_id === selectedAgentId)) {
       selectedAgentId = state.default_agent_id || agents[0]?.agent_id || "";
@@ -3397,7 +3482,8 @@ async function load(options = {}) {
 
     updateStatusBar();
 
-    if (!options.silent) setFeedback("已连接独立控制台。");
+    if (options.silent && route === "projects" && workspaceBefore === JSON.stringify(projectUI.data)) return;
+    if (!options.silent) setFeedback("已连接项目工作台。");
     render();
     if (draftRoute === route && draftTaskId === selectedTaskId) restoreForm(draft);
   } catch (error) {
@@ -3421,6 +3507,9 @@ function renderNav() {
       )
       .join("");
   }
+  let tree = document.getElementById("project-sidebar");
+  if (!tree && nav) { tree = document.createElement("div"); tree.id = "project-sidebar"; nav.after(tree); }
+  if (tree) tree.innerHTML = projectUI.sidebar();
   const found = sections.find(([id]) => id === route) || sections[0];
   if ($("section-title")) $("section-title").textContent = found[1];
   if ($("section-kicker")) $("section-kicker").textContent = found[2];
@@ -3497,6 +3586,7 @@ function render() {
   renderNav();
   if (!state) { restoreFieldFocusGlobal(__focusSnap); return; }
   syncLiveRefresh();
+  if (route === "projects") projectUI.render($("view"));
   if (route === "dashboard") renderDashboard();
   if (route === "canvas") renderCanvas();
   if (route === "workflow") renderWorkflowPage();
@@ -3505,6 +3595,8 @@ function render() {
   if (route === "monitor") renderMonitor();
   if (route === "integrations") renderIntegrations();
   if (route === "settings") renderSettingsPage();
+  applyEmbeddedPanels();
+  retireTimingUi();
   restoreWorkflowViewport(viewport);
   if (route === "workflow") refreshWorkflowCanvasDom();
   restoreFieldFocusGlobal(__focusSnap);
@@ -3516,12 +3608,12 @@ function syncLiveRefresh() {
     clearInterval(liveTimer);
     liveTimer = null;
   }
-  if (["dashboard", "tasks", "monitor"].includes(route)) {
+  if (["projects", "dashboard", "tasks", "monitor"].includes(route)) {
     liveTimer = setInterval(() => {
       // 任意路由下只要用户正在输入/选择，就跳过这次静默刷新，避免 render() 重建 DOM 把焦点和未保存输入冲掉。
       const editing = document.activeElement?.matches?.("input, textarea, select");
       if (editing) return;
-      if (["dashboard", "tasks", "monitor"].includes(route)) load({ silent: true });
+      if (["projects", "dashboard", "tasks", "monitor"].includes(route)) load({ silent: true });
     }, 5000);
   }
 }
@@ -3654,7 +3746,7 @@ function runOverview() {
             ${badge(healthLabel(health), healthTone(health))}
           </div>
           <div class="row-meta">
-            ${task ? `${esc(shortId(task.task_id, 14))} · 已运行 ${formatRuntime(activeTaskRuntimeSeconds(task))} · 下一步：${esc(task.next_step || "等待下一轮推进")}` : "普通会话保持原状；进入任务后这里会显示运行、心跳、审批和消耗。"}
+            ${task ? `${esc(shortId(task.task_id, 14))} · 已运行 ${formatRuntime(activeTaskRuntimeSeconds(task))} · 下一步：${esc(task.next_step || "等待下一轮推进")}` : "普通会话保持原状；项目中保存任务、审批和进度。"}
           </div>
         </div>
       </div>
@@ -3930,7 +4022,7 @@ function agentPolicyOverview() {
     ["隔离策略", isolationModeLabel(agent.isolation_policy.mode || "strict"), `工具：${toolModeLabel(agent.isolation_policy.tool_mode || "whitelist")} / 退出恢复：${agent.isolation_policy.restore_on_exit === false ? "否" : "是"}`],
     ["记忆策略", memoryModeLabel(agent.memory_policy.mode || "task_filtered"), `摘要 ${agent.memory_policy.entry_summary_turns || 24} 轮 / 长期记忆：${agent.memory_policy.allow_long_memory === false ? "关" : "开"}`],
     ["审批策略", approvalModeLabel(agent.approval_policy.mode || "work"), `必审 ${agent.approval_policy.require_approval?.length || 0} 项 / 预授权 ${agent.approval_policy.preapproved_scopes?.length || 0} 条`],
-    ["心跳策略", heartbeatModeLabel(agent.heartbeat_policy.mode || "manual"), `${agent.heartbeat_policy.allowed === false ? "禁止" : "允许"} / ${agent.heartbeat_policy.cron_expression || "*/5 * * * *"}`],
+
     ["提示词", agent.system_prompt ? "已配置" : "默认协议", `任务协议 ${String(agent.task_prompt || "").length} 字符`],
   ];
   return `
@@ -4362,7 +4454,7 @@ function renderCanvas() {
           </div>
           ${activeRows.length
             ? `<div class="task-list scheme-task-list">${taskConsoleRows(activeRows.slice(0, 5))}</div>`
-            : `<div class="empty">还没有运行中的任务。配好上面的入口后点「进入任务模式」开始；实时运行状态、心跳、产物都在 <a data-route="monitor" class="inline-link">运行监控</a> 查看。</div>`}
+            : `<div class="empty">还没有运行中的任务。配好上面的入口后点「进入任务模式」开始；任务记录与产物都在 <a data-route="monitor" class="inline-link">运行监控</a> 查看。</div>`}
         </section>
       </main>
     </section>
@@ -4631,7 +4723,7 @@ function renderWorkflowPage() {
           ${badge(workflowKindSummary(currentAgent), "info")}
           ${badge(report.valid ? "检查通过" : `${report.errors || 0} 错误 / ${report.warnings || 0} 提醒`, report.valid ? "ok" : "warn")}
         </div>
-        <div class="workflow-top-tools">
+        <div class="workflow-top-tools"><label class="canvas-density-label" title="缩放画布，保留文字和节点比例"><select id="canvas-density" aria-label="画布比例">${[.5,.65,.72,.85,1].map(z=>`<option value="${z}" ${Math.abs(workflowZoom-z)<.03?"selected":""}>${Math.round(z*100)}%</option>`).join("")}</select></label>
           <button class="button tiny secondary workflow-top-pin ${workflowTopPinned ? "active" : ""}" data-action="toggle-top-pin" title="${workflowTopPinned ? "取消固定顶栏" : "固定顶栏常驻"}" type="button">${workflowTopPinned ? "📌 已固定" : "📌 固定"}</button>
           <button class="button tiny secondary" data-action="check-workflow" type="button">静态检查</button>
           <button class="button tiny secondary" data-action="dry-run-workflow" type="button">预跑诊断</button>
@@ -4640,6 +4732,8 @@ function renderWorkflowPage() {
       </header>
       ${workflowRightDock(report)}
       <aside class="workflow-tool-drawer">
+        <div class="workflow-panel-head"><strong>添加素材</strong><div><button data-action="material-side">移至${materialSide === "right" ? "左侧" : "右侧"}</button><button data-action="material-collapse" title="收起素材">收起</button></div></div>
+        <div class="workflow-panel-resizer" role="separator" aria-label="调整素材面板宽度" aria-orientation="vertical" tabindex="0"></div>
         <div class="drawer-scroll">${workflowToolbox()}</div>
       </aside>
       ${workflowInspectorOpen ? `
@@ -5329,7 +5423,7 @@ function workflowToolbox() {
   const filter = workflowMaterialFilter.trim();
   const basicGroupIds = new Set(["trigger_monitor", "entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
   const templates = WORKFLOW_NODE_TEMPLATES
-    .filter((item) => !WORKFLOW_MERGED_TEMPLATE_IDS.has(item.id))
+    .filter((item) => !WORKFLOW_MERGED_TEMPLATE_IDS.has(item.id) && !["heartbeat", "schedule_trigger"].includes(item.action))
     .filter((item) =>
       includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
     );
@@ -6689,7 +6783,7 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "confirmation_text", label: "确认话术（可选）", type: "textarea", syncPath: "entry_policy.confirmation_text",
       placeholder: "留空用默认；填了则进入前先发这段确认语。" },
     { field: "_lm", label: "消息监听入口", type: "note",
-      text: "命令/暗号/关键词/正则——填了哪项就启用哪项匹配，未填即忽略；不再需要单独勾选触发类型。黑白名单、群聊/私聊范围在『范围过滤器』节点配置；定时 / 插件事件 / Webhook 请用各自专用入口素材。" },
+      text: "命令/暗号/关键词/正则——填了哪项就启用哪项匹配，未填即忽略；不再需要单独勾选触发类型。黑白名单、群聊/私聊范围在『范围过滤器』节点配置；插件事件 / Webhook 使用专用入口；本版本不再提供心跳和定时入口。" },
   ],
   match_keyword: [
     { field: "keywords", label: "命中哪些关键词？", type: "lines", required: true,
@@ -9006,11 +9100,11 @@ function autoLayoutWorkflow() {
 
 function focusWorkflowStart() {
   const first = currentAgent.workflow_nodes?.find((item) => workflowStage(item) === "entry") || currentAgent.workflow_nodes?.[0];
-  workflowZoom = clamp(workflowZoom || 0.85, 0.55, 1);
+  workflowZoom = clamp(workflowZoom || .72, .45, .85);
   const offsetX = workflowWorldOffsetX();
   const offsetY = workflowWorldOffsetY();
-  workflowPanX = first ? Math.round(120 - (Number(first.x || 0) + offsetX) * workflowZoom) : 80;
-  workflowPanY = first ? Math.round(180 - (Number(first.y || 0) + offsetY) * workflowZoom) : 120;
+  workflowPanX = first ? Math.round(48 - (Number(first.x || 0) + offsetX) * workflowZoom) : 80;
+  workflowPanY = first ? Math.round(60 - (Number(first.y || 0) + offsetY) * workflowZoom) : 120;
 }
 
 function portFromPoint(clientX, clientY) {
@@ -9806,6 +9900,10 @@ document.addEventListener("click", async (event) => {
       const result = await api("/api/task/control", { method: "POST", body });
       setFeedback(result.message); await load();
     }
+    if (action === "material-side") {
+      materialSide=materialSide==="right"?"left":"right";safeSession.setItem("agent_lab_material_side",materialSide);renderWorkflowStable();
+    }
+    if (action === "material-collapse") setMaterialOpen(false);
     if (action === "select-agent") {
       selectedAgentId = target.dataset.id;
       currentAgent = ensureAgent(clone((state.agents || []).find((item) => item.agent_id === selectedAgentId)));
@@ -10131,13 +10229,16 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "toggle-workflow-nav") {
       workflowNavCollapsed = !workflowNavCollapsed;
-      renderWorkflowStable();
+      document.body.classList.toggle("workflow-nav-collapsed",workflowNavCollapsed);
+      target.textContent=workflowNavCollapsed?"☰":"×";
+      target.title=workflowNavCollapsed?"展开项目导航":"收起项目导航";
     }
     if (action === "toggle-workflow-subagents") {
       workflowSubAgentOpen = !workflowSubAgentOpen;
       render();
     }
     if (action === "close-workflow-subagents") {
+      await animatePanelClose(".workflow-global-drawer");
       workflowSubAgentOpen = false;
       render();
     }
@@ -10204,14 +10305,14 @@ document.addEventListener("click", async (event) => {
     }
 
     if (action === "toggle-workflow-toolbox") {
-      workflowToolboxOpen = !workflowToolboxOpen;
-      renderWorkflowStable();
+      setMaterialOpen(!workflowToolboxOpen);
     }
     if (action === "set-workflow-library-mode") {
       workflowLibraryMode = target.dataset.id === "advanced" ? "advanced" : "basic";
       renderWorkflowStable();
     }
     if (action === "close-workflow-inspector") {
+      await animatePanelClose(".workflow-inspector-drawer");
       workflowInspectorOpen = false;
       renderWorkflowStable();
     }
@@ -10296,6 +10397,7 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "close-workflow-global") {
       applyWorkflowGlobalRules();
+      await animatePanelClose(".workflow-global-drawer");
       workflowGlobalOpen = false;
       renderWorkflowStable();
     }
@@ -10944,11 +11046,11 @@ document.addEventListener("DOMContentLoaded", () => {
     render();
   });
   $("status-view-btn")?.addEventListener("click", () => {
-    route = "tasks";
+    route = "projects";
     render();
   });
   $("status-pause-btn")?.addEventListener("click", () => {
-    route = "tasks";
+    route = "projects";
     render();
   });
   $("settings-btn")?.addEventListener("click", () => {

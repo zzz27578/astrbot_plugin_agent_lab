@@ -24,14 +24,17 @@ def prompt(task) -> str:
     return "\n[本次任务的持久计划，优先于旧对话摘要]\n" + json.dumps({
         "task_id": task.task_id, "goal": task.root_goal,
         "version": state.get("version", 0), "approved_version": state.get("approved_version", 0),
-        "steps": state.get("steps", []), "constraints": state.get("constraints", []),
+        "steps": [{"id": row["id"], "title": row["title"], "status": row["status"]} for row in state.get("steps", [])],
+        "current_step": next((row for row in state.get("steps", []) if row["id"] == state.get("current_step_id")), None),
+        "constraints": state.get("constraints", []),
         "current_step_id": state.get("current_step_id", ""),
         "workflow": state.get("workflow", "none"), "next_action": task.next_step,
         "guidance": state.get("guidance", [])[-8:],
+        "questions": state.get("questions", [])[-5:],
         "recent_tool_evidence": [{"id": r["id"], "name": r.get("name"), "status": r.get("status"),
                                   "step_id": r.get("step_id"), "result": str(r.get("result", ""))[:1000]}
                                  for r in state.get("journal", [])[-8:]],
-        "instruction": "按批准计划执行；工具后使用 agent_lab_checkpoint 记录步骤和证据。分析/汇总步骤可用 agent_lab_record_report 保存真实报告，不得编造测试结果。没有应用画布时不推进画布节点。计划全部完成再调用 agent_lab_finish。修改计划使用 agent_lab_submit_plan，审批由管理员完成。",
+        "instruction": "按批准计划执行；工具后使用agent_lab_checkpoint记录。明显缺失且影响结果的信息才用agent_lab_ask_question，给2–4个具体选择、推荐项和原因，不能替管理员选择。不为能从项目文件找到的信息反复询问。管理员停止/交付高于计划检查，未验证项如实列出。无需画布时直接略过。用agent_lab_project保存项目摘要，详细工具日志不回灌日常聊天。",
     }, ensure_ascii=False)
 
 
@@ -62,9 +65,11 @@ class TaskControl:
     def submit_plan(self, event, steps_json: str, constraints: str = "") -> str:
         task = self.load(event.unified_msg_origin)
         state = control(task)
-        if not state:
+        if not state or "owner_id" not in state:
+            project_id = state.get("project_id", "")
             self.initialize(task, event, "selected")
             state = control(task)
+            state["project_id"] = project_id
         raw = json.loads(steps_json)
         if not isinstance(raw, list) or not 1 <= len(raw) <= 50:
             raise ValueError("计划必须是 1–50 个步骤的 JSON 数组。")
@@ -124,14 +129,33 @@ class TaskControl:
         provider_id = await self.owner.context.get_current_chat_provider_id(task.umo)
         response = await self.owner.context.llm_generate(chat_provider_id=provider_id,
             prompt=json.dumps({"goal": task.root_goal, "brief": task.task_brief,
-                               "completion_conditions": task.completion_conditions}, ensure_ascii=False),
-            system_prompt="为当前Bot的任务制定具体计划，不执行操作。只返回JSON数组，2–8步，每步id/title/instruction。最后包含成果核对；不要编造项目结构。用用户语言。")
+                               "completion_conditions": task.completion_conditions,
+                               "projects": [{"id": p["project_id"], "title": p["title"], "category": p["category"]}
+                                            for p in self.owner.projects.index()["projects"] if p.get("source_umo") == task.umo],
+                               "clarifications": control(task).get("questions", [])[-4:]}, ensure_ascii=False),
+            system_prompt="为当前Bot的任务制定具体计划，不执行操作。返回JSON对象：steps数组(2–8步id/title/instruction)、project_id(匹配已有项目时填写)、project_title、category。仅关键目标缺失到无法规划时返回question、options(2–4项)、recommendation，不为能查文件确定的信息提问。保留明确项目选择，避免重复项目。最后包含成果核对；不要编造结构。用用户语言。")
         latest = self.load(task.umo, task_id)
         if control(latest).get("version") or control(latest).get("human_paused"):
             return "任务状态已变化，未覆盖计划。"
         text = str(response.completion_text or "").strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        proposal = json.loads(text)
+        if isinstance(proposal, dict):
+            if proposal.get("question"):
+                row = self.ask(event, str(proposal["question"]), proposal.get("options", []), str(proposal.get("recommendation") or ""))
+                return json.dumps(row, ensure_ascii=False) + f"\n/al answer {row['id']} <回答>"
+            project_id = control(latest).get("project_id")
+            project = self.owner.projects.project(project_id) if project_id else None
+            if not project or project.get("title") == "未分类":
+                selected = str(proposal.get("project_id") or "")
+                valid = {p["project_id"] for p in self.owner.projects.index()["projects"] if p.get("source_umo") == task.umo}
+                if selected in valid:
+                    self.owner.projects.attach(latest, selected)
+                elif proposal.get("project_title"):
+                    self.owner.projects.attach(latest, title=str(proposal["project_title"])[:100], category=str(proposal.get("category") or "项目"))
+                self.owner.storage.save_task(latest)
+            text = json.dumps(proposal.get("steps"), ensure_ascii=False)
         return self.submit_plan(event, text)
 
     def approval(self, task, row: dict, approved: bool):
@@ -183,7 +207,9 @@ class TaskControl:
 
     def ready(self, task) -> bool:
         state = control(task)
-        return bool(state and state.get("automatic") and not state.get("human_paused")
+        return bool(task.task_id not in self.owner.projects.cleaning
+                    and not self.owner.storage.ended_path(task.task_id).exists()
+                    and state and state.get("automatic") and not state.get("human_paused")
                     and task.status == "running" and not task.pending_approvals()
                     and state.get("approved_version") == state.get("version") and state.get("version")
                     and not any(row.get("status") in {"started", "unknown"} for row in state.get("journal", [])))
@@ -217,6 +243,10 @@ class TaskControl:
                         pending = latest.pending_approvals()
                         message += "\n" + "\n".join(f"{row.operation}\n{row.impact}\n/al approve {row.approval_id}" for row in pending)
                         message += f"\n当前任务：{latest.task_id}\n下一步：{latest.next_step}"
+                        for question in control(latest).get("questions", []):
+                            if question.get("status") == "pending":
+                                message += "\n" + question["question"] + "\n" + "\n".join(f"{i+1}. {text}" for i, text in enumerate(question["options"]))
+                                message += f"\n建议：{question.get('recommendation', '')}\n/al answer {question['id']} <选项或自由回答>"
                     self.owner._require_task_access(event)
                     await event.send(MessageChain().message(message[:5000]))
                     break
@@ -252,6 +282,44 @@ class TaskControl:
                 state["human_paused"] = True
                 task.next_step = "服务已重载。核对检查点及未知工具结果后，用 /al resume 恢复。"
             self.owner.storage.save_task(task)
+
+    def ask(self, event, question: str, options: list, recommendation: str = ""):
+        task = self.load(event.unified_msg_origin)
+        state = control(task)
+        if not question.strip() or len(question) > 1200 or not isinstance(options, list) or not 2 <= len(options) <= 4:
+            raise ValueError("反问需要明确问题和2–4个选项。")
+        if any(q.get("status") == "pending" for q in state.get("questions", [])):
+            raise ValueError("已有待回答问题，请等待管理员回答。")
+        row = {"id": "question_" + hashlib.sha256((question + now_iso()).encode()).hexdigest()[:12],
+               "question": question.strip(), "options": [str(option)[:300] for option in options],
+               "recommendation": recommendation[:600], "status": "pending", "created_at": now_iso()}
+        state.setdefault("questions", []).append(row)
+        task.status = "paused"
+        task.set_wait(wait_reason="need_answer", message=question, source="task_question",
+                      resume_command=f"/al answer {row['id']} <选项或自由回答>")
+        self.owner.storage.save_task(task)
+        return row
+
+    def answer(self, event, question_id: str, answer: str):
+        task = self.load(event.unified_msg_origin)
+        row = next((q for q in control(task).get("questions", []) if q["id"] == question_id), None)
+        if not row or row.get("status") != "pending": raise ValueError("问题已经回答或不存在。")
+        if not answer.strip() or len(answer) > 4000: raise ValueError("回答需要1–4000字符。")
+        message = f"管理员对“{row['question']}”的回答：{answer}"
+        state = control(task)
+        constraints = list(dict.fromkeys([*state.get("constraints", []), message]))
+        if sum(map(len, constraints)) > 20000:
+            raise ValueError("约束记录过长，请先整理任务要求再回答。")
+        row.update(status="answered", answer=answer.strip(), answered_at=now_iso(), answered_by=event.get_sender_id())
+        state["constraints"] = constraints
+        state.setdefault("guidance", []).append({"message": message, "time": now_iso()})
+        state["input_revision"] = int(state.get("input_revision", 0)) + 1
+        task.clear_wait()
+        if not control(task).get("human_paused") and not task.pending_approvals():
+            task.status = "running" if control(task).get("approved_version") else "paused"
+        self.owner.storage.save_task(task)
+        self.schedule(event)
+        return "回答已记录，继续条件满足时将自动接续。"
 
     @staticmethod
     def fingerprint(task) -> str:

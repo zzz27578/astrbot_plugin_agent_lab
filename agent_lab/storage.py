@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import re
 from pathlib import Path
 from typing import Any
 
@@ -192,12 +193,31 @@ class AgentLabStorage:
         return TaskState.from_dict(self._read_json(path))
 
     def save_task(self, task: TaskState, active: bool = True) -> None:
+        if self.ended_path(task.task_id).exists():
+            return  # administrator terminal fence outranks late callbacks
+        existing_path = self.task_path(task.umo, task.task_id)
+        pointer = self.active_task_path(task.umo)
+        if active and existing_path.exists():
+            # A switched-away task cannot reclaim the source pointer implicitly.
+            if not pointer.exists() or self._read_json(pointer).get("task_id") != task.task_id:
+                active = False
         task.updated_at = now_iso()
         payload = task.to_dict()
         self._write_json(self.task_path(task.umo, task.task_id), payload)
         self._write_text(self.task_markdown_path(task.umo, task.task_id), self.render_markdown(task))
         if active and task.status not in {"completed", "cancelled"} and not task.archive_path:
             self._write_json(self.active_task_path(task.umo), payload)
+
+    def ended_path(self, task_id: str) -> Path:
+        if not re.fullmatch(r"task_[a-f0-9]+", task_id):
+            raise ValueError("Invalid task identifier")
+        return self.root / "ended" / f"{task_id}.json"
+
+    def mark_ended(self, task: TaskState, status: str, actor: str) -> None:
+        if self.ended_path(task.task_id).exists():
+            return
+        self._write_json(self.ended_path(task.task_id), {"task_id": task.task_id, "status": status,
+                                                      "actor": actor, "time": now_iso()})
 
     def append_task_memory_observation(self, task: TaskState, payload: dict[str, Any]) -> None:
         self._append_jsonl(
@@ -223,7 +243,11 @@ class AgentLabStorage:
     def write_task_memory_summary(self, task: TaskState, text: str) -> None:
         self._write_text(self.task_memory_summary_path(task.umo, task.task_id), text)
 
-    def archive_task(self, task: TaskState) -> Path:
+    def archive_task(self, task: TaskState, *, administrator: bool = False) -> Path:
+        # An automatic finish may have awaited a model while the administrator
+        # ended the task. It cannot overwrite that already committed decision.
+        if self.ended_path(task.task_id).exists() and not administrator:
+            return self.archive_task_markdown_path(task.umo, task.task_id)
         task.finished_at = task.finished_at or now_iso()
         task.updated_at = now_iso()
         session_archive_dir = self.archive_session_dir(task.umo)
@@ -241,8 +265,9 @@ class AgentLabStorage:
         self._write_json(dst_json, task.to_dict())
         self._write_text(dst_md, self.render_markdown(task))
         active = self.active_task_path(task.umo)
-        if active.exists():
+        if active.exists() and self._read_json(active).get("task_id") == task.task_id:
             active.unlink()
+        self.mark_ended(task, task.status, "archive")
         if task.exit_summary.strip():
             self.save_memory_entry(
                 {

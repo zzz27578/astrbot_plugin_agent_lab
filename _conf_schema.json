@@ -39,7 +39,7 @@
     "type": "bool",
     "description": "同步任务模式技能规则",
     "default": true,
-    "hint": "把入口、审批、心跳和归档约定同步到 AstrBot 技能。"
+    "hint": "同步项目分类、筛选交接、反问、管理员结束与任务计划使用规则。"
   },
   "entry_summary_turns": {
     "type": "int",
@@ -87,13 +87,7 @@
     "type": "int",
     "description": "全局同时推进的任务轮数上限",
     "default": 3,
-    "hint": "跨任务的 tick 总并发闸；心跳一起醒时排队，避免惊群。建议 2-6。"
-  },
-  "heartbeat_jitter_seconds": {
-    "type": "int",
-    "description": "心跳错峰抖动（秒）",
-    "default": 8,
-    "hint": "心跳唤醒前随机延迟 0~N 秒，避免多任务同秒同时推进。0=不抖动。"
+    "hint": "跨任务推进的总并发闸；普通任务按执行事件续接，不依赖心跳。建议2–6。"
   },
   "workflow_parallel_concurrency": {
     "type": "int",
@@ -106,17 +100,5 @@
     "description": "完全关闭群聊任务入口",
     "default": true,
     "hint": "默认仅管理员私聊和已登录的控制台可操作。"
-  },
-  "schedule_target_umo": {
-    "type": "string",
-    "description": "定时模块的真实会话来源",
-    "default": "",
-    "hint": "填写真实UMO，或使用方案范围中第一个UMO白名单；不再创建虚假的QQ会话。"
-  },
-  "schedule_admin_id": {
-    "type": "string",
-    "description": "定时模块发起管理员ID",
-    "default": "",
-    "hint": "执行时重新检查该ID是否仍属于AstrBot或插件管理员；定时立项仍需计划审批。"
   }
 }

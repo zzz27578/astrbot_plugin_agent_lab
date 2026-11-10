@@ -101,6 +101,18 @@ class StandaloneWebUIServer:
         async def state():
             return await self._guard(self.owner.api_state)
 
+        @app.route("/api/workspace", methods=["GET", "POST"])
+        async def workspace():
+            return await self._guard(self.owner.workspace_api.handle)
+
+        @app.get("/project-ui.js")
+        async def project_ui():
+            return await send_from_directory(self.static_dir, "project-ui.js")
+
+        @app.get("/workspace.css")
+        async def workspace_css():
+            return await send_from_directory(self.static_dir, "workspace.css")
+
         @app.route("/api/agents", methods=["GET", "POST", "DELETE"])
         async def agents():
             return await self._guard(self.owner.api_agents)

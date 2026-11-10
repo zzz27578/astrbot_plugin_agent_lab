@@ -38,3 +38,12 @@ export function restoreForm(rows) {
     }
   }
 }
+
+export async function boundedRequest(promise, timeout = 90000) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("请求等待超时。操作可能仍在后台处理，请先刷新确认结果，避免重复提交。")), timeout);
+    })]);
+  } finally { clearTimeout(timer); }
+}

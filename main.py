@@ -75,10 +75,12 @@ from .agent_lab.task_control import TaskControl, control as task_control, prompt
 from .agent_lab.astrbot_bridge import AstrBotBridge
 from .agent_lab.web_api import admin_api
 from .agent_lab.node_policy import execute_with_policy
+from .agent_lab.projects import Projects
+from .agent_lab.workspace_api import WorkspaceAPI
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.3"
+PLUGIN_VERSION = "v0.2.4"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -579,6 +581,8 @@ class AgentLabPlugin(Star):
         self.api_executor = CustomApiExecutor(self)
         self.tool_executor = AstrBotToolExecutor(self)
         self.task_control = TaskControl(self)
+        self.projects = Projects(self)
+        self.workspace_api = WorkspaceAPI(self)
         self.astrbot_bridge = AstrBotBridge(self)
         self.node_executors = NodeExecutorRegistry()
         self._register_node_executors()
@@ -600,18 +604,19 @@ class AgentLabPlugin(Star):
 
     async def initialize(self):
         self.task_control.recover()
+        self.projects.import_legacy()
         self._sync_default_agent_identity()
         self._sync_agent_mode_skill()
-        await self._rehydrate_heartbeats()
-        await self._rehydrate_workflow_schedules()
+        if self.context.cron_manager:
+            for job in await self.context.cron_manager.list_jobs("basic"):
+                if str(getattr(job, "name", "")).startswith("agent_lab_"):
+                    await self.context.cron_manager.delete_job(job.job_id)
+        # Timed/heartbeat UI is retired; do not recreate old automatic wakeups.
+        for old_task in self.storage.list_tasks():
+            await self._disable_heartbeat(old_task)
+            self.storage.save_task(old_task)
         await self._start_webui_server()
-        # Prune stale memory candidates so the system starts clean.
-        try:
-            pruned = self.memory_manager.prune_stale_candidates(max_age_days=7)
-            if pruned:
-                logger.info(f"[AgentLab] pruned {pruned} stale memory candidate(s)")
-        except Exception as exc:
-            logger.warning(f"[AgentLab] memory prune skipped: {exc}")
+        # Project memory retention is explicit and previewed in the workspace UI.
         # Log pattern library health.
         try:
             active_patterns = self.pattern_library.count(status="active")
@@ -640,12 +645,83 @@ class AgentLabPlugin(Star):
             raise PermissionError("任务工具仅限 AstrBot 管理员或明确授权的管理员。")
         event.role = "admin"
 
+    @filter.llm_tool(name="agent_lab_project")
+    async def agent_lab_project(self, event: AstrMessageEvent, action: str = "list", project_id: str = "", title: str = "", category: str = "项目", summary: str = "", task_id: str = "") -> str:
+        """管理当前Bot会话的项目目录、分类和摘要。没有模型选择。详细日志不带回日常聊天。
+
+        Args:
+            action(string): list/create/select/summary/read/switch，分别列出、建项目、选项目、写当前任务摘要、读项目摘要、切任务。
+            project_id(string): 项目编号。
+            title(string): 新项目名称，相关任务复用同一项目。
+            category(string): 分类，例如插件开发、问题排查。
+            summary(string): summary操作保存已确认发现、未完成项、下一步和文件引用；不是授权。
+            task_id(string): switch操作要切换的任务ID；summary可选任务ID。
+        """
+        self._require_task_access(event)
+        umo = event.unified_msg_origin
+        if action == "list":
+            rows = self.projects.catalog()["projects"]
+            return json.dumps([{"id": row["project_id"], "title": row["title"], "category": row["category"],
+                "tasks": [{"id": task["task_id"], "title": task["title"], "status": task["status"]} for task in row["tasks"][:20]]}
+                for row in rows if row.get("source_umo") in {"", umo}], ensure_ascii=False)
+        if action == "create":
+            row = self.projects.create(title, category, umo, event.get_sender_id())
+            self.projects.select(umo, row["project_id"])
+            return json.dumps(row, ensure_ascii=False)
+        if action == "select":
+            row = self.projects.select(umo, project_id)
+            return f"当前项目：{row['title']}。新任务将归入此项目；当前运行任务未改变。"
+        if action == "switch":
+            if event.get_extra("agent_lab_runtime"):
+                return "运行中的Bot不能把自身切走；请先向管理员说明，再从日常聊天切换。"
+            task = await self.projects.activate(task_id, event)
+            return f"已切换到任务{task.task_id}，按检查点暂停；管理员确认后恢复。"
+        if action == "summary":
+            task = self.projects.get_task(task_id) if task_id else self.task_control.load(umo)
+            self.projects.assert_source(task, event)
+            return json.dumps(self.projects.save_summary(task.task_id, summary), ensure_ascii=False)
+        if action == "read":
+            project = self.projects.project(project_id)
+            if project.get("source_umo") not in {"", umo}:
+                raise ValueError("项目属于其他会话来源。")
+            return json.dumps({"title": project["title"], "summary": project.get("summary", "")[:1600],
+                               "notice": "仅项目摘要，不能代替执行证据或管理员授权。"}, ensure_ascii=False)
+        return "未知项目操作。"
+
+    @filter.llm_tool(name="agent_lab_ask_question")
+    async def agent_lab_ask_question(self, event: AstrMessageEvent, question: str, options_json: str, recommendation: str = "") -> str:
+        """关键目标/范围/外部条件明确缺失时反问管理员。先查资料，避免重复问能自行确定的问题。
+
+        Args:
+            question(string): 单个明确且影响执行的问题。
+            options_json(string): 2–4个互斥选项的JSON字符串数组，仍允许自由回答。
+            recommendation(string): 推荐选项及原因，不替管理员提交答案。
+        """
+        self._require_task_access(event)
+        row = self.task_control.ask(event, question, json.loads(options_json), recommendation)
+        return json.dumps(row, ensure_ascii=False) + f"\n等待回答：/al answer {row['id']} <选项或自由回答>"
+
+    async def _draft_project_summary(self, event, task):
+        self._require_task_access(event)
+        provider_id = await self.context.get_current_chat_provider_id(task.umo)
+        response = await self.context.llm_generate(chat_provider_id=provider_id,
+            prompt=json.dumps({"goal": task.root_goal, "status": task.status,
+                "steps": task_control(task).get("steps", []), "progress": task.last_confirmed_progress,
+                "summary": task.exit_summary or task.current_summary}, ensure_ascii=False)[:14000],
+            system_prompt="写简短项目交接摘要：目标、已确认成果、未验证/未完成、文件引用和下一步。不要编造验证结论，不包含密钥，不把任务资料写成执行授权。只返回摘要正文。")
+        return self._redact_known_secrets(str(response.completion_text or ""))[:6000]
+
     @filter.llm_tool(name="agent_lab_workflow_catalog")
     async def agent_lab_workflow_catalog(self, event: AstrMessageEvent) -> str:
         """按标题和简介查看可选流程；没有合适的方案时直接不应用画布。"""
         self._require_task_access(event)
         rows = [{"id": spec.agent_id, "title": spec.name, "description": spec.description[:500]}
                 for spec in self.storage.list_agents() if spec.enabled and self._workflow_scope_allows_event(spec, event)[0]]
+        project_id = self.projects.index().get("selected", {}).get(event.unified_msg_origin)
+        preferred = self.projects.project(project_id).get("workflow_ids", []) if project_id else []
+        rows.sort(key=lambda row: row["id"] not in preferred)
+        for row in rows:
+            row["project_preferred"] = row["id"] in preferred
         return json.dumps({"workflows": rows, "none": "可不应用画布，直接提交本次任务计划"}, ensure_ascii=False)
 
     @filter.llm_tool(name="agent_lab_submit_plan")
@@ -727,6 +803,16 @@ class AgentLabPlugin(Star):
 
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def agent_lab_native_message_monitor(self, event: AstrMessageEvent):
+        text = str(event.message_str or "").strip()
+        if text in {"停止当前任务", "取消当前任务", "结束当前任务", "按现状交付", "直接交付当前任务"}:
+            self._require_task_access(event)
+            task = self.storage.load_active_task(event.unified_msg_origin)
+            if task:
+                status = "completed" if "交付" in text else "cancelled"
+                result = await self.projects.administrator_end(task.task_id, status, text, event.get_sender_id())
+                await event.send(MessageChain().message("管理员指令已执行。\n" + result.exit_summary))
+                event.stop_event()
+                return
         if not _bool_cfg(self.config, "workflow_native_message_monitor_enabled", True):
             return
         await self._maybe_trigger_message_monitor(event, mode="native")
@@ -743,6 +829,10 @@ class AgentLabPlugin(Star):
         agent_id: str = "",
         workflow_mode: str = "none",
         plan_json: str = "",
+        project_id: str = "",
+        project_title: str = "",
+        category: str = "项目",
+        handoff_summary: str = "",
     ) -> str:
         """进入 AstrBot 任务模式，创建任务状态。
 
@@ -754,6 +844,10 @@ class AgentLabPlugin(Star):
             need_heartbeat(boolean): 是否需要为长任务开启心跳。
             agent_id(string): 可选流程方案 ID，可先通过 agent_lab_workflow_catalog 查看标题和简介。
             workflow_mode(string): none不应用画布，selected应用agent_id方案。默认none。
+            project_id(string): 可选已有项目ID，用agent_lab_project查看。
+            project_title(string): 新项目名称，相同项目应复用。
+            category(string): 类型，如插件开发、问题排查。
+            handoff_summary(string): 从日常聊天筛出的相关目标和约束，不复制全部对话。
             plan_json(string): 可选具体计划JSON数组，包含id/title/instruction；未提供时随后调用agent_lab_submit_plan。
         """
         self._require_task_access(event)
@@ -769,13 +863,14 @@ class AgentLabPlugin(Star):
             event,
             goal=goal,
             completion_conditions=completion_conditions,
-            brief="",
+            brief=handoff_summary,
             request_heartbeat=need_heartbeat,
             source="tool",
             risk_level=risk_level,
             agent_id=agent_id,
             workflow_mode=workflow_mode,
             plan_json=plan_json,
+            project_id=project_id, project_title=project_title, category=category,
         )
 
     @filter.llm_tool(name="agent_lab_read_state")
@@ -789,6 +884,13 @@ class AgentLabPlugin(Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
+        if not event.get_extra("agent_lab_runtime"):
+            state = task_control(task)
+            current = next((step for step in state.get("steps", []) if step.get("id") == state.get("current_step_id")), {})
+            return json.dumps({"task_id": task.task_id, "project_id": state.get("project_id"), "goal": task.root_goal[:300],
+                "status": task.status, "current_step": current.get("title"), "next": task.next_step[:500],
+                "summary": (task.exit_summary or task.current_summary)[:900],
+                "pending_questions": [q for q in state.get("questions", []) if q.get("status") == "pending"]}, ensure_ascii=False)
         spec = AgentSpec.from_dict(
             task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
         )
@@ -825,6 +927,8 @@ class AgentLabPlugin(Star):
             format(string): summary 或 json。summary 给模型快速复盘，json 返回结构化摘要。
         """
         self._require_task_access(event)
+        if not event.get_extra("agent_lab_runtime"):
+            return await self.agent_lab_read_state(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
@@ -1083,6 +1187,11 @@ class AgentLabPlugin(Star):
             limit(string): 返回条数上限，默认 8。
         """
         self._require_task_access(event)
+        if not event.get_extra("agent_lab_runtime"):
+            project_id = self.projects.index().get("selected", {}).get(event.unified_msg_origin)
+            if not project_id:
+                return "先通过agent_lab_project选择项目，再按需读取摘要。"
+            return await self.agent_lab_project(event, "read", project_id=project_id)
         query = str(query or "").strip().lower()
         status = str(status or "accepted").strip().lower()
         try:
@@ -1150,6 +1259,10 @@ class AgentLabPlugin(Star):
         except Exception:
             limit_int = 5
         rows = self.pattern_library.recommend(query, limit=limit_int)
+        current = self.storage.load_active_task(event.unified_msg_origin)
+        project_id = task_control(current).get("project_id") if current else self.projects.index().get("selected", {}).get(event.unified_msg_origin)
+        allowed_ids = {task_id for task_id, meta in self.projects.index()["tasks"].items() if meta.get("project_id") == project_id}
+        rows = [row for row in rows if row.get("source_task_id") in allowed_ids]
         if not rows:
             return "No matching Agent Lab task patterns."
         return json.dumps(
@@ -1448,22 +1561,30 @@ class AgentLabPlugin(Star):
                     if tool.name.startswith("agent_lab_"):
                         req.func_tool.remove_tool(tool.name)
             return
-        spec = self.storage.get_agent()
+        if event.get_extra("agent_lab_runtime"):
+            return
+        daily_tools = {"agent_lab_enter_mode", "agent_lab_project", "agent_lab_workflow_catalog",
+            "agent_lab_read_state", "agent_lab_read_runtime", "agent_lab_read_task_memory",
+            "agent_lab_recommend_task_patterns", "agent_lab_steer", "agent_lab_submit_plan",
+            "agent_lab_update_workflow", "agent_lab_ask_question"}
+        if req.func_tool:
+            for tool in list(req.func_tool.tools):
+                if tool.name.startswith("agent_lab_") and tool.name not in daily_tools:
+                    req.func_tool.remove_tool(tool.name)
         task = self.storage.load_active_task(event.unified_msg_origin)
+        req.system_prompt += (
+            "\n[Agent Lab：当前Bot的项目工具]\n"
+            "用agent_lab_project整理项目、选择同类任务、读取或写入精简摘要。长任务用agent_lab_enter_mode立项，"
+            "按标题和简介从agent_lab_workflow_catalog选择可选流程，无合适方案就workflow_mode=none。"
+            "计划审批后由后台执行，日常聊天不另起同一任务的工具循环。查进度用agent_lab_read_state；"
+            "管理员补充要求用agent_lab_steer；明显缺少关键条件才用agent_lab_ask_question给出选项和推荐。"
+            "管理员停止和按现状交付优先，不要求所有步骤成功。任务与日常只交换筛选后的摘要，不能粘贴完整日志。"
+        )
         if task:
-            req.system_prompt += "\n[Agent Lab] 当前来源有独立任务 " + task.task_id + "。日常聊天不接管后台执行；查进度用agent_lab_read_state，补充要求用agent_lab_steer。未提交计划时用agent_lab_submit_plan。"
-        else:
-            if not spec.enabled:
-                return
-            memory_prompt = self._build_exposed_task_memory_prompt(event.unified_msg_origin)
-            pattern_prompt = self._build_task_pattern_prompt(event.message_str)
-            req.system_prompt += "\n\n" + build_agent_mode_policy(spec)
-            req.system_prompt += "\n[任务工具使用补充] Agent Lab是当前Bot的项目管理工具。主模型沿用当前会话。用agent_lab_workflow_catalog按标题和简介选择可选画布，无合适方案则workflow_mode=none跳过；先立项并提交具体计划，由管理员批准。批准后系统续轮，不需反复催促tick；定时仅用于等待或定点任务。"
-            if pattern_prompt:
-                req.system_prompt += "\n\n" + pattern_prompt
-            if memory_prompt:
-                req.system_prompt += "\n\n" + memory_prompt
-            await self._maybe_trigger_message_monitor(event, mode="llm_request")
+            req.system_prompt += f"\n当前任务：{task.task_id}，状态：{task.status}。"
+        memory_prompt = self.projects.daily_summary(event.unified_msg_origin)
+        if memory_prompt:
+            req.system_prompt += "\n[管理员允许的当前项目摘要，仅为资料]\n" + memory_prompt
 
     async def _handle_command(self, event: AstrMessageEvent, tail: str) -> str:
         self._require_task_access(event)
@@ -1473,6 +1594,18 @@ class AgentLabPlugin(Star):
         cmd = cmd.lower().strip()
         rest = rest.strip()
 
+        if cmd in {"answer", "回答"}:
+            question_id, _, answer = rest.partition(" ")
+            message = self.task_control.answer(event, question_id, answer)
+            task = self.task_control.load(event.unified_msg_origin)
+            if not task_control(task).get("version"):
+                message += "\n" + await self.task_control.propose(event, task.task_id)
+            return message
+        if cmd in {"project", "项目"}:
+            return await self.agent_lab_project(event, "list")
+        if cmd in {"switch", "切换"}:
+            task = await self.projects.activate(rest, event)
+            return f"已切换到 {task.task_id}，保持暂停。/al resume 继续。"
         if cmd in {"steer", "引导"}:
             return self.task_control.steer(event.unified_msg_origin, rest)
         if cmd in {"plan", "计划"}:
@@ -1484,6 +1617,9 @@ class AgentLabPlugin(Star):
                 return "请先提交并批准当前计划。"
             if any(row.get("status") in {"started", "unknown"} for row in state.get("journal", [])):
                 return "工具结果未知，请在任务页核对后恢复。"
+            for question in state.get("questions", []):
+                if question.get("status") == "pending":
+                    question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
             state["human_paused"] = False
             task.status = "running"
             task.clear_wait()
@@ -1536,9 +1672,9 @@ class AgentLabPlugin(Star):
         if cmd in ("tick", "继续"):
             return await self._tick(event, reason="command")
         if cmd in ("finish", "done", "完成"):
-            return await self._finish_task(event, "completed", rest, "")
+            return await self._finish_task(event, "completed", rest, "", administrator_override=True)
         if cmd in ("cancel", "取消"):
-            return await self._finish_task(event, "cancelled", rest or "用户取消任务。", "")
+            return await self._finish_task(event, "cancelled", rest or "用户取消任务。", "", administrator_override=True)
         if cmd == "heartbeat":
             sub = rest.lower()
             task = self.storage.load_active_task(event.unified_msg_origin)
@@ -1562,7 +1698,12 @@ class AgentLabPlugin(Star):
             return self._resolve_approval(event.unified_msg_origin, rest, False, event.get_sender_id())
         return f"未知命令：{cmd}\n\n{self._help_text()}"
 
-    async def _start_task(
+    async def _start_task(self, event: AstrMessageEvent, **kwargs) -> str:
+        lock = self.projects.creation_locks.setdefault(event.unified_msg_origin, asyncio.Lock())
+        async with lock:
+            return await self._start_task_impl(event, **kwargs)
+
+    async def _start_task_impl(
         self,
         event: AstrMessageEvent,
         *,
@@ -1578,13 +1719,24 @@ class AgentLabPlugin(Star):
         skip_scope_check: bool = False,
         workflow_mode: str = "selected",
         plan_json: str = "",
+        project_id: str = "",
+        project_title: str = "",
+        category: str = "项目",
     ) -> str:
         self._require_task_access(event)
+        if not str(goal).strip():
+            raise ValueError("任务目标不能为空；请先明确要完成什么。")
         if workflow_mode not in {"none", "selected"}:
             raise ValueError("workflow_mode 必须为 none 或 selected")
         umo = event.unified_msg_origin
-        if self.storage.load_active_task(umo):
-            return "当前会话已有 active task。请先 /agentlab finish 或 /agentlab cancel。"
+        previous = self.storage.load_active_task(umo)
+        if previous:
+            await self.projects.pause_execution(previous)
+            if f"{previous.umo}:{previous.task_id}" in self._running_ticks:
+                return "上一任务已暂停派发但仍在收尾，请稍后再立项。"
+            pointer = self.storage.active_task_path(umo)
+            if pointer.exists() and self.storage._read_json(pointer).get("task_id") == previous.task_id:
+                pointer.unlink()
 
         spec = self.storage.get_agent(agent_id or None)
         if workflow_mode == "selected" and not spec.enabled:
@@ -1604,9 +1756,8 @@ class AgentLabPlugin(Star):
         profile_agent["runtime_identity"] = runtime_identity
         session_plugin_snapshot = {}
         self._refresh_summarizer_rules()
-        entry_summary = await self.summarizer.summarize_entry(
-            event, goal, brief, policy=self._as_plain_dict(spec.memory_policy)
-        )
+        # The daily bot supplies a filtered handoff; never scrape its full history.
+        entry_summary = str(brief or goal).strip()[:6000]
         task = TaskState(
             agent_id=spec.agent_id,
             agent_name=effective_agent_name,
@@ -1634,6 +1785,7 @@ class AgentLabPlugin(Star):
             budget=TaskBudget.from_dict(getattr(spec.default_task_budget, "__dict__", None)),
         )
         self.task_control.initialize(task, event, workflow_mode)
+        self.projects.attach(task, project_id, project_title, category)
         if workflow_mode == "selected":
             self._initialize_task_workflow(task, spec, source=source)
         if trigger_payload:
@@ -1680,7 +1832,7 @@ class AgentLabPlugin(Star):
         task.add_snapshot("created", {"source": source, "risk_level": risk_level})
         self.storage.save_task(task)
         heartbeat_text = ""
-        if request_heartbeat and task.heartbeat.allowed:
+        if False:  # legacy parameter kept for saved clients; continuous work uses task driver
             heartbeat_text = "\n" + await self._enable_heartbeat(
                 event, task, reason="start_request"
             )
@@ -1968,6 +2120,7 @@ class AgentLabPlugin(Star):
             str(item.get("final_summary") or "Administrator approved task finish."),
             str(item.get("memory_candidates") or ""),
             finish_approval_id=approval_id,
+            administrator_override=True,
         )
 
     async def _finish_task(
@@ -1978,11 +2131,16 @@ class AgentLabPlugin(Star):
         memory_candidates: str,
         *,
         finish_approval_id: str = "",
+        administrator_override: bool = False,
     ) -> str:
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
         status = str(status or "completed").strip().lower()
+        if administrator_override:
+            self._require_task_access(event)
+            ended = await self.projects.administrator_end(task.task_id, status, final_summary, str(event.get_sender_id()))
+            return f"管理员指令已执行：{ended.status}。\n{ended.exit_summary}"
         state = task_control(task)
         if status == "completed" and state.get("steps") and any(step.get("status") != "completed" for step in state["steps"]):
             return "本次批准计划仍有未完成步骤。请保存步骤证据，或明确取消任务。"
@@ -2032,6 +2190,8 @@ class AgentLabPlugin(Star):
         self.storage.save_task(task)
         self._refresh_summarizer_rules()
         exit_summary = await self.summarizer.summarize_exit(event, task, final_summary)
+        if self.storage.ended_path(task.task_id).exists():
+            return "任务已由管理员结束；自动交付不覆盖管理员决定。"
         task.status = status
         task.exit_summary = exit_summary
         task.memory_candidates = [
@@ -2077,7 +2237,13 @@ class AgentLabPlugin(Star):
             task.add_log("task_pattern", f"learned {pattern.get('pattern_id')}")
         for error in (memory_result.get("errors") or [])[:5]:
             task.add_log("memory_orchestrator_error", str(error))
+        if self.storage.ended_path(task.task_id).exists():
+            return "任务已结束；保留先前确认的交付记录。"
         archive_path = self.storage.archive_task(task)
+        try:
+            self.projects.save_summary(task.task_id, task.exit_summary or task.current_summary, auto=True)
+        except (OSError, ValueError) as exc:
+            logger.warning("[AgentLab] 任务已归档，项目摘要待补写：%s", exc)
         return (
             f"任务模式已结束并归档。\n"
             f"- status: {status}\n"
@@ -2086,33 +2252,7 @@ class AgentLabPlugin(Star):
         )
 
     async def _enable_heartbeat(self, event: AstrMessageEvent, task: TaskState, reason: str) -> str:
-        if not task.heartbeat.allowed:
-            return "当前 Agent 配置禁止使用心跳。"
-        if not self.context.cron_manager:
-            return "cron_manager 不可用，无法开启心跳。"
-        if task.heartbeat.job_id:
-            return f"心跳已经开启：{task.heartbeat.job_id}"
-        job = await self.context.cron_manager.add_basic_job(
-            name=f"agent_lab_{task.task_id}",
-            cron_expression=task.heartbeat.cron_expression,
-            handler=self._heartbeat_tick,
-            payload={
-                "umo": task.umo,
-                "task_id": task.task_id,
-                "state_path": str(self.storage.task_markdown_path(task.umo, task.task_id)),
-                "root_goal": task.root_goal,
-                "completion_conditions": task.completion_conditions,
-            },
-            persistent=False,
-            description=f"Agent Lab heartbeat for {task.task_id}",
-            enabled=True,
-        )
-        task.heartbeat.enabled = True
-        task.heartbeat.job_id = job.job_id
-        task.heartbeat.last_pulse_at = ""
-        task.add_log("heartbeat_on", f"reason={reason}; job_id={job.job_id}")
-        self.storage.save_task(task)
-        return f"已开启心跳：{job.job_id}，周期 {task.heartbeat.cron_expression}。"
+        return "本版本已移除心跳调度。任务按执行事件续轮，不需要定时唤醒。"
 
     async def _disable_heartbeat(self, task: TaskState) -> None:
         if task.heartbeat.job_id and self.context.cron_manager:
@@ -2330,8 +2470,10 @@ class AgentLabPlugin(Star):
 
     def _build_toolset(self, spec: AgentSpec):
         tmgr = self.context.get_llm_tool_manager()
-        internal_block = {"agent_lab_enter_mode", "agent_lab_tick"}
+        internal_block = {"agent_lab_enter_mode", "agent_lab_tick", "agent_lab_set_heartbeat"}
         essential = {
+            "agent_lab_project",
+            "agent_lab_ask_question",
             "agent_lab_checkpoint",
             "agent_lab_record_report",
             "agent_lab_submit_plan",
@@ -2343,7 +2485,6 @@ class AgentLabPlugin(Star):
             "agent_lab_update_state",
             "agent_lab_advance_workflow",
             "agent_lab_request_approval",
-            "agent_lab_set_heartbeat",
             "agent_lab_finish",
             "agent_lab_update_workflow",
             "agent_lab_run_parallel_workflow",
@@ -6522,7 +6663,13 @@ class AgentLabPlugin(Star):
             task.add_log("task_pattern", f"learned {pattern.get('pattern_id')}")
         for error in (memory_result.get("errors") or [])[:5]:
             task.add_log("memory_orchestrator_error", str(error))
+        if self.storage.ended_path(task.task_id).exists():
+            return "任务已结束；保留先前确认的交付记录。"
         archive_path = self.storage.archive_task(task)
+        try:
+            self.projects.save_summary(task.task_id, task.exit_summary or task.current_summary, auto=True)
+        except (OSError, ValueError) as exc:
+            logger.warning("[AgentLab] 任务已归档，项目摘要待补写：%s", exc)
         return f"Workflow archived.\n- status: {task.status}\n- archive: {archive_path}\n\n{self._compact_text(task.exit_summary, 1800)}"
 
     async def _execute_terminal_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
@@ -7467,12 +7614,7 @@ class AgentLabPlugin(Star):
 
     def _build_task_extensions_prompt(self, spec: AgentSpec, task: TaskState | None = None) -> str:
         sections = []
-        pattern_prompt = self._build_task_pattern_prompt(
-            task.root_goal if task else "",
-            exclude_task_id=task.task_id if task else "",
-        )
-        if pattern_prompt.strip():
-            sections.append(pattern_prompt)
+        # Related work enters only via the explicit project's filtered summary.
         modules_prompt = self.modules.build_prompt(spec.module_ids, spec.module_settings)
         if modules_prompt.strip():
             sections.append(modules_prompt)
@@ -7699,6 +7841,7 @@ class AgentLabPlugin(Star):
     def _register_web_apis(self) -> None:
         if jsonify is None:
             return
+        self.context.register_web_api(f"/{PLUGIN_NAME}/workspace", self.workspace_api.handle, ["GET", "POST"], "Projects and managed storage")
         self.context.register_web_api(f"/{PLUGIN_NAME}/task/control", self.api_task_control, ["POST"], "Task plan and steering")
         self.context.register_web_api(f"/{PLUGIN_NAME}/state", self.api_state, ["GET"], "Agent Lab state")
         self.context.register_web_api(f"/{PLUGIN_NAME}/agents", self.api_agents, ["GET", "POST", "DELETE"], "Agent specs")
@@ -8229,7 +8372,7 @@ class AgentLabPlugin(Star):
         before = self.storage.load_active_task(umo)
         text = await self._start_task(
             event,
-            goal=str(payload.get("goal") or "WebUI task"),
+            goal=str(payload.get("goal") or ""),
             completion_conditions=str(payload.get("completion_conditions") or "用户验收通过"),
             brief=str(payload.get("brief") or ""),
             request_heartbeat=bool(payload.get("heartbeat", False)),
@@ -8238,9 +8381,12 @@ class AgentLabPlugin(Star):
             agent_id=str(payload.get("agent_id") or ""),
             workflow_mode=str(payload.get("workflow_mode") or "selected"),
             plan_json=str(payload.get("plan_json") or ""),
+            project_id=str(payload.get("project_id") or ""),
+            project_title=str(payload.get("project_title") or ""),
+            category=str(payload.get("category") or "项目"),
         )
         created = self.storage.load_active_task(umo)
-        ok = before is None and created is not None
+        ok = created is not None and (before is None or created.task_id != before.task_id)
         return jsonify({"ok": ok, "message": text, "error": "" if ok else text})
 
     @admin_api
@@ -8283,6 +8429,7 @@ class AgentLabPlugin(Star):
             str(payload.get("summary") or "WebUI requested finish."),
             str(payload.get("memory_candidates") or ""),
             finish_approval_id=str(payload.get("approval_id") or ""),
+            administrator_override=True,
         )
         remaining = self.storage.load_active_task(umo)
         if remaining is not None and remaining.task_id == before.task_id:
@@ -8342,20 +8489,14 @@ class AgentLabPlugin(Star):
             "cancelled",
             str(payload.get("reason") or "WebUI requested cancel."),
             str(payload.get("memory_candidates") or ""),
+            administrator_override=True,
         )
         return jsonify({"ok": True, "message": msg or "任务已停止并归档。"})
 
     @admin_api
     async def api_task_delete(self):
-        payload = await request.get_json(force=True, silent=True) or {}
-        task_id = str(payload.get("task_id") or request.args.get("task_id") or "").strip()
-        umo = str(payload.get("umo") or request.args.get("umo") or "").strip()
-        if not task_id:
-            return jsonify({"ok": False, "error": "task_id is required"})
-        ok = self.storage.delete_archive_task(task_id, umo)
-        if not ok:
-            return jsonify({"ok": False, "error": "未找到该归档历史（可能已删除）。"})
-        return jsonify({"ok": True, "message": "归档历史已删除。"})
+        return jsonify({"ok": False, "error": "请在项目目录中使用“删除任务历史”，先查看包含记忆、文件和对话的清理预览。"}), 409
+
 
     @admin_api
     async def api_task_pause(self):
@@ -8403,6 +8544,9 @@ class AgentLabPlugin(Star):
             return jsonify({"ok": False, "error": "请先提交并批准当前任务计划。"})
         if any(row.get("status") in {"unknown", "started"} for row in state.get("journal", [])):
             return jsonify({"ok": False, "error": "请先核对未知工具结果。"})
+        for question in state.get("questions", []):
+            if question.get("status") == "pending":
+                question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
         state["human_paused"] = False
         task.status = "running"
         task.watchdog.paused_reason = ""
@@ -8418,43 +8562,8 @@ class AgentLabPlugin(Star):
 
     @admin_api
     async def api_task_purge(self):
-        payload = await request.get_json(force=True, silent=True) or {}
-        umo = str(payload.get("umo") or "").strip()
-        task_id = str(payload.get("task_id") or "").strip()
-        if not umo and task_id:
-            umo = self._umo_for_task_id(task_id)
-        task = self.storage.load_active_task(umo) if umo else None
-        if task is not None and task_id and task.task_id != task_id:
-            task = None
-        if task is not None:
-            task_id = task.task_id
-            event = self._make_cron_event(umo, "Agent Lab WebUI purge")
-            if event is None:
-                return jsonify({"ok": False, "error": "无法创建任务清理事件。"})
-            await self._finish_task(
-                event,
-                "cancelled",
-                str(payload.get("reason") or "WebUI stopped and deleted the task."),
-                "",
-            )
-        if not task_id:
-            return jsonify({"ok": False, "error": "task_id is required"})
-        deleted_archive = self.storage.delete_archive_task(task_id, umo)
-        deleted_memories = (
-            self.storage.delete_memory_entries_for_task(task_id)
-            if bool(payload.get("delete_memories", True))
-            else 0
-        )
-        if not deleted_archive and task is None:
-            return jsonify({"ok": False, "error": "未找到该任务（可能已删除）。"})
-        return jsonify(
-            {
-                "ok": True,
-                "message": "任务已停止并彻底删除。",
-                "deleted_archive": bool(deleted_archive),
-                "deleted_memories": deleted_memories,
-            }
-        )
+        return jsonify({"ok": False, "error": "请在项目目录中使用“删除任务历史”，先查看包含记忆、文件和对话的清理预览。"}), 409
+
 
     @admin_api
     async def api_task_heartbeat(self):
@@ -8483,6 +8592,9 @@ class AgentLabPlugin(Star):
         umo = str(payload.get("umo") or "")
         approval_id = str(payload.get("approval_id") or "")
         approved = bool(payload.get("approved", False))
+        selected = self.storage.load_active_task(umo)
+        if payload.get("task_id") and (not selected or selected.task_id != payload["task_id"]):
+            return jsonify({"ok": False, "error": "先切换到此任务再处理审批，避免操作其他任务。"})
         if not umo or not approval_id:
             return jsonify({"ok": False, "error": "umo and approval_id are required"})
         msg = self._resolve_approval(umo, approval_id, approved, "webui")

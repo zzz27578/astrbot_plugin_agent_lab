@@ -70,6 +70,10 @@ class AgentLabRunHooks(BaseAgentRunHooks):
             return
         self._tool_events += 1
         event = getattr(getattr(run_context, "context", None), "event", None)
+        if event is not None and event.get_extra("agent_lab_runtime"):
+            # Detailed progress belongs to the task/project log. Only questions,
+            # approvals and handoff notices are sent back by the task driver.
+            return
         send = getattr(event, "send", None)
         if not callable(send):
             return

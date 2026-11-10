@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import copy
 from contextlib import aclosing
 from uuid import uuid5, NAMESPACE_URL
 
@@ -42,6 +43,10 @@ class AstrBotBridge:
         task = self.owner.storage.load_active_task(event.unified_msg_origin)
         if not task or (task_id and task.task_id != task_id):
             raise ExecutionStopped("任务已经结束或切换。")
+        if self.owner.storage.ended_path(task.task_id).exists():
+            raise ExecutionStopped("管理员已经结束任务；禁止继续调用工具。")
+        if task.task_id in self.owner.projects.cleaning:
+            raise ExecutionStopped("当前任务正在清理缓存，等待清理完成后再继续。")
         state = control(task)
         if task.status != "running" or task.pending_approvals() or (state and (
             not state.get("approved_version") or state.get("approved_version") != state.get("version")
@@ -188,6 +193,11 @@ class AstrBotBridge:
         from astrbot.core.provider.entities import ProviderRequest
         from mcp.types import CallToolResult, TextContent
 
+        # Never mark the source daily-chat event as a private task execution.
+        event = copy.copy(event)
+        event._extras = dict(getattr(event, "_extras", {}))
+        event.set_extra("agent_lab_runtime", task.task_id)
+        system_prompt += self.owner.projects.filtered_context(task)
         # Always resolve the model selected on the source bot. No new provider UI.
         provider_id = provider_id or await self.owner.context.get_current_chat_provider_id(task.umo)
         provider = await self.owner.context.provider_manager.get_provider_by_id(provider_id)
@@ -283,5 +293,6 @@ class AstrBotBridge:
                     index = cursor
                 else:
                     safe.append(msg); index += 1
-            await manager.update_conversation(task.umo, cid, history=safe)
+            if not self.owner.storage.ended_path(task.task_id).exists():
+                await manager.update_conversation(task.umo, cid, history=safe)
         return runner.get_final_llm_resp()
