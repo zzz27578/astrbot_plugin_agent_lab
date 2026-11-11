@@ -1,0 +1,57 @@
+[
+  {
+    "file": "index.html",
+    "bytes": 2948,
+    "gzip_bytes": 1192
+  },
+  {
+    "file": "app.js",
+    "bytes": 579302,
+    "gzip_bytes": 146796
+  },
+  {
+    "file": "ui-runtime.js",
+    "bytes": 1885,
+    "gzip_bytes": 971
+  },
+  {
+    "file": "project-ui.js",
+    "bytes": 31245,
+    "gzip_bytes": 9931
+  },
+  {
+    "file": "navigation.js",
+    "bytes": 10165,
+    "gzip_bytes": 4029
+  },
+  {
+    "file": "connections.js",
+    "bytes": 3174,
+    "gzip_bytes": 1426
+  },
+  {
+    "file": "motion.js",
+    "bytes": 3172,
+    "gzip_bytes": 1405
+  },
+  {
+    "file": "style.css",
+    "bytes": 110784,
+    "gzip_bytes": 21090
+  },
+  {
+    "file": "workspace.css",
+    "bytes": 15245,
+    "gzip_bytes": 3584
+  },
+  {
+    "file": "theme.css",
+    "bytes": 26590,
+    "gzip_bytes": 6665
+  },
+  {
+    "file": "vendor/connectors.js",
+    "bytes": 4268,
+    "gzip_bytes": 1902
+  }
+]

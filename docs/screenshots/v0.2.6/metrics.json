@@ -1,0 +1,153 @@
+{
+  "errors": [],
+  "metrics": [
+    {
+      "width": 1440,
+      "route": "presets",
+      "overflow": false,
+      "view": {
+        "x": 264,
+        "y": 80,
+        "width": 1129,
+        "height": 792,
+        "top": 80,
+        "right": 1393,
+        "bottom": 872,
+        "left": 264
+      },
+      "nodes": 0
+    },
+    {
+      "width": 1440,
+      "route": "settings",
+      "overflow": false,
+      "view": {
+        "x": 264,
+        "y": 80,
+        "width": 1129,
+        "height": 792,
+        "top": 80,
+        "right": 1393,
+        "bottom": 872,
+        "left": 264
+      },
+      "nodes": 0
+    },
+    {
+      "width": 1440,
+      "route": "workflow",
+      "overflow": false,
+      "view": {
+        "x": 232,
+        "y": 52,
+        "width": 1193,
+        "height": 848,
+        "top": 52,
+        "right": 1425,
+        "bottom": 900,
+        "left": 232
+      },
+      "nodes": 9,
+      "materialSearchUncovered": true
+    },
+    {
+      "width": 1100,
+      "route": "presets",
+      "overflow": false,
+      "view": {
+        "x": 232,
+        "y": 76,
+        "width": 829,
+        "height": 800,
+        "top": 76,
+        "right": 1061,
+        "bottom": 876,
+        "left": 232
+      },
+      "nodes": 0
+    },
+    {
+      "width": 1100,
+      "route": "settings",
+      "overflow": false,
+      "view": {
+        "x": 232,
+        "y": 76,
+        "width": 829,
+        "height": 800,
+        "top": 76,
+        "right": 1061,
+        "bottom": 876,
+        "left": 232
+      },
+      "nodes": 0
+    },
+    {
+      "width": 1100,
+      "route": "workflow",
+      "overflow": false,
+      "view": {
+        "x": 208,
+        "y": 52,
+        "width": 877,
+        "height": 848,
+        "top": 52,
+        "right": 1085,
+        "bottom": 900,
+        "left": 208
+      },
+      "nodes": 9,
+      "materialSearchUncovered": true
+    },
+    {
+      "width": 820,
+      "route": "presets",
+      "overflow": false,
+      "view": {
+        "x": 232,
+        "y": 76,
+        "width": 549,
+        "height": 800,
+        "top": 76,
+        "right": 781,
+        "bottom": 876,
+        "left": 232
+      },
+      "nodes": 0
+    },
+    {
+      "width": 820,
+      "route": "settings",
+      "overflow": false,
+      "view": {
+        "x": 232,
+        "y": 76,
+        "width": 549,
+        "height": 800,
+        "top": 76,
+        "right": 781,
+        "bottom": 876,
+        "left": 232
+      },
+      "nodes": 0
+    },
+    {
+      "width": 820,
+      "route": "workflow",
+      "overflow": false,
+      "view": {
+        "x": 208,
+        "y": 52,
+        "width": 597,
+        "height": 848,
+        "top": 52,
+        "right": 805,
+        "bottom": 900,
+        "left": 208
+      },
+      "nodes": 9,
+      "materialSearchUncovered": true
+    }
+  ],
+  "requests": 6
+}

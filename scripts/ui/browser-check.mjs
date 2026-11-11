@@ -5,7 +5,7 @@ import {fileURLToPath} from 'node:url';
 import {createFixture} from './fixture.mjs';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 const before=process.argv.includes('--before');
-const out=path.join(root,'_preview',before?'before-025':'after-025');fs.mkdirSync(out,{recursive:true});
+const out=path.join(root,'_preview',before?'before-025':'after-026');fs.mkdirSync(out,{recursive:true});
 const fixture=createFixture();await new Promise(r=>fixture.server.listen(0,'127.0.0.1',r));
 const url=`http://127.0.0.1:${fixture.server.address().port}/host`;
 const browser=await chromium.launch({channel:'msedge',headless:true});

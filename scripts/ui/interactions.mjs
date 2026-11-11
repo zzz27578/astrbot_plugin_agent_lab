@@ -4,14 +4,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createFixture} from './fixture.mjs';
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),out=path.join(root,'_preview/after-025');fs.mkdirSync(out,{recursive:true});
+const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..'),out=path.join(root,'_preview/after-026');fs.mkdirSync(out,{recursive:true});
 const fixture=createFixture();await new Promise(r=>fixture.server.listen(0,'127.0.0.1',r));
 const browser=await chromium.launch({channel:'msedge',headless:true});
 const page=await browser.newPage({viewport:{width:1440,height:900}}),frame=page.frameLocator('iframe');
-const errors=[],checks=[],perf=[];let start;
+const errors=[],checks=[],perf=[],longTasks=[];let start;
 const check=(name,value)=>{assert.ok(value,name);checks.push(name);};
 page.on('pageerror',e=>errors.push(e.message));
-await page.addInitScript(()=>{window.__longTasks=[];try{new PerformanceObserver(list=>{window.__longTasks.push(...list.getEntries().map(e=>({duration:e.duration,start:e.startTime})));}).observe({entryTypes:['longtask']});}catch{}});
+await page.exposeFunction('__recordLongTask',entry=>longTasks.push(entry));
+await page.addInitScript(()=>{try{new PerformanceObserver(list=>{for(const e of list.getEntries())void window.__recordLongTask({duration:e.duration,start:e.startTime,surface:window===top?'host':'plugin'});}).observe({entryTypes:['longtask']});}catch{}});
 try{
  start=Date.now();await page.goto(`http://127.0.0.1:${fixture.server.address().port}/host`);await frame.locator('.project-folder-card').first().waitFor();perf.push({name:'first_render_ms',value:Date.now()-start});
  const pos=()=>frame.locator('#view').evaluate(el=>{const r=el.getBoundingClientRect();return{x:r.x,y:r.y,width:r.width};});
@@ -21,6 +22,13 @@ try{
  const bottom=await frame.locator('#rail-storage').boundingBox();check('storage anchored to sidebar bottom',bottom.y+bottom.height>880);
  check('no direct integrations or old all-schemes navigation',await frame.locator('#nav [data-route="integrations"],#nav [data-route="canvas"]').count()===0);
  await frame.locator('#settings-btn').click();check('settings uses identical content bounds',JSON.stringify(await pos())===JSON.stringify(home));
+ check('only real bot identities are selectable',await frame.locator('[data-nav-action="select-bot"]').count()===2&&await frame.locator('[data-bot-id="*"],[data-bot-id="unbound"]').count()===0);
+ await frame.locator('[data-nav-action="select-bot"][data-bot-id="qq-work"]').dblclick();
+ await frame.locator('[data-nav-action="default-bot"][data-bot-id="qq-work"][disabled]').waitFor();
+ check('double click persists a real default on backend',fixture.requests.some(r=>r.body.action==='set_default_bot'&&r.body.platform_id==='qq-work'));
+ await page.reload();await frame.locator('.project-folder-card').first().waitFor();
+ check('default survives opaque iframe reload',await frame.locator('#identity-instance').innerText()==='qq-work'&&await frame.locator('.project-folder-card').count()===1);
+ await frame.locator('#settings-btn').click();
  await frame.locator('[data-nav-action="select-bot"][data-bot-id="qq-dev"]').click();
  check('top-left identity includes instance',await frame.locator('#current-agent-name').innerText()==='开发助手'&&await frame.locator('#identity-instance').innerText()==='qq-dev');
  await frame.locator('[data-route="projects"]').click();check('projects filtered by exact bot instance',await frame.locator('.project-folder-card').count()===2);
@@ -29,13 +37,19 @@ try{
  await frame.locator('[data-project-action="tab"][data-tab="memory"]').click();await frame.locator('[data-project-action="cleanup"][data-mode="project"]').click();await frame.locator('[data-modal-confirm]').click();await frame.locator('.app-modal-overlay').waitFor({state:'detached'});
  check('project deletion confirms exact preview token',fixture.requests.some(r=>r.body.action==='cleanup_confirm'&&r.body.mode==='project'&&r.body.token==='preview-token'));
  await frame.locator('#settings-btn').click();await frame.locator('[data-nav-action="select-bot"][data-bot-id="qq-work"]').click();await frame.locator('[data-route="projects"]').click();check('same adapter different bot shows different project',await frame.locator('.project-folder-card').count()===1&&await frame.locator('.project-folder-card').innerText().then(t=>t.includes('研究资料')));
- await frame.locator('#settings-btn').click();await frame.locator('[data-nav-action="select-bot"][data-bot-id="*"]').click();
+ await frame.locator('#settings-btn').click();await frame.locator('[data-nav-action="select-bot"][data-bot-id="qq-work"]').click();
  await frame.locator('#nav [data-route="projects"]').click();
  await frame.locator('.project-folder-open[data-project-id="project_b1"]').click();
- check('project identity and status agree across bots in all scope',await frame.locator('#identity-instance').innerText()==='qq-work'&&await frame.locator('#current-task-id').innerText()==='task_b1');
+ check('project identity and status agree in selected scope',await frame.locator('#identity-instance').innerText()==='qq-work'&&await frame.locator('#current-task-id').innerText()==='task_b1');
  await frame.locator('#status-view-btn').click();await frame.locator('.project-task-detail h2').waitFor();
  check('status view opens the exact displayed task',await frame.locator('.project-detail-top code').innerText()==='task_b1');
+ check('progress questions and approvals display in one task timeline',await frame.locator('.task-message-timeline article').count()===3&&await frame.locator('.task-message-timeline').innerText().then(t=>['进展','需要回答','需要审批'].every(s=>t.includes(s))));
  await frame.locator('#settings-btn').click();
+ await frame.locator('[data-nav-action="settings-tab"][data-tab="messages"]').click();await frame.locator('#progress-enabled').check();await frame.locator('#progress-interval').selectOption('30');await frame.locator('[data-nav-action="save-progress"]').click();await page.waitForTimeout(80);
+ check('progress settings save to selected bot',fixture.requests.some(r=>r.body.action==='set_progress'&&r.body.platform_id==='qq-work'&&r.body.enabled===true&&r.body.min_interval_seconds===30));
+ const toggleSize=await frame.locator('#progress-enabled').boundingBox();check('progress switch keeps compact checkbox geometry',toggleSize.width===18&&toggleSize.height===18);
+ await page.screenshot({path:path.join(out,'messages-1440.png')});
+ await frame.locator('[data-nav-action="settings-tab"][data-tab="identity"]').click();await frame.locator('[data-nav-action="select-bot"][data-bot-id="qq-dev"]').click();
  await frame.locator('[data-nav-action="settings-tab"][data-tab="integrations"]').click();await page.screenshot({path:path.join(out,'integrations-1440.png')});
  check('integration settings content aligned',JSON.stringify(await pos())===JSON.stringify(home));
  await frame.locator('[data-action="integration-tab"][data-id="credentials"]').click();check('credential page responds',await frame.locator('.integration-content').innerText().then(t=>t.includes('凭证')));
@@ -45,6 +59,7 @@ try{
  await frame.locator('[data-nav-action="duplicate-preset"]').first().click();await frame.locator('[data-modal-confirm]').click();await frame.locator('.app-modal-overlay').waitFor({state:'detached'});await page.waitForTimeout(50);
  check('preset duplication preserves original graph metadata',fixture.state.agents.length===3&&fixture.state.agents[2].workflow_nodes.length===fixture.state.agents[0].workflow_nodes.length);
  await frame.locator('[data-nav-action="delete-preset"][data-id="new-plan"]').click();await frame.locator('[data-modal-confirm]').click();await frame.locator('.app-modal-overlay').waitFor({state:'detached'});await page.waitForTimeout(50);check('preset delete keeps original presets',fixture.state.agents.length===2&&fixture.state.agents[0].agent_id==='demo');
+ const railBefore=await frame.locator('.rail').evaluate(el=>({width:el.getBoundingClientRect().width,padding:getComputedStyle(el).padding,brand:getComputedStyle(el.querySelector('.brand strong')).fontSize,nav:getComputedStyle(el.querySelector('.nav button')).padding}));
  await frame.locator('[data-nav-action="open-preset"]').first().click();await frame.locator('.flow-node').first().waitFor();await page.waitForTimeout(200);
  const geometry=await frame.locator('body').evaluate(()=>Object.fromEntries(['.workflow-right-dock','.workflow-tool-drawer'].map(selector=>{const e=document.querySelector(selector),s=getComputedStyle(e),r=e.getBoundingClientRect();return[selector,{right:s.right,top:s.top,width:r.width,height:r.height,x:r.x,y:r.y,opacity:s.opacity}];})));
  fs.writeFileSync(path.join(out,'canvas-geometry.json'),JSON.stringify(geometry,null,2));
@@ -54,6 +69,15 @@ try{
  // Close overlays by their real controls before exercising the graph.
  if(await frame.locator('.workflow-page.toolbox-open').count())await frame.locator('[data-action="toggle-workflow-toolbox"]').click();
  if(!await frame.locator('body.workflow-nav-collapsed').count())await frame.locator('[data-action="toggle-workflow-nav"]').click();
+ // Expanded canvas sidebar must match the same shell at every route.
+ if(await frame.locator('body.workflow-nav-collapsed').count())await frame.locator('[data-action="toggle-workflow-nav"]').click();
+ const railAfter=await frame.locator('.rail').evaluate(el=>({width:el.getBoundingClientRect().width,padding:getComputedStyle(el).padding,brand:getComputedStyle(el.querySelector('.brand strong')).fontSize,nav:getComputedStyle(el.querySelector('.nav button')).padding}));
+ check('canvas sidebar keeps identical width typography and padding',JSON.stringify(railBefore)===JSON.stringify(railAfter));
+ await frame.locator('[data-action="toggle-workflow-nav"]').click();
+ check('unavailable backend materials cannot be added',await frame.locator('.workflow-material-chip[data-drag-id="heartbeat"],.workflow-material-chip[data-drag-id="schedule_trigger"],.workflow-material-chip[data-drag-id="subflow_call"]').count()===0);
+ for(const id of ['http_request','llm_prompt','secret_redaction','write_record','deliver_outbox','archive_task'])check(`backend material exists: ${id}`,await frame.locator(`.workflow-material-chip[data-drag-id="${id}"]`).count()===1);
+ const connector=await frame.locator('.workflow-link').first().evaluate(el=>{const s=getComputedStyle(el);return {opacity:s.opacity,stroke:s.stroke,width:parseFloat(s.strokeWidth)};});
+ check('actual canvas connector uses opaque dark stroke',connector.opacity==='1'&&connector.width>=2.6&&connector.stroke==='rgb(82, 102, 108)');
  const beforeEdges=await frame.locator('.link-group').count();
  const source=await frame.locator('.node-port-out[data-node-id="main"]').first().boundingBox();
  const target=await frame.locator('.node-port-in[data-node-id="exec"]').boundingBox();
@@ -72,8 +96,21 @@ try{
  check('node drag updates position',await node.evaluate(el=>el.style.left)!==oldLeft);
  await frame.locator('[data-action="save-agent"]').click();await page.waitForTimeout(150);check('canvas save persists geometry and full node metadata',fixture.requests.some(r=>r.route==='/api/agents'&&r.body?.workflow_nodes?.some(n=>n.id==='main'&&n.x!==620)));
  await page.screenshot({path:path.join(out,'canvas-interaction-1440.png')});
+ await frame.locator('[data-action="toggle-workflow-toolbox"]').click();
+ await frame.locator('.workflow-material-filter').fill('写入任务记录');
+ await frame.locator('.workflow-material-chip[data-drag-id="write_record"]').click();
+ await frame.locator('[data-action="apply-material-node"]').click();
+ await frame.locator('#sf-input_variable').fill('analysis.result');await frame.locator('#sf-payload').fill('{invalid');
+ const savedBefore=fixture.requests.filter(r=>r.route==='/api/agents').length;
+ await frame.locator('[data-action="save-agent"]').click();await page.waitForTimeout(80);
+ check('invalid record JSON blocks save with visible feedback',fixture.requests.filter(r=>r.route==='/api/agents').length===savedBefore&&await frame.locator('body').innerText().then(t=>t.includes('需要有效的JSON对象')));
+ await frame.locator('#sf-payload').fill('{"summary":"保留实际证据"}');
+ await frame.locator('[data-action="save-agent"]').click();await page.waitForTimeout(80);
+ check('material editor saves actual backend record fields',fixture.requests.some(r=>r.route==='/api/agents'&&r.body.workflow_nodes?.some(n=>n.action==='write_record'&&n.input_variable==='analysis.result'&&n.payload?.summary==='保留实际证据')));
  await frame.locator('#settings-btn').click();await frame.locator('[data-route="projects"]').click();
- await frame.locator('.project-folder-open[data-project-id="project_a1"]').click();await frame.locator('.project-task-row[data-task-id="task_a1"]').click();await frame.locator('.project-task-detail h2').waitFor();await page.screenshot({path:path.join(out,'task-1440.png')});
+ await frame.locator('.project-folder-open[data-project-id="project_a1"]').click();await frame.locator('.project-task-row[data-task-id="task_a1"]').click();await frame.locator('.project-task-detail h2').waitFor();
+ await frame.locator('.toast').first().waitFor({state:'detached',timeout:8000}).catch(()=>{});
+ await page.screenshot({path:path.join(out,'task-1440.png')});
  await frame.locator('[data-project-action="deliver"]').click();await frame.locator('[data-modal-confirm]').click();await page.waitForTimeout(200);
  check('administrator delivery button invokes exact selected task',fixture.requests.some(r=>r.route==='/api/workspace'&&r.body.action==='deliver'&&r.body.task_id==='task_a1'));
  await frame.locator('#rail-storage [data-project-action="storage"]').click();check('bottom storage opens storage view',await frame.locator('.storage-overview').count()===1);
@@ -86,11 +123,20 @@ try{
  check('preset search remains applied after navigation',await frame.locator('.preset-row:visible').count()===1);await frame.locator('#preset-search').fill('');await frame.locator('#nav [data-route="projects"]').click();
  check('repeated routes retain identical boundaries',bounds.every(b=>JSON.stringify(b)===JSON.stringify(home)));
  check('no root animation replay',await frame.locator('#view').evaluate(el=>[el,...el.children].every(n=>getComputedStyle(n).animationName==='none')));
+ const contrast=await frame.locator('body').evaluate(()=>{
+  const luminance=rgb=>rgb.map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4).reduce((v,n,i)=>v+n*[.2126,.7152,.0722][i],0);
+  return ['.project-header p','.project-folder-card p','.project-eyebrow'].map(selector=>{const el=document.querySelector(selector),rgb=getComputedStyle(el).color.match(/\d+/g).slice(0,3).map(Number);return{selector,ratio:1.05/(luminance(rgb)+.05)};});
+ });
+ check('secondary project text meets 4.5 contrast against white',contrast.every(r=>r.ratio>=4.5));
  await page.emulateMedia({reducedMotion:'reduce'});
  check('reduced-motion preference respected',await frame.locator('.project-workspace').evaluate(el=>getComputedStyle(el).animationName==='none'));
+ fixture.identities.splice(fixture.identities.findIndex(b=>b.platform_id==='qq-work'),1);await page.reload();await frame.locator('.project-folder-card').first().waitFor();
+ check('removed default instance falls back to available actual bot',await frame.locator('#identity-instance').innerText()==='qq-dev');
+ fixture.identities.splice(0);await page.reload();await frame.locator('.project-workspace').waitFor();await frame.locator('#settings-btn').click();
+ check('no loaded robots means no synthetic identity option',await frame.locator('[data-nav-action="select-bot"]').count()===0);
  check('sandboxed browser console has no uncaught errors',errors.length===0);
- const tasks=await frame.locator('body').evaluate(()=>window.__longTasks||[]);perf.push({name:'long_tasks_count',value:tasks.length},{name:'max_long_task_ms',value:Math.max(0,...tasks.map(t=>t.duration))});
- fs.writeFileSync(path.join(out,'interactions.json'),JSON.stringify({checks,errors,perf,requests:fixture.requests.length},null,2));
+ perf.push({name:'long_tasks_count',value:longTasks.length},{name:'max_long_task_ms',value:Math.max(0,...longTasks.map(t=>t.duration))});
+ fs.writeFileSync(path.join(out,'interactions.json'),JSON.stringify({checks,errors,perf,contrast,requests:fixture.requests.length},null,2));
  console.log(JSON.stringify({passed:checks.length,errors,perf},null,2));
 }catch(error){await page.screenshot({path:path.join(out,'failure.png')});fs.writeFileSync(path.join(out,'failure.json'),JSON.stringify({error:error.message,checks,errors},null,2));throw error;}
 finally{await browser.close();fixture.server.close();}

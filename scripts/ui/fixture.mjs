@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 export function createFixture(){
  const state=JSON.parse(fs.readFileSync(path.join(root,'scripts/preview/mockstate.json'),'utf8'));
+ state.node_capabilities=JSON.parse(execFileSync('python',[path.join(root,'scripts/ui/export_capabilities.py')],{encoding:'utf8'}));
  state.runtime={bot_label:'开发助手',bot_label_source:'platform'};
  state.agents[0].name='插件排查与修复';state.agents[0].description='定位复现条件、分析代码、修复并验证。用于插件故障和版本兼容问题。';
  state.agents.push({...structuredClone(state.agents[0]),agent_id:'research',name:'资料研究',description:'检索资料、交叉核对来源，并生成带引用的项目摘要。'});
@@ -20,8 +22,8 @@ export function createFixture(){
  const identities=[{platform_id:'qq-dev',label:'开发助手',platform_type:'aiocqhttp',status:'running',known:true,account_id:'',sessions:[{umo:a.umo,label:'私聊 · 10001',persona:'代码助手'}]},{platform_id:'qq-work',label:'工作助手',platform_type:'aiocqhttp',status:'running',known:true,account_id:'',sessions:[{umo:c.umo,label:'私聊 · 10001',persona:'研究助手'}]}];
  const row=t=>({task_id:t.task_id,umo:t.umo,title:t.root_goal,status:t.status,updated_at:t.updated_at,summary:t.current_summary,bytes:98304,cache_bytes:24576,selected:t!==b,question_count:0});
  let projects=[{project_id:'project_a1',title:'Agent Lab 插件',category:'插件开发',source_umo:a.umo,platform_id:'qq-dev',summary:'保留原画布和模块，在 AstrBot 原生能力上改善长期任务管理。',share_with_daily:false,workflow_ids:['demo'],tasks:[row(a),row(b)],bytes:196608,cache_bytes:49152,storage_path:'projects/project_a1'},{project_id:'project_a3',title:'部署与运行记录',category:'问题排查',source_umo:a.umo,platform_id:'qq-dev',summary:'检查部署环境、依赖与日志，记录可复用的排查步骤。',workflow_ids:[],tasks:[],bytes:4096,cache_bytes:0,storage_path:'projects/project_a3'},{project_id:'project_b1',title:'研究资料',category:'资料研究',source_umo:c.umo,platform_id:'qq-work',summary:'按主题归档证据、引用和阶段结论。',workflow_ids:['research'],tasks:[row(c)],bytes:98304,cache_bytes:24576,storage_path:'projects/project_b1'}];
- const requests=[];
- const workspace=()=>({ok:true,projects,identities,selected:{},total_bytes:299008,cache_bytes:73728,shared_metadata_bytes:2000});
+ const requests=[];let preferences={default_bot_id:'',progress_by_bot:{}};
+ const workspace=()=>({ok:true,projects,identities,preferences,selected:{},total_bytes:299008,cache_bytes:73728,shared_metadata_bytes:2000});
  const api=async(route,method,body)=>{
    requests.push({route,method,body});
    if(route==='/api/state')return state;
@@ -30,7 +32,9 @@ export function createFixture(){
      const p=projects.find(p=>p.project_id===body.project_id);
      const t=[...state.tasks,...state.archives].find(t=>t.task_id===body.task_id);
      let result={};
-     if(body.action==='detail')result={task:t,record_bytes:98304,native_history_bytes:15000,files:[{path:`sessions/mock/${t.task_id}.json`,bytes:98304}]};
+     if(body.action==='set_default_bot'){if(!identities.some(b=>b.platform_id===body.platform_id))throw Error('Unknown bot');preferences.default_bot_id=body.platform_id;result=preferences;}
+     else if(body.action==='set_progress'){preferences.progress_by_bot[body.platform_id]={enabled:body.enabled,min_interval_seconds:body.min_interval_seconds};result=preferences;}
+     else if(body.action==='detail')result={task:t,record_bytes:98304,native_history_bytes:15000,messages:[{kind:'progress',text:'已核对接口，正在检查执行上下文。',status:'sent'},{kind:'question',text:'请确认修改范围：仅当前插件，还是关联依赖？',status:'sent'},{kind:'approval',text:'等待管理员批准本次计划。',status:'sent'}],files:[{path:`sessions/mock/${t.task_id}.json`,bytes:98304}]};
      else if(body.action==='create_project'){const id='project_'+Date.now().toString(16);result={project_id:id,title:body.title,category:body.category||'项目',source_umo:body.umo||'',platform_id:body.umo?.split(':')[0]||body.platform_id||'',summary:'',tasks:[],bytes:0,cache_bytes:0,workflow_ids:[],storage_path:`projects/${id}`};projects.push(result);}
      else if(body.action==='update_project'){Object.assign(p,body);result=p;}
      else if(body.action==='save_summary'){p.summary=body.summary;result={message:'已保存'};}
@@ -70,5 +74,5 @@ export function createFixture(){
    }
    res.setHeader('Content-Type',({'.html':'text/html; charset=utf-8','.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml'})[path.extname(fp)]||'application/octet-stream');res.setHeader('Access-Control-Allow-Origin','*');res.end(content);
  });
- return {server,state,workspace,requests};
+ return {server,state,workspace,requests,identities};
 }

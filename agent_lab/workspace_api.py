@@ -6,25 +6,37 @@ from quart import g, jsonify, request
 from .task_control import control
 from .web_api import admin_api
 from .identities import identity_rows, source_platform
+from .workspace_preferences import WorkspacePreferences
 
 
 class WorkspaceAPI:
     def __init__(self, owner):
         self.owner = owner
+        self.preferences = WorkspacePreferences(owner.storage)
 
     @admin_api
     async def handle(self):
         projects = self.owner.projects
+        actor = str(getattr(g, "username", None) or "standalone-admin")
         if request.method == "GET":
             catalog = await asyncio.to_thread(projects.catalog)
-            return jsonify({"ok": True, **catalog, "identities": identity_rows(self.owner, catalog["projects"])})
+            identities = identity_rows(self.owner, catalog["projects"])
+            return jsonify({"ok": True, **catalog, "identities": identities,
+                            "preferences": self.preferences.for_viewer(actor, identities)})
         payload = await request.get_json(silent=True) or {}
         if not isinstance(payload, dict): raise ValueError("请求必须是对象。")
         action = str(payload.get("action") or "")
         project_id, task_id = str(payload.get("project_id") or ""), str(payload.get("task_id") or "")
-        actor = str(getattr(g, "username", "standalone-admin"))
         result = {}
-        if action == "create_project":
+        if action in {"set_default_bot", "set_progress"}:
+            identities = identity_rows(self.owner, projects.index()["projects"])
+            identifier = str(payload.get("platform_id") or "")
+            if identifier not in {row["platform_id"] for row in identities}:
+                raise ValueError("请选择 AstrBot 中已启用并加载的机器人实例。")
+            await self.preferences.save(actor, identifier, default=action == "set_default_bot",
+                                        progress=payload if action == "set_progress" else None)
+            result = self.preferences.for_viewer(actor, identities)
+        elif action == "create_project":
             umo = str(payload.get("umo") or "")
             if umo and self.owner._make_cron_event(umo, "Project create") is None: raise ValueError("会话来源不可用。")
             platform_id = str(payload.get("platform_id") or source_platform(umo))
@@ -51,6 +63,9 @@ class WorkspaceAPI:
         elif action in {"stop", "deliver"}:
             task = await projects.administrator_end(task_id, "cancelled" if action == "stop" else "completed",
                                                     str(payload.get("summary") or ""), actor)
+            event = self.owner._make_cron_event(task.umo, "Task delivery", actor_id=control(task).get("owner_id", ""))
+            if event and hasattr(self.owner, "task_messages"):
+                await self.owner.task_messages.state(event, task.task_id)
             result = {"task_id": task.task_id, "status": task.status, "summary": task.exit_summary}
         elif action == "activate":
             task = projects.get_task(task_id)

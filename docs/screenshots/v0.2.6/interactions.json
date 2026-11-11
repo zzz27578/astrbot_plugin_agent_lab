@@ -1,0 +1,94 @@
+{
+  "checks": [
+    "home fills available content width",
+    "old identity footer removed",
+    "storage anchored to sidebar bottom",
+    "no direct integrations or old all-schemes navigation",
+    "settings uses identical content bounds",
+    "only real bot identities are selectable",
+    "double click persists a real default on backend",
+    "default survives opaque iframe reload",
+    "top-left identity includes instance",
+    "projects filtered by exact bot instance",
+    "project creation carries chosen bot and source",
+    "project deletion confirms exact preview token",
+    "same adapter different bot shows different project",
+    "project identity and status agree in selected scope",
+    "status view opens the exact displayed task",
+    "progress questions and approvals display in one task timeline",
+    "progress settings save to selected bot",
+    "progress switch keeps compact checkbox geometry",
+    "integration settings content aligned",
+    "credential page responds",
+    "presets align with home",
+    "preset description persisted to actual API payload",
+    "preset duplication preserves original graph metadata",
+    "preset delete keeps original presets",
+    "original right-side vertical tool dock preserved",
+    "original material panel width and right offset preserved",
+    "canvas sidebar keeps identical width typography and padding",
+    "unavailable backend materials cannot be added",
+    "backend material exists: http_request",
+    "backend material exists: llm_prompt",
+    "backend material exists: secret_redaction",
+    "backend material exists: write_record",
+    "backend material exists: deliver_outbox",
+    "backend material exists: archive_task",
+    "actual canvas connector uses opaque dark stroke",
+    "port drag creates a real edge",
+    "undo restores edge count",
+    "redo restores created edge",
+    "selecting edge and Delete removes only edge",
+    "edge delete can be undone",
+    "node drag updates position",
+    "canvas save persists geometry and full node metadata",
+    "invalid record JSON blocks save with visible feedback",
+    "material editor saves actual backend record fields",
+    "administrator delivery button invokes exact selected task",
+    "bottom storage opens storage view",
+    "cleanup cancel does not issue cache delete request",
+    "project search remains applied after navigation",
+    "preset search remains applied after navigation",
+    "repeated routes retain identical boundaries",
+    "no root animation replay",
+    "secondary project text meets 4.5 contrast against white",
+    "reduced-motion preference respected",
+    "removed default instance falls back to available actual bot",
+    "no loaded robots means no synthetic identity option",
+    "sandboxed browser console has no uncaught errors"
+  ],
+  "errors": [],
+  "perf": [
+    {
+      "name": "first_render_ms",
+      "value": 189
+    },
+    {
+      "name": "drag_24_events_ms_including_150ms_settle",
+      "value": 330
+    },
+    {
+      "name": "long_tasks_count",
+      "value": 1
+    },
+    {
+      "name": "max_long_task_ms",
+      "value": 99
+    }
+  ],
+  "contrast": [
+    {
+      "selector": ".project-header p",
+      "ratio": 6.1063465318124655
+    },
+    {
+      "selector": ".project-folder-card p",
+      "ratio": 6.1063465318124655
+    },
+    {
+      "selector": ".project-eyebrow",
+      "ratio": 6.1063465318124655
+    }
+  ],
+  "requests": 37
+}

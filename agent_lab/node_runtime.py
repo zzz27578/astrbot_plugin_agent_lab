@@ -355,6 +355,16 @@ class NodeExecutorRegistry:
     def can_execute(self, node: dict[str, Any]) -> bool:
         return self.action(node) in self._executors
 
+    def catalog(self):
+        """Authoritative UI capabilities; retired actions stay readable only."""
+        return {action: {"runtime_type": self.runtime_type({"action": action}),
+                         "execution_mode": self.execution_mode({"action": action}),
+                         "port_schema": self.port_schema({"action": action}),
+                         "has_executor": action in self._executors,
+                         "available": action not in {"heartbeat", "schedule_trigger", "subflow_call"},
+                         "unavailable_reason": "嵌套工作流尚未实现" if action == "subflow_call" else "旧定时入口已停用" if action in {"heartbeat", "schedule_trigger"} else ""}
+                for action in sorted(set(ACTION_RUNTIME_TYPES) | set(self._executors))}
+
     async def execute(self, context: NodeExecutionContext) -> NodeExecutionResult:
         action = self.action(context.node)
         executor = self._executors.get(action)

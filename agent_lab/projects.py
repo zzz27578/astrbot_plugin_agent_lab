@@ -363,7 +363,10 @@ class Projects:
         # Existing manager serializes DB content reliably; storage size is content,
         # not SQLite allocated pages (which cannot be attributed per conversation).
         paths = self.task_paths(task)
+        message_path = self.storage.task_memory_dir(task.umo, task.task_id) / "messages.json"
+        messages = self.storage._read_json(message_path).get("messages", []) if message_path.exists() else []
         return {"task": task.to_dict(), "native_history_bytes": native_bytes,
+                "messages": messages,
                 "files": [{"path": str(p.relative_to(self.storage.root)), "bytes": file_size(p)} for p in paths],
                 "record_bytes": sum(file_size(p) for p in paths)}
 

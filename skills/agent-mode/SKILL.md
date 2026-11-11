@@ -1,11 +1,18 @@
 ---
 name: agent-mode
-description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、写代码、排错、部署、整理资料或需要自主管理工具/记忆/心跳时使用；指导 bot 调用 Agent Lab 工具进入 Agent Mode。
+description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、写代码、排错、部署、整理资料或需要自主管理计划/工具/项目记忆时使用；指导 bot 调用 Agent Lab 工具进入 Agent Mode。
 ---
 
 # Agent Mode
 
-你可以使用 Agent Lab 把当前 AstrBot 会话切换到受控 Agent Mode。Agent Mode 不是替换当前 bot，也不是完全隔离记忆，而是让当前 bot 在任务期间使用独立任务状态、入口/出口摘要、工具 profile、审批协议和心跳续跑。
+你可以使用 Agent Lab 把当前 AstrBot 会话切换到受控 Agent Mode。Agent Mode 不是替换当前 bot，也不是完全隔离记忆，而是让当前 bot 在任务期间使用独立任务状态、入口/出口摘要、工具 profile、审批协议和事件续轮。
+
+## v0.2.6 任务消息线（优先于旧章节）
+
+- 进展、反问、审批、交付共用原任务标识与管理员私聊来源。不要再起一个聊天任务执行计划。
+- 管理员可以在设置按机器人开启进展简报。开始/里程碑事件自动发送简要进度；重要发现或方向变化用 `agent_lab_progress(message="...")` 补充1–600字，说明已确认结果、正在做什么、下一步。
+- 简报有去重、最短间隔与总量限制。不要绕过限频，也不为凑进展虚构成果、发送密钥或粘贴完整工具日志；不需要额外调用模型写简报。
+- 需要答案用 `agent_lab_ask_question`，需要授权走原审批，不用普通简报冒充问题或批准。简报开关不影响必要控制消息；管理员停止/交付继续优先。
 
 ## v0.2.4 项目、反问和管理员优先（优先于旧章节）
 
@@ -68,7 +75,7 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 ## 可用工具
 
 - `agent_lab_enter_mode`：创建任务状态并进入 Agent Mode。
-- `agent_lab_read_state`：读取当前任务状态。心跳醒来或长任务继续前必须先用。
+- `agent_lab_read_state`：读取当前任务状态。长任务接续或上下文压缩后必须先用。
 - `agent_lab_update_state`：写回当前进度、观察、下一步和阻塞点。每轮结束前必须用。
 - `agent_lab_advance_workflow`：记录当前工作流节点结果并推进到下一节点；多分支、并行分支、审批/校验节点必须用它留下轨迹。
 - `agent_lab_read_task_memory`：读取已归档并暴露的任务记忆；普通模式也可以按标签或关键词查询续写上下文。
@@ -76,7 +83,7 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 - `agent_lab_run_parallel_workflow`：运行画布中 `parallel_branch` 后续工作包；API 节点调用已注册 API，提示词/插件/工具节点以受限工作包执行，结果写入 task_state。
 - `agent_lab_tick`：推进当前任务一轮。
 - `agent_lab_request_approval`：危险操作前请求审批。
-- `agent_lab_set_heartbeat`：为长任务开启/关闭心跳。
+- `agent_lab_set_heartbeat`：旧版兼容入口，仅在管理员明确要求定时功能时使用；不用于普通长任务续轮。
 - `agent_lab_finish`：完成任务、出口摘要、归档退出。
 
 ## 任务连续性
@@ -88,7 +95,7 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 3. 工具调用后总结观察结果。
 4. 调用 `agent_lab_update_state` 写回进度、关键改动点、验证结果、下一步、阻塞点。
 5. 调用 `agent_lab_advance_workflow` 记录本轮完成或选择的节点；多分支必须明确 next_node_id 和选择原因。
-6. 判断是否完成、暂停、请求审批或需要心跳。
+6. 判断是否完成、等待回答/审批或按执行事件接续，不用定时叫醒代替任务计划。
 7. 任务过程中的时间线和成果属于任务记忆，不直接污染普通聊天记忆；退出时再生成可回流的候选。
 8. 修改工作流后先用 `agent_lab_update_workflow operation=check` 检查入口、出口、入口摘要、隔离快照、任务记忆、审批/人工闸门、不可达节点和模块引用；工作流改变任务模式规则，不改变 bot 身份。
 9. 插件、API、工具、skill 都只是任务模式模块：绑定时写清 `ref_type/ref_id`，必要时补 `prompt`、`condition` 或 `parallel_group`，不要绕过 AgentSpec 的隔离和白名单。
@@ -111,16 +118,9 @@ description: 当用户希望 AstrBot bot 长时间推进任务、配置项目、
 - 小范围明确文件编辑。
 - 运行测试、查看 `git diff/status`。
 
-## 心跳
+## 续轮
 
-心跳只用于真正长任务。开启前确认用户允许，或在 smart/always 模式下判断任务确实需要持续推进。
-
-心跳醒来后必须：
-
-1. 先读 task_state。
-2. 再执行有限步骤。
-3. 立刻保存进度。
-4. 同类失败三次后暂停并请求人工介入。
+任务由执行事件连续推进；不启用定时心跳。每次先读持久计划，执行有限步骤并保存检查点；未知工具结果先核对，同类失败或无进展触发暂停并请求人工处理。
 
 ## 退出
 

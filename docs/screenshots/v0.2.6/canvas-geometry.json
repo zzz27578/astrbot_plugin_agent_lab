@@ -1,0 +1,20 @@
+{
+  ".workflow-right-dock": {
+    "right": "14px",
+    "top": "76px",
+    "width": 46,
+    "height": 502,
+    "x": 1380,
+    "y": 128,
+    "opacity": "1"
+  },
+  ".workflow-tool-drawer": {
+    "right": "74px",
+    "top": "424px",
+    "width": 408,
+    "height": 792,
+    "x": 958,
+    "y": 80,
+    "opacity": "1"
+  }
+}

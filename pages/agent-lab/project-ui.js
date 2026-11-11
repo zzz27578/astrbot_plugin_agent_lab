@@ -1,4 +1,4 @@
-import {safeSession} from './ui-runtime.js?v=025';
+import {safeSession} from './ui-runtime.js?v=026';
 const icon = (name, size = 18) => {
   const shapes = {
     folder: '<path d="M3 7V5a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
@@ -23,7 +23,8 @@ export class ProjectUI {
   constructor({api, esc, open, refresh, modal, notify, workflow}) {
     Object.assign(this, {api, esc, open, refresh, modal, notify, workflow});
     this.data = {projects:[]}; this.projectId = ""; this.taskId = ""; this.detail = null;
-    this.allData={projects:[]};this.identities=[];this.identityId=safeSession.getItem('agent_lab_bot_scope')||'*';
+    this.allData={projects:[]};this.identities=[];this.identityId='';this.identityInitialized=false;
+    this.preferences={default_bot_id:'',progress_by_bot:{}};
     this.expanded = new Set(); this.tab = "tasks"; this.search = ""; this.busy = false;
     this.drafts = new Map();
     this.selectionVersion = 0;
@@ -46,17 +47,22 @@ export class ProjectUI {
   }
   setData(data) {
     this.allData=data||{projects:[]};this.identities=this.allData.identities||[];
+    this.preferences=this.allData.preferences||{default_bot_id:'',progress_by_bot:{}};
+    if(!this.identityInitialized||!this.identities.some(b=>b.platform_id===this.identityId)){
+      this.identityId=this.identities.find(b=>b.platform_id===this.preferences.default_bot_id)?.platform_id||this.identities[0]?.platform_id||'';
+      this.identityInitialized=true;
+    }
     this.filterIdentity();
   }
   filterIdentity(){
-    const projects=(this.allData.projects||[]).filter(p=>this.identityId==='*'||(this.identityId==='unbound'?!p.platform_id:p.platform_id===this.identityId));
+    const projects=(this.allData.projects||[]).filter(p=>this.identityId&&p.platform_id===this.identityId);
     this.data={...this.allData,projects,total_bytes:projects.reduce((n,p)=>n+(p.bytes||0),0),cache_bytes:projects.reduce((n,p)=>n+(p.cache_bytes||0),0)};
     if (this.projectId && !this.data.projects.some(p => p.project_id === this.projectId)) {
       this.projectId = ""; this.taskId = ""; this.detail = null;
     }
   }
   selectIdentity(id){this.identityId=id;this.projectId='';this.taskId='';this.detail=null;this.tab='tasks';++this.selectionVersion;this.filterIdentity();}
-  identityLabel(){return this.identityId==='*'?'全部机器人':this.identityId==='unbound'?'未分配来源':this.identities.find(b=>b.platform_id===this.identityId)?.label||this.identityId;}
+  identityLabel(){return this.identities.find(b=>b.platform_id===this.identityId)?.label||'尚未配置机器人';}
   projectBotName(project){return this.identities.find(b=>b.platform_id===project.platform_id)?.label||project.platform_id||'未分配来源';}
   sidebar() {
     const e = this.esc;
@@ -128,6 +134,7 @@ export class ProjectUI {
     const selected=this.data.projects.flatMap(p=>p.tasks).find(t=>t.task_id===task.task_id)?.selected;
     return `<div class="project-detail-top"><span class="project-pill ${e(task.status)}">${e(labels[task.status]||task.status)}</span><code>${e(task.task_id)}</code></div><h2>${e(task.root_goal)}</h2>
       <div class="project-task-actions">${!ended?`${!selected?'<button class="button secondary" data-project-action="activate">切换到此任务</button>':`<button class="button secondary" data-project-action="${task.status==="running"?"pause":"resume"}">${icon(task.status==="running"?"pause":"play",15)}${task.status==="running"?"暂停":"继续"}</button>`}<button class="button" data-project-action="deliver">${icon("check",15)}按现状交付</button><button class="project-text-button danger-text" data-project-action="stop">停止任务</button>`:""}<button class="project-text-button" data-project-action="move">归入项目…</button></div>
+      ${(this.detail?.messages||[]).length?`<section class="task-message-timeline"><h3>任务消息线</h3>${this.detail.messages.slice(-8).map(m=>`<article><span>${e({progress:'进展',question:'需要回答',approval:'需要审批',delivery:'交付',status:'状态'}[m.kind]||m.kind)} · ${e(m.status==='sent'?'已发送':m.status==='failed'?'发送未确认':'发送中')}</span><p>${e(m.text)}</p></article>`).join('')}</section>`:''}
       ${questions.map(q=>`<section class="project-question"><div class="project-question-title">${icon("chat")}<strong>Bot 需要你确认</strong></div><h3>${e(q.question)}</h3><p>${e(q.recommendation||"")}</p><div class="project-options">${q.options.map((option,i)=>`<button data-project-action="answer-option" data-question-id="${e(q.id)}" data-option-index="${i}">${e(option)}</button>`).join("")}</div><label>也可以自由回答<input id="answer-${e(q.id)}" placeholder="补充你希望的处理方式…"/></label><button class="button secondary" data-project-action="answer" data-question-id="${e(q.id)}">提交回答</button></section>`).join("")}
       ${pending.map(a=>`<details class="project-approval" open><summary>${e(a.operation)}</summary><p>${e(a.reason)}</p><pre>${e(a.impact)}</pre><div class="project-task-actions"><button class="button" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="true">批准</button><button class="button secondary" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="false">拒绝</button></div></details>`).join("")}
       ${unknown.length?`<section class="project-question"><h3>有 ${unknown.length} 个操作的结果需要核对</h3><p>中断不代表外部操作没有发生。核对后可以继续；管理员也可以直接停止或按现状交付。</p>${unknown.map(row=>`<details><summary>${e(row.name||"工具")} · ${e(row.id)}</summary><pre>${e(JSON.stringify(row.arguments||{},null,2))}</pre><button class="button secondary" data-project-action="reconcile" data-call-id="${e(row.id)}">记录实际结果</button></details>`).join("")}</section>`:""}
@@ -155,6 +162,7 @@ export class ProjectUI {
     if(action==="home"){this.projectId="";this.taskId="";this.tab='tasks';this.open();return;}
     if(action==='storage'){this.projectId='';this.taskId='';this.tab='storage';this.open();return;}
     if(action==='storage-project'){this.projectId=button.dataset.projectId;this.taskId='';this.tab='memory';this.open();return;}
+    if(["create","new-task"].includes(action)&&!this.identityId){this.notify("请先在 AstrBot 配置并启用机器人。","error");return;}
     if(action==="expand"){
       const id=button.dataset.projectId;
       this.expanded.has(id)?this.expanded.delete(id):this.expanded.add(id);

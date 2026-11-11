@@ -34,7 +34,7 @@ def prompt(task) -> str:
         "recent_tool_evidence": [{"id": r["id"], "name": r.get("name"), "status": r.get("status"),
                                   "step_id": r.get("step_id"), "result": str(r.get("result", ""))[:1000]}
                                  for r in state.get("journal", [])[-8:]],
-        "instruction": "按批准计划执行；工具后使用agent_lab_checkpoint记录。明显缺失且影响结果的信息才用agent_lab_ask_question，给2–4个具体选择、推荐项和原因，不能替管理员选择。不为能从项目文件找到的信息反复询问。管理员停止/交付高于计划检查，未验证项如实列出。无需画布时直接略过。用agent_lab_project保存项目摘要，详细工具日志不回灌日常聊天。",
+        "instruction": "按批准计划执行；工具后使用agent_lab_checkpoint记录。开启简报时在新发现或转向时用agent_lab_progress简述已确认结果、当前动作与下一步，不转发工具日志或隐私；反问/审批交给原任务消息线，不重复发送相同通知。明显缺失且影响结果的信息才用agent_lab_ask_question，给2–4个具体选择、推荐项和原因，不能替管理员选择。不为能从项目文件找到的信息反复询问。管理员停止/交付高于计划检查，未验证项如实列出。无需画布时直接略过。用agent_lab_project保存项目摘要，详细工具日志不回灌日常聊天。",
     }, ensure_ascii=False)
 
 
@@ -237,18 +237,7 @@ class TaskControl:
                 result = await self.owner._tick(event, "continuation")
                 latest = self.owner.storage.load_active_task(event.unified_msg_origin)
                 if latest is None or not self.ready(latest):
-                    from astrbot.core.message.message_event_result import MessageChain
-                    message = str(result)
-                    if latest:
-                        pending = latest.pending_approvals()
-                        message += "\n" + "\n".join(f"{row.operation}\n{row.impact}\n/al approve {row.approval_id}" for row in pending)
-                        message += f"\n当前任务：{latest.task_id}\n下一步：{latest.next_step}"
-                        for question in control(latest).get("questions", []):
-                            if question.get("status") == "pending":
-                                message += "\n" + question["question"] + "\n" + "\n".join(f"{i+1}. {text}" for i, text in enumerate(question["options"]))
-                                message += f"\n建议：{question.get('recommendation', '')}\n/al answer {question['id']} <选项或自由回答>"
-                    self.owner._require_task_access(event)
-                    await event.send(MessageChain().message(message[:5000]))
+                    await self.owner.task_messages.state(event, task_id, str(result))
                     break
                 await asyncio.sleep(0)
         except asyncio.CancelledError:
@@ -257,8 +246,10 @@ class TaskControl:
             task = self.owner.storage.load_active_task(event.unified_msg_origin)
             if task and task.task_id == task_id:
                 task.status = "paused"
+                task.next_step = "执行已中断。请核对本任务检查点和未知工具结果后，用 /al resume 恢复。"
                 task.add_log("continuation_stopped", str(exc))
                 self.owner.storage.save_task(task)
+                await self.owner.task_messages.state(event, task_id)
         finally:
             self.running.pop(event.unified_msg_origin, None)
 
@@ -325,7 +316,7 @@ class TaskControl:
     def fingerprint(task) -> str:
         state = control(task)
         evidence = sorted({row.get("fingerprint", "") for row in state.get("journal", [])
-                           if row.get("status") == "completed" and row.get("name") != "report"})
+                           if row.get("status") == "completed" and row.get("name") not in {"report", "agent_lab_progress"}})
         visited = sorted({str(row.get("node_id", "")) for row in task.workflow_events if row.get("status") == "completed"})
         payload = [evidence, visited, [(s["id"], s["status"]) for s in state.get("steps", [])]]
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()

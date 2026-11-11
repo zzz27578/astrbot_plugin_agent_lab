@@ -1,10 +1,12 @@
-import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=025";
-import { ProjectUI } from "./project-ui.js?v=025";
-import { Navigation, settingsIcon } from "./navigation.js?v=025";
-import {getBezierPath, getSmoothStepPath, Position} from "./vendor/connectors.js?v=025";
+import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=026";
+import { ProjectUI } from "./project-ui.js?v=026";
+import { Navigation, settingsIcon } from "./navigation.js?v=026";
+import {getBezierPath, Position} from "./vendor/connectors.js?v=026";
+import {routeEdge} from "./connections.js?v=026";
+import "./motion.js?v=026";
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20261111-v025";
+const AGENT_LAB_WEBUI_BUILD = "20261111-v026";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -331,7 +333,7 @@ const WORKFLOW_RUNTIME_LABELS = {
   report: "报告",
 };
 const WORKFLOW_NODE_GROUPS = [
-  { id: "trigger_monitor", title: "触发与监听", hint: "命令、消息监听、关键词、正则、定时、插件事件和 Webhook。", icon: "book", open: true },
+  { id: "trigger_monitor", title: "触发与监听", hint: "命令、消息监听、关键词、正则、插件事件和 Webhook。", icon: "book", open: true },
   { id: "detect_route", title: "检测与路由", hint: "规则检测、LLM 检测、范围过滤、通过/失败/不确定分流。", icon: "select", open: true },
   { id: "report_control", title: "报告与控制", hint: "限流、错误处理、报告、私信、邮件和记录写入。", icon: "copy", open: false },
   { id: "entry_context", title: "开始与上下文", hint: "入口命令、确认、摘要和任务隔离。", icon: "book", open: true },
@@ -406,6 +408,16 @@ const WORKFLOW_LEGACY_NODE_MIGRATIONS = {
 };
 
 const WORKFLOW_NODE_TEMPLATES = [
+  {id:'global_control',title:'执行范围与预算',kind:'guard',stage:'entry',action:'global_control',library_group:'safety_human',instruction:'设置本次流程的隔离、工具白名单与执行预算，不修改管理员权限。'},
+  {id:'http_request',title:'HTTP 请求',kind:'api',stage:'execute',action:'http_request',library_group:'api_external',instruction:'配置明确URL、方法与请求数据；依后端权限与审批执行。',url:'',method:'GET'},
+  {id:'plugin_prompt',title:'插件调用提示',kind:'subflow',stage:'execute',action:'plugin_prompt',library_group:'tool_exec',instruction:'向现有Bot提供已安装插件的具体调用目标，由Bot受控处理。',plugin_name:'',prompt:''},
+  {id:'skill_evolution',title:'经验规则草稿',kind:'state',stage:'checkpoint',action:'skill_evolution',library_group:'memory_state',instruction:'从任务记录提炼规则草稿，保留审核范围。',apply_mode:'manual'},
+  {id:'archive_memory_folder',title:'记忆归档到文件夹',kind:'memory',stage:'archive',action:'archive_memory_folder',library_group:'memory_state',instruction:'将任务摘要归档到明确记忆夹，默认不向日常暴露。',expose_to_normal:false},
+  {id:'write_record',title:'写入任务记录',kind:'report',stage:'checkpoint',action:'write_record',library_group:'report_control',instruction:'把指定内容写入本任务记录，保留事实和引用。'},
+  {id:'llm_prompt',title:'模型提示处理',kind:'transform',stage:'execute',action:'llm_prompt',library_group:'data_template',instruction:'沿用 Bot 模型按提示处理输入，结果写入变量。',prompt:'',output_variable:'prompt.result'},
+  {id:'secret_redaction',title:'敏感信息脱敏',kind:'transform',stage:'checkpoint',action:'secret_redaction',library_group:'safety_human',instruction:'在输出前对输入文本进行敏感信息脱敏。',input_variable:'',output_variable:'redacted.result'},
+  {id:'deliver_outbox',title:'投递待发消息',kind:'notification',stage:'archive',action:'deliver_outbox',library_group:'report_control',instruction:'投递经现有消息机制记录的待发内容；先配置并核对目标。'},
+  {id:'archive_task',title:'归档当前任务',kind:'state',stage:'archive',action:'archive_task',library_group:'validate_exit',instruction:'核对完成条件后归档，未验证项如实保留。'},
   {
     id: "agent_role",
     title: "注册新 Agent",
@@ -1228,7 +1240,7 @@ function updateStatusBar() {
   globalState.activeTask=scoped?{...(state?.tasks||[]).find(t=>t.task_id===scoped.task_id),...scoped}:null;
   globalState.status=!scoped?"idle":scoped.question_count?"waiting":scoped.status==="running"?"running":scoped.status==="blocked"?"error":"paused";
   const agentName = shownProject ? projectUI.projectBotName(shownProject) : projectUI.identityLabel();
-  if($("identity-instance"))$("identity-instance").textContent=shownProject?(shownProject.platform_id||"未绑定"):projectUI.identityId==="*"?"全部实例":projectUI.identityId;
+  if($("identity-instance"))$("identity-instance").textContent=shownProject?(shownProject.platform_id||"未绑定"):projectUI.identityId||"未选择";
   const statusDot = $('status-dot');
   const statusText = $('status-text');
   const statusTask = $('status-task');
@@ -1450,7 +1462,7 @@ async function presetMutation(kind,id="") {
 }
 const navigation = new Navigation({esc,projectUI,render,
   openWorkflow:openPreset,newPreset:()=>presetMutation("new"),savePreset:id=>presetMutation("edit",id),
-  duplicatePreset:id=>presetMutation("duplicate",id),deletePreset:id=>presetMutation("delete",id),renderIntegrations,
+  duplicatePreset:id=>presetMutation("duplicate",id),deletePreset:id=>presetMutation("delete",id),renderIntegrations,identityChanged:()=>{renderNav();updateStatusBar();},
 });
 function applyEmbeddedPanels() {
   const page=document.querySelector(".workflow-page");
@@ -1538,6 +1550,7 @@ function workflowRuntimeType(item = {}) {
   const explicit = String(item.runtime_type || "").trim();
   if (explicit && WORKFLOW_RUNTIME_LABELS[explicit]) return explicit;
   const action = String(item.action || "").trim();
+  if (state?.node_capabilities?.[action]) return state.node_capabilities[action].runtime_type;
   if (WORKFLOW_ACTION_RUNTIME_TYPES[action]) return WORKFLOW_ACTION_RUNTIME_TYPES[action];
   const kind = String(item.kind || "").trim();
   if (WORKFLOW_KIND_RUNTIME_TYPES[kind]) return WORKFLOW_KIND_RUNTIME_TYPES[kind];
@@ -1553,7 +1566,7 @@ function workflowNodeRuntimeInfo(item = {}) {
   if (report) return report;
   const action = String(item.action || "").trim();
   const runtimeType = workflowRuntimeType(item);
-  const hasExecutor = WORKFLOW_EXECUTABLE_ACTIONS.has(action);
+  const hasExecutor = state?.node_capabilities?.[action]?.has_executor ?? WORKFLOW_EXECUTABLE_ACTIONS.has(action);
   return {
     runtime_type: runtimeType,
     action,
@@ -1565,14 +1578,19 @@ function workflowNodeRuntimeInfo(item = {}) {
 function workflowNodeBindingHint(item = {}) {
   const action = String(item.action || "").trim();
   const kind = String(item.kind || "").trim();
-  if ((action === "call_api" || kind === "api") && !String(item.api_id || item.ref_id || "").trim()) return "需要先绑定已注册 API";
-  if ((action === "run_tools" || kind === "tool") && !String(item.tool_name || item.ref_id || "").trim()) return "需要先绑定 AstrBot 工具";
-  if ((action === "run_tools" || kind === "tool") && !String(item.tool_args || item.arguments || item.params || item.input_variable || "").trim()) return "未填参数时会交给 ReAct 调用";
+  if (["call_api","api_scope"].includes(action) && !String(item.api_id || item.ref_id || "").trim()) return "需要先绑定已注册 API";
+  if (action === "run_tools" && !String(item.tool_name || item.ref_id || "").trim()) return "需要先绑定 AstrBot 工具";
+  if (action === "run_tools" && !String(item.tool_args || item.arguments || item.params || item.input_variable || "").trim()) return "未填参数时会交给 ReAct 调用";
+  if (action === "file_operation" && !String(item.path || item.file_path || "").trim()) return "需要填写文件路径";
+  if (action === "code_exec" && !String(item.command || item.code || "").trim()) return "需要填写代码或命令";
+  if (["llm_prompt","prompt_transform"].includes(action) && !String(item.prompt || item.user_prompt || "").trim()) return "需要填写处理提示";
   if (kind === "subflow" || action === "manual") return "由 ReAct 判断和执行";
   return "";
 }
 
 function workflowNodeExecutorState(item = {}) {
+  const capability=state?.node_capabilities?.[item.action];
+  if(capability?.available===false)return {label:'已停用',tone:'warn',hint:capability.unavailable_reason||'该能力当前未开放'};
   const info = workflowNodeRuntimeInfo(item);
   const binding = workflowNodeBindingHint(item);
   if (binding && binding.startsWith("需要")) return { label: "需配置", tone: "warn", hint: binding };
@@ -2034,6 +2052,11 @@ const WORKFLOW_ACTION_PORTS = {
 // 取某节点的端口集合：先看 action 覆盖，再看 runtime_type。
 function workflowNodePorts(node) {
   const action = String(node?.action || "").trim();
+  const backend=state?.node_capabilities?.[action]?.port_schema;
+  if(backend){
+    const outputs=[...new Set((backend.outputs||[]).map(workflowNormalizeEdgeType))];
+    return {inputs:action==='retry'?['retry']:(backend.inputs||[]).length?['in']:[],outputs};
+  }
   if (WORKFLOW_ACTION_PORTS[action]) return WORKFLOW_ACTION_PORTS[action];
   const rt = workflowRuntimeType(node);
   return WORKFLOW_RUNTIME_PORTS[rt] || { inputs: ["in"], outputs: ["success", "failed"] };
@@ -2071,7 +2094,7 @@ function workflowHeartbeatOn(agent) {
   return Boolean(hb.enabled) || String(hb.mode || "") === "auto" || workflowHasHeartbeatNode(agent);
 }
 function workflowKindSummary(agent) {
-  return workflowHeartbeatOn(agent) ? "长任务·可续跑" : "事件/静态自动化";
+  return "计划与事件流程";
 }
 function workflowHeartbeatSummary(agent) {
   const hb = agent?.heartbeat_policy || {};
@@ -2236,6 +2259,7 @@ function workflowActionLabel(action) {
     revoke_session: "注销会话",
     global_control: "全局控制",
     skill_evolution: "Skill 进化",
+    llm_prompt:"模型提示处理",prompt_transform:"提示转换",secret_redaction:"敏感信息脱敏",deliver_outbox:"投递待发消息",archive_task:"归档当前任务",
     manual: "人工判断",
   }[action] || action;
 }
@@ -3506,7 +3530,7 @@ function renderNav() {
   if (tree) { const scroll=tree.scrollTop;tree.innerHTML=projectUI.sidebar();tree.scrollTop=scroll; }
   if ($("rail-storage")) $("rail-storage").innerHTML=projectUI.footer();
   if ($("current-agent-name")) $("current-agent-name").textContent=projectUI.identityLabel();
-  if ($("identity-instance")) $("identity-instance").textContent=projectUI.identityId==="*"?"全部实例":projectUI.identityId;
+  if ($("identity-instance")) $("identity-instance").textContent=projectUI.identityId||"未选择";
   $("settings-btn")?.classList.toggle("active",route==="settings");
   const found = sections.find(([id]) => id === route) || sections[0];
   if ($("section-title")) $("section-title").textContent = found[1];
@@ -5289,7 +5313,7 @@ function workflowToolbox() {
   const filter = workflowMaterialFilter.trim();
   const basicGroupIds = new Set(["trigger_monitor", "entry_context", "plan_route", "tool_exec", "memory_state", "safety_human", "validate_exit"]);
   const templates = WORKFLOW_NODE_TEMPLATES
-    .filter((item) => !WORKFLOW_MERGED_TEMPLATE_IDS.has(item.id) && !["heartbeat", "schedule_trigger"].includes(item.action))
+    .filter((item) => !WORKFLOW_MERGED_TEMPLATE_IDS.has(item.id) && !["heartbeat", "schedule_trigger"].includes(item.action) && state?.node_capabilities?.[item.action]?.available!==false)
     .filter((item) =>
       includesQuery([item.id, item.title, item.kind, item.action, item.stage, item.library_group, item.instruction, item.description], filter)
     );
@@ -5434,6 +5458,8 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
   const edges = currentAgent.workflow_edges || [];
   const nodeArr = currentAgent.workflow_nodes || [];
   const nodes = new Map(nodeArr.map((item) => [item.id, item]));
+  const geometry=nodeArr.map(n=>[n.id,n.x,n.y]);
+  const obstacles=nodeArr.map(n=>({x:Number(n.x||0)+offsetX-14,y:Number(n.y||0)+offsetY-14,w:WORKFLOW_NODE_WIDTH+28,h:WORKFLOW_NODE_HEIGHT+28}));
   const paths = edges.map((edge, index) => {
     const from = nodes.get(edge.from);
     const to = nodes.get(edge.to);
@@ -5442,23 +5468,19 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const fromPort = String(edge.from_port || edgeType);
     const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
     const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    let pts = null;
-    if(edge.route_hint) {
-      const key=JSON.stringify([edge,start,end]);
-      pts=workflowDrag?workflowPathCache.get(key):null;
-      if(!pts){
-        const boxes=workflowDrag?[]:workflowRouteBoxesForEdge(nodeArr,from.id,to.id,offsetX,offsetY,true);
-        pts=workflowRoutePointsFromHint(edge.route_hint,start,end,boxes,offsetX,offsetY)||workflowRoutePoints(start,end,boxes);
-        workflowPathCache.set(key,pts);
-        if(workflowPathCache.size>1500)workflowPathCache.clear();
+    const laneIndex=edges.slice(0,index).filter(e=>e.from===edge.from).length;
+    const key=JSON.stringify([edge,start,end,geometry,laneIndex]);
+    let routed=workflowPathCache.get(key);
+    if(!routed){
+      let pts=null;
+      if(edge.route_hint){
+        const boxes=workflowRouteBoxesForEdge(nodeArr,from.id,to.id,offsetX,offsetY,true);
+        pts=workflowRoutePointsFromHint(edge.route_hint,start,end,boxes,offsetX,offsetY);
       }
+      routed=pts?{d:roundedOrthPath(pts,12),label:workflowPolylineMidpoint(pts)}:routeEdge({source:start,target:end,boxes:obstacles,laneIndex});
+      workflowPathCache.set(key,routed);if(workflowPathCache.size>512)workflowPathCache.delete(workflowPathCache.keys().next().value);
     }
-    const generated = getSmoothStepPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:from.kind==="loop"?Position.Left:Position.Right,targetPosition:to.kind==="loop"?Position.Top:Position.Left,borderRadius:16,offset:28});
-    const d = edge.route_hint ? roundedOrthPath(pts,16) : generated[0];
-    const color = workflowEdgeColor(edgeType);
-    const pid = `wflp-${index}`;
-    const marker = `workflow-arrow-${edgeType}`;
-    const mid = edge.route_hint ? workflowPolylineMidpoint(pts) : {x:generated[1],y:generated[2]};
+    const d=routed.d,color=workflowEdgeColor(edgeType),pid=`wflp-${index}`,marker=`workflow-arrow-${edgeType}`,mid=routed.label;
     const showLabel = edgeType !== "success" && edgeType !== "always";
     const labelHtml = showLabel
       ? `<g class="workflow-link-label" transform="translate(${mid.x.toFixed(1)} ${mid.y.toFixed(1)})"><rect x="-18" y="-9" width="36" height="18" rx="5" fill="#fff" stroke="${color}"></rect><text x="0" y="3" text-anchor="middle" fill="${color}">${esc(workflowPortShortLabel(edgeType))}</text></g>`
@@ -5484,7 +5506,7 @@ function workflowLinksSvg(offsetX = workflowWorldOffsetX(), offsetY = workflowWo
     const pv = workflowConnectionPreviewPoints(workflowConnection, end);
     workflowConnection.previewPts = pv;
     const start=workflowConnection.anchor;
-    const curve=start?getBezierPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:Position.Right,targetPosition:Position.Left,curvature:.3})[0]:roundedOrthPath(pv,16);
+    const curve=start?getBezierPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:start.leftExit?Position.Left:Position.Right,targetPosition:end.rightEntry?Position.Right:Position.Left,curvature:.3})[0]:roundedOrthPath(pv,16);
     preview = `<path class="workflow-link-preview" d="${curve}"></path>`;
   }
   return `
@@ -5700,8 +5722,8 @@ function workflowMarkerDefs() {
       ${types.map((type) => {
         const color = workflowEdgeColor(type);
         return `
-          <marker id="workflow-arrow-${type}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8.5" markerHeight="8.5" orient="auto-start-reverse">
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="${color}"></path>
+          <marker id="workflow-arrow-${type}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" markerUnits="userSpaceOnUse" orient="auto-start-reverse">
+            <path d="M 1 1 L 9 5 L 1 9" fill="none" stroke="#53666b" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
           </marker>
         `;
       }).join("")}
@@ -6557,6 +6579,11 @@ function workflowDatalistOptions(items, key = "name", label = "description") {
 // ============ 节点"填空题"字段注册表 ============
 // 每个 action 只暴露新手真正需要填的几个字段；高级字段收进"高级"模式。
 const WORKFLOW_SIMPLE_FIELDS = {
+  write_record: [{field:'input_variable',label:'记录来源变量',type:'text'},{field:'payload',label:'记录内容（JSON对象）',type:'json',placeholder:'{"summary":"已确认的结果与引用"}'}],
+  llm_prompt: [{field:'prompt',label:'处理提示',type:'textarea',required:true},{field:'input_variable',label:'输入变量',type:'text'},{field:'output_variable',label:'输出变量',type:'text'}],
+  secret_redaction: [{field:'input_variable',label:'输入变量',type:'text'},{field:'output_variable',label:'输出变量',type:'text'}],
+  deliver_outbox: [{field:'_delivery',label:'消息投递',type:'note',text:'使用后端现有待发消息队列和目标配置，不等于项目进展简报；简报在设置 → 任务消息控制。'}],
+  archive_task: [{field:'instruction',label:'交付核对说明',type:'textarea'}],
   agent_role: [
     { field: "_role_lead", label: "Agent 角色块", type: "note", text: "上方『节点名称』就是这个 Agent 的名字；保存方案后会同步成一个子Agent 泳道。" },
     { field: "provider_id", label: "模型 / provider（留空＝继承方案）", type: "text", placeholder: "如：openai-gpt4o" },
@@ -6588,7 +6615,7 @@ const WORKFLOW_SIMPLE_FIELDS = {
   ],
   delay: [
     { field: "delay_seconds", label: "延时秒数（0–300）", type: "number", default: 5, min: 0, max: 300,
-      hint: "等待指定秒数再继续；长暂停请用心跳，避免长占运行轮。" },
+      hint: "等待指定秒数再继续；长暂停请暂停任务并明确恢复，避免占用运行轮。" },
   ],
   dispatch_tasks: [
     { field: "assignments", label: "分派清单（每行：目标子Agent | 指令 | 资源标签,逗号分隔）", type: "lines", required: true,
@@ -6887,7 +6914,7 @@ const WORKFLOW_SIMPLE_FIELDS = {
       options: [["off","不隔离"],["session","会话隔离"],["strict","严格隔离"]] },
     { field: "tool_mode", label: "工具范围", type: "select", default: "whitelist",
       options: [["full","全部工具"],["whitelist","工具白名单"],["no_external","仅内置工具"]] },
-    { field: "progress_notice_mode", label: "汇报方式", type: "select", default: "agent_lab",
+    { field: "progress_notice_mode", label: "旧执行器工具提示（任务简报请到设置）", type: "select", default: "agent_lab",
       options: [["silent","静默"],["agent_lab","控制台记录"],["astrbot","AstrBot 原生提示"]] },
     { field: "show_tool_use", label: "显示工具调用", type: "checkbox" },
     { field: "max_total_tokens", label: "总 token 预算", type: "number", default: 240000, max: 50000000 },
@@ -6976,13 +7003,13 @@ function workflowSimpleFieldsFor(action) {
 }
 function workflowSimpleFieldHtml(item, f) {
   // syncPath 字段以 AgentSpec 上的路径为准（如 memory_policy.* / heartbeat_policy.*），否则读节点本身。
-  const fieldVal = (ff) => { const v = ff.syncPath ? agentFieldByPath(ff.syncPath) : item[ff.field]; if (Array.isArray(v)) return listToLines(v); return v === undefined || v === null ? "" : String(v); };
+  const fieldVal = (ff) => { const v = ff.syncPath ? agentFieldByPath(ff.syncPath) : item[ff.field]; if (ff.type === "json" && v && typeof v === "object") return JSON.stringify(v,null,2); if (Array.isArray(v)) return listToLines(v); return v === undefined || v === null ? "" : String(v); };
   const req = f.required ? ` <em class="req">必填</em>` : "";
   const hint = f.hint ? `<small class="field-hint">${esc(f.hint)}</small>` : "";
   const id = `sf-${esc(f.field)}`;
   if (f.type === "note") return `<div class="simple-note"><b>${esc(f.label)}</b><span>${esc(f.text || "")}</span></div>`;
   if (f.type === "lines") return `<label class="simple-field">${esc(f.label)}${req}<textarea id="${id}" rows="3" placeholder="${esc(f.placeholder || "")}">${esc(fieldVal(f))}</textarea>${hint}</label>`;
-  if (f.type === "textarea") return `<label class="simple-field">${esc(f.label)}${req}<textarea id="${id}" rows="4" placeholder="${esc(f.placeholder || "")}">${esc(fieldVal(f))}</textarea>${hint}</label>`;
+  if (["textarea","json"].includes(f.type)) return `<label class="simple-field">${esc(f.label)}${req}<textarea id="${id}" rows="4" placeholder="${esc(f.placeholder || "")}">${esc(fieldVal(f))}</textarea>${hint}</label>`;
   if (f.type === "number") { const cur = fieldVal(f) || (f.default ?? ""); return `<label class="simple-field">${esc(f.label)}${req}<input id="${id}" type="number" min="${esc(f.min ?? 0)}" max="${esc(f.max ?? 1000000)}" value="${esc(cur)}" />${hint}</label>`; }
   if (f.type === "checkbox") { const checked = f.syncPath ? agentFieldByPath(f.syncPath) === true : item[f.field] === true; return `<label class="check-line simple-field"><input id="${id}" type="checkbox" ${checked ? "checked" : ""} />${esc(f.label)}${req}${hint}</label>`; }
   if (f.type === "select") { const cur = fieldVal(f) || f.default || (f.options?.[0]?.[0] ?? ""); const opts = (f.options || []).map(([v,l]) => `<option value="${esc(v)}" ${v === cur ? "selected" : ""}>${esc(l)}</option>`).join(""); return `<label class="simple-field">${esc(f.label)}${req}<select id="${id}">${opts}</select>${hint}</label>`; }
@@ -7049,7 +7076,14 @@ function applySimpleEditorFields(node) {
     const el = document.getElementById(`sf-${f.field}`);
     if (!el) continue;
     const raw = el.value;
-    if (f.type === "lines") {
+    if (f.type === "json") {
+      if (raw.trim()) {
+        let parsed;
+        try { parsed = JSON.parse(raw); } catch { throw new Error(`${f.label}需要有效的JSON对象。`); }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${f.label}需要JSON对象。`);
+        node[f.field] = parsed;
+      } else delete node[f.field];
+    } else if (f.type === "lines") {
       const arr = linesToList(raw || "");
       if (arr.length) node[f.field] = arr; else delete node[f.field];
       if (f.syncPath) setAgentFieldByPath(f.syncPath, arr);
@@ -8609,7 +8643,9 @@ function blueprintsPanel() {
 }
 
 async function saveAgent(makeDefault = false) {
-  readAgentForm();
+  // The top-level Save must also commit the visible node editor draft.
+  if (workflowInspectorOpen && $("workflow-node-title")) applyWorkflowNodeFromInspector();
+  else readAgentForm();
   const payload = clone(currentAgent);
   if (makeDefault) payload._make_default = true;
   const result = await api("/api/agents", { method: "POST", body: payload });
@@ -8701,7 +8737,7 @@ function flushWorkflowCanvasDom(mode) {
       const end = workflowConnection.pointer;
       let path = svg.querySelector(".workflow-link-preview");
       if (!path) { path = document.createElementNS("http://www.w3.org/2000/svg", "path"); path.classList.add("workflow-link-preview"); svg.appendChild(path); }
-      path.setAttribute("d", getBezierPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:Position.Right,targetPosition:Position.Left,curvature:.3})[0]);
+      path.setAttribute("d", getBezierPath({sourceX:start.x,sourceY:start.y,targetX:end.x,targetY:end.y,sourcePosition:start.leftExit?Position.Left:Position.Right,targetPosition:end.rightEntry?Position.Right:Position.Left,curvature:.3})[0]);
     }
     return;
   }
@@ -8777,29 +8813,6 @@ function workflowCanvasRenderPoint(event) {
   };
 }
 
-function lockWorkflowEdgeRouteHintsForNode(nodeId = "") {
-  ensureWorkflow();
-  const targetId = String(nodeId || "");
-  const nodeArr = currentAgent.workflow_nodes || [];
-  const nodes = new Map(nodeArr.map((item) => [item.id, item]));
-  const offsetX = workflowWorldOffsetX();
-  const offsetY = workflowWorldOffsetY();
-  (currentAgent.workflow_edges || []).forEach((edge) => {
-    if (edge.route_hint) return;
-    if (targetId && edge.from !== targetId && edge.to !== targetId) return;
-    const from = nodes.get(edge.from);
-    const to = nodes.get(edge.to);
-    if (!from || !to) return;
-    const edgeType = String(edge.edge_type || "success");
-    const fromPort = String(edge.from_port || edgeType);
-    const start = workflowNodeOutAnchor(from, fromPort, offsetX, offsetY);
-    const end = workflowNodeAnchor(to, "in", offsetX, offsetY);
-    const boxes = workflowRouteBoxesForEdge(nodeArr, from.id, to.id, offsetX, offsetY, true);
-    const pts = workflowRoutePoints(start, end, boxes);
-    const hint = workflowRouteHintFromRenderPoints(pts, offsetX, offsetY);
-    if (hint) edge.route_hint = hint;
-  });
-}
 
 function addWorkflowEdge(from, to, edgeType = "success", fromPort = "", routeHint = null) {
   ensureWorkflow();
@@ -9184,7 +9197,6 @@ document.addEventListener("pointerdown", (event) => {
   if (nodeEl && canvasEl?.contains(nodeEl)) {
     const item = workflowNodeById(nodeEl.dataset.id);
     if (!item) return;
-    lockWorkflowEdgeRouteHintsForNode(item.id);
     const before = workflowSnapshot();
     selectedWorkflowNodeId = item.id;
     document.querySelectorAll(".flow-node.selected").forEach((node) => node.classList.remove("selected"));
@@ -9223,7 +9235,6 @@ document.addEventListener("pointerdown", (event) => {
     return;
   }
   if (workflowSelectionMove && workflowSelectedNodeIds.size) {
-    Array.from(workflowSelectedNodeIds).forEach((id) => lockWorkflowEdgeRouteHintsForNode(id));
     const base = new Map();
     Array.from(workflowSelectedNodeIds).forEach((id) => {
       const n = workflowNodeById(id);

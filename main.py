@@ -77,10 +77,11 @@ from .agent_lab.web_api import admin_api
 from .agent_lab.node_policy import execute_with_policy
 from .agent_lab.projects import Projects
 from .agent_lab.workspace_api import WorkspaceAPI
+from .agent_lab.task_messages import TaskMessages
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.5"
+PLUGIN_VERSION = "v0.2.6"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -583,6 +584,7 @@ class AgentLabPlugin(Star):
         self.task_control = TaskControl(self)
         self.projects = Projects(self)
         self.workspace_api = WorkspaceAPI(self)
+        self.task_messages = TaskMessages(self)
         self.astrbot_bridge = AstrBotBridge(self)
         self.node_executors = NodeExecutorRegistry()
         self._register_node_executors()
@@ -699,6 +701,7 @@ class AgentLabPlugin(Star):
         """
         self._require_task_access(event)
         row = self.task_control.ask(event, question, json.loads(options_json), recommendation)
+        await self.task_messages.state(event, self.task_control.load(event.unified_msg_origin).task_id)
         return json.dumps(row, ensure_ascii=False) + f"\n等待回答：/al answer {row['id']} <选项或自由回答>"
 
     async def _draft_project_summary(self, event, task):
@@ -733,7 +736,9 @@ class AgentLabPlugin(Star):
             constraints(string): 必须保留的用户要求，每行一项。
         """
         self._require_task_access(event)
-        return self.task_control.submit_plan(event, steps_json, constraints)
+        result = self.task_control.submit_plan(event, steps_json, constraints)
+        await self.task_messages.state(event, self.task_control.load(event.unified_msg_origin).task_id)
+        return result
 
     @filter.llm_tool(name="agent_lab_checkpoint")
     async def agent_lab_checkpoint(self, event: AstrMessageEvent, step_id: str, summary: str, evidence_json: str = "[]", completed: bool = False) -> str:
@@ -746,7 +751,10 @@ class AgentLabPlugin(Star):
             completed(boolean): 本步骤是否已完成。
         """
         self._require_task_access(event)
-        return self.task_control.checkpoint(event, step_id, summary, evidence_json, completed)
+        result = self.task_control.checkpoint(event, step_id, summary, evidence_json, completed)
+        task = self.task_control.load(event.unified_msg_origin)
+        await self.task_messages.state(event, task.task_id)
+        return result
 
     @filter.llm_tool(name="agent_lab_steer")
     async def agent_lab_steer(self, event: AstrMessageEvent, message: str) -> str:
@@ -757,6 +765,18 @@ class AgentLabPlugin(Star):
         """
         self._require_task_access(event)
         return self.task_control.steer(event.unified_msg_origin, message)
+
+    @filter.llm_tool(name="agent_lab_progress")
+    async def agent_lab_progress(self, event: AstrMessageEvent, message: str) -> str:
+        """向立项管理员发送简洁进展，与反问、审批共用任务消息线。由设置控制与限频。
+
+        Args:
+            message(string): 已确认发现、当前动作或下一步，1–600字；不要发送日志或隐私。
+        """
+        task = self.astrbot_bridge.check(event)
+        if not message.strip() or len(message) > 600:
+            raise ValueError("进展简报需要1–600字。")
+        return await self.task_messages.publish(event, task.task_id, message)
 
     @filter.llm_tool(name="agent_lab_record_report")
     async def agent_lab_record_report(self, event: AstrMessageEvent, report: str) -> str:
@@ -810,7 +830,9 @@ class AgentLabPlugin(Star):
             if task:
                 status = "completed" if "交付" in text else "cancelled"
                 result = await self.projects.administrator_end(task.task_id, status, text, event.get_sender_id())
-                await event.send(MessageChain().message("管理员指令已执行。\n" + result.exit_summary))
+                sent = await self.task_messages.state(event, task.task_id)
+                if sent == "该来源不支持管理员私聊简报。":
+                    await event.send(MessageChain().message(f"[任务 {task.task_id} · 交付]\n" + result.exit_summary))
                 event.stop_event()
                 return
         if not _bool_cfg(self.config, "workflow_native_message_monitor_enabled", True):
@@ -1130,6 +1152,9 @@ class AgentLabPlugin(Star):
             missing=[operation],
         )
         self.storage.save_task(task)
+        sent = await self.task_messages.state(event, task.task_id)
+        if sent == "已发送任务消息。":
+            return f"审批 {approval.approval_id} 已在原任务消息线发出；等待管理员处理，不重复通知。"
         return (
             f"已创建审批请求 {approval.approval_id}。请向用户说明：\n"
             f"- 操作：{operation}\n- 原因：{reason}\n- 影响：{impact}\n"
@@ -1701,7 +1726,13 @@ class AgentLabPlugin(Star):
     async def _start_task(self, event: AstrMessageEvent, **kwargs) -> str:
         lock = self.projects.creation_locks.setdefault(event.unified_msg_origin, asyncio.Lock())
         async with lock:
-            return await self._start_task_impl(event, **kwargs)
+            result = await self._start_task_impl(event, **kwargs)
+            task = self.storage.load_active_task(event.unified_msg_origin)
+            if task and (task.pending_approvals() or any(q.get("status") == "pending" for q in task_control(task).get("questions", []))):
+                sent = await self.task_messages.state(event, task.task_id)
+                if sent == "已发送任务消息。":
+                    return f"已立项：{task.task_id}。待确认事项已在同一任务消息线发出，处理后继续。"
+            return result
 
     async def _start_task_impl(
         self,
@@ -1986,7 +2017,13 @@ class AgentLabPlugin(Star):
         return data
 
     async def _tick(self, event: AstrMessageEvent, reason: str) -> str:
-        return (await self.service.run_tick(event, reason=reason)).message
+        before = self.storage.load_active_task(event.unified_msg_origin)
+        if before:
+            await self.task_messages.state(event, before.task_id)
+        result = (await self.service.run_tick(event, reason=reason)).message
+        if before:
+            await self.task_messages.state(event, before.task_id, result)
+        return result
 
     async def _tick_impl(self, event: AstrMessageEvent, reason: str) -> str:
         return await self.runtime_runner.run_tick(event, reason)
@@ -2140,6 +2177,9 @@ class AgentLabPlugin(Star):
         if administrator_override:
             self._require_task_access(event)
             ended = await self.projects.administrator_end(task.task_id, status, final_summary, str(event.get_sender_id()))
+            sent = await self.task_messages.state(event, ended.task_id)
+            if sent == "已发送任务消息。":
+                return f"管理员指令已执行：{ended.status}。交付说明已发送到原任务消息线。"
             return f"管理员指令已执行：{ended.status}。\n{ended.exit_summary}"
         state = task_control(task)
         if status == "completed" and state.get("steps") and any(step.get("status") != "completed" for step in state["steps"]):
@@ -2172,6 +2212,7 @@ class AgentLabPlugin(Star):
                 next_action="approve_finish_override_or_collect_evidence",
             )
             self.storage.save_task(task)
+            await self.task_messages.state(event, task.task_id)
             missing_text = "、".join(finish_verdict.missing or [])
             suffix = f"；缺少：{missing_text}" if missing_text else ""
             return (
@@ -2244,6 +2285,7 @@ class AgentLabPlugin(Star):
             self.projects.save_summary(task.task_id, task.exit_summary or task.current_summary, auto=True)
         except (OSError, ValueError) as exc:
             logger.warning("[AgentLab] 任务已归档，项目摘要待补写：%s", exc)
+        await self.task_messages.state(event, task.task_id)
         return (
             f"任务模式已结束并归档。\n"
             f"- status: {status}\n"
@@ -2298,10 +2340,10 @@ class AgentLabPlugin(Star):
             )
             task = self.storage.load_active_task(umo)
             state = task_control(task) if task else {}
-            event.message_obj.sender.user_id = str(state.get("owner_id") or actor_id or "")
+            event.message_obj.sender.user_id = str(actor_id or state.get("owner_id") or "")
             if has_request_context() and (getattr(g, "username", None) or getattr(g, "agent_lab_web_admin", False)):
                 event.set_extra("agent_lab_web_admin", True)
-                event.message_obj.sender.user_id = str(state.get("owner_id") or "webui")
+                event.message_obj.sender.user_id = str(actor_id or state.get("owner_id") or "webui")
             elif state.get("web_admin"):
                 event.set_extra("agent_lab_web_admin", True)
             self._require_task_access(event)
@@ -7960,6 +8002,7 @@ class AgentLabPlugin(Star):
                     "auth": bool(self.webui_server and self.webui_server.token),
                 },
                 "runtime": self._runtime_identity_payload(),
+                "node_capabilities": self.node_executors.catalog(),
             }
         )
 
