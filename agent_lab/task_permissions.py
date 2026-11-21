@@ -28,7 +28,8 @@ def apply_mode(spec, state):
 
 
 def signature(name, arguments, state, resource):
-    body = [name, arguments, resource, state.get("version"), state.get("current_step_id"), state.get("input_revision", 0)]
+    body = [name, arguments, resource, state.get("authorization_version", state.get("version")),
+            state.get("current_step_id"), state.get("input_revision", 0)]
     return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
 
 

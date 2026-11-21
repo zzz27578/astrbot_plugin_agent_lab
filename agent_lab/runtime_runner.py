@@ -9,6 +9,7 @@ from .prompts import build_task_system_prompt, build_tick_prompt
 from .task_control import control, prompt as plan_prompt
 from .astrbot_bridge import BudgetStopped, ExecutionStopped
 from .task_permissions import apply_mode
+from .continuity import HandoffError
 
 
 def _cfg(config: Any, key: str, default: Any = None) -> Any:
@@ -250,6 +251,14 @@ class AgentRuntimeRunner:
                 self.storage.save_task(latest)
             return str(exc)
         except ExecutionStopped as exc:
+            return str(exc)
+        except HandoffError as exc:
+            latest = self.storage.load_active_task(event.unified_msg_origin)
+            if latest and latest.task_id == task.task_id and latest.status == "running":
+                latest.status = "paused"
+                latest.set_wait(wait_reason="handoff_failed", message=str(exc), source="continuity", resume_command="任务继续")
+                latest.add_log("handoff_failed", str(exc))
+                self.storage.save_task(latest)
             return str(exc)
         except Exception as exc:
             latest = self.storage.load_active_task(event.unified_msg_origin)

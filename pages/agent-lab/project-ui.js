@@ -18,6 +18,7 @@ const icon = (name, size = 18) => {
 };
 const labels = {running:"执行中",paused:"已暂停",blocked:"待处理",completed:"已交付",cancelled:"已停止",pending:"待审批",approved:"已批准",consumed:"已使用",rejected:"已拒绝",expired:"已失效"};
 const budgetFields = [["max_total_tokens","总 Token 预算",0,50000000],["max_tokens_per_tick","每轮 Token 预算",0,1000000],["max_total_tool_calls","任务工具总上限",0,100000],["max_total_ticks","总轮数",0,100000],["max_nodes_per_tick","每轮节点上限",1,200],["max_seconds_per_tick","每轮秒数",1,3600]];
+const continuityFields = [["context_tokens","任务上下文容量（Token）",2000,10000000,1000000],["context_percent","整理触发比例（%）",30,90,70],["max_stage_ticks","阶段连续轮数上限",1,1000,8],["summary_chars","交接摘要最多字数",1000,20000,6000]];
 const splitLines = value => value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
 export const bytes = value => {const n=Number(value)||0;return n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;};
 
@@ -190,6 +191,12 @@ export class ProjectUI {
             <label>任务指引<textarea id="execution-task_prompt" name="task_prompt" rows="2" maxlength="4000">${e(current.task_prompt)}</textarea></label>
           </div>
         </fieldset>
+        <fieldset><legend>长任务与上下文</legend>
+          <div class="project-settings-grid">
+            ${continuityFields.map(([key,label,min,max,fallback])=>number(key,label,min,max,current.continuity?.[key]??fallback)).join("")}
+          </div>
+          <p class="project-hint">默认上下文容量为 1M Token；模型配置容量更小时取较小值。阶段结束、达到连续轮数或容量比例时，先保存交接再整理历史，阶段未完成会接着执行。此组设置下轮生效，累计预算不会重置。</p>
+        </fieldset>
         <fieldset><legend>预算与上限</legend>
           <div class="project-settings-grid">
             ${number("native_steps","AstrBot 原生每轮工具上限",1,10000,current.native_steps)}
@@ -240,6 +247,7 @@ export class ProjectUI {
       ${pending.map(a=>`<details class="project-approval" open><summary>${e(a.operation)}</summary><p>${e(a.reason)}</p><pre>${e(a.impact)}</pre>${a.rollback?`<p>恢复方式：${e(a.rollback)}</p>`:""}${a.calls?.length?`<details><summary>核对 ${a.calls.length} 个操作的参数</summary><pre>${e(JSON.stringify(a.calls.map(c=>({tool:c.tool_name,arguments:c.arguments})),null,2))}</pre></details>`:""}<div class="project-task-actions"><button class="button" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="true">批准</button><button class="button secondary" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="false">拒绝</button></div></details>`).join("")}
       ${unknown.length?`<section class="project-question"><h3>有 ${unknown.length} 个操作的结果需要核对</h3><p>中断不代表外部操作没有发生。核对后可以继续；管理员也可以直接停止或按现状交付。</p>${unknown.map(row=>`<details><summary>${e(row.name||"工具")} · ${e(row.id)}</summary><pre>${e(JSON.stringify(row.arguments||{},null,2))}</pre><button class="button secondary" data-project-action="reconcile" data-call-id="${e(row.id)}">记录实际结果</button></details>`).join("")}</section>`:""}
       <p class="project-detail-summary">${e(summary)}</p><ol class="project-steps">${(c.steps||[]).map(step=>`<li class="${step.id===c.current_step_id?"current":""}"><span>${step.status==="completed"?icon("check",13):""}</span><div><strong>${e(step.title)}</strong><p>${e(step.summary||step.instruction)}</p></div></li>`).join("")||"<li>尚未形成具体计划。</li>"}</ol>
+      ${c.continuity?.lanes?.[""]?.summary?`<details class="project-storage-details"><summary>阶段交接 · ${e(c.continuity.lanes[""].stage||"")}</summary><p class="project-detail-summary">${e(c.continuity.lanes[""].summary)}</p><p class="project-hint">完整阶段历史可在记录与存储中回查。</p></details>`:""}
       ${!ended&&!c.version?'<button class="button secondary" data-project-action="draft-plan">让 Bot 制定具体计划</button>':""}
       ${!ended?`<label>途中引导<textarea id="project-guidance" rows="2" placeholder="例如：不要修改数据库，先检查配置。"></textarea></label><button class="button secondary" data-project-action="steer">发送引导</button>`:""}
       <details class="project-storage-details"><summary>${icon("storage",15)}记录与存储 <span>${bytes(this.detail.record_bytes)} 文件 + ${bytes(this.detail.native_history_bytes)} 对话内容</span></summary>
@@ -314,7 +322,7 @@ export class ProjectUI {
         const form=button.closest("form"), projectId=this.projectId, taskId=this.taskId;
         if(!form.reportValidity()) {rerender=false;return;}
         const fields=new FormData(form), current=this.execution.get(projectId), native=fields.get("native_steps");
-        await this.request("save_execution_settings",{project_id:projectId,...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode:fields.get("mode"),roots:splitLines(fields.get("roots")),warnings:splitLines(fields.get("warnings")),task_prompt:fields.get("task_prompt"),budget:Object.fromEntries(budgetFields.map(([key])=>[key,fields.get(key)]))}});
+        await this.request("save_execution_settings",{project_id:projectId,...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode:fields.get("mode"),roots:splitLines(fields.get("roots")),warnings:splitLines(fields.get("warnings")),task_prompt:fields.get("task_prompt"),continuity:Object.fromEntries(continuityFields.map(([key])=>[key,fields.get(key)])),budget:Object.fromEntries(budgetFields.map(([key])=>[key,fields.get(key)]))}});
         form.querySelectorAll("[id]").forEach(el=>this.drafts.delete(`${projectId}:${taskId}:${el.id}`));
         await this.loadExecution(projectId);this.notify("项目运行设置已保存。");
       } else if(action==="task-budget") {

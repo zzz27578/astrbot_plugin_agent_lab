@@ -82,7 +82,7 @@ from .agent_lab.task_messages import TaskMessages
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.7"
+PLUGIN_VERSION = "v0.2.8"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -730,14 +730,16 @@ class AgentLabPlugin(Star):
 
     @filter.llm_tool(name="agent_lab_submit_plan")
     async def agent_lab_submit_plan(self, event: AstrMessageEvent, steps_json: str, constraints: str = "") -> str:
-        """提交/修订当前任务的具体计划，管理员批准后继续。不要代替管理员批准。
+        """提交/修订任务计划。普通调整审阅后直接继续，目标/验收/预算变化须批准。
 
         Args:
-            steps_json(string): JSON数组，每步包含id、title、instruction，修订时保留已完成步骤。
+            steps_json(string): 数组或对象。steps每步含id/title/instruction，可用stage归组；修订提供change_reason。保留已完成步骤，返工写reopen_reason。修改goal、completion_conditions、budget或remove_constraints须确认。不能修改权限配置。
             constraints(string): 必须保留的用户要求，每行一项。
         """
         self._require_task_access(event)
-        result = self.task_control.submit_plan(event, steps_json, constraints)
+        result = await self.task_control.submit_plan(event, steps_json, constraints)
+        if "已调整并记录" in result:
+            await self.task_messages.publish(event, self.task_control.load(event.unified_msg_origin).task_id, result)
         await self.task_messages.state(event, self.task_control.load(event.unified_msg_origin).task_id)
         return result
 
@@ -747,7 +749,7 @@ class AgentLabPlugin(Star):
 
         Args:
             step_id(string): 当前计划步骤ID。
-            summary(string): 本步骤实际进展和遗留事项。
+            summary(string): 实际进展、决定及原因、文件位置、验证结果和遗留事项。完成阶段前留下可接手的交接记录。
             evidence_json(string): 成功工具返回的证据ID的JSON数组。
             completed(boolean): 本步骤是否已完成。
         """
@@ -756,6 +758,18 @@ class AgentLabPlugin(Star):
         task = self.task_control.load(event.unified_msg_origin)
         await self.task_messages.state(event, task.task_id)
         return result
+
+    @filter.llm_tool(name="agent_lab_read_handoff")
+    async def agent_lab_read_handoff(self, event: AstrMessageEvent, record_id: str = "", offset: int = 0, limit: int = 12000) -> str:
+        """回查本任务的阶段交接与原始历史。摘要不能代替实际文件和验证。
+
+        Args:
+            record_id(string): 留空列出本任务交接索引，填写编号分段读取完整记录。
+            offset(number): 从第几个字符继续读取，非负整数。
+            limit(number): 本次读取字符数，500–24000的整数，默认12000。
+        """
+        task = self.astrbot_bridge.check(event)
+        return json.dumps(self.astrbot_bridge.continuity.read(task, record_id, offset, limit), ensure_ascii=False)
 
     @filter.llm_tool(name="agent_lab_steer")
     async def agent_lab_steer(self, event: AstrMessageEvent, message: str) -> str:
@@ -794,6 +808,8 @@ class AgentLabPlugin(Star):
         self.storage.append_task_memory_observation(task, {"id": identifier, "report": report, "step_id": state.get("current_step_id")})
         state.setdefault("journal", []).append({"id": identifier, "name": "report", "status": "completed",
             "step_id": state.get("current_step_id"), "plan_version": state.get("version"), "result": report[:2000],
+            "authorization_version": state.get("authorization_version", state.get("approved_version", 0)),
+            "step_revision": next((s.get("revision", 0) for s in state.get("steps", []) if s["id"] == state.get("current_step_id")), 0),
             "fingerprint": hashlib.sha256(report.encode()).hexdigest()})
         self.storage.save_task(task)
         return f"报告已保存，证据 ID：{identifier}。报告内容不是实际测试通过证明。"
@@ -1660,7 +1676,7 @@ class AgentLabPlugin(Star):
         if cmd in {"steer", "引导"}:
             return self.task_control.steer(event.unified_msg_origin, rest)
         if cmd in {"plan", "计划"}:
-            return self.task_control.submit_plan(event, rest)
+            return await self.task_control.submit_plan(event, rest)
         if cmd in {"resume", "恢复"}:
             task = self.task_control.load(event.unified_msg_origin)
             state = task_control(task)
@@ -1916,7 +1932,7 @@ class AgentLabPlugin(Star):
             )
         runtime_text = ""
         if plan_json.strip():
-            runtime_text = "\n" + self.task_control.submit_plan(event, plan_json)
+            runtime_text = "\n" + await self.task_control.submit_plan(event, plan_json)
         else:
             try:
                 runtime_text = "\n" + await self.task_control.propose(event, task.task_id)
@@ -2562,6 +2578,7 @@ class AgentLabPlugin(Star):
         internal_block = {"agent_lab_enter_mode", "agent_lab_tick", "agent_lab_set_heartbeat"}
         essential = {
             "agent_lab_project",
+            "agent_lab_read_handoff",
             "agent_lab_ask_question",
             "agent_lab_checkpoint",
             "agent_lab_record_report",
@@ -7981,7 +7998,7 @@ class AgentLabPlugin(Star):
         if action == "plan":
             if int(payload.get("expected_version", -1)) != int(task_control(task).get("version", 0)):
                 raise ValueError("计划版本已更新，请刷新后重新核对草稿。")
-            message = self.task_control.submit_plan(event, str(payload.get("steps_json") or "[]"), str(payload.get("constraints") or ""))
+            message = await self.task_control.submit_plan(event, str(payload.get("steps_json") or "[]"), str(payload.get("constraints") or ""))
         elif action == "steer":
             message = self.task_control.steer(umo, str(payload.get("message") or ""), task.task_id)
         elif action == "reconcile":

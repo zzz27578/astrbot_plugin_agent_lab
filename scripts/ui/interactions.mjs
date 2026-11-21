@@ -43,12 +43,17 @@ try{
  check('no project toolbar shortcut opens a settings dialog',await frame.getByRole('button',{name:'运行设置',exact:true}).count()===0);
  await frame.getByRole('button',{name:'开发保护',exact:true}).click();
  const settings=frame.getByRole('region',{name:'运行设置'});
+ check('development settings expose 1M context and stage handoff defaults',await settings.getByLabel('任务上下文容量（Token）').inputValue()==='1000000'&&await settings.getByLabel('阶段连续轮数上限').inputValue()==='8');
+ await settings.getByLabel('整理触发比例（%）').fill('65');
+ await settings.getByLabel('阶段连续轮数上限').fill('5');
+ await settings.getByLabel('交接摘要最多字数').fill('4000');
  await settings.getByLabel('AstrBot 原生每轮工具上限').fill('24');
  await settings.getByLabel('预计绝对路径（每行一项）').fill('/project\n/reference');
  await settings.getByRole('button',{name:'保存运行设置'}).click();
  await settings.getByRole('button',{name:'保存运行设置'}).waitFor();
  check('project execution settings are inline',await frame.getByRole('dialog').count()===0);
  check('project settings save native limit and preserve multiline scope',fixture.requests.some(r=>r.body.action==='save_execution_settings'&&r.body.native_steps==='24'&&r.body.settings.roots.join(',')==='/project,/reference'));
+ check('stage handoff limits are persisted with project settings',fixture.requests.some(r=>r.body.action==='save_execution_settings'&&r.body.settings.continuity.context_tokens==='1000000'&&r.body.settings.continuity.max_stage_ticks==='5'&&r.body.settings.continuity.context_percent==='65'&&r.body.settings.continuity.summary_chars==='4000'));
  await frame.getByRole('button',{name:'摘要与存储',exact:true}).click();
  const summary=frame.getByRole('region',{name:'摘要互通'});
  const daily=summary.getByLabel('日常聊天引用当前项目摘要最多字数');
@@ -64,6 +69,7 @@ try{
  await page.screenshot({path:path.join(out,'project-summary-settings.png')});
  await frame.getByRole('button',{name:'开发保护',exact:true}).click();
  check('native limit is read back when project settings are reopened',await settings.getByLabel('AstrBot 原生每轮工具上限').inputValue()==='24');
+ check('stage handoff limits survive reopening settings',await settings.getByLabel('阶段连续轮数上限').inputValue()==='5'&&await settings.getByLabel('整理触发比例（%）').inputValue()==='65'&&await settings.getByLabel('交接摘要最多字数').inputValue()==='4000');
  await page.screenshot({path:path.join(out,'project-execution-settings.png')});
  await page.setViewportSize({width:820,height:900});
  check('inline runtime settings fit the narrow project pane',await settings.evaluate(el=>el.scrollWidth<=el.clientWidth+1));

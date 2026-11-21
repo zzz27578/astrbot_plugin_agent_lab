@@ -1,6 +1,6 @@
 {
   "name": "agent-lab-ui-checks",
-  "version": "0.2.6",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "scripts": {

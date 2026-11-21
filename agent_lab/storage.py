@@ -544,6 +544,12 @@ class AgentLabStorage:
             lines.extend(f"- [{step.get('status')}] {step.get('id')}: {step.get('title')}\n  {step.get('instruction')}\n  Evidence: {step.get('evidence', [])}"
                          for step in plan.get("steps", []))
             lines.extend(["", "## Task Constraints", *[f"- {text}" for text in plan.get("constraints", [])]])
+            lanes = plan.get("continuity", {}).get("lanes", {})
+            if lanes:
+                lines.extend(["", "## Stage Handoffs"])
+                for lane, saved in lanes.items():
+                    lines.extend([f"### {lane or 'main'} · {saved.get('stage', '-')}",
+                                  f"Record: {saved.get('record_path', '-')}", saved.get("summary", "暂无交接摘要。")])
         lines.append("")
         return "\n".join(lines)
 

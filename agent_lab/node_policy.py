@@ -47,7 +47,9 @@ async def execute_with_policy(owner, ctx):
         approval["status"] = "consumed"
     journaled = action in EXTERNAL_ACTIONS
     record = {"id": new_id("node"), "name": action, "status": "started", "time": now_iso(),
-              "step_id": state.get("current_step_id"), "plan_version": version, "arguments": ctx.node}
+              "step_id": state.get("current_step_id"), "plan_version": version, "arguments": ctx.node,
+              "authorization_version": state.get("authorization_version", state.get("approved_version", 0)),
+              "step_revision": next((s.get("revision", 0) for s in state.get("steps", []) if s["id"] == state.get("current_step_id")), 0)}
     if journaled:
         state.setdefault("journal", []).append(record)
     # Cursor/variables live on ctx.task; commit before awaiting any executor.

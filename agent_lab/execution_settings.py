@@ -5,6 +5,7 @@ import asyncio
 from copy import deepcopy
 
 from .models import TaskBudget
+from .continuity import DEFAULTS as CONTINUITY_DEFAULTS, LIMITS as CONTINUITY_LIMITS
 
 BUDGET_LIMITS = {
     "max_nodes_per_tick": (1, 200), "max_seconds_per_tick": (1, 3600),
@@ -41,7 +42,11 @@ def normalize(payload):
     task_prompt = str(payload.get("task_prompt") or "").strip()
     if len(task_prompt) > 4000:
         raise ValueError("任务指引不能超过 4000 字。")
-    return {"mode": mode, "roots": lines(payload.get("roots", [])),
+    continuity = payload.get("continuity", {})
+    if not isinstance(continuity, dict) or set(continuity) - set(CONTINUITY_LIMITS):
+        raise ValueError("请选择有效的阶段交接设置。")
+    continuity = {key: integer(continuity.get(key, value), *CONTINUITY_LIMITS[key]) for key, value in CONTINUITY_DEFAULTS.items()}
+    return {"mode": mode, "roots": lines(payload.get("roots", [])), "continuity": continuity,
             "warnings": lines(payload.get("warnings", [])), "task_prompt": task_prompt,
             "budget": {key: integer(value, *BUDGET_LIMITS[key]) for key, value in budget.items() if key in BUDGET_LIMITS}}
 

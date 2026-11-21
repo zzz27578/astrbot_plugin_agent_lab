@@ -8,10 +8,12 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from copy import deepcopy
 from typing import Any
 
 from .models import ApprovalRequest, now_iso
-from .execution_settings import lines
+from .execution_settings import BUDGET_LIMITS, integer, lines
+from .continuity import working_context
 
 
 def control(task) -> dict:
@@ -30,6 +32,8 @@ def prompt(task) -> str:
         "constraints": state.get("constraints", []),
         "current_step_id": state.get("current_step_id", ""),
         "workflow": state.get("workflow", "none"), "next_action": task.next_step,
+        "stage_memory": working_context(task),
+        "recent_plan_changes": state.get("plan_changes", [])[-4:],
         "execution_scope": {"mode": state.get("execution_settings", {}).get("mode", "standard"),
                             "roots": state.get("execution_settings", {}).get("roots", []) + state.get("scope_roots", []),
                             "warnings": state.get("execution_settings", {}).get("warnings", []) + state.get("risk_lines", []),
@@ -39,7 +43,7 @@ def prompt(task) -> str:
         "recent_tool_evidence": [{"id": r["id"], "name": r.get("name"), "status": r.get("status"),
                                   "step_id": r.get("step_id"), "result": str(r.get("result", ""))[:1000]}
                                  for r in state.get("journal", [])[-8:]],
-        "instruction": "按批准计划执行，优先结构化搜索、读写和常规测试；同样路径与查询不要无理由重读。范围外普通关联操作只提醒。危险操作先汇总成一批，用 agent_lab_request_approval 的 operations_json 提交确切工具与参数，中文说明影响和恢复方式。不要先调用危险工具撞审批，也不要改写已拒绝的同一动作后重试。关键成果与验证完成后使用 agent_lab_checkpoint；无画布时不调用流程推进。只有缺少关键答案时反问。",
+        "instruction": "按当前有效计划执行，阶段按实际任务划分，不必凑固定数量。优先结构化搜索、读写和常规测试；同样路径与查询不要无理由重读。普通拆分、重排、补测试可用 agent_lab_submit_plan 修订并说明原因，涉及目标、验收条件、预算或解除用户约束才重新审批。返工已完成步骤需提供 reopen_reason。范围外普通关联操作只提醒。危险操作先汇总成一批，用 agent_lab_request_approval 的 operations_json 提交确切工具与参数，中文说明影响和恢复方式。不要先调用危险工具撞审批，也不要改写已拒绝的同一动作后重试。阶段内及时用 agent_lab_checkpoint 保存实际成果、决定原因、文件位置、验证和遗留事项；完成阶段后自动交接，不能把整理历史当作完成阶段。无画布时不调用流程推进。只有缺少关键答案时反问。",
     }, ensure_ascii=False)
 
 
@@ -67,7 +71,7 @@ class TaskControl:
         task.next_step = "Bot 调用 agent_lab_submit_plan 提交具体步骤，管理员批准后自动推进。"
         task.set_wait(wait_reason="need_plan", message=task.next_step, source="task_control")
 
-    def submit_plan(self, event, steps_json: str, constraints: str = "") -> str:
+    async def submit_plan(self, event, steps_json: str, constraints: str = "") -> str:
         task = self.load(event.unified_msg_origin)
         state = control(task)
         if not state or "owner_id" not in state:
@@ -76,6 +80,10 @@ class TaskControl:
             state = control(task)
             state["project_id"] = project_id
         raw = json.loads(steps_json)
+        proposal = raw if isinstance(raw, dict) else {}
+        if set(proposal) - {"steps", "scope_roots", "risk_lines", "cleanup_paths", "change_reason",
+                            "goal", "completion_conditions", "budget", "remove_constraints"}:
+            raise ValueError("计划不能修改权限或运行配置；请通过项目设置由管理员调整。")
         scope_roots = state.get("scope_roots", [])
         risk_lines = state.get("risk_lines", [])
         cleanup_paths = []
@@ -95,26 +103,97 @@ class TaskControl:
             identifier = str(item.get("id") or f"step_{index+1}")
             title = str(item.get("title") or "").strip()
             instruction = str(item.get("instruction") or title).strip()
-            if not title or identifier in ids or len(instruction) > 4000:
+            if not title or len(title) > 300 or not identifier or len(identifier) > 80 or identifier in ids or len(instruction) > 4000:
                 raise ValueError("步骤需有名称、唯一 ID，说明不能超过4000字符。")
             ids.add(identifier)
             previous = old.get(identifier, {})
-            if previous.get("status") == "completed" and (title != previous["title"] or instruction != previous["instruction"]):
+            reopen = str(item.get("reopen_reason") or "").strip()
+            stage = str(item.get("stage") or previous.get("stage") or identifier).strip()
+            if not stage or len(stage) > 120 or len(reopen) > 2000:
+                raise ValueError("阶段名称需在120字以内，返工说明需在2000字以内。")
+            changed = bool(previous and (title != previous["title"] or instruction != previous["instruction"]))
+            if previous.get("status") == "completed" and changed and not reopen:
                 raise ValueError("已完成步骤不能改写；请另加修正步骤。")
-            steps.append({"id": identifier, "title": title, "instruction": instruction,
-                          "status": previous.get("status", "pending"), "evidence": previous.get("evidence", [])})
+            step = {**deepcopy(previous), "id": identifier, "title": title, "instruction": instruction, "stage": stage,
+                    "status": "pending" if reopen or changed else previous.get("status", "pending"),
+                    "evidence": [] if reopen or changed else previous.get("evidence", []),
+                    "revision": int(previous.get("revision", 0)) + int(bool(reopen or changed))}
+            if reopen:
+                step["reopen_reason"] = reopen
+                step.pop("completed_at", None)
+            steps.append(step)
         if any(step["status"] == "completed" and key not in ids for key, step in old.items()):
             raise ValueError("已完成步骤必须保留。")
         additions = [line.strip() for line in constraints.splitlines() if line.strip()]
         retained = list(dict.fromkeys([*state.get("constraints", []), *additions]))
         if sum(map(len, retained)) > 20000:
             raise ValueError("任务约束过长，请先整理为精简要求。")
+        changes = {}
+        if "goal" in proposal:
+            goal = str(proposal["goal"]).strip()
+            if not goal or len(goal) > 8000:
+                raise ValueError("修改后的目标需在1–8000字之间。")
+            if goal != task.root_goal:
+                changes["goal"] = goal
+        if "completion_conditions" in proposal:
+            conditions = lines(proposal["completion_conditions"], 50)
+            if not conditions:
+                raise ValueError("验收条件不能为空。")
+            if conditions != task.completion_conditions:
+                changes["completion_conditions"] = conditions
+        if "budget" in proposal:
+            budget = proposal["budget"]
+            if not isinstance(budget, dict) or set(budget) - set(BUDGET_LIMITS):
+                raise ValueError("计划包含无效预算字段。")
+            values = {k: integer(v, *BUDGET_LIMITS[k]) for k, v in budget.items()}
+            if any(getattr(task.budget, k) != v for k, v in values.items()):
+                changes["budget"] = values
+        removed = lines(proposal.get("remove_constraints", []), 50)
+        if any(value not in state.get("constraints", []) for value in removed):
+            raise ValueError("只能申请解除当前已有的用户约束。")
+        if removed:
+            changes["constraints"] = [c for c in retained if c not in removed]
+        authorized = bool(state.get("version") and state.get("approved_version") == state.get("version"))
+        routine, review_reason = False, str(proposal.get("change_reason") or "提交任务计划")[:2000]
+        previous_snapshot = deepcopy(state)
+        if authorized:
+            if task.pending_approvals() or any(r.get("status") in {"started", "unknown"} for r in state.get("journal", [])):
+                raise ValueError("请先处理待审批操作或未知结果，再修订计划。")
+            if (steps == state.get("steps", []) and retained == state.get("constraints", [])
+                    and scope_roots == state.get("scope_roots", []) and risk_lines == state.get("risk_lines", [])
+                    and not cleanup_paths and not changes):
+                return "计划内容未变，继续当前步骤。"
+            if not changes and not cleanup_paths:
+                routine, review_reason = await self._review_revision(event, task, steps, retained, review_reason)
+                current = self.load(task.umo, task.task_id)
+                if control(current) != previous_snapshot or current.status != task.status:
+                    raise ValueError("审阅期间任务记录已变化，请读取最新计划后重试。")
+                task, state = current, control(current)
+        # Full revisions, including old summaries/evidence, are stored outside
+        # the injected prompt. Routine edits do not expand execution authority.
+        revision_id = f"plan_{int(state.get('version', 0))+1}"
+        revision_path = self.owner.storage.task_memory_dir(task.umo, task.task_id) / "plans" / f"{revision_id}.json"
+        self.owner.storage._write_json(revision_path, json.loads(self.owner._redact_known_secrets(json.dumps({
+            "before": previous_snapshot.get("steps", []), "after": steps, "changes": changes,
+            "reason": review_reason, "routine": routine, "created_at": now_iso()}, ensure_ascii=False))))
         for approval in task.approvals:
             if approval.get("status") in {"pending", "approved"} and approval.get("approval_type") in {"task_plan", "tool_call", "tool_batch"}:
                 approval["status"] = "expired"
+        previous_authority = state.get("authorization_version", state.get("approved_version", 0))
         state.update(version=int(state.get("version", 0)) + 1, approved_version=0,
                      steps=steps, constraints=retained, scope_roots=scope_roots,
-                     risk_lines=risk_lines, approved_cleanup_paths=[], phase="awaiting_plan", human_paused=False)
+                     risk_lines=risk_lines, phase="awaiting_plan")
+        state.setdefault("plan_changes", []).append({"version": state["version"], "reason": review_reason,
+            "routine": routine, "record_path": str(revision_path.relative_to(self.owner.storage.root)), "time": now_iso()})
+        state["plan_changes"] = state["plan_changes"][-8:]
+        if routine:
+            state.update(approved_version=state["version"], authorization_version=previous_authority, phase="executing")
+            state.setdefault("continuity", {}).setdefault("lanes", {}).setdefault("", {})["pending_reason"] = "plan_revised"
+            task.next_step = next((s["instruction"] for s in steps if s["status"] != "completed"), "核对全部成果并结束归档")
+            task.add_log("plan_revised", f"v{state['version']}: {review_reason}")
+            self.owner.storage.save_task(task)
+            return f"计划 v{state['version']} 已调整并记录：{review_reason}。继续当前任务，原权限和累计预算保留。"
+        state["approved_cleanup_paths"] = []
         approval = ApprovalRequest(operation=f"批准任务计划 v{state['version']}", reason=task.root_goal,
             impact="\n".join(f"{i+1}. {s['title']}: {s['instruction']}" for i, s in enumerate(steps)),
             approval_type="task_plan")
@@ -127,9 +206,14 @@ class TaskControl:
             approval.impact += "\n风险警告线：" + "、".join(risk_lines)
         if cleanup_paths:
             approval.impact += "\n同时申请清理这些明确文件（不含递归删除）：\n" + "\n".join(cleanup_paths)
+        if authorized:
+            approval.impact += "\n调整原因：" + review_reason
+        if changes:
+            approval.impact += "\n需要确认的变化：" + json.dumps(changes, ensure_ascii=False)
         row = approval.to_dict()
         row["plan_version"] = state["version"]
         row["cleanup_paths"] = cleanup_paths
+        row["changes"] = changes
         task.approvals.append(row)
         task.status = "paused"
         task.next_step = f"/al approve {approval.approval_id}"
@@ -137,6 +221,42 @@ class TaskControl:
         task.add_log("plan_submitted", f"version={state['version']}")
         self.owner.storage.save_task(task)
         return f"计划 v{state['version']} 已保存，执行前须管理员批准。\n{approval.impact}\n{task.next_step}"
+
+    async def _review_revision(self, event, task, steps, constraints, reason):
+        """Compare actual plans with the immutable request using a tool-free review."""
+        if task.budget.max_total_tokens and task.budget.tokens_used >= task.budget.max_total_tokens:
+            raise ValueError("任务总预算已用尽，请先由管理员调整额度。")
+        provider_id = await self.owner.context.get_current_chat_provider_id(task.umo)
+        response = await self.owner.context.llm_generate(chat_provider_id=provider_id,
+            prompt=json.dumps({"goal": task.root_goal, "acceptance": task.completion_conditions,
+                "constraints": constraints, "old_steps": control(task).get("steps", []), "new_steps": steps,
+                "stated_reason": reason}, ensure_ascii=False),
+            system_prompt="审阅任务清单修改，不执行操作，也不批准权限。比较实际前后差异与用户目标、验收和约束，不能只相信修改者声称普通调整。仅拆分、重排、补充排查/测试、保留原目标的返工是普通调整；改变交付目标、取消必要验收、引入费用或放宽用户要求须确认。不确定也须确认。返回JSON：routine布尔值、reason中文简述实际差异。")
+        # Persist model accounting without replacing concurrently updated state.
+        latest = self.load(task.umo, task.task_id)
+        usage = getattr(response, "usage", None)
+        if usage:
+            latest.add_token_usage(usage)
+            consume = getattr(self.owner, "_consume_token_budget", None)
+            exhausted = consume(latest, usage) if consume else ""
+            if latest.budget.max_total_tokens and latest.budget.tokens_used >= latest.budget.max_total_tokens:
+                exhausted = f"任务 Token 总预算已用尽：{latest.budget.tokens_used}/{latest.budget.max_total_tokens}"
+                pause = getattr(self.owner, "_pause_task_for_budget", None)
+                if pause:
+                    pause(latest, exhausted)
+            self.owner.storage.save_task(latest)
+            if exhausted:
+                raise ValueError(exhausted)
+        text = str(response.completion_text or "").strip()
+        if text.startswith("```"):
+            text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+        try:
+            result = json.loads(text)
+            if not isinstance(result, dict) or not isinstance(result.get("routine"), bool) or not str(result.get("reason") or "").strip():
+                raise ValueError("invalid review")
+            return result["routine"], self.owner._redact_known_secrets(str(result["reason"]))[:1000]
+        except (ValueError, TypeError):
+            return False, "无法自动确认此次修改是否保留全部交付要求，请管理员核对。"
 
     async def propose(self, event, task_id: str):
         """Draft using the source bot's already configured model, without tools."""
@@ -150,7 +270,7 @@ class TaskControl:
                                "projects": [{"id": p["project_id"], "title": p["title"], "category": p["category"]}
                                             for p in self.owner.projects.index()["projects"] if p.get("source_umo") == task.umo],
                                "clarifications": control(task).get("questions", [])[-4:]}, ensure_ascii=False),
-            system_prompt="为当前Bot的任务制定具体计划，不执行操作。返回JSON对象：steps数组(2–8步id/title/instruction)、scope_roots（已知的预计绝对路径）、risk_lines（额外风险线，需审批用 审批:工具名或路径通配，其余作说明）、cleanup_paths（预计清理的具体文件绝对路径，可省略）、project_id、project_title、category。仅关键目标缺失到无法规划时返回question、options、recommendation。不编造路径，最后包含成果核对，用中文。")
+            system_prompt="为当前Bot的任务制定具体计划，不执行操作。按实际工作划分阶段，不凑固定数量。返回JSON对象：steps数组(id/title/instruction，可用相同stage名称将几个步骤归入一个阶段)、scope_roots（已知的预计绝对路径）、risk_lines（额外风险线，需审批用 审批:工具名或路径通配，其余作说明）、cleanup_paths（预计清理的具体文件绝对路径，可省略）、project_id、project_title、category。仅关键目标缺失到无法规划时返回question、options、recommendation。不编造路径，最后包含成果核对，用中文。")
         latest = self.load(task.umo, task_id)
         if control(latest).get("version") or control(latest).get("human_paused"):
             return "任务状态已变化，未覆盖计划。"
@@ -173,7 +293,7 @@ class TaskControl:
                     self.owner.projects.attach(latest, title=str(proposal["project_title"])[:100], category=str(proposal.get("category") or "项目"))
                 self.owner.storage.save_task(latest)
             text = json.dumps({key: proposal[key] for key in ("steps", "scope_roots", "risk_lines", "cleanup_paths") if key in proposal}, ensure_ascii=False)
-        return self.submit_plan(event, text)
+        return await self.submit_plan(event, text)
 
     def approval(self, task, row: dict, approved: bool):
         state = control(task)
@@ -181,7 +301,17 @@ class TaskControl:
             if row.get("plan_version") != state.get("version"):
                 raise ValueError("计划已变更，请审阅最新版本。")
             if approved:
-                state.update(approved_version=state["version"], approved_cleanup_paths=row.get("cleanup_paths", []), phase="executing")
+                state.update(approved_version=state["version"], authorization_version=state["version"],
+                             approved_cleanup_paths=row.get("cleanup_paths", []), phase="executing")
+                changes = row.get("changes", {})
+                if "goal" in changes:
+                    task.root_goal = changes["goal"]
+                if "completion_conditions" in changes:
+                    task.completion_conditions = changes["completion_conditions"]
+                if "constraints" in changes:
+                    state["constraints"] = changes["constraints"]
+                for key, value in changes.get("budget", {}).items():
+                    setattr(task.budget, key, value)
         if not approved:
             state["human_paused"] = True
 
@@ -193,15 +323,25 @@ class TaskControl:
         step = next((row for row in state["steps"] if row["id"] == step_id), None)
         if not step or step_id != state.get("current_step_id"):
             raise ValueError("只能更新当前未完成步骤，请先读取任务状态。")
+        if not summary.strip() or len(summary) > 4000:
+            raise ValueError("检查点说明需在1–4000字之间，请保留可继续执行的关键事实。")
         evidence = json.loads(evidence_json or "[]")
         if not isinstance(evidence, list):
             raise ValueError("证据必须是工具记录 ID 的 JSON 数组。")
+        authority = state.get("authorization_version", state["approved_version"])
         valid = {row["id"] for row in state.get("journal", []) if row.get("status") == "completed"
-                 and row.get("step_id") == step_id and row.get("plan_version") == state["version"]}
+                 and row.get("step_id") == step_id
+                 and row.get("step_revision", 0) == step.get("revision", 0)
+                 and row.get("authorization_version", row.get("plan_version")) == authority}
         if any(item not in valid for item in evidence) or (completed and (not evidence or not summary.strip())):
             raise ValueError("完成步骤需提供本步骤成功工具记录 ID 及结果说明，不能仅复述目标。")
         step.update(status="completed" if completed else "running", summary=summary[:4000],
                     evidence=list(dict.fromkeys([*step.get("evidence", []), *evidence])))
+        if completed:
+            step["completed_at"] = now_iso()
+            stage = step.get("stage") or step_id
+            if all(s.get("status") == "completed" for s in state["steps"] if (s.get("stage") or s["id"]) == stage):
+                state.setdefault("continuity", {}).setdefault("lanes", {}).setdefault("", {})["pending_reason"] = "stage_completed"
         task.last_confirmed_progress = summary[:4000]
         task.next_step = next((s["instruction"] for s in state["steps"] if s["status"] != "completed"), "核对全部成果并结束归档")
         task.add_log("plan_checkpoint", f"{step_id}: {summary[:1000]}")

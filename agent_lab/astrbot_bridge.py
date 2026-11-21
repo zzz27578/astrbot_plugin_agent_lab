@@ -11,6 +11,7 @@ from uuid import uuid5, NAMESPACE_URL
 from .models import ApprovalRequest, new_id, now_iso
 from .task_control import control
 from .task_permissions import apply_mode, assess, signature
+from .continuity import HandoffError, StageContextManager, TaskContinuity, estimate
 
 
 class ExecutionStopped(Exception):
@@ -25,6 +26,7 @@ class AstrBotBridge:
     def __init__(self, owner):
         self.owner = owner
         self._tool_locks = {}
+        self.continuity = TaskContinuity(owner)
 
     def tool(self, name, event=None):
         name = {"astrbot_sandboxed_shell": "astrbot_execute_shell", "astrbot_sandboxed_python": "astrbot_execute_ipython"}.get(name, name)
@@ -165,8 +167,12 @@ class AstrBotBridge:
 
         task = self.check(event, task_id)
         state = control(task)
+        if event.get_extra("agent_lab_boundary_stopped", False):
+            raise ExecutionStopped("检查点已保存，本轮结束；下一轮从最新计划继续。")
         if state.get("input_revision", 0) != event.get_extra("agent_lab_input_revision", state.get("input_revision", 0)):
             raise ExecutionStopped("收到新引导，先结束本轮并重载要求。")
+        if state.get("version") != event.get_extra("agent_lab_plan_version", state.get("version")):
+            raise ExecutionStopped("计划已经调整，先从最新清单继续。")
         tool = self.tool(tool.name, event) or tool
         encoded_args = json.dumps(arguments, ensure_ascii=False, sort_keys=True)
         if self.owner._redact_known_secrets(encoded_args) != encoded_args:
@@ -211,7 +217,9 @@ class AstrBotBridge:
                 raise ExecutionStopped(reason)
         identifier = new_id("call")
         record = {"id": identifier, "name": tool.name, "arguments": arguments, "status": "started", "time": now_iso(),
-                  "plan_version": state.get("version", 0), "step_id": state.get("current_step_id", "")}
+                  "plan_version": state.get("version", 0), "step_id": state.get("current_step_id", ""),
+                  "authorization_version": state.get("authorization_version", state.get("approved_version", 0)),
+                  "step_revision": next((s.get("revision", 0) for s in state.get("steps", []) if s["id"] == state.get("current_step_id")), 0)}
         if not internal:
             state.setdefault("journal", []).append(record)
         if approved_call:
@@ -324,12 +332,29 @@ class AstrBotBridge:
             await manager.db.create_conversation(user_id=task.umo, platform_id=task.umo.split(":", 1)[0], cid=cid, content=[], title="Agent Lab · " + task.root_goal[:80])
         conv = await manager.get_conversation(task.umo, cid)
         contexts = json.loads(conv.history or "[]")
-        if len(contexts) > 40:
-            start = next((i for i in range(len(contexts) - 40, len(contexts)) if contexts[i].get("role") == "user"), None)
-            contexts = contexts[start:] if start is not None else []
+        # Stage/context handoff commits the source and summary before reducing
+        # history. Never silently discard an arbitrary message window here.
+        latest = self.owner.storage.load_active_task(task.umo)
+        if not latest or latest.task_id != task.task_id:
+            raise ExecutionStopped("任务已经结束或切换。")
+        if (control(latest).get("version") != control(task).get("version")
+                or control(latest).get("input_revision", 0) != control(task).get("input_revision", 0)):
+            raise ExecutionStopped("任务计划或指引已变化，请从最新状态继续。")
+        task = latest
+        self.continuity.begin_round(task, lane)
         runner = ToolLoopAgentRunner()
         bridge = self
+        boundary_stopped = False
+        event.set_extra("agent_lab_boundary_stopped", False)
+        def stop_runner():
+            nonlocal boundary_stopped
+            boundary_stopped = True
+            event.set_extra("agent_lab_boundary_stopped", True)
+            stop = getattr(runner, "request_stop", None)
+            if stop:
+                stop()
         event.set_extra("agent_lab_input_revision", control(task).get("input_revision", 0))
+        event.set_extra("agent_lab_plan_version", control(task).get("version"))
         # A subagent keeps its own conversation, but writes tool records into
         # the same task. Tools that mutate the main plan are never delegated.
         if lane:
@@ -343,8 +368,12 @@ class AstrBotBridge:
                     results = await bridge.invoke(event, tool, arguments, task.task_id, count=True, native=True)
                     for result in results:
                         yield result
+                    latest = bridge.owner.storage.load_active_task(task.umo)
+                    if latest and (control(latest).get("version") != control(task).get("version")
+                            or (tool.name == "agent_lab_checkpoint" and arguments.get("completed"))):
+                        stop_runner()
                 except ExecutionStopped as exc:
-                    runner.request_stop()
+                    stop_runner()
                     yield CallToolResult(content=[TextContent(type="text", text=str(exc))], isError=True)
 
         context = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
@@ -353,6 +382,9 @@ class AstrBotBridge:
             def __getattr__(self, name):
                 return getattr(provider, name)
             async def text_chat(self, **kwargs):
+                handoff = kwargs.pop("_agent_lab_handoff", False)
+                if boundary_stopped:
+                    raise ExecutionStopped("检查点已保存，下一轮从最新计划继续。")
                 latest = bridge.check(event, task.task_id, allow_inflight=True)
                 if latest.budget.max_total_tokens and latest.budget.tokens_used >= latest.budget.max_total_tokens:
                     message = f"任务 Token 总预算已用尽：{latest.budget.tokens_used}/{latest.budget.max_total_tokens}"
@@ -373,7 +405,7 @@ class AstrBotBridge:
                             limit = f"任务 Token 总预算已用尽：{latest.budget.tokens_used}/{latest.budget.max_total_tokens}"
                             bridge.owner._pause_task_for_budget(latest, limit)
                         bridge.owner.storage.save_task(latest)
-                        if limit:
+                        if limit and (not handoff or latest.status != "running"):
                             raise BudgetStopped(limit)
                 return response
         metered = MeteredProvider()
@@ -381,9 +413,18 @@ class AstrBotBridge:
         await runner.reset(provider=metered, request=request, run_context=context, tool_executor=Executor(), agent_hooks=hooks,
                            streaming=False, llm_compress_provider=metered, llm_compress_keep_recent_ratio=0.15,
                            enforce_max_turns=-1)
+        manager_name = next((name for name in ("request_context_manager", "context_manager") if hasattr(runner, name)), None)
+        if not manager_name:
+            raise HandoffError("当前 AstrBot 版本没有可用的上下文整理接口，请升级 AstrBot 后继续。")
+        setattr(runner, manager_name, StageContextManager(self.continuity, event, task.task_id, metered,
+            getattr(runner, manager_name), lane=lane,
+            prompt_tokens=estimate([{"name": tool.name, "description": getattr(tool, "description", ""),
+                                    "parameters": getattr(tool, "parameters", {})} for tool in tools.tools])))
         try:
-            async for _ in runner.step_until_done(max_steps):
-                pass
+            async with aclosing(runner.step_until_done(max_steps)) as stream:
+                async for _ in stream:
+                    if boundary_stopped:
+                        break
         finally:
             history = [msg.model_dump() for msg in context.messages if msg.role != "system"]
             # Persist only complete tool-call groups. An interrupted suffix stays

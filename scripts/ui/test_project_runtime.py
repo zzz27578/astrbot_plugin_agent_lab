@@ -76,12 +76,14 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(data['ok'], data)
             return data['result']
         self.assertEqual((await request('execution_settings'))['native_steps'], 12)
-        await request('save_execution_settings', native_steps=23, settings={'mode': 'full', 'budget': {'max_total_tokens': 0}})
+        await request('save_execution_settings', native_steps=23, settings={'mode': 'full', 'budget': {'max_total_tokens': 0},
+                      'continuity': {'context_tokens': 1000000, 'max_stage_ticks': 5, 'context_percent': 65, 'summary_chars': 4000}})
         self.assertEqual(selected.persisted['agent_runner']['config']['misc'], {'max_steps': 23, 'tool_schema_mode': 'full'})
         self.assertEqual(default['agent_runner']['config']['misc']['max_steps'], 128)
         selected['agent_runner']['config']['misc']['max_steps'] = 29
         settings = await request('execution_settings')
         self.assertEqual((settings['native_steps'], settings['mode'], settings['budget']['max_total_tokens']), (29, 'full', 0))
+        self.assertEqual(settings['continuity'], {'context_tokens': 1000000, 'max_stage_ticks': 5, 'context_percent': 65, 'summary_chars': 4000})
         await request('task_budget', budget={'max_total_tokens': 310000})
         self.assertEqual(self.storage.load_active_task(task.umo).budget.max_total_tokens, 310000)
 
