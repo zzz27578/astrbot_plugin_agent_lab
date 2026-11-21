@@ -38,7 +38,7 @@ export function createFixture(){
      else if(body.action==='create_project'){const id='project_'+Date.now().toString(16);result={project_id:id,title:body.title,category:body.category||'项目',source_umo:body.umo||'',platform_id:body.umo?.split(':')[0]||body.platform_id||'',summary:'',tasks:[],bytes:0,cache_bytes:0,workflow_ids:[],storage_path:`projects/${id}`};projects.push(result);}
      else if(body.action==='update_project'){Object.assign(p,body);result=p;}
      else if(body.action==='execution_settings'){result=p.execution_settings||{mode:'standard',native_steps:12,bound_session:true,roots:[],warnings:[],task_prompt:'',budget:{max_total_tokens:240000,max_tokens_per_tick:12000,max_total_tool_calls:240,max_total_ticks:120,max_nodes_per_tick:6,max_seconds_per_tick:240}};}
-     else if(body.action==='save_execution_settings'){p.execution_settings={...body.settings,native_steps:Number(body.native_steps||12),bound_session:true};result=p;}
+     else if(body.action==='save_execution_settings'){p.execution_settings={...body.settings,native_steps:Number(body.native_steps||p.execution_settings?.native_steps||12),bound_session:true};result=p;}
      else if(body.action==='task_budget'){Object.assign(t.budget,body.budget);result={budget:t.budget};}
      else if(body.action==='save_summary'){p.summary=body.summary;result={message:'已保存'};}
      else if(body.action==='draft_summary')result={summary:'接口梳理已完成；异常处理尚未验证。下一步核对任务暂停与恢复。'};

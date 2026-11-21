@@ -17,6 +17,8 @@ const icon = (name, size = 18) => {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shapes[name] || shapes.task}</svg>`;
 };
 const labels = {running:"执行中",paused:"已暂停",blocked:"待处理",completed:"已交付",cancelled:"已停止",pending:"待审批",approved:"已批准",consumed:"已使用",rejected:"已拒绝",expired:"已失效"};
+const budgetFields = [["max_total_tokens","总 Token 预算",0,50000000],["max_tokens_per_tick","每轮 Token 预算",0,1000000],["max_total_tool_calls","任务工具总上限",0,100000],["max_total_ticks","总轮数",0,100000],["max_nodes_per_tick","每轮节点上限",1,200],["max_seconds_per_tick","每轮秒数",1,3600]];
+const splitLines = value => value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
 export const bytes = value => {const n=Number(value)||0;return n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;};
 
 export class ProjectUI {
@@ -27,6 +29,9 @@ export class ProjectUI {
     this.preferences={default_bot_id:'',progress_by_bot:{}};
     this.expanded = new Set(); this.tab = "tasks"; this.search = ""; this.busy = false;
     this.drafts = new Map();
+    this.execution = new Map();
+    this.summarySaves = new Map();
+    this.summaryStatus = new Map();
     this.selectionVersion = 0;
     document.addEventListener("click", e => {
       const button = e.target.closest("[data-project-action]");
@@ -35,7 +40,7 @@ export class ProjectUI {
       void this.action(button).catch(error => this.notify(error.message, "error"));
     });
     document.addEventListener("input", e => {
-      if (e.target.closest(".project-workspace") && e.target.id) {
+      if (e.target.closest(".project-workspace") && e.target.id && !e.target.matches("[data-summary-setting]")) {
         this.drafts.set(`${this.projectId}:${this.taskId}:${e.target.id}`, e.target.type === "checkbox" ? e.target.checked : e.target.value);
       }
       if (e.target.id === "project-search") {
@@ -43,6 +48,15 @@ export class ProjectUI {
         const cards = document.querySelectorAll("[data-search-text]");
         cards.forEach(card => { card.hidden = !card.dataset.searchText.includes(this.search.toLowerCase()); });
       }
+    });
+    document.addEventListener("change", e => {
+      if (e.target.matches("[data-summary-setting]")) this.saveSummarySetting(e.target);
+      if (e.target.matches("#execution-mode")) this.drafts.set(`${this.projectId}:${this.taskId}:${e.target.id}`, e.target.value);
+    });
+    document.addEventListener("submit", e => {
+      if (!e.target.matches("#project-execution-form")) return;
+      e.preventDefault();
+      void this.action(e.submitter || e.target.querySelector('[data-project-action="save-execution"]')).catch(error => this.notify(error.message, "error"));
     });
   }
   setData(data) {
@@ -90,7 +104,7 @@ export class ProjectUI {
       ${p?this.renderProject(p):this.tab==='storage'?this.renderStorage():this.renderOverview()}
     </div>`;
     if (this.busy) container.querySelectorAll("button").forEach(b => { b.disabled = true; });
-    container.querySelectorAll("input[id],textarea[id]").forEach(el=>{
+    container.querySelectorAll("input[id],textarea[id],select[id]").forEach(el=>{
       const key=`${this.projectId}:${this.taskId}:${el.id}`;
       if(this.drafts.has(key)) { if(el.type==="checkbox")el.checked=this.drafts.get(key);else el.value=this.drafts.get(key); }
     });
@@ -107,16 +121,100 @@ export class ProjectUI {
   renderProject(p) {
     const e=this.esc, task = this.detail?.task;
     const tabs=[["tasks","任务"],["memory","摘要与存储"],["workflows","预案"],["tools","开发保护"]];
-    return `<div class="project-toolbar"><nav>${tabs.map(([id,label])=>`<button class="${this.tab===id?"active":""}" data-project-action="tab" data-tab="${id}">${label}</button>`).join("")}</nav><div class="project-task-actions"><button class="project-text-button" data-project-action="rename" data-project-id="${e(p.project_id)}">编辑分类</button><button class="button secondary" data-project-action="run-settings">运行设置</button></div></div>
+    return `<div class="project-toolbar"><nav>${tabs.map(([id,label])=>`<button class="${this.tab===id?"active":""}" data-project-action="tab" data-tab="${id}">${label}</button>`).join("")}</nav><button class="project-text-button" data-project-action="rename" data-project-id="${e(p.project_id)}">编辑分类</button></div>
       ${this.tab==="tasks"?`<div class="project-task-layout"><section class="project-task-list">${p.tasks.map(t=>`<button class="project-task-row ${t.task_id===this.taskId?"selected":""}" data-project-action="task" data-task-id="${e(t.task_id)}" data-project-id="${e(p.project_id)}"><span class="project-dot ${e(t.status)}"></span><div><strong>${e(t.title)}</strong><p>${e(t.summary||"等待 Bot 记录进展")}</p><small>${e(labels[t.status]||t.status)} · ${bytes(t.bytes)}${t.question_count?" · 等待回答":""}</small></div>${icon("arrow",15)}</button>`).join("")||'<div class="project-empty"><h3>这个项目还没有任务</h3><p>新任务与以往记录分开，交接时只引用摘要。</p></div>'}</section>
       <section class="project-task-detail">${task&&p.tasks.some(t=>t.task_id===task.task_id)?this.renderTask(task):'<div class="project-empty"><h3>选择一个任务</h3><p>查看计划、待回答问题、记录和存储明细。</p></div>'}</section></div>`:""}
       ${this.tab==="memory"?`<section class="project-memory-panel"><div class="project-memory-heading">${icon("storage",24)}<div><h2>存储透明，清理有范围</h2><p>${e(p.storage_path)} · 文件 ${bytes(p.bytes)} · 日志缓存 ${bytes(p.cache_bytes)}</p></div></div>
-        <div class="project-summary"><span class="project-eyebrow">PROJECT SUMMARY</span><p>${e(p.summary||"暂无摘要。选中任务后可让 Bot 草拟，或直接写入项目交接说明。")}</p></div>
-        <label class="project-check"><input type="checkbox" id="project-daily-share" ${p.share_with_daily?"checked":""}/> 日常聊天仅注入本项目最多 800 字摘要</label><button class="button secondary" data-project-action="sharing">保存互通设置</button>
+        <div class="project-summary"><span class="project-eyebrow">项目摘要</span><p>${e(p.summary||"暂无摘要。选中任务后可让 Bot 草拟，或直接写入项目交接说明。")}</p></div>
+        ${this.renderSummarySettings(p)}
         <div class="project-clean-actions"><button class="button secondary" data-project-action="cleanup" data-mode="cache">${icon("storage",16)}预览清理缓存</button><button class="button secondary" data-project-action="cleanup" data-mode="history">删除项目任务历史…</button><button class="button danger" data-project-action="cleanup" data-mode="project">删除项目…</button></div>
         <p class="project-hint">缓存清理保留计划、证据编号和摘要。历史/项目删除会删除对应记录、记忆与任务对话；不会删除开发源码目录。原生对话大小在清理预览中单独计算。所有项目共用的索引与历史记忆文件共 ${bytes(this.data.shared_metadata_bytes)}，不重复分摊到每个项目。</p></section>`:""}
       ${this.tab==="workflows"?`<section class="project-memory-panel"><h2>这个项目的常用预案</h2><p class="project-hint">Bot 按标题和简介选择。没有合适预案可以略过，不影响任务立项。</p><div class="project-workflow-list">${(this.agents||[]).map(a=>`<label><input type="checkbox" name="project-workflow" value="${e(a.agent_id)}" ${(p.workflow_ids||[]).includes(a.agent_id)?"checked":""}/><span><strong>${e(a.name||a.agent_id)}</strong><small>${e(a.description||"暂无简介")}</small></span><button type="button" class="project-text-button" data-project-action="workflow" data-agent-id="${e(a.agent_id)}">${icon("flow",16)}打开画布</button></label>`).join("")}</div><button class="button" data-project-action="save-workflows">保存项目预案关联</button></section>`:""}
-      ${this.tab==="tools"?this.renderDeveloperTools():""}`;
+      ${this.tab==="tools"?this.renderExecutionSettings(p)+this.renderDeveloperTools():""}`;
+  }
+  renderSummarySettings(p) {
+    const e=this.esc;
+    const rows=[
+      ["share_with_daily","daily_summary_chars","日常聊天引用当前项目摘要",false,800,4000],
+      ["share_with_tasks","task_summary_chars","同项目任务引用交接摘要",true,3500,12000],
+    ];
+    return `<section class="project-settings" aria-labelledby="project-summary-settings-title">
+      <div class="project-settings-heading"><h3 id="project-summary-settings-title">摘要互通</h3><span id="project-summary-settings-status" role="status">${e(this.summaryStatus.get(p.project_id)||"自动保存")}</span></div>
+      ${rows.map(([toggle,limit,label,enabled,defaultValue,max])=>`<div class="project-settings-row">
+        <label class="project-check"><input type="checkbox" data-summary-setting="${toggle}" ${(p[toggle]??enabled)?"checked":""}/> ${label}</label>
+        <label class="project-summary-limit"><span>最多字数</span><input type="number" aria-label="${label}最多字数" data-summary-setting="${limit}" value="${e(p[limit]??defaultValue)}" min="1" max="${max}" step="1" required/><span>字</span></label>
+      </div>`).join("")}
+    </section>`;
+  }
+  saveSummarySetting(field) {
+    const key=field.dataset.summarySetting, projectId=this.projectId;
+    const status=(text, error=false)=>{
+      this.summaryStatus.set(projectId,text);
+      const node=this.projectId===projectId&&this.container?.querySelector("#project-summary-settings-status");
+      if(node){node.textContent=text;node.classList.toggle("danger-text",error);}
+    };
+    if(!field.reportValidity()){status(`请输入 ${field.min}–${field.max} 之间的整数。`,true);return;}
+    const value=field.type==="checkbox"?field.checked:field.value;
+    status("保存中…");
+    const save=(this.summarySaves.get(projectId)||Promise.resolve()).then(async()=>{
+      const result=await this.request("update_project",{project_id:projectId,[key]:value});
+      const project=this.allData.projects.find(p=>p.project_id===projectId);
+      if(project)project[key]=result[key];
+    });
+    const pending=save.then(()=>{
+      if(this.summarySaves.get(projectId)===pending) status("已保存");
+    }, error=>{
+      if(this.summarySaves.get(projectId)===pending) status(`未保存：${error.message}`,true);
+      else this.notify(error.message,"error");
+      const node=this.projectId===projectId&&this.container?.querySelector(`[data-summary-setting="${key}"]`);
+      const project=this.allData.projects.find(p=>p.project_id===projectId);
+      if(node&&project&&(node.type==="checkbox"?node.checked:node.value)===value){
+        if(node.type==="checkbox") node.checked=project[key]??(key==="share_with_tasks");
+        else node.value=project[key]??(key==="daily_summary_chars"?800:3500);
+      }
+    }).finally(()=>{if(this.summarySaves.get(projectId)===pending)this.summarySaves.delete(projectId);});
+    this.summarySaves.set(projectId,pending);
+  }
+  renderExecutionSettings(p) {
+    const e=this.esc, current=this.execution.get(p.project_id);
+    const number=(key,title,min,max,value)=>`<label>${title}<input id="execution-${key}" name="${key}" type="number" min="${min}" max="${max}" step="1" required value="${e(value)}" /></label>`;
+    return `<section id="project-execution-settings" class="project-settings project-execution-settings" aria-labelledby="project-execution-title">
+      <div class="project-settings-heading"><h2 id="project-execution-title">运行设置</h2></div>
+      ${!current?'<p role="status">正在读取运行设置…</p>':current.error?`<p class="danger-text">${e(current.error)}</p><button type="button" class="button secondary" data-project-action="reload-execution">重试</button>`:`
+      <form id="project-execution-form">
+        <fieldset><legend>权限与范围</legend>
+          <div class="project-settings-grid">
+            <label>权限档位<select id="execution-mode" name="mode">${[["readonly","只读"],["standard","标准开发"],["full","完全访问 · 保留高危审批"]].map(([id,label])=>`<option value="${id}" ${current.mode===id?"selected":""}>${label}</option>`).join("")}</select></label>
+            <label>预计绝对路径（每行一项）<textarea id="execution-roots" name="roots" rows="2">${e(current.roots.join("\n"))}</textarea></label>
+            <label>风险警告线（每行一项）<textarea id="execution-warnings" name="warnings" rows="2" placeholder="审批:工具名或路径通配">${e(current.warnings.join("\n"))}</textarea></label>
+            <label>任务指引<textarea id="execution-task_prompt" name="task_prompt" rows="2" maxlength="4000">${e(current.task_prompt)}</textarea></label>
+          </div>
+        </fieldset>
+        <fieldset><legend>预算与上限</legend>
+          <div class="project-settings-grid">
+            ${number("native_steps","AstrBot 原生每轮工具上限",1,10000,current.native_steps)}
+            ${budgetFields.map(([key,label,min,max])=>number(key,label+(min===0?"（0 不限）":""),min,max,current.budget[key])).join("")}
+          </div>
+          <p class="project-hint">原生上限写入${current.bound_session?"项目会话使用的 AstrBot 配置档":" AstrBot 默认配置档"}，影响共用此档的会话。其余设置由新任务继承。</p>
+        </fieldset>
+        <div class="project-settings-footer"><button type="submit" class="button secondary" data-project-action="save-execution">保存运行设置</button></div>
+      </form>`}
+    </section>`;
+  }
+  async loadExecution(projectId) {
+    this.execution.delete(projectId);
+    const renderSection=()=>{
+      const section=this.projectId===projectId&&this.tab==="tools"&&this.container?.querySelector("#project-execution-settings");
+      const project=this.data.projects.find(p=>p.project_id===projectId);
+      if(section&&project) section.outerHTML=this.renderExecutionSettings(project);
+    };
+    renderSection();
+    try {
+      this.execution.set(projectId,await this.request("execution_settings",{project_id:projectId}));
+    } catch(error) {
+      this.execution.set(projectId,{error:error.message});
+    }
+    renderSection();
   }
   renderDeveloperTools() {
     const e=this.esc;
@@ -175,13 +273,14 @@ export class ProjectUI {
       button.classList.toggle("open",open);return;
     }
     if(action==="select"){this.projectId=button.dataset.projectId;this.taskId="";this.detail=null;this.tab="tasks";this.expanded.add(this.projectId);this.open();return;}
-    if(action==="tab"){this.tab=button.dataset.tab;this.open();return;}
+    if(action==="tab"){this.tab=button.dataset.tab;this.open();if(this.tab==="tools")await this.loadExecution(this.projectId);return;}
+    if(action==="reload-execution"){await this.loadExecution(this.projectId);return;}
     if(action==="workflow"){this.workflow(button.dataset.agentId);return;}
     this.busy=true;button.disabled=true;button.setAttribute("aria-busy","true");
     let rerender=true;
     try {
       if(action==="task"){this.projectId=button.dataset.projectId;await this.showTask(button.dataset.taskId);}
-      else if(action==="refresh"){await this.refresh();if(this.taskId)await this.showTask(this.taskId);}
+      else if(action==="refresh"){await this.refresh();if(this.tab==="tools")await this.loadExecution(this.projectId);else if(this.taskId)await this.showTask(this.taskId);}
       else if(action==="create") {
         const selected=this.identities.find(b=>b.platform_id===this.identityId);
         const values=await this.modal({title:"新建项目",message:`当前查看身份：${this.identityLabel()}。项目会绑定来源中的平台实例；留空可稍后由 Bot 立项时绑定。`,fields:[{label:"项目名称",value:"",placeholder:"例如：Agent Lab 插件"},{label:"类型",value:"插件开发"},{label:"来源 UMO",value:selected?.sessions?.[0]?.umo||""}]});
@@ -202,8 +301,7 @@ export class ProjectUI {
         if(!values)return;
         await this.api("/api/task/start",{method:"POST",body:{goal:values[0],umo:values[1],project_id:p.project_id,workflow_mode:"none"}});
         await this.refresh();this.notify("已立项，Bot将草拟计划；批准后继续。");
-      } else if(action==="sharing") {await this.request("update_project",{share_with_daily:document.getElementById("project-daily-share").checked});await this.refresh();}
-      else if(action==="save-workflows") {await this.request("update_project",{workflow_ids:[...document.querySelectorAll('[name="project-workflow"]:checked')].map(el=>el.value)});await this.refresh();}
+      } else if(action==="save-workflows") {await this.request("update_project",{workflow_ids:[...document.querySelectorAll('[name="project-workflow"]:checked')].map(el=>el.value)});await this.refresh();}
       else if(action==="activate"){await this.request("activate");await this.refresh();await this.showTask(this.taskId);}
       else if(["pause","resume"].includes(action)) {
         const t=this.detail.task;await this.api(`/api/task/${action}`,{method:"POST",body:{umo:t.umo,task_id:t.task_id}});await this.refresh();await this.showTask(t.task_id);
@@ -212,24 +310,13 @@ export class ProjectUI {
         if(!answer)return;await this.request(action,{summary:answer[0]});await this.refresh();await this.showTask(this.taskId);
       } else if(action==="steer") {
         const t=this.detail.task;await this.api("/api/task/control",{method:"POST",body:{umo:t.umo,task_id:t.task_id,action:"steer",message:document.getElementById("project-guidance").value}});await this.showTask(t.task_id);
-      } else if(action==="run-settings") {
-        const current=await this.request("execution_settings");
-        const fields=[
-          {label:"权限档位",type:"select",value:current.mode,options:[["readonly","只读"],["standard","标准开发"],["full","完全访问 · 保留高危审批"]]},
-          {label:"AstrBot 原生每轮工具上限",type:"number",value:current.native_steps,min:1,max:10000},
-          {label:"预计绝对路径（每行一项）",type:"textarea",value:current.roots.join("\n")},
-          {label:"风险警告线（每行一项）",type:"textarea",value:current.warnings.join("\n"),placeholder:"审批:工具名或路径通配"},
-          {label:"任务指引",type:"textarea",value:current.task_prompt},
-        ];
-        const budgetLabels=[["max_total_tokens","总 Token 预算",0,50000000],["max_tokens_per_tick","每轮 Token 预算",0,1000000],["max_total_tool_calls","任务工具总上限",0,100000],["max_total_ticks","总轮数",0,100000],["max_nodes_per_tick","每轮节点上限",1,200],["max_seconds_per_tick","每轮秒数",1,3600]];
-        for(const [key,label,min,max] of budgetLabels)fields.push({label:`${label}${min===0?"（0 不限）":""}`,type:"number",min,max,value:current.budget[key]});
-        const target=current.bound_session?"项目会话使用的 AstrBot 配置档":"AstrBot 默认配置档（项目尚未绑定会话）";
-        const values=await this.modal({title:"项目运行设置",message:`原生每轮上限写入${target}。共用该档的会话与任务同步生效。其余设置供新任务继承。`,fields,confirmText:"保存设置"});
-        if(!values)return;
-        const [mode,native,roots,warnings,task_prompt,...limits]=values;
-        const split=value=>value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
-        await this.request("save_execution_settings",{...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode,roots:split(roots),warnings:split(warnings),task_prompt,budget:Object.fromEntries(budgetLabels.map(([key],i)=>[key,limits[i]]))}});
-        await this.refresh();this.notify("项目运行设置已保存。");
+      } else if(action==="save-execution") {
+        const form=button.closest("form"), projectId=this.projectId, taskId=this.taskId;
+        if(!form.reportValidity()) {rerender=false;return;}
+        const fields=new FormData(form), current=this.execution.get(projectId), native=fields.get("native_steps");
+        await this.request("save_execution_settings",{project_id:projectId,...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode:fields.get("mode"),roots:splitLines(fields.get("roots")),warnings:splitLines(fields.get("warnings")),task_prompt:fields.get("task_prompt"),budget:Object.fromEntries(budgetFields.map(([key])=>[key,fields.get(key)]))}});
+        form.querySelectorAll("[id]").forEach(el=>this.drafts.delete(`${projectId}:${taskId}:${el.id}`));
+        await this.loadExecution(projectId);this.notify("项目运行设置已保存。");
       } else if(action==="task-budget") {
         const t=this.detail.task, limits=t.budget||{};
         const fields=[["max_total_tokens","总 Token 预算",50000000],["max_total_tool_calls","工具总上限",100000],["max_total_ticks","总轮数",100000]];

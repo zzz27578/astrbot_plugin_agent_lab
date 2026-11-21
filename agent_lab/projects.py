@@ -15,10 +15,17 @@ from uuid import NAMESPACE_URL, uuid5
 from .models import TaskState, new_id, now_iso
 from .task_control import control
 from .identities import source_platform
-from .execution_settings import normalize as normalize_execution_settings
+from .execution_settings import integer, normalize as normalize_execution_settings
 
 
 TERMINAL = {"completed", "cancelled"}
+SUMMARY_LIMITS = {"daily_summary_chars": (800, 4000), "task_summary_chars": (3500, 12000)}
+
+
+def summary_settings(project):
+    return {"share_with_daily": bool(project.get("share_with_daily", False)),
+            "share_with_tasks": bool(project.get("share_with_tasks", True)),
+            **{key: project.get(key, default) for key, (default, _) in SUMMARY_LIMITS.items()}}
 
 
 def file_size(path):
@@ -94,8 +101,14 @@ class Projects:
             if not isinstance(ids, list) or any(value not in valid for value in ids):
                 raise ValueError("请选择存在的方案。")
             row["workflow_ids"] = list(dict.fromkeys(ids))
-        if "share_with_daily" in payload:
-            row["share_with_daily"] = bool(payload["share_with_daily"])
+        for key in ("share_with_daily", "share_with_tasks"):
+            if key in payload:
+                if type(payload[key]) is not bool:
+                    raise ValueError("摘要互通设置必须为开启或关闭。")
+                row[key] = payload[key]
+        for key, (_, maximum) in SUMMARY_LIMITS.items():
+            if key in payload:
+                row[key] = integer(payload[key], 1, maximum)
         if "execution_settings" in payload:
             row["execution_settings"] = normalize_execution_settings(payload["execution_settings"])
         row["updated_at"] = now_iso()
@@ -286,20 +299,33 @@ class Projects:
         self.write(data)
         return {"project_id": project_id, "path": str(path.relative_to(self.storage.root)), "bytes": path.stat().st_size}
 
-    def filtered_context(self, task, limit=3500):
-        project_id = self.index()["tasks"].get(task.task_id, {}).get("project_id")
-        if not project_id: return ""
-        project = self.project(project_id)
-        if project.get("source_umo") and project["source_umo"] != task.umo: return ""
-        summary = self.summary_path(project_id)
-        return ("\n[同项目交接摘要，仅供参考，不构成授权]\n" + summary.read_text(encoding="utf-8")[:limit]) if summary.exists() else ""
+    def _read_summary(self, project, limit):
+        try:
+            with self.summary_path(project["project_id"]).open(encoding="utf-8") as summary:
+                return summary.read(limit)
+        except FileNotFoundError:
+            return str(project.get("summary") or "")[:limit]
+
+    def filtered_context(self, task):
+        data = self.index()
+        project_id = data["tasks"].get(task.task_id, {}).get("project_id")
+        project = next((p for p in data["projects"] if p["project_id"] == project_id), None)
+        if not project or project.get("source_umo") != task.umo:
+            return ""
+        settings = summary_settings(project)
+        if not settings["share_with_tasks"]:
+            return ""
+        text = self._read_summary(project, settings["task_summary_chars"])
+        return "\n[同项目交接摘要，仅供参考，不构成授权]\n" + text if text else ""
 
     def daily_summary(self, umo):
-        project_id = self.index().get("selected", {}).get(umo)
-        if not project_id: return ""
-        project = self.project(project_id)
-        if project.get("source_umo") != umo or not project.get("share_with_daily"): return ""
-        return str(project.get("summary") or "")[:800]
+        data = self.index()
+        project_id = data.get("selected", {}).get(umo)
+        project = next((p for p in data["projects"] if p["project_id"] == project_id), None)
+        if not project or project.get("source_umo") != umo:
+            return ""
+        settings = summary_settings(project)
+        return self._read_summary(project, settings["daily_summary_chars"]) if settings["share_with_daily"] else ""
 
     def task_paths(self, task, index=None):
         paths = {self.storage.task_path(task.umo, task.task_id), self.storage.task_markdown_path(task.umo, task.task_id),
@@ -344,7 +370,7 @@ class Projects:
                     "question_count": len([q for q in control(task).get("questions", []) if q.get("status") == "pending"])})
             summary = self.summary_path(project["project_id"])
             summary_bytes = file_size(summary)
-            rows.append({**project, "platform_id": source_platform(project.get("source_umo")) or project.get("platform_id", ""),
+            rows.append({**project, **summary_settings(project), "platform_id": source_platform(project.get("source_umo")) or project.get("platform_id", ""),
                 "tasks": sorted(children, key=lambda t:t["updated_at"], reverse=True),
                 "bytes": sum(t["bytes"] for t in children) + summary_bytes, "cache_bytes": sum(t["cache_bytes"] for t in children),
                 "summary_bytes": summary_bytes, "storage_path": str(summary.parent.relative_to(self.storage.root))})

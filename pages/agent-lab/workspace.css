@@ -123,6 +123,23 @@ body { font-size:14px; }
 .project-summary p { white-space:pre-wrap; font-size:13px; line-height:1.85; }
 .project-check { display:flex!important; align-items:center; }
 .project-check input { width:16px; }
+.project-settings { padding-block:16px; border-block:1px solid var(--line); }
+.project-execution-settings { margin-block:0 20px; padding-inline:4px; }
+.project-settings-heading { display:flex; align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:8px; }
+.project-settings-heading h2,.project-settings-heading h3 { margin:0; }
+.project-settings-heading [role="status"] { color:var(--muted); font-size:12px; overflow-wrap:anywhere; }
+.project-settings-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px 24px; min-height:48px; }
+.project-settings-row + .project-settings-row { border-top:1px solid var(--line); }
+.project-settings-row label { margin:0; }
+.project-settings-row .project-check { min-height:44px; gap:8px; }
+.project-settings-row .project-summary-limit { display:flex; align-items:center; gap:8px; }
+.project-summary-limit input { width:92px; }
+.project-settings fieldset { border:0; margin:0; min-width:0; padding:12px 0; }
+.project-settings fieldset + fieldset { border-top:1px solid var(--line); }
+.project-settings legend { padding:0 8px 0 0; font-size:13px; font-weight:600; }
+.project-settings-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr)); gap:4px 18px; }
+.project-settings-grid label { min-width:0; }
+.project-settings-footer { display:flex; justify-content:flex-end; }
 .project-clean-actions { margin-top:22px; }
 .project-hint { color:var(--muted); font-size:12px; line-height:1.8; }
 .project-workflow-list { display:grid; gap:8px; margin:20px 0; }

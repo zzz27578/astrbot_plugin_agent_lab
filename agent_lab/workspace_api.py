@@ -46,7 +46,8 @@ class WorkspaceAPI:
             if umo and platform_id != source_platform(umo): raise ValueError("会话来源与选择的机器人不一致。")
             result = projects.create(payload.get("title", ""), payload.get("category", "项目"), umo, actor, platform_id)
         elif action == "update_project":
-            result = projects.update(project_id, payload)
+            async with projects.lock:
+                result = projects.update(project_id, payload)
         elif action == "execution_settings":
             project = projects.project(project_id)
             spec = self.owner.storage.get_agent((project.get("workflow_ids") or [None])[0])

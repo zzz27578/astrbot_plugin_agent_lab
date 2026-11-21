@@ -201,12 +201,25 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         finally:future.cancel();await asyncio.gather(future,return_exceptions=True);self.owner.task_control.running.clear()
     async def test_filtered_summary_opt_in_and_boundaries(self):
         a,pa=self.task('qq-a');b,pb=self.task('qq-b')
-        self.projects.save_summary(a.task_id,'A'*4000)
+        self.projects.save_summary(a.task_id,'甲'*4000)
         self.assertEqual(self.projects.daily_summary(a.umo),'')
         self.projects.update(pa['project_id'],{'share_with_daily':True})
         self.assertEqual(len(self.projects.daily_summary(a.umo)),800)
-        self.assertNotIn('AAA',self.projects.filtered_context(b))
+        self.assertEqual(self.projects.daily_summary(b.umo),'')
+        self.assertNotIn('甲',self.projects.filtered_context(b))
         self.assertLess(len(self.projects.filtered_context(a)),3600)
+        self.projects.update(pa['project_id'], {'daily_summary_chars': '2200', 'task_summary_chars': 120})
+        self.assertEqual(self.projects.daily_summary(a.umo), '甲'*2200)
+        self.assertEqual(self.projects.filtered_context(a).splitlines()[-1], '甲'*120)
+        self.projects.update(pa['project_id'], {'share_with_tasks': False})
+        self.assertEqual(self.projects.filtered_context(a), '')
+        self.assertEqual(len(self.projects.daily_summary(a.umo)), 2200)
+        with self.assertRaises(ValueError):
+            self.projects.update(pa['project_id'], {'share_with_daily': False, 'daily_summary_chars': 4001})
+        self.assertEqual(len(self.projects.daily_summary(a.umo)), 2200)
+        catalog = {p['project_id']: p for p in self.projects.catalog()['projects']}
+        self.assertEqual(catalog[pa['project_id']]['task_summary_chars'], 120)
+        self.assertEqual(catalog[pb['project_id']]['daily_summary_chars'], 800)
     async def test_cleanup_token_rejects_changed_data(self):
         task,p=self.task();plan=await self.projects.cleanup_plan(p['project_id'],mode='history')
         self.projects.save_summary(task.task_id,'new evidence')

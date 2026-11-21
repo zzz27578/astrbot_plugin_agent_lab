@@ -1,5 +1,5 @@
 import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=026";
-import { ProjectUI } from "./project-ui.js?v=026";
+import { ProjectUI } from "./project-ui.js?v=027-project-settings";
 import { Navigation, settingsIcon } from "./navigation.js?v=026";
 import {getBezierPath, Position} from "./vendor/connectors.js?v=026";
 import {routeEdge} from "./connections.js?v=026";
