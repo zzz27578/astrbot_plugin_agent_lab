@@ -5,6 +5,7 @@ const icon = (name, size = 18) => {
     task: '<rect x="5" y="3" width="14" height="18" rx="3"/><path d="m8 10 2 2 5-5M8 16h8"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     arrow: '<path d="m9 5 7 7-7 7"/>',
+    back: '<path d="m14 6-6 6 6 6M8 12h13"/>',
     storage: '<ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 4 16 4 16 0V5M4 12c0 4 16 4 16 0"/>',
     trash: '<path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7"/>',
     pause: '<path d="M8 5v14M16 5v14"/>',
@@ -33,7 +34,20 @@ export class ProjectUI {
     this.execution = new Map();
     this.summarySaves = new Map();
     this.summaryStatus = new Map();
+    this.messageViews = new Map();
     this.selectionVersion = 0;
+    document.addEventListener("toggle", e => {
+      if (!e.target.matches(".task-message-timeline")) return;
+      const view=this.messageViews.get(e.target.dataset.taskId)||{};
+      view.open=e.target.open;
+      this.messageViews.set(e.target.dataset.taskId,view);
+      this.restoreMessages(e.target);
+    }, true);
+    document.addEventListener("scroll", e => {
+      if (!e.target.matches?.(".task-message-scroll")) return;
+      const timeline=e.target.closest(".task-message-timeline");
+      if(timeline.open) this.messageViews.set(timeline.dataset.taskId,{open:true,scrollTop:e.target.scrollTop});
+    }, true);
     document.addEventListener("click", e => {
       const button = e.target.closest("[data-project-action]");
       if (!button || button.disabled) return;
@@ -109,6 +123,12 @@ export class ProjectUI {
       const key=`${this.projectId}:${this.taskId}:${el.id}`;
       if(this.drafts.has(key)) { if(el.type==="checkbox")el.checked=this.drafts.get(key);else el.value=this.drafts.get(key); }
     });
+    this.restoreMessages(container.querySelector(".task-message-timeline"));
+  }
+  restoreMessages(timeline) {
+    if(!timeline?.open)return;
+    const scroll=timeline.querySelector(".task-message-scroll");
+    scroll.scrollTop=this.messageViews.get(timeline.dataset.taskId)?.scrollTop??scroll.scrollHeight;
   }
   renderOverview() {
     const e=this.esc, projects=this.data.projects;
@@ -123,8 +143,7 @@ export class ProjectUI {
     const e=this.esc, task = this.detail?.task;
     const tabs=[["tasks","任务"],["memory","摘要与存储"],["workflows","预案"],["tools","开发保护"]];
     return `<div class="project-toolbar"><nav>${tabs.map(([id,label])=>`<button class="${this.tab===id?"active":""}" data-project-action="tab" data-tab="${id}">${label}</button>`).join("")}</nav><button class="project-text-button" data-project-action="rename" data-project-id="${e(p.project_id)}">编辑分类</button></div>
-      ${this.tab==="tasks"?`<div class="project-task-layout"><section class="project-task-list">${p.tasks.map(t=>`<button class="project-task-row ${t.task_id===this.taskId?"selected":""}" data-project-action="task" data-task-id="${e(t.task_id)}" data-project-id="${e(p.project_id)}"><span class="project-dot ${e(t.status)}"></span><div><strong>${e(t.title)}</strong><p>${e(t.summary||"等待 Bot 记录进展")}</p><small>${e(labels[t.status]||t.status)} · ${bytes(t.bytes)}${t.question_count?" · 等待回答":""}</small></div>${icon("arrow",15)}</button>`).join("")||'<div class="project-empty"><h3>这个项目还没有任务</h3><p>新任务与以往记录分开，交接时只引用摘要。</p></div>'}</section>
-      <section class="project-task-detail">${task&&p.tasks.some(t=>t.task_id===task.task_id)?this.renderTask(task):'<div class="project-empty"><h3>选择一个任务</h3><p>查看计划、待回答问题、记录和存储明细。</p></div>'}</section></div>`:""}
+      ${this.tab==="tasks"?`<div class="project-task-layout">${task&&p.tasks.some(t=>t.task_id===task.task_id)?`<section class="project-task-detail">${this.renderTask(task)}</section>`:`<section class="project-task-list" aria-label="项目任务">${p.tasks.map(t=>`<button class="project-task-row" data-project-action="task" data-task-id="${e(t.task_id)}" data-project-id="${e(p.project_id)}"><span class="project-dot ${e(t.status)}"></span><div><strong>${e(t.title)}</strong><p>${e(t.summary||"等待 Bot 记录进展")}</p><small>${e(labels[t.status]||t.status)} · ${bytes(t.bytes)}${t.question_count?" · 等待回答":""}</small></div>${icon("arrow",15)}</button>`).join("")||'<div class="project-empty"><h3>这个项目还没有任务</h3><p>新任务与以往记录分开，交接时只引用摘要。</p></div>'}</section>`}</div>`:""}
       ${this.tab==="memory"?`<section class="project-memory-panel"><div class="project-memory-heading">${icon("storage",24)}<div><h2>存储透明，清理有范围</h2><p>${e(p.storage_path)} · 文件 ${bytes(p.bytes)} · 日志缓存 ${bytes(p.cache_bytes)}</p></div></div>
         <div class="project-summary"><span class="project-eyebrow">项目摘要</span><p>${e(p.summary||"暂无摘要。选中任务后可让 Bot 草拟，或直接写入项目交接说明。")}</p></div>
         ${this.renderSummarySettings(p)}
@@ -178,17 +197,17 @@ export class ProjectUI {
   }
   renderExecutionSettings(p) {
     const e=this.esc, current=this.execution.get(p.project_id);
-    const number=(key,title,min,max,value)=>`<label>${title}<input id="execution-${key}" name="${key}" type="number" min="${min}" max="${max}" step="1" required value="${e(value)}" /></label>`;
+    const number=(key,title,min,max,value)=>`<label><span>${title}</span><input id="execution-${key}" name="${key}" type="number" min="${min}" max="${max}" step="1" required value="${e(value)}" /></label>`;
     return `<section id="project-execution-settings" class="project-settings project-execution-settings" aria-labelledby="project-execution-title">
       <div class="project-settings-heading"><h2 id="project-execution-title">运行设置</h2></div>
       ${!current?'<p role="status">正在读取运行设置…</p>':current.error?`<p class="danger-text">${e(current.error)}</p><button type="button" class="button secondary" data-project-action="reload-execution">重试</button>`:`
       <form id="project-execution-form">
         <fieldset><legend>权限与范围</legend>
-          <div class="project-settings-grid">
-            <label>权限档位<select id="execution-mode" name="mode">${[["readonly","只读"],["standard","标准开发"],["full","完全访问 · 保留高危审批"]].map(([id,label])=>`<option value="${id}" ${current.mode===id?"selected":""}>${label}</option>`).join("")}</select></label>
-            <label>预计绝对路径（每行一项）<textarea id="execution-roots" name="roots" rows="2">${e(current.roots.join("\n"))}</textarea></label>
-            <label>风险警告线（每行一项）<textarea id="execution-warnings" name="warnings" rows="2" placeholder="审批:工具名或路径通配">${e(current.warnings.join("\n"))}</textarea></label>
-            <label>任务指引<textarea id="execution-task_prompt" name="task_prompt" rows="2" maxlength="4000">${e(current.task_prompt)}</textarea></label>
+          <div class="project-settings-grid project-permission-grid">
+            <label><span>权限档位</span><select id="execution-mode" name="mode">${[["readonly","只读"],["standard","标准开发"],["full","完全访问 · 保留高危审批"]].map(([id,label])=>`<option value="${id}" ${current.mode===id?"selected":""}>${label}</option>`).join("")}</select></label>
+            <label><span>预计绝对路径（每行一项）</span><textarea id="execution-roots" name="roots" rows="2">${e(current.roots.join("\n"))}</textarea></label>
+            <label><span>风险警告线（每行一项）</span><textarea id="execution-warnings" name="warnings" rows="2" placeholder="审批:工具名或路径通配">${e(current.warnings.join("\n"))}</textarea></label>
+            <label class="project-field-wide"><span>任务指引</span><textarea id="execution-task_prompt" name="task_prompt" rows="2" maxlength="4000">${e(current.task_prompt)}</textarea></label>
           </div>
         </fieldset>
         <fieldset><legend>长任务与上下文</legend>
@@ -204,7 +223,7 @@ export class ProjectUI {
           </div>
           <p class="project-hint">原生上限写入${current.bound_session?"项目会话使用的 AstrBot 配置档":" AstrBot 默认配置档"}，影响共用此档的会话。其余设置由新任务继承。</p>
         </fieldset>
-        <div class="project-settings-footer"><button type="submit" class="button secondary" data-project-action="save-execution">保存运行设置</button></div>
+        <div class="project-settings-footer"><button type="submit" class="button" data-project-action="save-execution">${icon("check",16)}保存运行设置</button></div>
       </form>`}
     </section>`;
   }
@@ -237,23 +256,23 @@ export class ProjectUI {
     const questions=(c.questions||[]).filter(q=>q.status==="pending");
     const unknown=(c.journal||[]).filter(row=>["unknown","started"].includes(row.status));
     const selected=this.data.projects.flatMap(p=>p.tasks).find(t=>t.task_id===task.task_id)?.selected;
-    return `<div class="project-detail-top"><span class="project-pill ${e(task.status)}">${e(labels[task.status]||task.status)}</span><code>${e(task.task_id)}</code></div><h2>${e(task.root_goal)}</h2>
+    return `<div class="project-detail-top"><span class="project-pill ${e(task.status)}">${e(labels[task.status]||task.status)}</span><code>${e(task.task_id)}</code><button class="project-text-button project-task-back" data-project-action="task-list">${icon("back",15)}返回任务列表</button></div><h2>${e(task.root_goal)}</h2>
       <div class="project-task-actions">${!ended?`${!selected?'<button class="button secondary" data-project-action="activate">切换到此任务</button>':`<button class="button secondary" data-project-action="${task.status==="running"?"pause":"resume"}">${icon(task.status==="running"?"pause":"play",15)}${task.status==="running"?"暂停":"继续"}</button>`}<button class="button" data-project-action="deliver">${icon("check",15)}按现状交付</button><button class="project-text-button danger-text" data-project-action="stop">停止任务</button>`:""}<button class="project-text-button" data-project-action="move">归入项目…</button></div>
-      ${(this.detail?.messages||[]).length?`<section class="task-message-timeline"><h3>任务消息线</h3>${this.detail.messages.slice(-8).map(m=>`<article><span>${e({progress:'进展',question:'需要回答',approval:'需要审批',delivery:'交付',status:'状态'}[m.kind]||m.kind)} · ${e(m.status==='sent'?'已发送':m.status==='failed'?'发送未确认':'发送中')}</span><p>${e(m.text)}</p></article>`).join('')}</section>`:''}
+      <section class="project-task-plan" aria-labelledby="project-task-plan-title"><div class="project-plan-heading"><h3 id="project-task-plan-title">任务清单</h3><span>${(c.steps||[]).filter(s=>s.status==="completed").length} / ${(c.steps||[]).length} 已完成</span></div><ol class="project-steps">${(c.steps||[]).map((step,i)=>`<li class="${step.id===c.current_step_id&&step.status!=="completed"?"current":""}"><span>${step.status==="completed"?icon("check",13):i+1}</span><div><strong>${e(step.title)}</strong><p>${e(step.summary||step.instruction)}</p></div><small class="project-step-status">${e({pending:"待执行",running:"进行中",completed:"已完成"}[step.status]||step.status)}</small></li>`).join("")||"<li>尚未形成具体计划。</li>"}</ol></section>
       ${questions.map(q=>`<section class="project-question"><div class="project-question-title">${icon("chat")}<strong>Bot 需要你确认</strong></div><h3>${e(q.question)}</h3><p>${e(q.recommendation||"")}</p><div class="project-options">${q.options.map((option,i)=>`<button data-project-action="answer-option" data-question-id="${e(q.id)}" data-option-index="${i}">${e(option)}</button>`).join("")}</div><label>也可以自由回答<input id="answer-${e(q.id)}" placeholder="补充你希望的处理方式…"/></label><button class="button secondary" data-project-action="answer" data-question-id="${e(q.id)}">提交回答</button></section>`).join("")}
       <p class="project-hint">Token：${e(task.budget?.tokens_used ?? 0)} / ${e(task.budget?.max_total_tokens || "不限")} · 每轮工具上限：${e(this.detail.native_steps ?? task.budget?.max_tools_per_tick ?? "—")}</p>
       ${task.wait?.message?`<p class="project-detail-summary">${e(task.wait.message)}</p>`:""}
-      ${selected&&task.status==="paused"?'<button class="button secondary" data-project-action="task-budget">调整本任务预算</button>':""}
       ${pending.map(a=>`<details class="project-approval" open><summary>${e(a.operation)}</summary><p>${e(a.reason)}</p><pre>${e(a.impact)}</pre>${a.rollback?`<p>恢复方式：${e(a.rollback)}</p>`:""}${a.calls?.length?`<details><summary>核对 ${a.calls.length} 个操作的参数</summary><pre>${e(JSON.stringify(a.calls.map(c=>({tool:c.tool_name,arguments:c.arguments})),null,2))}</pre></details>`:""}<div class="project-task-actions"><button class="button" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="true">批准</button><button class="button secondary" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="false">拒绝</button></div></details>`).join("")}
       ${unknown.length?`<section class="project-question"><h3>有 ${unknown.length} 个操作的结果需要核对</h3><p>中断不代表外部操作没有发生。核对后可以继续；管理员也可以直接停止或按现状交付。</p>${unknown.map(row=>`<details><summary>${e(row.name||"工具")} · ${e(row.id)}</summary><pre>${e(JSON.stringify(row.arguments||{},null,2))}</pre><button class="button secondary" data-project-action="reconcile" data-call-id="${e(row.id)}">记录实际结果</button></details>`).join("")}</section>`:""}
-      <p class="project-detail-summary">${e(summary)}</p><ol class="project-steps">${(c.steps||[]).map(step=>`<li class="${step.id===c.current_step_id?"current":""}"><span>${step.status==="completed"?icon("check",13):""}</span><div><strong>${e(step.title)}</strong><p>${e(step.summary||step.instruction)}</p></div></li>`).join("")||"<li>尚未形成具体计划。</li>"}</ol>
+      ${summary?`<p class="project-detail-summary">${e(summary)}</p>`:""}
       ${c.continuity?.lanes?.[""]?.summary?`<details class="project-storage-details"><summary>阶段交接 · ${e(c.continuity.lanes[""].stage||"")}</summary><p class="project-detail-summary">${e(c.continuity.lanes[""].summary)}</p><p class="project-hint">完整阶段历史可在记录与存储中回查。</p></details>`:""}
       ${!ended&&!c.version?'<button class="button secondary" data-project-action="draft-plan">让 Bot 制定具体计划</button>':""}
-      ${!ended?`<label>途中引导<textarea id="project-guidance" rows="2" placeholder="例如：不要修改数据库，先检查配置。"></textarea></label><button class="button secondary" data-project-action="steer">发送引导</button>`:""}
       <details class="project-storage-details"><summary>${icon("storage",15)}记录与存储 <span>${bytes(this.detail.record_bytes)} 文件 + ${bytes(this.detail.native_history_bytes)} 对话内容</span></summary>
         <div class="project-file-list">${(this.detail.files||[]).map(file=>`<div><button class="project-text-button" data-project-action="read-record" data-path="${e(file.path)}"><code>${e(file.path)}</code></button><span>${bytes(file.bytes)}</span></div>`).join("")}</div>
         <div class="project-clean-actions"><button class="button secondary" data-project-action="task-cleanup" data-mode="cache">清理此任务缓存…</button><button class="button danger" data-project-action="task-cleanup" data-mode="history">删除此任务历史…</button></div></details>
-      <details class="project-summary-editor"><summary>项目交接摘要</summary><p class="project-hint">只保存已确认发现、未验证项、文件引用和下一步；不把完整日志放进日常聊天。</p><textarea id="project-summary-draft" rows="6">${e(task.exit_summary||task.last_confirmed_progress||"")}</textarea><div class="project-task-actions"><button class="button secondary" data-project-action="draft-summary">让 Bot 草拟</button><button class="button" data-project-action="save-summary">保存到项目</button></div></details>`;
+      <details class="project-summary-editor"><summary>项目交接摘要</summary><p class="project-hint">只保存已确认发现、未验证项、文件引用和下一步；不把完整日志放进日常聊天。</p><textarea id="project-summary-draft" rows="6">${e(task.exit_summary||task.last_confirmed_progress||"")}</textarea><div class="project-task-actions"><button class="button secondary" data-project-action="draft-summary">让 Bot 草拟</button><button class="button" data-project-action="save-summary">保存到项目</button></div></details>
+      ${(this.detail?.messages||[]).length?`<details class="task-message-timeline" data-task-id="${e(task.task_id)}" ${this.messageViews.get(task.task_id)?.open===false?"":"open"}><summary><span class="task-message-heading">${icon("chat",17)}任务消息线</span><span class="task-message-count">${this.detail.messages.length} 条</span><span class="task-message-toggle"><span class="task-message-expand">展开</span><span class="task-message-collapse">收起</span>${icon("arrow",14)}</span></summary><div class="task-message-scroll" role="region" aria-label="任务消息内容" tabindex="0">${this.detail.messages.map(m=>`<article><span class="task-message-meta">${e({progress:'进展',question:'需要回答',approval:'需要审批',delivery:'交付',status:'状态'}[m.kind]||m.kind)} · ${e(m.status==='sent'?'已发送':m.status==='failed'?'发送未确认':'发送中')}</span><p>${e(m.text)}</p></article>`).join('')}</div></details>`:""}
+      ${!ended?`<section class="project-task-controls" aria-labelledby="project-task-controls-title"><h3 id="project-task-controls-title">途中设置</h3><label>途中引导<textarea id="project-guidance" rows="2" placeholder="例如：不要修改数据库，先检查配置。"></textarea></label><div class="project-task-actions"><button class="button secondary" data-project-action="steer">${icon("chat",15)}发送引导</button>${selected&&task.status==="paused"?'<button class="button secondary" data-project-action="task-budget">调整本任务预算</button>':""}</div></section>`:""}`;
   }
   async request(action, extra={}) {
     const response=await this.api("/api/workspace", {method:"POST",body:{action,project_id:this.projectId,task_id:this.taskId,...extra}});
@@ -271,6 +290,7 @@ export class ProjectUI {
     if(action==="home"){this.projectId="";this.taskId="";this.tab='tasks';this.open();return;}
     if(action==='storage'){this.projectId='';this.taskId='';this.tab='storage';this.open();return;}
     if(action==='storage-project'){this.projectId=button.dataset.projectId;this.taskId='';this.tab='memory';this.open();return;}
+    if(action==="task-list"){this.taskId="";this.detail=null;++this.selectionVersion;this.open();return;}
     if(["create","new-task"].includes(action)&&!this.identityId){this.notify("请先在 AstrBot 配置并启用机器人。","error");return;}
     if(action==="expand"){
       const id=button.dataset.projectId;
