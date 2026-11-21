@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 from .models import ApprovalRequest, now_iso
+from .execution_settings import lines
 
 
 def control(task) -> dict:
@@ -29,12 +30,16 @@ def prompt(task) -> str:
         "constraints": state.get("constraints", []),
         "current_step_id": state.get("current_step_id", ""),
         "workflow": state.get("workflow", "none"), "next_action": task.next_step,
+        "execution_scope": {"mode": state.get("execution_settings", {}).get("mode", "standard"),
+                            "roots": state.get("execution_settings", {}).get("roots", []) + state.get("scope_roots", []),
+                            "warnings": state.get("execution_settings", {}).get("warnings", []) + state.get("risk_lines", []),
+                            "approved_cleanup_paths": state.get("approved_cleanup_paths", [])},
         "guidance": state.get("guidance", [])[-8:],
         "questions": state.get("questions", [])[-5:],
         "recent_tool_evidence": [{"id": r["id"], "name": r.get("name"), "status": r.get("status"),
                                   "step_id": r.get("step_id"), "result": str(r.get("result", ""))[:1000]}
                                  for r in state.get("journal", [])[-8:]],
-        "instruction": "按批准计划执行；工具后使用agent_lab_checkpoint记录。开启简报时在新发现或转向时用agent_lab_progress简述已确认结果、当前动作与下一步，不转发工具日志或隐私；反问/审批交给原任务消息线，不重复发送相同通知。明显缺失且影响结果的信息才用agent_lab_ask_question，给2–4个具体选择、推荐项和原因，不能替管理员选择。不为能从项目文件找到的信息反复询问。管理员停止/交付高于计划检查，未验证项如实列出。无需画布时直接略过。用agent_lab_project保存项目摘要，详细工具日志不回灌日常聊天。",
+        "instruction": "按批准计划执行，优先结构化搜索、读写和常规测试；同样路径与查询不要无理由重读。范围外普通关联操作只提醒。危险操作先汇总成一批，用 agent_lab_request_approval 的 operations_json 提交确切工具与参数，中文说明影响和恢复方式。不要先调用危险工具撞审批，也不要改写已拒绝的同一动作后重试。关键成果与验证完成后使用 agent_lab_checkpoint；无画布时不调用流程推进。只有缺少关键答案时反问。",
     }, ensure_ascii=False)
 
 
@@ -71,6 +76,14 @@ class TaskControl:
             state = control(task)
             state["project_id"] = project_id
         raw = json.loads(steps_json)
+        scope_roots = state.get("scope_roots", [])
+        risk_lines = state.get("risk_lines", [])
+        cleanup_paths = []
+        if isinstance(raw, dict):
+            scope_roots = lines(raw.get("scope_roots", scope_roots))
+            risk_lines = lines(list(dict.fromkeys(risk_lines + lines(raw.get("risk_lines", [])))))
+            cleanup_paths = [p for p in lines(raw.get("cleanup_paths", [])) if p.startswith("/") and not p.endswith("/")]
+            raw = raw.get("steps")
         if not isinstance(raw, list) or not 1 <= len(raw) <= 50:
             raise ValueError("计划必须是 1–50 个步骤的 JSON 数组。")
         old = {step["id"]: step for step in state.get("steps", [])}
@@ -97,22 +110,26 @@ class TaskControl:
         if sum(map(len, retained)) > 20000:
             raise ValueError("任务约束过长，请先整理为精简要求。")
         for approval in task.approvals:
-            if approval.get("status") in {"pending", "approved"} and approval.get("approval_type") in {"task_plan", "tool_call"}:
+            if approval.get("status") in {"pending", "approved"} and approval.get("approval_type") in {"task_plan", "tool_call", "tool_batch"}:
                 approval["status"] = "expired"
         state.update(version=int(state.get("version", 0)) + 1, approved_version=0,
-                     steps=steps, constraints=retained, phase="awaiting_plan", human_paused=False)
+                     steps=steps, constraints=retained, scope_roots=scope_roots,
+                     risk_lines=risk_lines, approved_cleanup_paths=[], phase="awaiting_plan", human_paused=False)
         approval = ApprovalRequest(operation=f"批准任务计划 v{state['version']}", reason=task.root_goal,
             impact="\n".join(f"{i+1}. {s['title']}: {s['instruction']}" for i, s in enumerate(steps)),
             approval_type="task_plan")
         from .models import AgentSpec
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent"))
         approval.impact += "\n画布：" + ("不应用" if state.get("workflow") == "none" else (spec.name or spec.agent_id))
-        scopes = [value for value in spec.approval_policy.preapproved_scopes if str(value).startswith("tool:")]
-        if scopes:
-            approval.impact += "\n本计划同时申请以下工具范围免重复审批（覆盖该工具参数，请确认边界）：" + ", ".join(scopes)
+        if scope_roots:
+            approval.impact += "\n预计操作范围：" + "、".join(scope_roots)
+        if risk_lines:
+            approval.impact += "\n风险警告线：" + "、".join(risk_lines)
+        if cleanup_paths:
+            approval.impact += "\n同时申请清理这些明确文件（不含递归删除）：\n" + "\n".join(cleanup_paths)
         row = approval.to_dict()
         row["plan_version"] = state["version"]
-        row["tool_scopes"] = scopes
+        row["cleanup_paths"] = cleanup_paths
         task.approvals.append(row)
         task.status = "paused"
         task.next_step = f"/al approve {approval.approval_id}"
@@ -133,7 +150,7 @@ class TaskControl:
                                "projects": [{"id": p["project_id"], "title": p["title"], "category": p["category"]}
                                             for p in self.owner.projects.index()["projects"] if p.get("source_umo") == task.umo],
                                "clarifications": control(task).get("questions", [])[-4:]}, ensure_ascii=False),
-            system_prompt="为当前Bot的任务制定具体计划，不执行操作。返回JSON对象：steps数组(2–8步id/title/instruction)、project_id(匹配已有项目时填写)、project_title、category。仅关键目标缺失到无法规划时返回question、options(2–4项)、recommendation，不为能查文件确定的信息提问。保留明确项目选择，避免重复项目。最后包含成果核对；不要编造结构。用用户语言。")
+            system_prompt="为当前Bot的任务制定具体计划，不执行操作。返回JSON对象：steps数组(2–8步id/title/instruction)、scope_roots（已知的预计绝对路径）、risk_lines（额外风险线，需审批用 审批:工具名或路径通配，其余作说明）、cleanup_paths（预计清理的具体文件绝对路径，可省略）、project_id、project_title、category。仅关键目标缺失到无法规划时返回question、options、recommendation。不编造路径，最后包含成果核对，用中文。")
         latest = self.load(task.umo, task_id)
         if control(latest).get("version") or control(latest).get("human_paused"):
             return "任务状态已变化，未覆盖计划。"
@@ -155,7 +172,7 @@ class TaskControl:
                 elif proposal.get("project_title"):
                     self.owner.projects.attach(latest, title=str(proposal["project_title"])[:100], category=str(proposal.get("category") or "项目"))
                 self.owner.storage.save_task(latest)
-            text = json.dumps(proposal.get("steps"), ensure_ascii=False)
+            text = json.dumps({key: proposal[key] for key in ("steps", "scope_roots", "risk_lines", "cleanup_paths") if key in proposal}, ensure_ascii=False)
         return self.submit_plan(event, text)
 
     def approval(self, task, row: dict, approved: bool):
@@ -164,7 +181,7 @@ class TaskControl:
             if row.get("plan_version") != state.get("version"):
                 raise ValueError("计划已变更，请审阅最新版本。")
             if approved:
-                state.update(approved_version=state["version"], approved_tool_scopes=row.get("tool_scopes", []), phase="executing")
+                state.update(approved_version=state["version"], approved_cleanup_paths=row.get("cleanup_paths", []), phase="executing")
         if not approved:
             state["human_paused"] = True
 
@@ -316,7 +333,8 @@ class TaskControl:
     def fingerprint(task) -> str:
         state = control(task)
         evidence = sorted({row.get("fingerprint", "") for row in state.get("journal", [])
-                           if row.get("status") == "completed" and row.get("name") not in {"report", "agent_lab_progress"}})
+                            if row.get("status") == "completed" and row.get("name") not in {
+                                "report", "agent_lab_progress", "astrbot_file_read_tool", "astrbot_grep_tool", "astrbot_list_directory"}})
         visited = sorted({str(row.get("node_id", "")) for row in task.workflow_events if row.get("status") == "completed"})
         payload = [evidence, visited, [(s["id"], s["status"]) for s in state.get("steps", [])]]
         return hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()).hexdigest()

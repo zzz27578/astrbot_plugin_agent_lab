@@ -107,7 +107,7 @@ export class ProjectUI {
   renderProject(p) {
     const e=this.esc, task = this.detail?.task;
     const tabs=[["tasks","任务"],["memory","摘要与存储"],["workflows","预案"],["tools","开发保护"]];
-    return `<div class="project-toolbar"><nav>${tabs.map(([id,label])=>`<button class="${this.tab===id?"active":""}" data-project-action="tab" data-tab="${id}">${label}</button>`).join("")}</nav><button class="project-text-button" data-project-action="rename" data-project-id="${e(p.project_id)}">编辑分类</button></div>
+    return `<div class="project-toolbar"><nav>${tabs.map(([id,label])=>`<button class="${this.tab===id?"active":""}" data-project-action="tab" data-tab="${id}">${label}</button>`).join("")}</nav><div class="project-task-actions"><button class="project-text-button" data-project-action="rename" data-project-id="${e(p.project_id)}">编辑分类</button><button class="button secondary" data-project-action="run-settings">运行设置</button></div></div>
       ${this.tab==="tasks"?`<div class="project-task-layout"><section class="project-task-list">${p.tasks.map(t=>`<button class="project-task-row ${t.task_id===this.taskId?"selected":""}" data-project-action="task" data-task-id="${e(t.task_id)}" data-project-id="${e(p.project_id)}"><span class="project-dot ${e(t.status)}"></span><div><strong>${e(t.title)}</strong><p>${e(t.summary||"等待 Bot 记录进展")}</p><small>${e(labels[t.status]||t.status)} · ${bytes(t.bytes)}${t.question_count?" · 等待回答":""}</small></div>${icon("arrow",15)}</button>`).join("")||'<div class="project-empty"><h3>这个项目还没有任务</h3><p>新任务与以往记录分开，交接时只引用摘要。</p></div>'}</section>
       <section class="project-task-detail">${task&&p.tasks.some(t=>t.task_id===task.task_id)?this.renderTask(task):'<div class="project-empty"><h3>选择一个任务</h3><p>查看计划、待回答问题、记录和存储明细。</p></div>'}</section></div>`:""}
       ${this.tab==="memory"?`<section class="project-memory-panel"><div class="project-memory-heading">${icon("storage",24)}<div><h2>存储透明，清理有范围</h2><p>${e(p.storage_path)} · 文件 ${bytes(p.bytes)} · 日志缓存 ${bytes(p.cache_bytes)}</p></div></div>
@@ -136,7 +136,10 @@ export class ProjectUI {
       <div class="project-task-actions">${!ended?`${!selected?'<button class="button secondary" data-project-action="activate">切换到此任务</button>':`<button class="button secondary" data-project-action="${task.status==="running"?"pause":"resume"}">${icon(task.status==="running"?"pause":"play",15)}${task.status==="running"?"暂停":"继续"}</button>`}<button class="button" data-project-action="deliver">${icon("check",15)}按现状交付</button><button class="project-text-button danger-text" data-project-action="stop">停止任务</button>`:""}<button class="project-text-button" data-project-action="move">归入项目…</button></div>
       ${(this.detail?.messages||[]).length?`<section class="task-message-timeline"><h3>任务消息线</h3>${this.detail.messages.slice(-8).map(m=>`<article><span>${e({progress:'进展',question:'需要回答',approval:'需要审批',delivery:'交付',status:'状态'}[m.kind]||m.kind)} · ${e(m.status==='sent'?'已发送':m.status==='failed'?'发送未确认':'发送中')}</span><p>${e(m.text)}</p></article>`).join('')}</section>`:''}
       ${questions.map(q=>`<section class="project-question"><div class="project-question-title">${icon("chat")}<strong>Bot 需要你确认</strong></div><h3>${e(q.question)}</h3><p>${e(q.recommendation||"")}</p><div class="project-options">${q.options.map((option,i)=>`<button data-project-action="answer-option" data-question-id="${e(q.id)}" data-option-index="${i}">${e(option)}</button>`).join("")}</div><label>也可以自由回答<input id="answer-${e(q.id)}" placeholder="补充你希望的处理方式…"/></label><button class="button secondary" data-project-action="answer" data-question-id="${e(q.id)}">提交回答</button></section>`).join("")}
-      ${pending.map(a=>`<details class="project-approval" open><summary>${e(a.operation)}</summary><p>${e(a.reason)}</p><pre>${e(a.impact)}</pre><div class="project-task-actions"><button class="button" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="true">批准</button><button class="button secondary" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="false">拒绝</button></div></details>`).join("")}
+      <p class="project-hint">Token：${e(task.budget?.tokens_used ?? 0)} / ${e(task.budget?.max_total_tokens || "不限")} · 每轮工具上限：${e(this.detail.native_steps ?? task.budget?.max_tools_per_tick ?? "—")}</p>
+      ${task.wait?.message?`<p class="project-detail-summary">${e(task.wait.message)}</p>`:""}
+      ${selected&&task.status==="paused"?'<button class="button secondary" data-project-action="task-budget">调整本任务预算</button>':""}
+      ${pending.map(a=>`<details class="project-approval" open><summary>${e(a.operation)}</summary><p>${e(a.reason)}</p><pre>${e(a.impact)}</pre>${a.rollback?`<p>恢复方式：${e(a.rollback)}</p>`:""}${a.calls?.length?`<details><summary>核对 ${a.calls.length} 个操作的参数</summary><pre>${e(JSON.stringify(a.calls.map(c=>({tool:c.tool_name,arguments:c.arguments})),null,2))}</pre></details>`:""}<div class="project-task-actions"><button class="button" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="true">批准</button><button class="button secondary" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="false">拒绝</button></div></details>`).join("")}
       ${unknown.length?`<section class="project-question"><h3>有 ${unknown.length} 个操作的结果需要核对</h3><p>中断不代表外部操作没有发生。核对后可以继续；管理员也可以直接停止或按现状交付。</p>${unknown.map(row=>`<details><summary>${e(row.name||"工具")} · ${e(row.id)}</summary><pre>${e(JSON.stringify(row.arguments||{},null,2))}</pre><button class="button secondary" data-project-action="reconcile" data-call-id="${e(row.id)}">记录实际结果</button></details>`).join("")}</section>`:""}
       <p class="project-detail-summary">${e(summary)}</p><ol class="project-steps">${(c.steps||[]).map(step=>`<li class="${step.id===c.current_step_id?"current":""}"><span>${step.status==="completed"?icon("check",13):""}</span><div><strong>${e(step.title)}</strong><p>${e(step.summary||step.instruction)}</p></div></li>`).join("")||"<li>尚未形成具体计划。</li>"}</ol>
       ${!ended&&!c.version?'<button class="button secondary" data-project-action="draft-plan">让 Bot 制定具体计划</button>':""}
@@ -209,6 +212,30 @@ export class ProjectUI {
         if(!answer)return;await this.request(action,{summary:answer[0]});await this.refresh();await this.showTask(this.taskId);
       } else if(action==="steer") {
         const t=this.detail.task;await this.api("/api/task/control",{method:"POST",body:{umo:t.umo,task_id:t.task_id,action:"steer",message:document.getElementById("project-guidance").value}});await this.showTask(t.task_id);
+      } else if(action==="run-settings") {
+        const current=await this.request("execution_settings");
+        const fields=[
+          {label:"权限档位",type:"select",value:current.mode,options:[["readonly","只读"],["standard","标准开发"],["full","完全访问 · 保留高危审批"]]},
+          {label:"AstrBot 原生每轮工具上限",type:"number",value:current.native_steps,min:1,max:10000},
+          {label:"预计绝对路径（每行一项）",type:"textarea",value:current.roots.join("\n")},
+          {label:"风险警告线（每行一项）",type:"textarea",value:current.warnings.join("\n"),placeholder:"审批:工具名或路径通配"},
+          {label:"任务指引",type:"textarea",value:current.task_prompt},
+        ];
+        const budgetLabels=[["max_total_tokens","总 Token 预算",0,50000000],["max_tokens_per_tick","每轮 Token 预算",0,1000000],["max_total_tool_calls","任务工具总上限",0,100000],["max_total_ticks","总轮数",0,100000],["max_nodes_per_tick","每轮节点上限",1,200],["max_seconds_per_tick","每轮秒数",1,3600]];
+        for(const [key,label,min,max] of budgetLabels)fields.push({label:`${label}${min===0?"（0 不限）":""}`,type:"number",min,max,value:current.budget[key]});
+        const target=current.bound_session?"项目会话使用的 AstrBot 配置档":"AstrBot 默认配置档（项目尚未绑定会话）";
+        const values=await this.modal({title:"项目运行设置",message:`原生每轮上限写入${target}。共用该档的会话与任务同步生效。其余设置供新任务继承。`,fields,confirmText:"保存设置"});
+        if(!values)return;
+        const [mode,native,roots,warnings,task_prompt,...limits]=values;
+        const split=value=>value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
+        await this.request("save_execution_settings",{...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode,roots:split(roots),warnings:split(warnings),task_prompt,budget:Object.fromEntries(budgetLabels.map(([key],i)=>[key,limits[i]]))}});
+        await this.refresh();this.notify("项目运行设置已保存。");
+      } else if(action==="task-budget") {
+        const t=this.detail.task, limits=t.budget||{};
+        const fields=[["max_total_tokens","总 Token 预算",50000000],["max_total_tool_calls","工具总上限",100000],["max_total_ticks","总轮数",100000]];
+        const values=await this.modal({title:"调整本任务预算",message:`已用 ${limits.tokens_used||0} Token、${limits.tool_calls_used||0} 次工具、${limits.ticks_used||0} 轮。`,fields:fields.map(([key,label,max])=>({label:`${label}（0 不限）`,type:"number",min:0,max,value:limits[key]})),confirmText:"保存额度"});
+        if(!values)return;
+        await this.request("task_budget",{budget:Object.fromEntries(fields.map(([key],i)=>[key,values[i]]))});await this.showTask(t.task_id);
       } else if(action==="approval") {
         const t=this.detail.task;await this.api("/api/task/approval",{method:"POST",body:{umo:t.umo,task_id:t.task_id,approval_id:button.dataset.approvalId,approved:button.dataset.approved==="true"}});await this.refresh();await this.showTask(t.task_id);
       } else if(action==="reconcile") {

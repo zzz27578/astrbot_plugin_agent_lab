@@ -40,6 +40,16 @@ try{
  await frame.locator('#settings-btn').click();await frame.locator('[data-nav-action="select-bot"][data-bot-id="qq-work"]').click();
  await frame.locator('#nav [data-route="projects"]').click();
  await frame.locator('.project-folder-open[data-project-id="project_b1"]').click();
+ await frame.getByRole('button',{name:'运行设置',exact:true}).click();
+ const settingsDialog=frame.getByRole('dialog');
+ await settingsDialog.getByLabel('AstrBot 原生每轮工具上限').fill('24');
+ await settingsDialog.getByLabel('预计绝对路径（每行一项）').fill('/project\n/reference');
+ await settingsDialog.getByRole('button',{name:'保存设置'}).click();
+ await page.waitForTimeout(150);
+ check('project settings save native limit and preserve multiline scope',fixture.requests.some(r=>r.body.action==='save_execution_settings'&&r.body.native_steps==='24'&&r.body.settings.roots.join(',')==='/project,/reference'));
+ await frame.getByRole('button',{name:'运行设置',exact:true}).click();
+ check('native limit is read back when project settings are reopened',await settingsDialog.getByLabel('AstrBot 原生每轮工具上限').inputValue()==='24');
+ await settingsDialog.getByRole('button',{name:'取消',exact:true}).click();
  check('project identity and status agree in selected scope',await frame.locator('#identity-instance').innerText()==='qq-work'&&await frame.locator('#current-task-id').innerText()==='task_b1');
  await frame.locator('#status-view-btn').click();await frame.locator('.project-task-detail h2').waitFor();
  check('status view opens the exact displayed task',await frame.locator('.project-detail-top code').innerText()==='task_b1');

@@ -7,6 +7,7 @@ from .task_control import control
 from .web_api import admin_api
 from .identities import identity_rows, source_platform
 from .workspace_preferences import WorkspacePreferences
+from .execution_settings import BUDGET_LIMITS, effective, integer, native_steps, normalize, save_native_steps
 
 
 class WorkspaceAPI:
@@ -46,8 +47,38 @@ class WorkspaceAPI:
             result = projects.create(payload.get("title", ""), payload.get("category", "项目"), umo, actor, platform_id)
         elif action == "update_project":
             result = projects.update(project_id, payload)
+        elif action == "execution_settings":
+            project = projects.project(project_id)
+            spec = self.owner.storage.get_agent((project.get("workflow_ids") or [None])[0])
+            result = effective(self.owner, project, spec.default_task_budget)
+            result["bound_session"] = bool(project.get("source_umo"))
+        elif action == "save_execution_settings":
+            async with projects.lock:
+                project = projects.project(project_id)
+                if project_id in projects.cleaning_projects:
+                    raise ValueError("项目正在清理，请稍后修改。")
+                settings = normalize(payload.get("settings"))
+                if "native_steps" in payload:
+                    await save_native_steps(self.owner, project.get("source_umo") or None, payload["native_steps"])
+                result = projects.update(project_id, {"execution_settings": settings})
+        elif action == "task_budget":
+            task = projects.get_task(task_id)
+            active = self.owner.storage.load_active_task(task.umo)
+            if not active or active.task_id != task_id or active.status != "paused" or f"{task.umo}:{task_id}" in self.owner._running_ticks:
+                raise ValueError("请先暂停当前任务，等本轮收尾后再调整额度。")
+            budget = payload.get("budget")
+            if not isinstance(budget, dict) or not budget or set(budget) - set(BUDGET_LIMITS):
+                raise ValueError("请选择有效的任务预算字段。")
+            values = {key: integer(value, *BUDGET_LIMITS[key]) for key, value in budget.items()}
+            for key, value in values.items():
+                setattr(active.budget, key, value)
+            active.add_log("budget_updated", "管理员已调整本任务预算。")
+            projects.storage.save_task(active)
+            result = {"budget": active.budget.__dict__}
         elif action == "detail":
             result = await projects.detail(task_id)
+            if result["task"]["status"] not in {"completed", "cancelled"}:
+                result["native_steps"] = native_steps(self.owner, result["task"]["umo"])
         elif action == "read_record":
             task = projects.get_task(task_id)
             relative = str(payload.get("path") or "")

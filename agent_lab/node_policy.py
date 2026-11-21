@@ -22,6 +22,8 @@ async def execute_with_policy(owner, ctx):
     if state and (ctx.task.status != "running" or not state.get("approved_version") or state["approved_version"] != version):
         return NodeExecutionResult(ok=False, blocked=True, advance=False, outcome="等待任务计划批准或恢复。")
     action = str(ctx.node.get("action") or "")
+    if state.get("execution_settings", {}).get("mode") == "readonly" and action in EXTERNAL_ACTIONS | {"code_exec", "plugin_execute"}:
+        return NodeExecutionResult(ok=False, blocked=True, advance=False, outcome="项目只读档位不允许执行此节点。")
     policy = ctx.node.get("retry_policy") or {}
     attempts = max(1, min(int(policy.get("max_attempts") or 1), 8))
     # Unknown external effects are never retried by a generic retry policy.

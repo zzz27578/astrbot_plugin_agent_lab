@@ -11,6 +11,7 @@ import sys
 import tempfile
 import types
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -49,6 +50,115 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         self.storage.save_task(task);p=self.projects.create(project,'development',task.umo,'123');self.projects.attach(task,p['project_id']);self.storage.save_task(task)
         return task,p
     def event(self,umo):return SimpleNamespace(unified_msg_origin=umo,get_sender_id=lambda:'123')
+
+    async def test_project_settings_write_same_native_profile_and_task_budget(self):
+        from quart import Quart
+        Workspace = importlib.import_module('review_agent_lab.workspace_api').WorkspaceAPI
+        task, project = self.task()
+        class Profile(dict):
+            async def save_config_async(self, update):
+                self.update(deepcopy(update))
+                self.persisted = deepcopy(dict(self))
+                return True
+        default = Profile(agent_runner={'config': {'misc': {'max_steps': 128}}})
+        selected = Profile(agent_runner={'config': {'misc': {'max_steps': 12, 'tool_schema_mode': 'full'}}})
+        self.owner.context.get_config = lambda umo=None: selected if umo == task.umo else default
+        app = Quart(__name__)
+        @app.before_request
+        async def allow_admin():
+            from quart import g
+            g.username = 'admin'
+        app.add_url_rule('/workspace', view_func=Workspace(self.owner).handle, methods=['GET', 'POST'])
+        client = app.test_client()
+        async def request(action, **fields):
+            response = await client.post('/workspace', json={'action': action, 'project_id': project['project_id'], 'task_id': task.task_id, **fields})
+            data = await response.get_json()
+            self.assertTrue(data['ok'], data)
+            return data['result']
+        self.assertEqual((await request('execution_settings'))['native_steps'], 12)
+        await request('save_execution_settings', native_steps=23, settings={'mode': 'full', 'budget': {'max_total_tokens': 0}})
+        self.assertEqual(selected.persisted['agent_runner']['config']['misc'], {'max_steps': 23, 'tool_schema_mode': 'full'})
+        self.assertEqual(default['agent_runner']['config']['misc']['max_steps'], 128)
+        selected['agent_runner']['config']['misc']['max_steps'] = 29
+        settings = await request('execution_settings')
+        self.assertEqual((settings['native_steps'], settings['mode'], settings['budget']['max_total_tokens']), (29, 'full', 0))
+        await request('task_budget', budget={'max_total_tokens': 310000})
+        self.assertEqual(self.storage.load_active_task(task.umo).budget.max_total_tokens, 310000)
+
+    async def test_bridge_scope_batch_resume_rejection_and_result_pairing(self):
+        from mcp.types import CallToolResult, TextContent
+        Bridge = importlib.import_module('review_agent_lab.astrbot_bridge').AstrBotBridge
+        Messages = importlib.import_module('review_agent_lab.task_messages').TaskMessages
+        task, _ = self.task(status='running')
+        state = Control.control(task)
+        state.update(current_step_id='one', execution_settings={'mode': 'standard', 'roots': ['/project']})
+        self.storage.save_task(task)
+        event = self.event(task.umo)
+        event.get_extra = lambda key, default=None: default
+        tools = {name: SimpleNamespace(name=name, description='') for name in ('astrbot_file_read_tool', 'astrbot_execute_shell')}
+        bridge = Bridge(self.owner)
+        bridge.tool = lambda name, event=None: tools.get(name)
+        bridge.execution_context = lambda event: self.owner.context
+        self.owner._tool_allowed_by_agent_profile = lambda spec, name: True
+        self.owner._tool_available_for_agent = lambda tool, disabled: True
+        self.owner._disabled_plugin_names = lambda spec: []
+        self.owner._effective_tool_risk = lambda spec, name, risk: risk
+        self.owner._infer_tool_risk = lambda name, desc: 'work'
+        self.owner._cfg_value = lambda key, default: default
+        self.owner._budget_remaining_tools = lambda current: 8
+        self.owner._consume_tool_budget = lambda *args: ''
+        actions, sent = [], []
+        async def execute(tool, context, **args):
+            actions.append((tool.name, args))
+            yield CallToolResult(content=[TextContent(type='text', text='file body')])
+        async def send(umo, text):
+            sent.append(text)
+        async def provider(umo):
+            return 'model'
+        async def summarize(**kwargs):
+            self.assertIn('恢复方式', kwargs['system_prompt'])
+            return SimpleNamespace(completion_text='删除两项旧文件。恢复时使用保留的备份。')
+        self.owner.context.get_current_chat_provider_id = provider
+        self.owner.context.llm_generate = summarize
+        modules = {
+            'astrbot.core.astr_agent_context': SimpleNamespace(AstrAgentContext=SimpleNamespace, AgentContextWrapper=SimpleNamespace),
+            'astrbot.core.astr_agent_tool_exec': SimpleNamespace(FunctionToolExecutor=SimpleNamespace(execute=execute)),
+        }
+        with patch.dict(sys.modules, modules):
+            result = await bridge.invoke(event, tools['astrbot_file_read_tool'], {'path': '/outside/reference'}, native=True)
+            self.assertEqual(len(result), 1)
+            self.assertEqual(result[0].content[0].text, 'file body')
+            self.assertIn('证据 ID', result[0].content[-1].text)
+            await bridge.invoke(event, tools['astrbot_execute_shell'], {'command': 'ls /project'})
+            ops = [{'tool_name': 'astrbot_execute_shell', 'arguments': {'command': 'rm /outside/' + suffix}} for suffix in ('one', 'two')]
+            bridge.request_batch(event, ops, '清理旧文件', '影响两个对象', '恢复备份')
+            paused = self.storage.load_active_task(task.umo)
+            self.assertEqual(paused.status, 'paused')
+            self.assertEqual(len(actions), 2)
+            await Messages(self.owner, send=send).state(event, task.task_id)
+            self.assertIn('删除两项旧文件', sent[-1]); self.assertNotIn('rm /outside', sent[-1])
+            paused.approvals[-1]['status'] = 'approved'; paused.status = 'running'
+            self.storage.save_task(paused)
+            self.assertTrue(await bridge.resume_batch(event, paused))
+            current = self.storage.load_active_task(task.umo)
+            self.assertEqual(current.approvals[-1]['status'], 'consumed')
+            await bridge.resume_batch(event, current)
+            self.assertEqual(actions[-2:], [(op['tool_name'], op['arguments']) for op in ops])
+            self.assertEqual(len(actions), 4)
+            self.assertEqual(Control.control(current)['scope_notices'][0]['path'], '/outside/reference')
+            bridge.request_batch(event, ops[:1], '测试拒绝', '单项', '')
+            current = self.storage.load_active_task(task.umo)
+            current.approvals[-1]['status'] = 'rejected'; current.status = 'running'
+            self.storage.save_task(current)
+            with self.assertRaisesRegex(ValueError, '已经被拒绝'):
+                await bridge.invoke(event, tools['astrbot_execute_shell'], ops[0]['arguments'])
+            self.assertEqual(len(actions), 4)
+            current.status = 'paused'
+            current.next_step = '旧步骤'
+            current.set_wait(wait_reason='budget_exhausted', message='任务 Token 总预算已用尽：242064/240000', source='budget')
+            self.storage.save_task(current)
+            await Messages(self.owner, send=send).state(event, task.task_id)
+            self.assertIn('242064/240000', sent[-1]); self.assertNotIn('旧步骤', sent[-1])
 
     async def test_same_adapter_two_instances_remain_separate(self):
         a,pa=self.task('qq-a','Same name');b,pb=self.task('qq-b','Same name')
@@ -205,7 +315,7 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         approval=Models.ApprovalRequest(operation='Large plan',reason='Review',impact='x'*10000)
         latest=self.storage.load_active_task(task.umo);Control.control(latest)['questions']=[];latest.approvals=[approval.to_dict()];self.storage.save_task(latest)
         await messages.state(self.event(task.umo),task.task_id)
-        self.assertIn('/al approve '+approval.approval_id,sent[-1][1]);self.assertIn('完整计划',sent[-1][1])
+        self.assertIn('回复“批准”或“拒绝”',sent[-1][1]);self.assertNotIn(approval.approval_id,sent[-1][1])
         with self.assertRaises(PermissionError):await messages.publish(self.event('qq-b:FriendMessage:123'),task.task_id,'wrong')
         detail=await self.projects.detail(task.task_id)
         self.assertEqual([m['kind'] for m in detail['messages']],['progress','question','approval','approval'])
@@ -298,7 +408,7 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         self.owner.task_messages=importlib.import_module('review_agent_lab.task_messages').TaskMessages(self.owner,send=send)
         self.owner.agent_runtime=SimpleNamespace(record_pause=lambda *args,**kwargs:None)
         result=await namespace[method.name](self.owner,self.event(task.umo),'Write config','Fix issue','One file','Restore backup')
-        self.assertEqual(len(sent),1);self.assertIn(task.task_id,sent[0][1]);self.assertIn('回滚：Restore backup',sent[0][1])
+        self.assertEqual(len(sent),1);self.assertIn(task.task_id,sent[0][1]);self.assertIn('核对完整动作',sent[0][1]);self.assertNotIn('Restore backup',sent[0][1])
         self.assertIn('原任务消息线',result)
         self.assertEqual((await self.projects.detail(task.task_id))['messages'][0]['kind'],'approval')
 

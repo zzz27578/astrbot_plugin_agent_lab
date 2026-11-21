@@ -77,11 +77,12 @@ from .agent_lab.web_api import admin_api
 from .agent_lab.node_policy import execute_with_policy
 from .agent_lab.projects import Projects
 from .agent_lab.workspace_api import WorkspaceAPI
+from .agent_lab.execution_settings import native_steps, normalize as normalize_execution_settings
 from .agent_lab.task_messages import TaskMessages
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.6"
+PLUGIN_VERSION = "v0.2.7"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -824,6 +825,17 @@ class AgentLabPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def agent_lab_native_message_monitor(self, event: AstrMessageEvent):
         text = str(event.message_str or "").strip()
+        aliases = {"批准": "approve", "拒绝": "reject", "任务暂停": "pause",
+                   "任务继续": "resume", "任务重启": "resume", "任务恢复": "resume",
+                   "任务终止": "cancel", "任务状态": "status"}
+        if text in aliases and (text not in {"批准", "拒绝"} or self.storage.load_active_task(event.unified_msg_origin)):
+            try:
+                result = await self._handle_command(event, aliases[text])
+            except (PermissionError, ValueError) as exc:
+                result = str(exc)
+            event.stop_event()
+            await event.send(MessageChain().message(result))
+            return
         if text in {"停止当前任务", "取消当前任务", "结束当前任务", "按现状交付", "直接交付当前任务"}:
             self._require_task_access(event)
             task = self.storage.load_active_task(event.unified_msg_origin)
@@ -912,6 +924,9 @@ class AgentLabPlugin(Star):
             return json.dumps({"task_id": task.task_id, "project_id": state.get("project_id"), "goal": task.root_goal[:300],
                 "status": task.status, "current_step": current.get("title"), "next": task.next_step[:500],
                 "summary": (task.exit_summary or task.current_summary)[:900],
+                "wait_reason": task.wait.wait_reason, "wait_message": task.wait.message,
+                "budget": {"used_tokens": task.budget.tokens_used, "max_total_tokens": task.budget.max_total_tokens},
+                "pending_approvals": len(task.pending_approvals()),
                 "pending_questions": [q for q in state.get("questions", []) if q.get("status") == "pending"]}, ensure_ascii=False)
         spec = AgentSpec.from_dict(
             task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
@@ -1107,6 +1122,7 @@ class AgentLabPlugin(Star):
         rollback: str = "",
         approval_type: str = "operation",
         requested_status: str = "",
+        operations_json: str = "",
     ) -> str:
         """危险操作前请求用户审批，不要直接执行危险操作。
 
@@ -1115,11 +1131,21 @@ class AgentLabPlugin(Star):
             reason(string): 为什么需要做。
             impact(string): 影响范围。
             rollback(string): 可回滚方案。
+            operations_json(string): 提前合并危险操作；JSON 数组，每项为 {tool_name, arguments}。批准后按原参数续接，无需再次调用。
         """
         self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task，无法记录审批。"
+        if operations_json.strip():
+            try:
+                if len(operations_json) > 18000:
+                    raise ValueError("请把批次缩小到可完整审阅的范围。")
+                operations = json.loads(operations_json)
+                task_id = self.astrbot_bridge.request_batch(event, operations, reason[:800], impact[:1200], rollback[:700])
+            except ValueError as exc:
+                return str(exc)
+            return f"任务 {task_id} 已在执行前保存审批批次，等待管理员批准；不再派发新动作。"
         approval = ApprovalRequest(
             operation=operation,
             reason=reason,
@@ -1642,12 +1668,17 @@ class AgentLabPlugin(Star):
                 return "请先提交并批准当前计划。"
             if any(row.get("status") in {"started", "unknown"} for row in state.get("journal", [])):
                 return "工具结果未知，请在任务页核对后恢复。"
+            budget_reason = self._total_budget_reason(task)
+            if budget_reason:
+                return budget_reason + "。请在任务详情调整额度后再继续。"
             for question in state.get("questions", []):
                 if question.get("status") == "pending":
                     question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
             state["human_paused"] = False
             task.status = "running"
             task.clear_wait()
+            task.watchdog.paused_reason = ""
+            task.watchdog.consecutive_failures = 0
             self.storage.save_task(task)
             self.task_control.schedule(event)
             return "已从检查点恢复自动续接。"
@@ -1710,17 +1741,27 @@ class AgentLabPlugin(Star):
             await self._disable_heartbeat(task)
             self.storage.save_task(task)
             return "已关闭当前任务心跳。"
-        if cmd == "approve":
+        if cmd in {"approve", "reject"}:
             approval_id = rest.strip()
-            msg = self._resolve_approval(event.unified_msg_origin, approval_id, True, event.get_sender_id())
+            if not approval_id:
+                task = self.task_control.load(event.unified_msg_origin)
+                if str(event.get_sender_id()) != str(task_control(task).get("owner_id")):
+                    raise PermissionError("快捷审批仅限立项管理员在原会话使用。")
+                pending = task.pending_approvals()
+                if len(pending) != 1:
+                    return "没有唯一的待审批项，请在任务详情选择要处理的审批。"
+                approval_id = pending[0].approval_id
+            approved = cmd == "approve"
+            msg = self._resolve_approval(event.unified_msg_origin, approval_id, approved, event.get_sender_id())
+            if not approved:
+                return ("已拒绝，本批次不会执行。任务保持暂停。可补充处理方向后发“任务继续”，或发“任务终止”退出并归档。"
+                        if msg.startswith("审批已拒绝") else msg)
             if msg.startswith("\u5ba1\u6279\u5df2\u901a\u8fc7"):
                 finished = await self._finish_after_approval(event, approval_id)
                 if finished:
                     msg = f"{msg}\n{finished}"
             self.task_control.schedule(event)
-            return msg
-        if cmd == "reject":
-            return self._resolve_approval(event.unified_msg_origin, rest, False, event.get_sender_id())
+            return "已批准。任务将从检查点继续。" if not rest and msg.startswith("审批已通过") and not finished else msg
         return f"未知命令：{cmd}\n\n{self._help_text()}"
 
     async def _start_task(self, event: AstrMessageEvent, **kwargs) -> str:
@@ -1817,6 +1858,12 @@ class AgentLabPlugin(Star):
         )
         self.task_control.initialize(task, event, workflow_mode)
         self.projects.attach(task, project_id, project_title, category)
+        project = self.projects.project(task_control(task)["project_id"])
+        execution = normalize_execution_settings(project.get("execution_settings") or {})
+        task_control(task)["execution_settings"] = execution
+        for key, value in execution["budget"].items():
+            setattr(task.budget, key, value)
+        self._configure_task_budget(task)
         if workflow_mode == "selected":
             self._initialize_task_workflow(task, spec, source=source)
         if trigger_payload:
@@ -2454,7 +2501,7 @@ class AgentLabPlugin(Star):
             return "当前没有 active task。"
         if not approval_id:
             return "请提供 approval_id。"
-        if not self._approval_actor_allowed(user_id):
+        if not (self._approval_actor_allowed(user_id) or (user_id != "webui" and user_id in self._clean_string_list(_cfg(self._context_config(umo), "admins_id", [])))):
             return "无权限处理审批：已配置管理员列表时，仅 workflow_admin_ids 中的管理员可以批准或拒绝。"
         found = False
         for item in task.approvals:
@@ -2479,7 +2526,7 @@ class AgentLabPlugin(Star):
             task.watchdog.last_decision = "approval_rejected"
             task.set_wait(
                 wait_reason="need_user_decision",
-                message=f"Approval rejected: {approval_id}. Revise the plan before continuing.",
+                message="管理员已拒绝该操作。可调整方案后继续，或终止任务。",
                 source="approval_resolved",
                 required_input=[approval_id],
             )
@@ -2510,7 +2557,7 @@ class AgentLabPlugin(Star):
         self.storage.save_task(task)
         return f"审批已{'通过' if approved else '拒绝'}：{approval_id}"
 
-    def _build_toolset(self, spec: AgentSpec):
+    def _build_toolset(self, spec: AgentSpec, event=None):
         tmgr = self.context.get_llm_tool_manager()
         internal_block = {"agent_lab_enter_mode", "agent_lab_tick", "agent_lab_set_heartbeat"}
         essential = {
@@ -2540,7 +2587,7 @@ class AgentLabPlugin(Star):
             toolset = ToolSet()
             for name in essential:
                 try:
-                    tool = self.astrbot_bridge.tool(name)
+                    tool = self.astrbot_bridge.tool(name, event)
                 except Exception:
                     tool = None
                 if tool:
@@ -2550,7 +2597,10 @@ class AgentLabPlugin(Star):
         if tool_mode == "full" or not spec.enabled_tools:
             toolset = tmgr.get_full_tool_set()
             for name in ("astrbot_file_read_tool", "astrbot_grep_tool", "astrbot_file_write_tool", "astrbot_file_edit_tool", "astrbot_execute_shell", "astrbot_execute_python", "astrbot_execute_ipython"):
-                tool = self.astrbot_bridge.tool(name)
+                try:
+                    tool = self.astrbot_bridge.tool(name, event)
+                except (KeyError, ValueError, ImportError):
+                    tool = None
                 if tool:
                     toolset.add_tool(tool)
             for name in internal_block:
@@ -2565,7 +2615,7 @@ class AgentLabPlugin(Star):
                 ):
                     toolset.remove_tool(tool.name)
             for name in essential:
-                tool = self.astrbot_bridge.tool(name)
+                tool = self.astrbot_bridge.tool(name, event)
                 if tool:
                     toolset.add_tool(tool)
             return toolset
@@ -2578,7 +2628,7 @@ class AgentLabPlugin(Star):
             if name in internal_block:
                 continue
             try:
-                tool = self.astrbot_bridge.tool(name)
+                tool = self.astrbot_bridge.tool(name, event)
             except Exception as exc:
                 logger.warning("[AgentLab] cannot resolve tool %s: %s", name, exc)
                 continue
@@ -2768,23 +2818,10 @@ class AgentLabPlugin(Star):
         task.lease.reason = ""
 
     def _configure_task_budget(self, task: TaskState) -> None:
-        budget = task.budget
-        config_defaults = {
-            "max_nodes_per_tick": ("workflow_auto_steps_per_tick", 6),
-            "max_tools_per_tick": ("max_steps_per_tick", 12),
-            "max_seconds_per_tick": ("max_seconds_per_tick", 240),
-            "max_tokens_per_tick": ("max_tokens_per_tick", 12000),
-            "max_total_ticks": ("max_total_ticks", 120),
-            "max_total_tool_calls": ("max_total_tool_calls", 240),
-            "max_total_tokens": ("max_total_tokens", 240000),
-        }
-        for attr, (key, default) in config_defaults.items():
-            current = int(getattr(budget, attr, 0) or 0)
-            if current <= 0:
-                setattr(budget, attr, int(_cfg(self.config, key, default) or default))
+        task.budget.max_tools_per_tick = native_steps(self, task.umo)
 
-    def _budget_before_tick(self, task: TaskState, reason: str) -> str:
-        self._configure_task_budget(task)
+    @staticmethod
+    def _total_budget_reason(task: TaskState) -> str:
         budget = task.budget
         if budget.max_total_ticks and budget.ticks_used >= budget.max_total_ticks:
             return f"任务 tick 总预算已用尽：{budget.ticks_used}/{budget.max_total_ticks}"
@@ -2792,6 +2829,13 @@ class AgentLabPlugin(Star):
             return f"任务工具调用总预算已用尽：{budget.tool_calls_used}/{budget.max_total_tool_calls}"
         if budget.max_total_tokens and budget.tokens_used >= budget.max_total_tokens:
             return f"任务 token 总预算已用尽：{budget.tokens_used}/{budget.max_total_tokens}"
+        return ""
+
+    def _budget_before_tick(self, task: TaskState, reason: str) -> str:
+        self._configure_task_budget(task)
+        if message := self._total_budget_reason(task):
+            return message
+        budget = task.budget
         budget.ticks_used += 1
         budget.tick_started_at = now_iso()
         data = self._ensure_workflow_data(task)
@@ -2876,6 +2920,7 @@ class AgentLabPlugin(Star):
     def _pause_task_for_budget(self, task: TaskState, reason: str) -> None:
         task.status = "paused"
         task.watchdog.last_decision = "paused_budget"
+        task.watchdog.paused_reason = reason
         task.set_wait(
             wait_reason="budget_exhausted",
             message=reason,
@@ -5323,18 +5368,14 @@ class AgentLabPlugin(Star):
 
         budget_fields = {
             "max_nodes_per_tick": (1, 200),
-            "max_tools_per_tick": (0, 200),
             "max_seconds_per_tick": (1, 3600),
             "max_tokens_per_tick": (0, 1_000_000),
-            "max_total_ticks": (0, 100_000),
-            "max_total_tool_calls": (0, 100_000),
-            "max_total_tokens": (0, 50_000_000),
         }
         updated_budget: dict[str, int] = {}
         for field, (minimum, maximum) in budget_fields.items():
             current = int(getattr(ctx.task.budget, field, 0) or 0)
             value = node_int(field, current, minimum=minimum, maximum=maximum)
-            if value != current or field in ctx.node:
+            if value and (not current or value < current):
                 setattr(ctx.task.budget, field, value)
                 updated_budget[field] = value
 
@@ -5344,15 +5385,12 @@ class AgentLabPlugin(Star):
             minimum=1,
             maximum=100,
         )
-        ctx.task.heartbeat.max_repeated_failures = repeated
+        ctx.task.heartbeat.max_repeated_failures = min(ctx.task.heartbeat.max_repeated_failures, repeated)
 
         for key in (
             "progress_notice_mode",
             "pause_commands",
             "conversation_mode",
-            "risk_level",
-            "isolation_mode",
-            "tool_mode",
             "report_frequency",
         ):
             if key in ctx.node:
@@ -8587,12 +8625,15 @@ class AgentLabPlugin(Star):
             return jsonify({"ok": False, "error": "请先提交并批准当前任务计划。"})
         if any(row.get("status") in {"unknown", "started"} for row in state.get("journal", [])):
             return jsonify({"ok": False, "error": "请先核对未知工具结果。"})
+        if budget_reason := self._total_budget_reason(task):
+            return jsonify({"ok": False, "error": budget_reason + "。请先调整本任务额度。"})
         for question in state.get("questions", []):
             if question.get("status") == "pending":
                 question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
         state["human_paused"] = False
         task.status = "running"
         task.watchdog.paused_reason = ""
+        task.watchdog.consecutive_failures = 0
         task.watchdog.last_decision = "manual_resume"
         task.clear_wait()
         task.add_log("resumed", str(payload.get("reason") or "WebUI manual resume."))
@@ -10793,16 +10834,13 @@ class AgentLabPlugin(Star):
             return "Agent Lab：当前没有 active task。" + webui
         runtime = self.agent_runtime.summary(task)
         return (
-            f"Agent Lab active task:\n"
-            f"- id: {task.task_id}\n"
-            f"- status: {task.status}\n"
-            f"- goal: {task.root_goal}\n"
-            f"- next: {task.next_step or '-'}\n"
-            f"- runtime: node={runtime.get('current_node_id') or '-'} "
-            f"capabilities={runtime.get('capability_count', 0)} verdicts={runtime.get('verdicts', 0)}\n"
-            f"- heartbeat: {'on' if task.heartbeat.enabled else 'off'}\n"
-            f"- pending approvals: {len(task.pending_approvals())}\n"
-            f"- state: {self.storage.task_markdown_path(umo, task.task_id)}"
+            f"任务状态：{ {'running': '运行中', 'paused': '已暂停', 'blocked': '受阻'}.get(task.status, task.status) }\n"
+            f"目标：{task.root_goal}\n"
+            f"{('原因：' + self._redact_known_secrets(task.wait.message) + chr(10)) if task.wait.message else ''}"
+            f"下一步：{task.next_step or '暂无'}\n"
+            f"预算：{task.budget.tokens_used}/{task.budget.max_total_tokens or '不限'} Token，"
+            f"原生每轮工具上限 {native_steps(self, umo)}\n"
+            f"待审批：{len(task.pending_approvals())} 项"
             f"{webui}"
         )
 

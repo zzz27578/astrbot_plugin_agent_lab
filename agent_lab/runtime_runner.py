@@ -7,6 +7,8 @@ from .hooks import AgentLabRunHooks
 from .models import AgentSpec
 from .prompts import build_task_system_prompt, build_tick_prompt
 from .task_control import control, prompt as plan_prompt
+from .astrbot_bridge import BudgetStopped, ExecutionStopped
+from .task_permissions import apply_mode
 
 
 def _cfg(config: Any, key: str, default: Any = None) -> Any:
@@ -89,12 +91,20 @@ class AgentRuntimeRunner:
                 task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict()
             )
             state = control(task)
+            apply_mode(spec, state)
             current = next((step for step in state.get("steps", []) if step.get("status") != "completed"), None)
             if current:
                 state["current_step_id"] = current["id"]
                 current["status"] = "running"
                 task.next_step = current["instruction"]
             self.storage.save_task(task)
+            event.set_extra("agent_lab_input_revision", state.get("input_revision", 0))
+            if not await self.astrbot_bridge.resume_batch(event, task):
+                return "已保存审批批次进度；未派发动作仍在队列中。"
+            current_task = self.storage.load_active_task(event.unified_msg_origin)
+            if not current_task or current_task.task_id != task.task_id:
+                return "任务已结束或切换。"
+            task = current_task
             self._normalize_agent_workflow(spec)
             self._sync_agent_runtime(task, spec, reason=f"tick:{reason}")
             self.agent_runtime.record_decision(
@@ -159,15 +169,18 @@ class AgentRuntimeRunner:
             prompt = (build_tick_prompt(task, reason) if control(task).get("workflow") == "none"
                       else self._workflow_react_prompt(task=task, spec=spec, reason=reason))
             if control(task).get("workflow") == "none":
-                system_prompt = system_prompt.split("[Workflow]", 1)[0] + "\n" + modules_prompt
+                system_prompt = ("你正在 Agent Lab 任务模式中执行已批准计划。"
+                                 "按检查点继续；只有验证通过才完成。遵守当前任务权限，保护凭证，未知副作用不得重放。"
+                                 f"\n验收条件：{task.completion_conditions}\n{modules_prompt}")
                 prompt = "推进当前批准计划的具体步骤。每个工作单元结束调用 agent_lab_checkpoint。全部步骤完成再调用 agent_lab_finish。"
+            system_prompt += "\n项目任务指引：" + control(task).get("execution_settings", {}).get("task_prompt", "")
             system_prompt += plan_prompt(task)
             provider_id = await self.context.get_current_chat_provider_id(event.unified_msg_origin)
             remaining_tool_steps = self._budget_remaining_tools(task)
             if remaining_tool_steps <= 0:
                 return "本轮工具预算已用尽，下轮从检查点继续。"
             resp = await asyncio.wait_for(self.astrbot_bridge.run(
-                event, task, self._build_toolset(spec), prompt, system_prompt, remaining_tool_steps,
+                event, task, self._build_toolset(spec, event), prompt, system_prompt, remaining_tool_steps,
                 AgentLabRunHooks(self.storage, task.umo, task.task_id, budget_max_tools=0,
                                 progress_mode=str(_cfg(self.config, "agent_mode_progress_notice_mode", "agent_lab")))),
                 timeout=max(10, int(task.budget.max_seconds_per_tick or 240)))
@@ -200,7 +213,6 @@ class AgentRuntimeRunner:
                     node_id=runtime_run.react_node_id or task.workflow_current_node_id,
                     payload={"text": task.last_observation},
                 )
-            budget_message = ""  # Usage committed at each native model/compaction response.
             task.add_log("tick", f"reason={reason}; response={self._compact_text(text, 1200)}")
             task.add_snapshot(
                 "tick",
@@ -216,8 +228,6 @@ class AgentRuntimeRunner:
                     },
                 },
             )
-            if budget_message:
-                self._pause_task_for_budget(task, budget_message)
             self._watchdog_after_tick(task, before_hash=before_hash, reason=reason)
             self.agent_runtime.record_verdict(
                 task,
@@ -233,6 +243,14 @@ class AgentRuntimeRunner:
             if task.status == "paused" and task.watchdog.paused_reason:
                 return f"tick 已暂停：{task.watchdog.paused_reason}\n\n{self._compact_text(text, 1800)}"
             return f"tick 完成。\n\n{self._compact_text(text, 1800)}"
+        except BudgetStopped as exc:
+            latest = self.storage.load_active_task(event.unified_msg_origin)
+            if latest and latest.task_id == task.task_id and latest.status == "running":
+                self._watchdog_after_tick(latest, before_hash=before_hash, reason=reason)
+                self.storage.save_task(latest)
+            return str(exc)
+        except ExecutionStopped as exc:
+            return str(exc)
         except Exception as exc:
             latest = self.storage.load_active_task(event.unified_msg_origin)
             if latest is None or latest.task_id != task.task_id:

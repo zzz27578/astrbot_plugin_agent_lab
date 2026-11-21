@@ -50,7 +50,7 @@ global.document = { querySelector: () => ({ content: "/api" }) };
 function token() { return ""; }
 
 const code = ["apiUrl", "pluginPageRequest", "pluginPageBridge", "api"].map(extract).join("\n\n");
-const api = new Function("window", "location", "document", "token", `${code}; return api;`)(window, location, document, token);
+const api = new Function("window", "location", "document", "token", "boundedRequest", `${code}; return api;`)(window, location, document, token, promise => promise);
 
 (async () => {
   const state = await api("/api/state");

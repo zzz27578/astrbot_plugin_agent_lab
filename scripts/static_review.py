@@ -16,8 +16,9 @@ for name in re.findall(r'register_web_api\([^\n]*self\.(api_\w+)', text):
     assert any(ast.unparse(decorator) == "admin_api" for decorator in methods[name].decorator_list), name
 config = json.loads((root / "_conf_schema.json").read_text(encoding="utf-8"))
 assert config["private_only"]["default"] is True
-assert 'version: v0.2.6' in (root / "metadata.yaml").read_text(encoding="utf-8")
-assert 'PLUGIN_VERSION = "v0.2.6"' in text
+version = re.search(r'^version: (v\d+\.\d+\.\d+)$', (root / "metadata.yaml").read_text(encoding="utf-8"), re.M).group(1)
+assert f'PLUGIN_VERSION = "{version}"' in text
+assert f'· {version}<' in (root / "pages" / "agent-lab" / "index.html").read_text(encoding="utf-8")
 assert len(list((root / "modules").glob("*.json"))) == 5
 for source in (root / "modules").glob("*.json"):
     json.loads(source.read_text(encoding="utf-8"))

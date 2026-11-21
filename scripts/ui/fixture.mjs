@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
 export function createFixture(){
  const state=JSON.parse(fs.readFileSync(path.join(root,'scripts/preview/mockstate.json'),'utf8'));
- state.node_capabilities=JSON.parse(execFileSync('python',[path.join(root,'scripts/ui/export_capabilities.py')],{encoding:'utf8'}));
+ state.node_capabilities=JSON.parse(execFileSync(process.env.AGENT_LAB_PYTHON || (process.platform==='win32'?'py':'python'),[path.join(root,'scripts/ui/export_capabilities.py')],{encoding:'utf8'}));
  state.runtime={bot_label:'开发助手',bot_label_source:'platform'};
  state.agents[0].name='插件排查与修复';state.agents[0].description='定位复现条件、分析代码、修复并验证。用于插件故障和版本兼容问题。';
  state.agents.push({...structuredClone(state.agents[0]),agent_id:'research',name:'资料研究',description:'检索资料、交叉核对来源，并生成带引用的项目摘要。'});
@@ -37,6 +37,9 @@ export function createFixture(){
      else if(body.action==='detail')result={task:t,record_bytes:98304,native_history_bytes:15000,messages:[{kind:'progress',text:'已核对接口，正在检查执行上下文。',status:'sent'},{kind:'question',text:'请确认修改范围：仅当前插件，还是关联依赖？',status:'sent'},{kind:'approval',text:'等待管理员批准本次计划。',status:'sent'}],files:[{path:`sessions/mock/${t.task_id}.json`,bytes:98304}]};
      else if(body.action==='create_project'){const id='project_'+Date.now().toString(16);result={project_id:id,title:body.title,category:body.category||'项目',source_umo:body.umo||'',platform_id:body.umo?.split(':')[0]||body.platform_id||'',summary:'',tasks:[],bytes:0,cache_bytes:0,workflow_ids:[],storage_path:`projects/${id}`};projects.push(result);}
      else if(body.action==='update_project'){Object.assign(p,body);result=p;}
+     else if(body.action==='execution_settings'){result=p.execution_settings||{mode:'standard',native_steps:12,bound_session:true,roots:[],warnings:[],task_prompt:'',budget:{max_total_tokens:240000,max_tokens_per_tick:12000,max_total_tool_calls:240,max_total_ticks:120,max_nodes_per_tick:6,max_seconds_per_tick:240}};}
+     else if(body.action==='save_execution_settings'){p.execution_settings={...body.settings,native_steps:Number(body.native_steps||12),bound_session:true};result=p;}
+     else if(body.action==='task_budget'){Object.assign(t.budget,body.budget);result={budget:t.budget};}
      else if(body.action==='save_summary'){p.summary=body.summary;result={message:'已保存'};}
      else if(body.action==='draft_summary')result={summary:'接口梳理已完成；异常处理尚未验证。下一步核对任务暂停与恢复。'};
      else if(body.action==='read_record')result={path:body.path,text:'任务记录：计划与证据已保存。',truncated:false};

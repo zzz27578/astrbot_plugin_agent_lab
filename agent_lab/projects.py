@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, uuid5
 from .models import TaskState, new_id, now_iso
 from .task_control import control
 from .identities import source_platform
+from .execution_settings import normalize as normalize_execution_settings
 
 
 TERMINAL = {"completed", "cancelled"}
@@ -95,6 +96,8 @@ class Projects:
             row["workflow_ids"] = list(dict.fromkeys(ids))
         if "share_with_daily" in payload:
             row["share_with_daily"] = bool(payload["share_with_daily"])
+        if "execution_settings" in payload:
+            row["execution_settings"] = normalize_execution_settings(payload["execution_settings"])
         row["updated_at"] = now_iso()
         self.write(data)
         return row

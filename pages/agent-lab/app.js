@@ -1735,6 +1735,12 @@ function showAppModal(opts = {}) {
         const opts = (f.options || []).map(([v, lbl]) => `<option value="${esc(v)}" ${String(v) === cur ? "selected" : ""}>${esc(lbl)}</option>`).join("");
         return `<label class="app-modal-field"><span>${esc(f.label || "")}</span><select data-modal-field="${i}">${opts}</select></label>`;
       }
+      if (f.type === "textarea") {
+        return `<label class="app-modal-field"><span>${esc(f.label || "")}</span><textarea data-modal-field="${i}" rows="2" placeholder="${esc(f.placeholder || "")}">${esc(f.value ?? "")}</textarea></label>`;
+      }
+      if (f.type === "number") {
+        return `<label class="app-modal-field"><span>${esc(f.label || "")}</span><input type="number" data-modal-field="${i}" value="${esc(f.value ?? "")}" min="${esc(f.min ?? 0)}" max="${esc(f.max ?? 10000)}" step="1" required /></label>`;
+      }
       return `<label class="app-modal-field"><span>${esc(f.label || "")}</span><input type="text" data-modal-field="${i}" value="${esc(f.value == null ? "" : f.value)}" placeholder="${esc(f.placeholder || "")}" /></label>`;
     }).join("");
     overlay.innerHTML = `
@@ -1754,7 +1760,10 @@ function showAppModal(opts = {}) {
     let done = false;
     const cleanup = () => { document.removeEventListener("keydown", onKey, true); overlay.remove(); };
     const finish = (val) => { if (done) return; done = true; cleanup(); resolve(val); };
-    const onConfirm = () => finish(fields.length ? inputs.map((el) => el.value.trim()) : true);
+    const onConfirm = () => {
+      for (const el of inputs) if (!el.reportValidity()) return;
+      finish(fields.length ? inputs.map((el) => el.value.trim()) : true);
+    };
     const onCancel = () => finish(null);
     overlay.querySelector("[data-modal-confirm]").addEventListener("click", onConfirm);
     overlay.querySelector("[data-modal-cancel]").addEventListener("click", onCancel);
@@ -4568,12 +4577,6 @@ function applyWorkflowNodeFromInspector() {
     currentAgent.workflow_scope.user_denylist = linesToList($("scope-user-deny")?.value || "");
   }
   if (document.getElementById("workflow-default-completion-conditions")) currentAgent.entry_policy.default_completion_conditions = linesToList($("workflow-default-completion-conditions").value);
-  if (document.getElementById("wf-approval-mode")) {
-    currentAgent.approval_policy ||= {};
-    currentAgent.approval_policy.mode = $("wf-approval-mode").value;
-    currentAgent.approval_policy.require_approval = linesToList($("wf-approval-require").value);
-    currentAgent.approval_policy.preapproved_scopes = linesToList($("wf-approval-preapproved").value);
-  }
 
   currentAgent.workflow_edges = currentAgent.workflow_edges.map((edge) => ({
     ...edge,
@@ -4684,7 +4687,6 @@ function workflowGlobalEditor() {
   const pluginRows = pluginList.length
     ? pluginList.map((p) => `<label class="check-line"><input type="checkbox" data-global-plugin-blacklist="${esc(p.name)}" ${blacklisted.has(p.name) ? "checked" : ""} /> <span>${esc(p.display_name || p.name)}</span><small>${esc(p.name)}</small></label>`).join("")
     : `<div class="empty">没有检测到第三方插件。</div>`;
-  const budget = a.default_task_budget || {};
   return `
     <div class="detail-box workflow-editor">
       <section class="workflow-editor-section simple-editor">
@@ -4706,19 +4708,6 @@ function workflowGlobalEditor() {
         <p class="simple-editor-lead">勾选的插件会被本方案<strong>全程禁用</strong>，绝不会在任务流里被调用；没勾的插件，也只有被画布节点引用时才会启用。</p>
         <div class="capability-list">${pluginRows}</div>
       </section>
-      <section class="workflow-editor-section simple-editor">
-        <h4>预算与运行控制</h4>
-        <div class="form-grid compact">
-          <label>总 Token 预算<input id="global-budget-tokens" type="number" min="0" max="50000000" value="${esc(budget.max_total_tokens ?? 240000)}" /></label>
-          <label>总 Tick 预算<input id="global-budget-ticks" type="number" min="0" max="100000" value="${esc(budget.max_total_ticks ?? 120)}" /></label>
-          <label>每轮最多节点<input id="global-budget-nodes" type="number" min="1" max="200" value="${esc(budget.max_nodes_per_tick ?? 6)}" /></label>
-          <label>每轮最多工具<input id="global-budget-tools" type="number" min="0" max="200" value="${esc(budget.max_tools_per_tick ?? 12)}" /></label>
-          <label>每轮最多秒数<input id="global-budget-seconds" type="number" min="1" max="3600" value="${esc(budget.max_seconds_per_tick ?? 240)}" /></label>
-          <label>每轮 Token 预算<input id="global-budget-tokens-per-tick" type="number" min="0" max="1000000" value="${esc(budget.max_tokens_per_tick ?? 12000)}" /></label>
-          <label>总工具调用预算<input id="global-budget-tool-calls" type="number" min="0" max="100000" value="${esc(budget.max_total_tool_calls ?? 240)}" /></label>
-          <label>重复失败阈值<input id="global-max-repeated-failures" type="number" min="1" max="100" value="${esc(a.heartbeat_policy.max_repeated_failures ?? 3)}" /></label>
-        </div>
-      </section>
       <div class="button-row">
         <button class="button" data-action="apply-workflow-global" type="button">应用全局规则</button>
         <button class="button secondary" data-action="close-workflow-global" type="button">关闭</button>
@@ -4734,25 +4723,6 @@ function applyWorkflowGlobalRules() {
   const tp = document.getElementById("global-task-prompt");
   if (sp) a.system_prompt = sp.value;
   if (tp) a.task_prompt = tp.value;
-  a.default_task_budget ||= {};
-  const budgetMap = [
-    ["global-budget-tokens", "max_total_tokens"],
-    ["global-budget-ticks", "max_total_ticks"],
-    ["global-budget-nodes", "max_nodes_per_tick"],
-    ["global-budget-tools", "max_tools_per_tick"],
-    ["global-budget-seconds", "max_seconds_per_tick"],
-    ["global-budget-tokens-per-tick", "max_tokens_per_tick"],
-    ["global-budget-tool-calls", "max_total_tool_calls"],
-  ];
-  budgetMap.forEach(([id, key]) => {
-    const el = document.getElementById(id);
-    if (!el) return;
-    const value = Number(el.value || 0);
-    if (Number.isFinite(value)) a.default_task_budget[key] = Math.max(0, Math.round(value));
-  });
-  a.heartbeat_policy ||= {};
-  const repeated = document.getElementById("global-max-repeated-failures");
-  if (repeated) a.heartbeat_policy.max_repeated_failures = Math.max(1, Math.round(Number(repeated.value || 3)));
   const skillBoxes = document.querySelectorAll("[data-global-skill]");
   if (skillBoxes.length) {
     a.enabled_skills = Array.from(skillBoxes).filter((b) => b.checked).map((b) => b.dataset.globalSkill);
@@ -6910,16 +6880,9 @@ const WORKFLOW_SIMPLE_FIELDS = {
     { field: "admin_user_id", label: "指定管理员/操作者 ID", type: "text" },
   ],
   global_control: [
-    { field: "isolation_mode", label: "插件隔离", type: "select", default: "strict",
-      options: [["off","不隔离"],["session","会话隔离"],["strict","严格隔离"]] },
-    { field: "tool_mode", label: "工具范围", type: "select", default: "whitelist",
-      options: [["full","全部工具"],["whitelist","工具白名单"],["no_external","仅内置工具"]] },
     { field: "progress_notice_mode", label: "旧执行器工具提示（任务简报请到设置）", type: "select", default: "agent_lab",
       options: [["silent","静默"],["agent_lab","控制台记录"],["astrbot","AstrBot 原生提示"]] },
     { field: "show_tool_use", label: "显示工具调用", type: "checkbox" },
-    { field: "max_total_tokens", label: "总 token 预算", type: "number", default: 240000, max: 50000000 },
-    { field: "max_total_ticks", label: "总 Tick 预算", type: "number", default: 120, max: 100000 },
-    { field: "max_tools_per_tick", label: "每轮最多工具调用", type: "number", default: 12, max: 200 },
     { field: "max_seconds_per_tick", label: "每轮最多秒数", type: "number", default: 240, max: 3600 },
     { field: "max_repeated_failures", label: "重复失败阈值", type: "number", default: 3, max: 100 },
   ],
@@ -7238,7 +7201,6 @@ function workflowInspector() {
   const body = mode === "advanced" ? workflowInspectorAdvanced(item) : workflowSimpleEditor(item);
   const ep = currentAgent.entry_policy || {};
   const sc = currentAgent.workflow_scope || {};
-  const ap = currentAgent.approval_policy || {};
   const scopeRule = isScopeNode ? `
     <div class="workflow-node-rule-box">
       <div class="panel-head"><div><p class="card-kicker">生效范围</p><h3>谁能触发 / 在哪里生效</h3></div></div>
@@ -7265,9 +7227,7 @@ function workflowInspector() {
   const approvalRule = isApprovalNode ? `
     <div class="workflow-node-rule-box">
       <div class="panel-head"><div><p class="card-kicker">审批准则</p><h3>这个审批节点怎么放行</h3></div></div>
-      <label>审批力度<select id="wf-approval-mode">${labeledOptions(["observe", "work", "high_risk_review", "delegated"], ap.mode || "work", approvalModeLabel)}</select></label>
-      <label>必须先审批的动作（每行一个）<textarea id="wf-approval-require" rows="4" placeholder="file_delete&#10;deployment&#10;secret_read">${esc(listToLines(ap.require_approval || []))}</textarea></label>
-      <label>已预授权、无需每次确认（每行一个）<textarea id="wf-approval-preapproved" rows="3" placeholder="read_only&#10;list_files">${esc(listToLines(ap.preapproved_scopes || []))}</textarea></label>
+      <p class="field-hint">此节点只控制流程分支。任务权限在项目运行设置中配置。</p>
     </div>` : "";
   const idField = mode === "simple" ? `<input type="hidden" id="workflow-node-id" value="${esc(item.id)}" />` : "";
   return `
