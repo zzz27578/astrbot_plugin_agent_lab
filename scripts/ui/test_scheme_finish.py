@@ -109,7 +109,7 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         task, _ = self.f.task(status='running'); state = Control.control(task)
         state.update(current_step_id='one',execution_settings={'mode':'full','roots':['/project']});self.storage.save_task(task)
         event = self.f.event(task.umo); event.get_extra = lambda key,default=None:'round_test' if key=='agent_lab_round_id' else default
-        tools = {name:S(name=name,description='') for name in ['astrbot_file_read_tool','astrbot_file_write_tool','astrbot_execute_shell']}
+        tools = {name:S(name=name,description='') for name in ['astrbot_grep_tool','astrbot_file_write_tool','astrbot_execute_shell']}
         bridge = Bridge.AstrBotBridge(self.owner);bridge.tool=lambda name,event=None:tools[name]
         bridge.execution_context=lambda event:self.owner.context
         self.owner._tool_allowed_by_agent_profile=self.owner._tool_available_for_agent=lambda *args:True
@@ -124,13 +124,15 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         modules={'astrbot.core.astr_agent_context':S(AstrAgentContext=S,AgentContextWrapper=S),
                  'astrbot.core.astr_agent_tool_exec':S(FunctionToolExecutor=S(execute=execute))}
         with patch.dict(sys.modules,modules):
-            first=await bridge.invoke(event,tools['astrbot_file_read_tool'],{'path':'/project/app.css'},native=True)
+            # Queries with no filesystem version use the same-round cache.
+            # File content instead requires the versioned range-cache tests.
+            first=await bridge.invoke(event,tools['astrbot_grep_tool'],{'path':'/project/app.css','pattern':'button'},native=True)
             self.assertLess(len(first[0].content[0].text),8500)
-            second=await bridge.invoke(event,tools['astrbot_file_read_tool'],{'path':'/project/app.css'})
+            second=await bridge.invoke(event,tools['astrbot_grep_tool'],{'path':'/project/app.css','pattern':'button'})
             self.assertIn('没有再次执行',second);self.assertLess(len(second),1800)
             self.assertEqual(len(calls),1)
             await bridge.invoke(event,tools['astrbot_file_write_tool'],{'path':'/project/app.css','content':'changed'})
-            await bridge.invoke(event,tools['astrbot_file_read_tool'],{'path':'/project/app.css'})
+            await bridge.invoke(event,tools['astrbot_grep_tool'],{'path':'/project/app.css','pattern':'button'})
             self.assertEqual(len(calls),3)
             for _ in range(3):
                 with self.assertRaises(Bridge.OperationBlocked):

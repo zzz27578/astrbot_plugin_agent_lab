@@ -11,6 +11,7 @@ from .identities import source_platform
 from .models import now_iso
 from .workspace_preferences import WorkspacePreferences
 from .bot_identity import source_persona, persona_prompt
+from .usage_metrics import write_task_line
 
 
 class TaskMessages:
@@ -40,6 +41,8 @@ class TaskMessages:
         task = self.task(event, task_id)
         state = task.workflow_data.get("task_control", {})
         if task.status in {"completed", "cancelled"}:
+            if task.workflow_data.get("usage_metrics"):
+                write_task_line(self.owner, task, event_id="terminal", event="archive")
             return await self.publish(event, task_id, task.exit_summary or "任务已结束，记录已归档。", "delivery")
         pending = task.pending_approvals()
         questions = [q for q in state.get("questions", []) if q.get("status") == "pending"]
@@ -164,7 +167,7 @@ class TaskMessages:
                     digest = hashlib.sha256((kind + body).encode()).hexdigest()
             label = {"progress": "进展", "question": "需要回答", "approval": "需要审批",
                      "delivery": "交付", "status": "状态", "scope": "范围提醒", "budget": "预算"}[kind]
-            row = {"kind": kind, "text": body, "time": now_iso(), "status": "sending", "id": digest[:16]}
+            row = {"kind": kind, "text": body, "chars": len(body), "time": now_iso(), "status": "sending", "id": digest[:16]}
             stream["messages"].append(row)
             stream["messages"] = stream["messages"][-80:]
             delivery["fingerprint"] = digest

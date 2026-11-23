@@ -377,6 +377,12 @@ class ContinuityTests(ProjectRuntime):
             self.assertNotIn('finding 54', str(stored))
         self.assertFalse(any('_agent_lab_handoff' in call for call in calls))
         self.assertEqual(Control.control(self.load(task))['steps'][1]['status'], 'pending')
+        metrics = self.load(task).workflow_data['usage_metrics']
+        self.assertGreaterEqual(metrics['model_calls'], 2)
+        trace = self.storage.task_memory_dir(task.umo, task.task_id) / 'usage.jsonl'
+        entries = [json.loads(line) for line in trace.read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(len(entries), metrics['model_calls'])
+        self.assertTrue(all('prompt' not in entry and 'contexts' not in entry for entry in entries))
 
     async def test_handoff_failure_pauses_real_tick_without_native_discard(self):
         # Run the real tick coordinator; isolate only AstrBot/provider plumbing.

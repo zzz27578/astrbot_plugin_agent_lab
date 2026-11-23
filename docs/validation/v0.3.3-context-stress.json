@@ -1,0 +1,117 @@
+{
+  "environment": "temporary files, deterministic fake tools/providers; no production calls",
+  "tests": 7,
+  "scenarios": [
+    {
+      "case": "stale_source_cursor_restart",
+      "first_chunk_reprocessed_for_changed_source": true,
+      "assertions": "passed"
+    },
+    {
+      "case": "44_messages_signed_large_context",
+      "raw_history_chars": 437613,
+      "handoff_source_chars": 11677,
+      "post_handoff_chars": 1115,
+      "summary_chars": 46,
+      "summary_limit": 800,
+      "handoff_requests": 1,
+      "simulated_reported_tokens": 7432,
+      "token_source": "deterministic_fake_provider_usage_not_a_real_bill",
+      "assertions": "passed"
+    },
+    {
+      "case": "60_working_view_passes_100_metric_updates",
+      "initial_working_chars": 175362,
+      "final_working_chars": 175362,
+      "metrics_chars": 3633,
+      "reported_tokens_simulated": 6500,
+      "unreported_calls": 50,
+      "assertions": "passed"
+    },
+    {
+      "case": "new_update_continue_delete_recreate_cleanup",
+      "source_lines": 1617,
+      "actual_read_calls": 5,
+      "overlap_new_read": [
+        100,
+        50
+      ],
+      "stored_chars_before_delete": 148233,
+      "assertions": "passed"
+    },
+    {
+      "case": "budget_interruption_resume_then_admin_cancel",
+      "handoff_record_reused": true,
+      "first_chunk_not_replayed": true,
+      "task_not_resurrected": true,
+      "assertions": "passed"
+    },
+    {
+      "case": "timeout_then_ok",
+      "calls": 2,
+      "summary_chars": 15,
+      "limit": 800,
+      "quality": "normal",
+      "issue": "timeout",
+      "reported_tokens": null,
+      "assertions": "passed"
+    },
+    {
+      "case": "timeout_twice",
+      "calls": 2,
+      "summary_chars": 397,
+      "limit": 800,
+      "quality": "degraded",
+      "issue": "timeout",
+      "reported_tokens": null,
+      "assertions": "passed"
+    },
+    {
+      "case": "empty_then_ok",
+      "calls": 2,
+      "summary_chars": 15,
+      "limit": 800,
+      "quality": "normal",
+      "issue": "empty",
+      "reported_tokens": null,
+      "assertions": "passed"
+    },
+    {
+      "case": "empty_twice",
+      "calls": 2,
+      "summary_chars": 397,
+      "limit": 800,
+      "quality": "degraded",
+      "issue": "empty",
+      "reported_tokens": null,
+      "assertions": "passed"
+    },
+    {
+      "case": "oversize_twice",
+      "calls": 2,
+      "summary_chars": 800,
+      "limit": 800,
+      "quality": "degraded",
+      "issue": "too_long",
+      "reported_tokens": null,
+      "assertions": "passed"
+    },
+    {
+      "case": "oversize_then_ok",
+      "calls": 2,
+      "summary_chars": 15,
+      "limit": 800,
+      "quality": "normal",
+      "issue": "too_long",
+      "reported_tokens": null,
+      "assertions": "passed"
+    },
+    {
+      "case": "tool_timeout_after_partial_write",
+      "executions": 1,
+      "journal_status": "unknown",
+      "task_status": "paused",
+      "assertions": "passed"
+    }
+  ]
+}

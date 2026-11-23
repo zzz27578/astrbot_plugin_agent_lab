@@ -46,3 +46,8 @@ node browser-check.mjs
 ## v0.3.1 定向验证
 
 `test_scheme_finish.py` 检查完成证据、交付不自动送审、批准历史、人设继承、只读复用、单轮上限、变量路径和小步骤交接。`full-access-ui-smoke.mjs` 验证图形化开关状态，`scheme-settings-check.mjs` 运行三种宽度下的30项浏览器交互，截图和结果保存在 `docs/screenshots/v0.3.1/`。这组验证不调用真实模型或生产任务。
+
+## v0.3.3 自查与极端模拟
+
+`python scripts/ui/test_context_stress.py` 在临时目录运行7项测试、12个场景，输出 `docs/validation/v0.3.3-context-stress.json`。所有Token数均标记为模拟报告或估算，未调用真实模型。
+`node scripts/ui/usage-metrics-check.mjs` 检查桌面/窄屏统计、任务线和文件字符数，截图在 `docs/screenshots/v0.3.3/`。

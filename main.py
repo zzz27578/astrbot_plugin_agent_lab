@@ -85,7 +85,7 @@ from .agent_lab.context_views import state_summary
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.3.2"
+PLUGIN_VERSION = "v0.3.3"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"

@@ -14,9 +14,21 @@ THOUGHT_FIELDS = {"reasoning_content", "reasoning_signature", "thinking", "signa
 def arguments_view(arguments, limit=400):
     if not isinstance(arguments, dict):
         return {}
-    return {key: (f"[内容已存原记录，{len(value)}字符]" if key in LARGE_FIELDS and isinstance(value, str) and len(value) > limit
-                  else value[:limit] + f"…（共{len(value)}字符）" if isinstance(value, str) and len(value) > limit else value)
-            for key, value in arguments.items()}
+    def bounded(value, depth=0):
+        if isinstance(value, str):
+            return value[:limit] + f"…（共{len(value)}字符）" if len(value) > limit else value
+        if isinstance(value, (dict, list)) and depth >= 2:
+            return f"[嵌套参数已存原记录，共{len(value)}项]"
+        if isinstance(value, dict):
+            return {str(k)[:80]: bounded(v, depth+1) for k, v in list(value.items())[:12]}
+        if isinstance(value, list):
+            return [bounded(v, depth+1) for v in value[:6]] + ([f"…共{len(value)}项"] if len(value)>6 else [])
+        return value
+    result = {str(key)[:80]: (f"[内容已存原记录，{len(value)}字符]" if key in LARGE_FIELDS and isinstance(value, str) and len(value) > limit
+                            else bounded(value)) for key, value in list(arguments.items())[:16]}
+    if len(json.dumps(result, ensure_ascii=False, default=str)) > 3500:
+        result = {str(key)[:80]: f"[参数见原记录，{len(str(value))}字符]" for key, value in list(arguments.items())[:16]}
+    return result
 
 
 def text_of(content):
@@ -78,6 +90,9 @@ def history_view(history, task=None, *, for_summary=False, read_budget=6000):
         evidence = re.search(r"任务工具证据 ID:\s*([\w-]+)", body)
         evidence_id = evidence.group(1) if evidence else by_signature.get((name, json.dumps(args, sort_keys=True, ensure_ascii=False)), "")
         preview_limit = 240 if for_summary else min(3000, max(160, remaining)) if read else 500
+        if body.startswith("[历史工具内容已索引；"):
+            # Never wrap a previous work view in another layer of work views.
+            continue
         preview = body[:preview_limit]
         if read:
             remaining = max(0, remaining - len(preview))

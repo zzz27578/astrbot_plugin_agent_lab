@@ -105,7 +105,8 @@ class WorkspaceAPI:
                 with candidate.open("r", encoding="utf-8", errors="replace") as handle:
                     return handle.read(24001)
             text = await asyncio.to_thread(read_preview)
-            result = {"path": relative, "text": self.owner._redact_known_secrets(text[:24000]), "truncated": len(text)>24000}
+            result = {"path": relative, "text": self.owner._redact_known_secrets(text[:24000]), "truncated": len(text)>24000,
+                      "chars": projects.file_record(candidate).get("chars"), "preview_chars": len(text[:24000])}
         elif action in {"stop", "deliver"}:
             task = await projects.administrator_end(task_id, "cancelled" if action == "stop" else "completed",
                                                     str(payload.get("summary") or ""), actor)

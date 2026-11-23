@@ -186,6 +186,11 @@ body { font-size:14px; }
 .nav { flex:0 0 auto;overflow:visible; }
 #project-sidebar { min-height:0;flex:1;overflow:auto;scrollbar-width:thin; }
 .project-question pre {white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;max-height:200px;overflow:auto;}
+.task-usage-metrics{margin:14px 0 20px;border:1px solid var(--line);border-radius:10px;padding:14px 16px;}
+.task-usage-metrics>summary{display:flex;justify-content:space-between;align-items:center;gap:12px;cursor:pointer;font-size:13px;min-height:32px;}
+.task-usage-metrics>summary span{font-size:11px;color:var(--muted);}
+.task-usage-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:18px;padding:18px 0 4px;}
+.task-usage-grid>div{display:grid;gap:7px;min-width:0;}.task-usage-grid small{font-size:11px;color:var(--muted);}.task-usage-grid strong{font-size:14px;overflow-wrap:anywhere;}
 @media(max-width:1050px){.project-permission-grid{grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media(max-width:700px){.project-permission-grid{grid-template-columns:minmax(0,1fr);}}
 @media(max-width:580px){

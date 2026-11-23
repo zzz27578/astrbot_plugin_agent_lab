@@ -5,6 +5,7 @@ import asyncio
 import hashlib
 import json
 import copy
+import time
 from contextlib import aclosing
 from uuid import uuid5, NAMESPACE_URL
 
@@ -15,6 +16,7 @@ from .continuity import HandoffError, StageContextManager, TaskContinuity, estim
 from .bot_identity import persona_prompt, host_skills_prompt
 from .context_views import arguments_view, history_view
 from .read_cache import ReadCache
+from .usage_metrics import request_size, record_request, record_round, write_task_line
 
 
 class ExecutionStopped(Exception):
@@ -225,7 +227,7 @@ class AstrBotBridge:
                     read_plan = self.read_cache.plan(task, arguments, scope_state.get("execution_cwd"))
                 except (OSError, ValueError, KeyError):
                     read_plan = None  # A cache failure must not prevent a fresh authorized read.
-            if read_plan is None and read_only and action == "allow" and round_id:
+            if read_plan is None and tool.name != "astrbot_file_read_tool" and read_only and action == "allow" and round_id:
                 for previous in reversed(journal):
                     if previous.get("round_id") != round_id or not previous.get("read_only"):
                         break  # Any intervening write invalidates this read window.
@@ -562,9 +564,28 @@ class AstrBotBridge:
                 used = latest.workflow_data.get("tick_budget", {}).get("tokens_used", 0)
                 if latest.budget.max_tokens_per_tick and used >= latest.budget.max_tokens_per_tick:
                     raise BudgetStopped("本轮 Token 预算已用尽，自动从检查点续轮。")
+                raw_request = dict(kwargs)
                 if isinstance(kwargs.get("contexts"), list):
                     kwargs["contexts"] = history_view(kwargs["contexts"], latest)
-                response = await provider.text_chat(**kwargs)
+                sizes = request_size(raw_request, kwargs)
+                started, response, outcome = time.monotonic(), None, "failed"
+                try:
+                    response = await provider.text_chat(**kwargs)
+                    outcome = "completed"
+                except asyncio.CancelledError:
+                    outcome = "cancelled_or_timeout"
+                    raise
+                finally:
+                    current = bridge.owner.storage.load_active_task(task.umo)
+                    if current and current.task_id == task.task_id:
+                        metric = record_request(current, sizes, getattr(response, "usage", None),
+                            phase="handoff" if handoff else "execution", status=outcome,
+                            elapsed_ms=(time.monotonic()-started)*1000, round_id=event.get_extra("agent_lab_round_id", ""))
+                        try:
+                            bridge.owner.storage._append_jsonl(bridge.owner.storage.task_memory_dir(task.umo, task.task_id) / "usage.jsonl", metric)
+                        except OSError:
+                            current.add_log("usage_metrics", "逐请求用量记录未写入；当前任务中的汇总仍保留。")
+                        bridge.owner.storage.save_task(current)
                 latest = bridge.owner.storage.load_active_task(task.umo)
                 if latest and latest.task_id == task.task_id:
                     usage = getattr(response, "usage", None)
@@ -620,11 +641,13 @@ class AstrBotBridge:
             if not self.owner.storage.ended_path(task.task_id).exists():
                 await manager.update_conversation(task.umo, cid, history=safe)
                 latest = self.owner.storage.load_active_task(task.umo)
-                if latest and latest.task_id == task.task_id and latest.status == "running":
-                    calls = [r for r in control(latest).get("journal", [])
-                             if r.get("round_id") == event.get_extra("agent_lab_round_id")]
-                    if len(calls) >= min(max_steps, control(latest).get("execution_settings", {}).get("round_tool_limit", 24)):
+                if latest and latest.task_id == task.task_id:
+                    round_id = event.get_extra("agent_lab_round_id")
+                    calls = [r for r in control(latest).get("journal", []) if r.get("round_id") == round_id]
+                    if latest.status == "running" and len(calls) >= min(max_steps, control(latest).get("execution_settings", {}).get("round_tool_limit", 24)):
                         lane_state = control(latest).setdefault("continuity", {}).setdefault("lanes", {}).setdefault(lane, {})
                         lane_state.setdefault("pending_reason", "tool_round_limit")
-                        self.owner.storage.save_task(latest)
+                    record_round(latest, round_id)
+                    self.owner.storage.save_task(latest)
+                    write_task_line(self.owner, latest, event_id=round_id)
         return runner.get_final_llm_resp()

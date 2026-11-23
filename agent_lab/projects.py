@@ -363,16 +363,19 @@ class Projects:
                 task = tasks[task_id]
                 paths = self.task_paths(task, data)
                 cache = sum(file_size(p) for p in paths if p.suffix == ".jsonl")
+                chars = sum(self.file_record(path).get("chars") or 0 for path in paths)
                 children.append({"task_id": task_id, "umo": task.umo, "title": task.root_goal[:160], "status": task.status,
                     "updated_at": task.updated_at, "summary": (task.exit_summary or task.current_summary)[:350],
-                    "bytes": sum(file_size(p) for p in paths), "cache_bytes": cache,
+                    "bytes": sum(file_size(p) for p in paths), "cache_bytes": cache, "chars": chars,
                     "selected": active_ids.get(task.umo) == task_id,
                     "question_count": len([q for q in control(task).get("questions", []) if q.get("status") == "pending"])})
             summary = self.summary_path(project["project_id"])
             summary_bytes = file_size(summary)
+            summary_chars = self.file_record(summary).get("chars") or 0
             rows.append({**project, **summary_settings(project), "platform_id": source_platform(project.get("source_umo")) or project.get("platform_id", ""),
                 "tasks": sorted(children, key=lambda t:t["updated_at"], reverse=True),
                 "bytes": sum(t["bytes"] for t in children) + summary_bytes, "cache_bytes": sum(t["cache_bytes"] for t in children),
+                "chars": sum(t["chars"] for t in children) + summary_chars, "summary_chars": summary_chars,
                 "summary_bytes": summary_bytes, "storage_path": str(summary.parent.relative_to(self.storage.root))})
         fence_bytes = sum(file_size(p) for p in (self.storage.root / "ended").glob("*.json"))
         shared_bytes = sum(file_size(p) for p in [self.index_path, self.storage.memory_entries_path, self.owner.pattern_library.path]) + fence_bytes
@@ -383,21 +386,41 @@ class Projects:
 
     async def detail(self, task_id):
         task = self.get_task(task_id)
-        native_bytes = 0
+        native_bytes, native_chars = 0, 0
         for cid in self.conversation_ids(task):
             conversation = await self.owner.context.conversation_manager.db.get_conversation_by_id(cid)
             if conversation and conversation.user_id == task.umo:
                 raw = json.dumps(conversation.content, ensure_ascii=False, default=str) if hasattr(conversation, "content") else str(conversation.history or "")
                 native_bytes += len(raw.encode("utf-8"))
+                native_chars += len(raw)
         # Existing manager serializes DB content reliably; storage size is content,
         # not SQLite allocated pages (which cannot be attributed per conversation).
         paths = self.task_paths(task)
         message_path = self.storage.task_memory_dir(task.umo, task.task_id) / "messages.json"
         messages = self.storage._read_json(message_path).get("messages", []) if message_path.exists() else []
-        return {"task": task.to_dict(), "native_history_bytes": native_bytes,
+        files = [self.file_record(path) for path in paths]
+        return {"task": task.to_dict(), "native_history_bytes": native_bytes, "native_history_chars": native_chars,
+                "usage_metrics": task.workflow_data.get("usage_metrics", {}),
                 "messages": messages,
-                "files": [{"path": str(p.relative_to(self.storage.root)), "bytes": file_size(p)} for p in paths],
-                "record_bytes": sum(file_size(p) for p in paths)}
+                "files": files, "record_chars": sum(row.get("chars") or 0 for row in files),
+                "record_bytes": sum(row["bytes"] for row in files)}
+
+    def file_record(self, path):
+        info = {"path": str(path.relative_to(self.storage.root)), "bytes": file_size(path), "chars": None}
+        if path.suffix not in {".json", ".jsonl", ".md", ".txt", ".log"}:
+            return info
+        cache = getattr(self, "_char_counts", {})
+        try:
+            stat = path.stat()
+            key = (str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if key not in cache:
+                with path.open(encoding="utf-8", errors="replace") as handle:
+                    cache[key] = sum(len(chunk) for chunk in iter(lambda: handle.read(65536), ""))
+            info["chars"] = cache[key]
+            self._char_counts = dict(list(cache.items())[-2000:])
+        except OSError:
+            pass
+        return info
 
     async def cleanup_plan(self, project_id, task_id="", mode="cache"):
         if mode not in {"cache", "history", "project"}: raise ValueError("未知清理类型。")
@@ -425,7 +448,8 @@ class Projects:
         if mode == "project":
             summary = self.summary_path(project_id)
             if summary.exists(): paths.append(summary)
-        files = [{"path": str(p.relative_to(self.storage.root)), "bytes": p.stat().st_size, "mtime": p.stat().st_mtime_ns} for p in sorted(set(paths))]
+        files = [{"path": str(p.relative_to(self.storage.root)), "bytes": p.stat().st_size,
+                  "chars": self.file_record(p).get("chars"), "mtime": p.stat().st_mtime_ns} for p in sorted(set(paths))]
         legacy_memory = [item for item in self.storage.list_memory_entries() if item.get("source_task_id") in ids]
         related_patterns = [item for item in self.owner.pattern_library.list_patterns(status="all")
                             if item.get("source_task_id") in ids or any(source.get("task_id") in ids for source in (item.get("evidence") or {}).get("source_tasks", []))]
