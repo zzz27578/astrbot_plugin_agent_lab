@@ -61,6 +61,7 @@ class TaskMessages:
         if task.status != "running":
             why = task.wait.message or task.watchdog.paused_reason or fallback or "请核对任务记录。"
             follow = ("可在任务详情增加当前任务预算，再发送“任务继续”。" if task.wait.wait_reason == "budget_exhausted"
+                      else "请核对权限范围或补充引导后发送“任务继续”；也可发送“任务终止”归档。当前没有新增审批。" if task.wait.wait_reason == "guard_retry_limit"
                       else "可发送“任务状态”查看，或发送“任务终止”退出并归档。")
             return await self.publish(event, task_id, f"任务已暂停：{why}\n{follow}", "status")
         notices = [n for n in state.get("scope_notices", []) if not n.get("sent")]

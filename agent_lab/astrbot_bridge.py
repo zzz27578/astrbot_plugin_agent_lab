@@ -10,7 +10,7 @@ from uuid import uuid5, NAMESPACE_URL
 
 from .models import ApprovalRequest, new_id, now_iso
 from .task_control import control
-from .task_permissions import apply_mode, assess, signature
+from .task_permissions import apply_mode, assess, signature, full_guard, record_guard_refusal, GUARD_RETRY_LIMIT
 from .continuity import HandoffError, StageContextManager, TaskContinuity, estimate
 
 
@@ -20,6 +20,10 @@ class ExecutionStopped(Exception):
 
 class BudgetStopped(ExecutionStopped):
     pass
+
+
+class OperationBlocked(ValueError):
+    """A refused operation the model can handle without freezing the task."""
 
 
 class AstrBotBridge:
@@ -189,11 +193,35 @@ class AstrBotBridge:
         risk = self.owner._effective_tool_risk(spec, tool.name, self.owner._infer_tool_risk(tool.name, tool.description))
         approved_row = approved_call = None
         if not internal:
-            action, outside = assess(tool.name, arguments, state, risk, tool.description)
+            scope_state = state
+            if state.get("execution_settings", {}).get("mode") == "full":
+                # Use the host's real local workspace for relative paths. A cwd
+                # guessed from the first configured root would give false safety.
+                cfg = self.owner._context_config(task.umo) or {}
+                if cfg.get("provider_settings", {}).get("computer_use_runtime") == "local":
+                    try:
+                        from astrbot.core.tools.computer_tools.util import workspace_root_for_context
+                        wrapper = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
+                                                      tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
+                        workspace = await workspace_root_for_context(wrapper)
+                        scope_state = dict(state, execution_cwd=str(workspace))
+                    except ImportError:
+                        pass  # Older hosts do not expose workspace resolution.
+            action, outside = assess(tool.name, arguments, scope_state, risk, tool.description)
             call = self.call_record(task, tool, arguments)
             if action == "deny":
                 raise ValueError("项目当前为只读档位，不能执行该动作。")
             self.ensure_not_rejected(task, [call])
+            journal = state.get("journal", [])
+            previous = journal[-1] if journal else {}
+            if (previous.get("approval_id") and previous.get("status") == "completed"
+                    and previous.get("call_signature") == call["call_signature"]):
+                text = self._evidence_text(task, previous)
+                evidence = f"\n[任务工具证据 ID: {previous['id']}; status=completed; 复用已完成审批结果，未再次执行]"
+                if native:
+                    from mcp.types import CallToolResult, TextContent
+                    return [CallToolResult(content=[TextContent(type="text", text=text + evidence)])]
+                return text + evidence
             for row in task.approvals:
                 if row.get("status") == "approved" and row.get("approval_type") == "tool_batch":
                     approved_call = next((c for c in row["calls"] if c["status"] == "queued" and c["call_signature"] == call["call_signature"]), None)
@@ -201,6 +229,19 @@ class AstrBotBridge:
                         approved_row = row
                         break
             if action == "review" and not approved_call:
+                if state.get("execution_settings", {}).get("mode") == "full":
+                    reason, _ = full_guard(tool.name, arguments, scope_state)
+                    reason = self.owner._redact_known_secrets(reason)
+                    budget_reason = self.owner._consume_tool_budget(task, tool.name) if count else ""
+                    paused = record_guard_refusal(task, reason)
+                    task.add_log("operation_blocked", self.owner._redact_known_secrets(reason))
+                    self.owner.storage.save_task(task)
+                    if paused:
+                        raise ExecutionStopped(paused + " 未创建审批；管理员核对后可用“任务继续”恢复。")
+                    if budget_reason:
+                        raise ExecutionStopped(budget_reason)
+                    attempt = state["guard_refusals"]["count"]
+                    raise OperationBlocked(reason + f" 本阶段已拒绝 {attempt}/{GUARD_RETRY_LIMIT} 次。此动作未执行，未创建审批。请改用授权范围内的方案；确需执行时，由你主动调用 agent_lab_request_approval 并提交 operations_json。")
                 self.pause_for_batch(task, [call], "执行前风险检查", "模型尚未主动送审，此动作未执行。")
                 raise ExecutionStopped("动作尚未执行，等待管理员审批。")
             if outside:
@@ -217,12 +258,15 @@ class AstrBotBridge:
                 raise ExecutionStopped(reason)
         identifier = new_id("call")
         record = {"id": identifier, "name": tool.name, "arguments": arguments, "status": "started", "time": now_iso(),
+                  "call_signature": call["call_signature"] if not internal else "",
+                  "approval_id": approved_row["approval_id"] if approved_row else "",
                   "plan_version": state.get("version", 0), "step_id": state.get("current_step_id", ""),
                   "authorization_version": state.get("authorization_version", state.get("approved_version", 0)),
                   "step_revision": next((s.get("revision", 0) for s in state.get("steps", []) if s["id"] == state.get("current_step_id")), 0)}
         if not internal:
             state.setdefault("journal", []).append(record)
         if approved_call:
+            state.pop("guard_refusals", None)
             approved_call.update(status="dispatched", evidence_id=identifier)
             if not any(c["status"] == "queued" for c in approved_row["calls"]):
                 approved_row["status"] = "consumed"
@@ -263,7 +307,11 @@ class AstrBotBridge:
                 item = next((row for row in control(latest).get("journal", []) if row["id"] == identifier), None)
                 if item:
                     output = "\n".join(chunks)
-                    item.update(status=status, result=output[:12000], fingerprint=hashlib.sha256(
+                    result_path = self.owner.storage.task_memory_dir(latest.umo, latest.task_id) / "tool_results" / f"{identifier}.txt"
+                    self.owner.storage._write_text(result_path, output)
+                    item.update(status=status, result=output[:12000], result_chars=len(output),
+                                result_truncated=len(output) > 12000,
+                                result_path=str(result_path.relative_to(self.owner.storage.root)), fingerprint=hashlib.sha256(
                         json.dumps([tool.name, arguments, output], sort_keys=True, ensure_ascii=False).encode()).hexdigest())
                     if status == "unknown":
                         latest.status = "paused"
@@ -277,6 +325,27 @@ class AstrBotBridge:
                 combined.append(TextContent(type="text", text=evidence))
             return [CallToolResult(content=combined or [TextContent(type="text", text="工具未返回内容。")], isError=status != "completed")]
         return "\n".join(chunks) + evidence
+
+    def _evidence_text(self, task, row):
+        path = self.owner.storage.task_memory_dir(task.umo, task.task_id) / "tool_results" / f"{row['id']}.txt"
+        return path.read_text(encoding="utf-8") if path.is_file() else str(row.get("result", ""))
+
+    def read_evidence(self, event, evidence_id, offset=0, limit=12000):
+        self.owner._require_task_access(event)
+        task = self.owner.storage.load_active_task(event.unified_msg_origin)
+        if not task:
+            raise ValueError("当前没有执行中的任务。")
+        row = next((r for r in control(task).get("journal", []) if r.get("id") == evidence_id), None)
+        if not row:
+            raise ValueError("未找到当前任务的工具证据。")
+        offset, limit = int(offset), int(limit)
+        if offset < 0 or not 1 <= limit <= 24000:
+            raise ValueError("offset 不能小于0，limit 必须在1–24000之间。")
+        # Derive the path from the verified journal ID; never trust a caller path.
+        output = self._evidence_text(task, row)
+        return json.dumps({"id": row["id"], "name": row.get("name"), "arguments": row.get("arguments", {}),
+                           "status": row.get("status"), "result": output[offset:offset+limit],
+                           "total_chars": len(output), "next_offset": offset+limit if offset+limit < len(output) else None}, ensure_ascii=False)
 
     def execution_context(self, event):
         from astrbot.api.star import Context
@@ -372,6 +441,8 @@ class AstrBotBridge:
                     if latest and (control(latest).get("version") != control(task).get("version")
                             or (tool.name == "agent_lab_checkpoint" and arguments.get("completed"))):
                         stop_runner()
+                except OperationBlocked as exc:
+                    yield CallToolResult(content=[TextContent(type="text", text=str(exc))], isError=True)
                 except ExecutionStopped as exc:
                     stop_runner()
                     yield CallToolResult(content=[TextContent(type="text", text=str(exc))], isError=True)

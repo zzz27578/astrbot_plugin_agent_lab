@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .models import AgentSpec, TaskState
+from .task_permissions import execution_guidance
 
 
 def _lines_or_none(items: list[str]) -> str:
@@ -363,7 +364,8 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 agent_runtime 是任务的硬控制层：capabilities 决定当前 Agent 被授予什么能力，TaskPlan 决定当前目标实例的结构化步骤，observations 是证据层，verdicts 是验证层，resume 是重启/等待用户后继续的入口，pattern_recommendations 是从已完成任务中抽取的计划模板提示。不要绕过能力目录调用未授权工具；不要在 verifier 未通过或完成条件缺证据时调用 agent_lab_finish。每轮若看不到最新 runtime，请先调用 agent_lab_read_runtime。
 
 [Approval Contract]
-普通读取、创建任务记录、小范围明确文件写入、运行测试无需审批。删除、批量覆盖、git reset/clean、部署/重启服务、密钥读取、数据库破坏性变更、全局插件/系统配置修改必须先请求审批。若某项在 preapproved_scopes 中，仍需先确认它确实属于用户已授权范围；若超出范围，必须调用 agent_lab_request_approval。
+{execution_guidance(task.workflow_data.get("task_control", {}))}
+审批由主 Agent 在执行前主动提出，使用 agent_lab_request_approval 的 operations_json 提交确切工具与参数。已批准且已完成的调用先读取证据，不重复执行。
 
 [Task Memory Contract]
 任务过程中的时间线以 task_state.progress_log 和 state_snapshots 为准。每轮写回时必须说明：几点/哪一轮做了什么、关键改动点、验证结果、下一步。退出时必须用 agent_lab_finish 生成出口摘要和 memory_candidates；候选记忆只保存稳定事实、项目约定、后续续写提示，不保存密钥、一次性 token 或临时噪声。完成任务还会沉淀 task pattern，后续任务可以参考其 TaskPlan 和能力需求，但 pattern 只是 planning hint，不能替代当前任务证据或 verifier。

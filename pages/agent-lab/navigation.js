@@ -1,7 +1,7 @@
 export const settingsIcon='<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m9.5 3-.6 2.5-2.2 1.3-2.5-.7-2.5 4.3 1.9 1.8v2.6l-1.9 1.8 2.5 4.3 2.5-.7 2.2 1.3.6 2.5h5l.6-2.5 2.2-1.3 2.5.7 2.5-4.3-1.9-1.8v-2.6l1.9-1.8-2.5-4.3-2.5.7-2.2-1.3-.6-2.5z" transform="translate(1 -1) scale(.92)"/><circle cx="12" cy="12" r="3.2"/></svg>';
 export class Navigation {
- constructor({esc,projectUI,render,openWorkflow,newPreset,savePreset,deletePreset,duplicatePreset,renderIntegrations,identityChanged}){
-  Object.assign(this,{esc,projectUI,render,openWorkflow,newPreset,savePreset,deletePreset,duplicatePreset,renderIntegrations,identityChanged});
+ constructor({esc,projectUI,render,openWorkflow,editRules,newPreset,savePreset,deletePreset,duplicatePreset,renderIntegrations,identityChanged}){
+  Object.assign(this,{esc,projectUI,render,openWorkflow,editRules,newPreset,savePreset,deletePreset,duplicatePreset,renderIntegrations,identityChanged});
   this.settingsTab='identity';this.presetQuery='';
   document.addEventListener('click',e=>{
    const b=e.target.closest('[data-nav-action]');if(!b)return;e.preventDefault();
@@ -17,6 +17,7 @@ export class Navigation {
    if(action==='default-bot')void this.saveIdentity(b.dataset.botId);
    if(action==='save-progress')void this.saveProgress();
    if(action==='open-preset')this.openWorkflow(b.dataset.id);
+   if(action==='preset-rules')this.editRules(b.dataset.id);
    if(action==='new-preset')this.newPreset();
    if(action==='edit-preset')void this.savePreset(b.dataset.id);
    if(action==='duplicate-preset')void this.duplicatePreset(b.dataset.id);
@@ -30,7 +31,7 @@ export class Navigation {
   const e=this.esc;
   container.innerHTML=`<section class="presets-page">${this.header('工作流预案','描述适用任务与处理步骤，供 Bot 选择；不适用时可直接略过。','<button class="button" data-nav-action="new-preset">＋ 新建预案</button>')}
    <div class="preset-search-row"><input id="preset-search" aria-label="搜索工作流预案" placeholder="搜索名称、用途…" value="${e(this.presetQuery)}"/><span>${agents.length} 份预案 · 项目可关联常用预案</span></div>
-   <div class="preset-list">${agents.map(a=>`<article class="preset-row" ${!((a.name||'')+' '+(a.description||'')).toLowerCase().includes(this.presetQuery.toLowerCase())?'hidden':''} data-preset-search="${e((a.name+' '+a.description).toLowerCase())}"><div class="preset-symbol">↳</div><div class="preset-info"><h2>${e(a.name||a.agent_id)}${a.enabled===false?'<span class="neutral-badge">未启用</span>':''}</h2><p>${e(a.description||'补充简洁用途，让 Bot 更准确地选择这份预案。')}</p><small>${a.workflow_nodes?.length||0} 节点 · ${a.workflow_edges?.length||0} 连线</small></div><div class="preset-actions"><button class="button secondary" data-nav-action="edit-preset" data-id="${e(a.agent_id)}">用途</button><button class="button secondary" data-nav-action="duplicate-preset" data-id="${e(a.agent_id)}">复制</button><button class="button" data-nav-action="open-preset" data-id="${e(a.agent_id)}">编辑画布</button><button class="icon-only danger-text" data-nav-action="delete-preset" data-id="${e(a.agent_id)}" title="删除预案" aria-label="删除 ${e(a.name)}" ${agents.length<=1?'disabled':''}>×</button></div></article>`).join('')}</div></section>`;
+   <div class="preset-list">${agents.map(a=>`<article class="preset-row" ${!((a.name||'')+' '+(a.description||'')).toLowerCase().includes(this.presetQuery.toLowerCase())?'hidden':''} data-preset-search="${e((a.name+' '+a.description).toLowerCase())}"><div class="preset-symbol">↳</div><div class="preset-info"><h2>${e(a.name||a.agent_id)}${a.enabled===false?'<span class="neutral-badge">未启用</span>':''}</h2><p>${e(a.description||'补充简洁用途，让 Bot 更准确地选择这份预案。')}</p><small>${a.workflow_nodes?.length||0} 节点 · ${a.workflow_edges?.length||0} 连线</small></div><div class="preset-actions"><button class="button secondary" data-nav-action="edit-preset" data-id="${e(a.agent_id)}">用途</button><button class="button secondary" data-nav-action="duplicate-preset" data-id="${e(a.agent_id)}">复制</button><button class="button secondary" data-nav-action="preset-rules" data-id="${e(a.agent_id)}">方案设置</button><button class="button" data-nav-action="open-preset" data-id="${e(a.agent_id)}">编辑画布</button><button class="icon-only danger-text" data-nav-action="delete-preset" data-id="${e(a.agent_id)}" title="删除预案" aria-label="删除 ${e(a.name)}" ${agents.length<=1?'disabled':''}>×</button></div></article>`).join('')}</div></section>`;
  }
  async saveIdentity(id){
   if(this.saving)return;this.saving=true;

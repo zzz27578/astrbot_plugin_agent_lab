@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import ntpath
+import posixpath
 from copy import deepcopy
 
 from .models import TaskBudget
@@ -46,7 +48,10 @@ def normalize(payload):
     if not isinstance(continuity, dict) or set(continuity) - set(CONTINUITY_LIMITS):
         raise ValueError("请选择有效的阶段交接设置。")
     continuity = {key: integer(continuity.get(key, value), *CONTINUITY_LIMITS[key]) for key, value in CONTINUITY_DEFAULTS.items()}
-    return {"mode": mode, "roots": lines(payload.get("roots", [])), "continuity": continuity,
+    roots = lines(payload.get("roots", []))
+    if any(not (posixpath.isabs(root) or ntpath.isabs(root)) or any(c in root for c in "*?[]") for root in roots):
+        raise ValueError("授权范围请填写不含通配符的绝对目录路径。")
+    return {"mode": mode, "roots": roots, "continuity": continuity,
             "warnings": lines(payload.get("warnings", [])), "task_prompt": task_prompt,
             "budget": {key: integer(value, *BUDGET_LIMITS[key]) for key, value in budget.items() if key in BUDGET_LIMITS}}
 

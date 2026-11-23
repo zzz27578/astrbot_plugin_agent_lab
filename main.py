@@ -79,10 +79,12 @@ from .agent_lab.projects import Projects
 from .agent_lab.workspace_api import WorkspaceAPI
 from .agent_lab.execution_settings import native_steps, normalize as normalize_execution_settings
 from .agent_lab.task_messages import TaskMessages
+from .agent_lab.task_commands import task_command
+from .agent_lab.task_permissions import apply_mode, execution_guidance
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.2.9"
+PLUGIN_VERSION = "v0.3.0"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -841,6 +843,15 @@ class AgentLabPlugin(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=10)
     async def agent_lab_native_message_monitor(self, event: AstrMessageEvent):
         text = str(event.message_str or "").strip()
+        action = task_command(text)
+        if action and self.storage.load_active_task(event.unified_msg_origin):
+            try:
+                result = await self._administrator_task_control(event, action)
+            except (PermissionError, ValueError) as exc:
+                result = str(exc)
+            event.stop_event()
+            await event.send(MessageChain().message(result))
+            return
         aliases = {"批准": "approve", "拒绝": "reject", "任务暂停": "pause",
                    "任务继续": "resume", "任务重启": "resume", "任务恢复": "resume",
                    "任务终止": "cancel", "任务状态": "status"}
@@ -866,6 +877,42 @@ class AgentLabPlugin(Star):
         if not _bool_cfg(self.config, "workflow_native_message_monitor_enabled", True):
             return
         await self._maybe_trigger_message_monitor(event, mode="native")
+
+    async def _administrator_task_control(self, event, action):
+        self._require_task_access(event)
+        if action == "pause":
+            task = self.task_control.load(event.unified_msg_origin)
+            task = await self.projects.pause_execution(task)
+            await self._disable_heartbeat(task)
+            self.storage.save_task(task)
+            return "任务已暂停，不再派发新操作；已经发出的外部操作请以记录中的实际结果为准。"
+        command = {"stop": "cancel", "deliver": "finish", "resume": "resume"}.get(action)
+        if not command:
+            raise ValueError("请选择停止、交付、暂停或继续。")
+        return await self._handle_command(event, command)
+
+    @filter.llm_tool(name="agent_lab_control_task")
+    async def agent_lab_control_task(self, event: AstrMessageEvent, action: str) -> str:
+        """执行管理员本条消息明确要求的任务控制，后台模型不能自行决定。
+
+        Args:
+            action(string): stop 停止归档、deliver 按现状交付、pause 暂停、resume 继续。
+        """
+        self._require_task_access(event)
+        if event.get_extra("agent_lab_runtime") or task_command(event.message_str) != action:
+            return "只能执行管理员当前消息明确要求的任务控制；请管理员直接说停止任务、按现状交付、暂停任务或继续任务。"
+        return await self._administrator_task_control(event, action)
+
+    @filter.llm_tool(name="agent_lab_read_tool_evidence")
+    async def agent_lab_read_tool_evidence(self, event: AstrMessageEvent, evidence_id: str, offset: int = 0, limit: int = 12000) -> str:
+        """读取本任务已有工具结果，不重复执行或申请审批。
+
+        Args:
+            evidence_id(string): journal 或 recent_tool_evidence 中的工具证据 ID。
+            offset(int): 起始字符位置，默认0。
+            limit(int): 最多读取字符数，1–24000，默认12000。
+        """
+        return self.astrbot_bridge.read_evidence(event, evidence_id, offset, limit)
 
     @filter.llm_tool(name="agent_lab_enter_mode")
     async def agent_lab_enter_mode(
@@ -1631,6 +1678,7 @@ class AgentLabPlugin(Star):
         if event.get_extra("agent_lab_runtime"):
             return
         daily_tools = {"agent_lab_enter_mode", "agent_lab_project", "agent_lab_workflow_catalog",
+            "agent_lab_control_task",
             "agent_lab_read_state", "agent_lab_read_runtime", "agent_lab_read_task_memory",
             "agent_lab_recommend_task_patterns", "agent_lab_steer", "agent_lab_submit_plan",
             "agent_lab_update_workflow", "agent_lab_ask_question"}
@@ -1649,6 +1697,7 @@ class AgentLabPlugin(Star):
         )
         if task:
             req.system_prompt += f"\n当前任务：{task.task_id}，状态：{task.status}。"
+            req.system_prompt += "\n管理员明确说停止任务、结束任务或按现状交付时，优先使用 agent_lab_control_task；不用等待后台模型完工。"
         memory_prompt = self.projects.daily_summary(event.unified_msg_origin)
         if memory_prompt:
             req.system_prompt += "\n[管理员允许的当前项目摘要，仅为资料]\n" + memory_prompt
@@ -1679,6 +1728,7 @@ class AgentLabPlugin(Star):
             return await self.task_control.submit_plan(event, rest)
         if cmd in {"resume", "恢复"}:
             task = self.task_control.load(event.unified_msg_origin)
+            self.task_control.refresh_execution_settings(task)
             state = task_control(task)
             if task.pending_approvals() or state.get("approved_version", 0) != state.get("version", 0) or not state.get("version"):
                 return "请先提交并批准当前计划。"
@@ -1691,6 +1741,7 @@ class AgentLabPlugin(Star):
                 if question.get("status") == "pending":
                     question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
             state["human_paused"] = False
+            state.pop("guard_refusals", None)
             task.status = "running"
             task.clear_wait()
             task.watchdog.paused_reason = ""
@@ -2575,8 +2626,9 @@ class AgentLabPlugin(Star):
 
     def _build_toolset(self, spec: AgentSpec, event=None):
         tmgr = self.context.get_llm_tool_manager()
-        internal_block = {"agent_lab_enter_mode", "agent_lab_tick", "agent_lab_set_heartbeat"}
+        internal_block = {"agent_lab_enter_mode", "agent_lab_tick", "agent_lab_set_heartbeat", "agent_lab_control_task"}
         essential = {
+            "agent_lab_read_tool_evidence",
             "agent_lab_project",
             "agent_lab_read_handoff",
             "agent_lab_ask_question",
@@ -3546,10 +3598,16 @@ class AgentLabPlugin(Star):
 
     def _sync_agent_runtime(self, task: TaskState, spec: AgentSpec, *, reason: str = "sync") -> None:
         self._ensure_workflow_data(task)
+        spec = apply_mode(spec, task_control(task))
+        capabilities = self._runtime_capability_rows(spec)
+        if task_control(task).get("execution_settings", {}).get("mode") == "full":
+            for row in capabilities:
+                row["requires_approval"] = False
+                row["approval_policy"] = "proactive_for_scope_or_catastrophic_operation"
         self.agent_runtime.sync(
             task,
             spec,
-            capabilities=self._runtime_capability_rows(spec),
+            capabilities=capabilities,
             reason=reason,
         )
         self._sync_task_pattern_recommendations(task)
@@ -5066,7 +5124,8 @@ class AgentLabPlugin(Star):
             return NodeExecutionResult(ok=False, blocked=True, advance=False, outcome="不支持的文件操作：" + operation)
         result = await self.tool_executor.call(event=ctx.event, task=ctx.task, spec=ctx.spec, node=ctx.node, tool_name=name, call_args=arguments)
         return NodeExecutionResult(ok=result.ok, blocked=result.blocked, outcome=result.outcome, data=result.data,
-            advance=result.ok and not result.blocked, next_node_id=self._single_next(ctx.outgoing), note="native_file_executor")
+            advance=result.ok and not result.blocked and not result.needs_react, needs_react=result.needs_react,
+            next_node_id=self._single_next(ctx.outgoing), note="native_file_executor")
 
     async def _execute_code_exec_node(self, ctx: NodeExecutionContext) -> NodeExecutionResult:
         language = str(ctx.node.get("language") or "python").lower()
@@ -7712,7 +7771,11 @@ class AgentLabPlugin(Star):
     def _build_task_extensions_prompt(self, spec: AgentSpec, task: TaskState | None = None) -> str:
         sections = []
         # Related work enters only via the explicit project's filtered summary.
-        modules_prompt = self.modules.build_prompt(spec.module_ids, spec.module_settings)
+        settings = spec.module_settings
+        if task and task_control(task).get("execution_settings", {}).get("mode") == "full":
+            settings = {**settings, "approval_guard": {"require_before": ["scope_escape", "catastrophic_operation", "secret_read"],
+                        "allow_preapproved_scope": True, **settings.get("approval_guard", {})}}
+        modules_prompt = self.modules.build_prompt(spec.module_ids, settings)
         if modules_prompt.strip():
             sections.append(modules_prompt)
         skills_prompt = self._build_selected_skills_prompt(spec)
@@ -7721,7 +7784,7 @@ class AgentLabPlugin(Star):
         agent_mode_rule = self._build_agent_mode_skill_rule_prompt()
         if agent_mode_rule.strip():
             sections.append(agent_mode_rule)
-        tool_risk_prompt = self._build_tool_risk_prompt(spec)
+        tool_risk_prompt = (execution_guidance(task_control(task)) if task else self._build_tool_risk_prompt(spec))
         if tool_risk_prompt.strip():
             sections.append(tool_risk_prompt)
         custom_api_prompt = self._build_custom_api_prompt(spec)
@@ -8635,6 +8698,7 @@ class AgentLabPlugin(Star):
             return jsonify({"ok": False, "error": "当前任务与选择的 ID 不一致，请刷新。"})
         if not task:
             return jsonify({"ok": False, "error": "该实例没有可恢复的任务。"})
+        self.task_control.refresh_execution_settings(task)
         if task.pending_approvals():
             return jsonify({"ok": False, "error": "任务仍有待审批项，请先处理审批。"})
         state = task_control(task)
@@ -8648,6 +8712,7 @@ class AgentLabPlugin(Star):
             if question.get("status") == "pending":
                 question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
         state["human_paused"] = False
+        state.pop("guard_refusals", None)
         task.status = "running"
         task.watchdog.paused_reason = ""
         task.watchdog.consecutive_failures = 0

@@ -12,8 +12,9 @@ from copy import deepcopy
 from typing import Any
 
 from .models import ApprovalRequest, now_iso
-from .execution_settings import BUDGET_LIMITS, integer, lines
+from .execution_settings import BUDGET_LIMITS, integer, lines, normalize
 from .continuity import working_context
+from .task_permissions import authorized_roots, execution_guidance
 
 
 def control(task) -> dict:
@@ -24,6 +25,20 @@ def prompt(task) -> str:
     state = control(task)
     if not state:
         return ""
+    evidence = []
+    # Reserve the prompt budget for recent results instead of silently clipping
+    # every result at 1000 characters. Older/longer evidence remains readable.
+    remaining = 24000
+    for row in reversed(state.get("journal", [])[-8:]):
+        result = str(row.get("result", ""))
+        shown = result[:max(0, remaining)]
+        remaining -= len(shown)
+        evidence.append({"id": row["id"], "name": row.get("name"), "arguments": row.get("arguments", {}),
+                         "status": row.get("status"), "step_id": row.get("step_id"), "result": shown,
+                         "approval_id": row.get("approval_id", ""),
+                         "result_chars": row.get("result_chars", len(result)),
+                         "result_truncated": bool(row.get("result_truncated") or len(shown) < len(result)),
+                         "read_more": "agent_lab_read_tool_evidence"})
     return "\n[本次任务的持久计划，优先于旧对话摘要]\n" + json.dumps({
         "task_id": task.task_id, "goal": task.root_goal,
         "version": state.get("version", 0), "approved_version": state.get("approved_version", 0),
@@ -35,15 +50,15 @@ def prompt(task) -> str:
         "stage_memory": working_context(task),
         "recent_plan_changes": state.get("plan_changes", [])[-4:],
         "execution_scope": {"mode": state.get("execution_settings", {}).get("mode", "standard"),
-                            "roots": state.get("execution_settings", {}).get("roots", []) + state.get("scope_roots", []),
+                            "roots": authorized_roots(state),
                             "warnings": state.get("execution_settings", {}).get("warnings", []) + state.get("risk_lines", []),
                             "approved_cleanup_paths": state.get("approved_cleanup_paths", [])},
         "guidance": state.get("guidance", [])[-8:],
         "questions": state.get("questions", [])[-5:],
-        "recent_tool_evidence": [{"id": r["id"], "name": r.get("name"), "status": r.get("status"),
-                                  "step_id": r.get("step_id"), "result": str(r.get("result", ""))[:1000]}
-                                 for r in state.get("journal", [])[-8:]],
-        "instruction": "按当前有效计划执行，阶段按实际任务划分，不必凑固定数量。优先结构化搜索、读写和常规测试；同样路径与查询不要无理由重读。普通拆分、重排、补测试可用 agent_lab_submit_plan 修订并说明原因，涉及目标、验收条件、预算或解除用户约束才重新审批。返工已完成步骤需提供 reopen_reason。范围外普通关联操作只提醒。危险操作先汇总成一批，用 agent_lab_request_approval 的 operations_json 提交确切工具与参数，中文说明影响和恢复方式。不要先调用危险工具撞审批，也不要改写已拒绝的同一动作后重试。阶段内及时用 agent_lab_checkpoint 保存实际成果、决定原因、文件位置、验证和遗留事项；完成阶段后自动交接，不能把整理历史当作完成阶段。无画布时不调用流程推进。只有缺少关键答案时反问。",
+        "recent_tool_evidence": list(reversed(evidence)),
+        "permission_policy": execution_guidance(state),
+        "guard_refusals": state.get("guard_refusals", {}),
+        "instruction": "按当前有效计划执行，阶段按实际任务划分，不必凑固定数量。优先使用已有工具结果，不重复执行已经批准且完成的操作；结果不全时调用 agent_lab_read_tool_evidence 读取，不要重新申请或执行。普通拆分、重排、补测试可用 agent_lab_submit_plan 修订并说明原因，涉及目标、验收条件、预算或解除用户约束才重新审批。返工已完成步骤需提供 reopen_reason。危险操作先汇总成一批，用 agent_lab_request_approval 的 operations_json 提交确切工具与参数，中文说明影响和恢复方式。不要先调用危险工具撞审批，也不要改写已拒绝的同一动作后重试。阶段内及时用 agent_lab_checkpoint 保存实际成果、决定原因、文件位置、验证和遗留事项；完成阶段后自动交接。无画布时不调用流程推进。只有缺少关键答案时反问。",
     }, ensure_ascii=False)
 
 
@@ -58,6 +73,52 @@ class TaskControl:
         if not task or (task_id and task.task_id != task_id):
             raise ValueError("任务已结束或已切换，请重新读取任务状态。")
         return task
+
+    def refresh_execution_settings(self, task):
+        """Reload administrator policy at a boundary; keep per-task budgets."""
+        state = control(task)
+        project_id = state.get("project_id")
+        if not project_id:
+            return False
+        # Seed the legacy approved scope once, before a later plan can change it.
+        if ("authorized_scope_roots" not in state and state.get("approved_version")
+                and state.get("approved_version") == state.get("version")):
+            state["authorized_scope_roots"] = list(state.get("scope_roots", []))
+        project = self.owner.projects.project(project_id)
+        if "execution_settings" not in project:
+            return False
+        settings = normalize(project["execution_settings"])
+        previous = state.get("execution_settings", {})
+        settings["budget"] = previous.get("budget", settings["budget"])
+        changed = settings != previous
+        if changed:
+            state["execution_settings"] = settings
+            state["input_revision"] = state.get("input_revision", 0) + 1
+            state.pop("guard_refusals", None)
+            for row in task.approvals:
+                if row.get("status") == "approved" and row.get("approval_type") in {"tool_call", "tool_batch"}:
+                    row["status"] = "expired"
+            task.add_log("execution_settings", "已载入管理员最新权限规则；任务累计预算保持不变。")
+        # Old versions automatically froze full-access tasks on harmless tools.
+        # Discard only those generated cards, never an AI/user-requested review.
+        expired = False
+        if settings["mode"] == "full":
+            for row in task.approvals:
+                if (row.get("approval_type") == "tool_batch" and row.get("status") == "pending"
+                        and row.get("reason") == "执行前风险检查"):
+                    row["status"] = "expired"
+                    expired = True
+            if expired:
+                task.add_log("approval_migrated", "旧版自动审批已撤销；按完全权限规则继续，必要审批由 AI 主动提出。")
+                if (not state.get("human_paused") and not task.pending_approvals()
+                        and state.get("approved_version") == state.get("version")
+                        and not any(r.get("status") in {"started", "unknown"} for r in state.get("journal", []))
+                        and task.status == "paused" and task.wait.wait_reason == "need_approval"):
+                    task.status = "running"
+                    task.clear_wait()
+        if changed or expired:
+            self.owner.storage.save_task(task)
+        return changed or expired
 
     def initialize(self, task, event, workflow: str):
         task.workflow_data["task_control"] = {
@@ -163,12 +224,14 @@ class TaskControl:
                     and scope_roots == state.get("scope_roots", []) and risk_lines == state.get("risk_lines", [])
                     and not cleanup_paths and not changes):
                 return "计划内容未变，继续当前步骤。"
-            if not changes and not cleanup_paths:
+            if not changes and not cleanup_paths and scope_roots == state.get("scope_roots", []):
                 routine, review_reason = await self._review_revision(event, task, steps, retained, review_reason)
                 current = self.load(task.umo, task.task_id)
                 if control(current) != previous_snapshot or current.status != task.status:
                     raise ValueError("审阅期间任务记录已变化，请读取最新计划后重试。")
                 task, state = current, control(current)
+        if authorized and "authorized_scope_roots" not in state:
+            state["authorized_scope_roots"] = list(state.get("scope_roots", []))
         # Full revisions, including old summaries/evidence, are stored outside
         # the injected prompt. Routine edits do not expand execution authority.
         revision_id = f"plan_{int(state.get('version', 0))+1}"
@@ -302,6 +365,7 @@ class TaskControl:
                 raise ValueError("计划已变更，请审阅最新版本。")
             if approved:
                 state.update(approved_version=state["version"], authorization_version=state["version"],
+                             authorized_scope_roots=list(state.get("scope_roots", [])),
                              approved_cleanup_paths=row.get("cleanup_paths", []), phase="executing")
                 changes = row.get("changes", {})
                 if "goal" in changes:
@@ -375,6 +439,8 @@ class TaskControl:
         if self.closing:
             return
         task = self.owner.storage.load_active_task(event.unified_msg_origin)
+        if task:
+            self.refresh_execution_settings(task)
         if not task or not self.ready(task) or task.umo in self.running:
             return
         self.running[task.umo] = asyncio.create_task(self._drive(event, task.task_id))

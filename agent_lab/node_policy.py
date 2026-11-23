@@ -8,6 +8,7 @@ import json
 from .models import ApprovalRequest, new_id, now_iso
 from .node_runtime import NodeExecutionResult
 from .task_control import control
+from .task_permissions import full_guard, record_guard_refusal
 
 
 EXTERNAL_ACTIONS = {"call_api", "http_request", "send_message", "send_private_message", "send_email",
@@ -33,7 +34,15 @@ async def execute_with_policy(owner, ctx):
     signature = hashlib.sha256(json.dumps([ctx.node, version, state.get("current_step_id"),
         owner.storage.list_custom_apis() if action in {"call_api", "http_request"} else []],
         ensure_ascii=False, sort_keys=True, default=str).encode()).hexdigest()
-    if action in EXTERNAL_ACTIONS:
+    if action in EXTERNAL_ACTIONS and state.get("execution_settings", {}).get("mode") == "full":
+        reason, _ = full_guard(action, ctx.node, state)
+        if reason:
+            paused = record_guard_refusal(ctx.task, owner._redact_known_secrets(reason))
+            owner.storage.save_task(ctx.task)
+            if paused:
+                return NodeExecutionResult(ok=False, blocked=True, advance=False, outcome=paused)
+            return NodeExecutionResult(needs_react=True, advance=False, outcome=reason + " 当前节点未执行。请由主 Agent 调整方案或主动申请确切操作。")
+    elif action in EXTERNAL_ACTIONS:
         approval = next((row for row in ctx.task.approvals if row.get("status") == "approved" and row.get("call_signature") == signature), None)
         if not approval:
             row = ApprovalRequest(operation=f"画布节点：{ctx.node.get('title') or action}",

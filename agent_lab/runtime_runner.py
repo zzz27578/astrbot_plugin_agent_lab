@@ -41,6 +41,9 @@ class AgentRuntimeRunner:
         if not task:
             return "当前没有 active task。可以先 /agentlab start <目标>。"
         self.owner_access(event)
+        refresh = getattr(self.task_control, "refresh_execution_settings", None)
+        if refresh:
+            refresh(task)
         state = control(task)
         if not state:
             self.task_control.initialize(task, event, "selected")

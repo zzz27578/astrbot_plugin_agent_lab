@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from .astrbot_bridge import OperationBlocked
+from .task_permissions import apply_mode, READ_TOOLS
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -43,6 +45,7 @@ class AstrBotToolExecutor:
                 needs_react=True,
                 note="node_executor_tool_react_fallback",
             )
+        spec = apply_mode(spec, task.workflow_data.get("task_control", {}))
         if not self.owner._tool_allowed_by_agent_profile(spec, tool_name):
             return ToolExecutionResult(
                 ok=False,
@@ -99,7 +102,10 @@ class AstrBotToolExecutor:
                 },
                 note="node_executor_tool_schema_mismatch",
             )
-        if not self.owner._permission_allows_tool(node, capability=capability, risk=risk):
+        profile_risk = risk
+        if task.workflow_data.get("task_control", {}).get("execution_settings", {}).get("mode") == "full":
+            profile_risk = "safe" if tool_name in READ_TOOLS else "work"
+        if not self.owner._permission_allows_tool(node, capability=capability, risk=profile_risk):
             return ToolExecutionResult(
                 ok=False,
                 status="blocked",
@@ -112,6 +118,8 @@ class AstrBotToolExecutor:
             latest = self.owner.storage.load_active_task(task.umo)
             if latest and latest.task_id == task.task_id:
                 task.__dict__.update(latest.__dict__)
+        except OperationBlocked as exc:
+            return ToolExecutionResult(outcome=str(exc), needs_react=True, note="node_executor_needs_proactive_approval")
         except NotImplementedError:
             return ToolExecutionResult(
                 outcome=f"Tool {tool_name} has no direct callable executor; ReAct/tool-loop is required.",

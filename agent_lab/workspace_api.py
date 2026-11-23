@@ -62,6 +62,20 @@ class WorkspaceAPI:
                 if "native_steps" in payload:
                     await save_native_steps(self.owner, project.get("source_umo") or None, payload["native_steps"])
                 result = projects.update(project_id, {"execution_settings": settings})
+                seen = set()
+                for meta in projects.index()["tasks"].values():
+                    umo = meta.get("umo")
+                    if meta.get("project_id") != project_id or not umo or umo in seen:
+                        continue
+                    seen.add(umo)
+                    task = projects.storage.load_active_task(umo)
+                    if task and control(task).get("project_id") == project_id:
+                        refreshed = self.owner.task_control.refresh_execution_settings(task)
+                        make_event = getattr(self.owner, "_make_cron_event", None)
+                        if refreshed and task.status == "running" and make_event:
+                            event = make_event(umo, "项目权限更新")
+                            if event:
+                                self.owner.task_control.schedule(event)
         elif action == "task_budget":
             task = projects.get_task(task_id)
             active = self.owner.storage.load_active_task(task.umo)

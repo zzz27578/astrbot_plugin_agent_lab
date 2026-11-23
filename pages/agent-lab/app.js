@@ -1,6 +1,6 @@
 import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=026";
-import { ProjectUI } from "./project-ui.js?v=029-task-layout";
-import { Navigation, settingsIcon } from "./navigation.js?v=026";
+import { ProjectUI } from "./project-ui.js?v=030-full-access";
+import { Navigation, settingsIcon } from "./navigation.js?v=030-full-access";
 import {getBezierPath, Position} from "./vendor/connectors.js?v=026";
 import {routeEdge} from "./connections.js?v=026";
 import "./motion.js?v=026";
@@ -1403,7 +1403,6 @@ let workflowMaterialFilter = "";
 let workflowLibraryMode = "basic";
 let workflowEditorMode = "simple"; // simple | advanced ：节点编辑器默认填空题模式
 let workflowSubAgentOpen = false;
-let workflowGlobalOpen = false; // 全局规则抽屉是否打开
 let workflowToolboxOpenGroups = new Set();
 let workflowToolboxSeeded = false; // 首次渲染把默认展开的分类填进上面的集合
 let workflowMinimapWidth = 128;
@@ -1429,6 +1428,12 @@ function openPreset(id) {
   const agent=(state.agents||[]).find(a=>a.agent_id===id);
   if(!agent)return setFeedback("预案不存在，请刷新。","error");
   selectedAgentId=id;currentAgent=ensureAgent(clone(agent));route="workflow";workflowViewportInitialized=false;render();
+}
+function openPresetRules(id, keepDraft=false) {
+  const agent=(state.agents||[]).find(a=>a.agent_id===id);
+  if(!agent)return setFeedback("预案不存在，请刷新。","error");
+  if(!keepDraft)currentAgent=ensureAgent(clone(agent));
+  selectedAgentId=id;route="preset-settings";render();
 }
 const projectUI = new ProjectUI({api,esc,modal:showAppModal,notify:setFeedback,
   refresh:()=>load({silent:true}),
@@ -1461,6 +1466,7 @@ async function presetMutation(kind,id="") {
   finally {presetBusy=false;document.querySelectorAll("[data-nav-action$='preset']").forEach(el=>el.disabled=false);}
 }
 const navigation = new Navigation({esc,projectUI,render,
+  editRules:openPresetRules,
   openWorkflow:openPreset,newPreset:()=>presetMutation("new"),savePreset:id=>presetMutation("edit",id),
   duplicatePreset:id=>presetMutation("duplicate",id),deletePreset:id=>presetMutation("delete",id),renderIntegrations,identityChanged:()=>{renderNav();updateStatusBar();},
 });
@@ -1471,7 +1477,7 @@ function applyEmbeddedPanels() {
     if(head.querySelector(".embedded-close"))return;
     const panel=head.closest(".workflow-inspector-drawer");
     const close=document.createElement("button");close.className="embedded-close";close.type="button";close.textContent="关闭";
-    close.dataset.action=workflowGlobalOpen&&panel.classList.contains("workflow-global-drawer")?"close-workflow-global":workflowSubAgentOpen&&panel.classList.contains("workflow-global-drawer")?"close-workflow-subagents":"close-workflow-inspector";
+    close.dataset.action=workflowSubAgentOpen&&panel.classList.contains("workflow-global-drawer")?"close-workflow-subagents":"close-workflow-inspector";
     head.appendChild(close);
   });
   // Keep the original drawer box; only inset its scroll content below a wrapped toolbar.
@@ -3526,7 +3532,7 @@ function renderNav() {
     nav.innerHTML = sections
       .map(
         ([id, title, meta]) => `
-          <button class="${route === id ? "active" : ""}" data-route="${id}" type="button">
+          <button class="${(route === id || route === "preset-settings" && id === "presets") ? "active" : ""}" data-route="${id}" type="button">
             <strong>${title}</strong><br />
             <span>${meta}</span>
           </button>
@@ -3541,7 +3547,7 @@ function renderNav() {
   if ($("current-agent-name")) $("current-agent-name").textContent=projectUI.identityLabel();
   if ($("identity-instance")) $("identity-instance").textContent=projectUI.identityId||"未选择";
   $("settings-btn")?.classList.toggle("active",route==="settings");
-  const found = sections.find(([id]) => id === route) || sections[0];
+  const found = sections.find(([id]) => id === (route==="preset-settings"?"presets":route)) || sections[0];
   if ($("section-title")) $("section-title").textContent = found[1];
   if ($("section-kicker")) $("section-kicker").textContent = found[2];
 }
@@ -3623,6 +3629,7 @@ function render() {
   if (route === "projects") projectUI.render($("view"));
   if (route === "dashboard") renderDashboard();
   if (route === "presets") navigation.renderPresets($("view"),state.agents||[]);
+  if (route === "preset-settings") renderPresetRulesPage();
   if (route === "workflow") renderWorkflowPage();
   if (route === "memory") renderMemoryPage();
   if (route === "tasks") renderTasks();
@@ -4424,7 +4431,7 @@ function workflowRightDock(report) {
       </div>
       <div class="workflow-dock-group">
         <button class="workflow-dock-button text ${workflowToolboxOpen ? "active" : ""}" data-action="toggle-workflow-toolbox" title="打开 / 收起节点素材库" aria-label="素材库" type="button">素材</button>
-        <button class="workflow-dock-button text ${workflowGlobalOpen ? "active" : ""}" data-action="open-workflow-global" title="全局规则：整套工作流的安全准则 / 参考 / 技能" aria-label="全局规则" type="button">全局</button>
+        <button class="workflow-dock-button text" data-action="open-preset-rules" title="在独立页面编辑方案规则与插件" type="button">方案设置</button>
         <button class="workflow-dock-button text" data-action="auto-layout-workflow" title="按连线层级自动整理画布" aria-label="整理" type="button">整理</button>
       </div>
       <div class="workflow-dock-group">
@@ -4640,17 +4647,6 @@ function renderWorkflowPage() {
           </div>
         </section>
       ` : ""}
-      ${workflowGlobalOpen ? `
-        <div class="workflow-modal-backdrop" data-action="close-workflow-global"></div>
-        <section class="workflow-inspector-drawer workflow-global-drawer" role="dialog" aria-modal="true">
-          <div class="drawer-head">
-            <div><p class="card-kicker">全局规则</p><h3>整套工作流的准则 / 参考 / 技能</h3></div>
-          </div>
-          <div class="drawer-scroll">
-            ${workflowGlobalEditor()}
-          </div>
-        </section>
-      ` : ""}
       ${workflowSubAgentOpen ? `
         <div class="workflow-modal-backdrop" data-action="close-workflow-subagents"></div>
         <section class="workflow-inspector-drawer workflow-global-drawer" role="dialog" aria-modal="true">
@@ -4667,30 +4663,33 @@ function renderWorkflowPage() {
   `;
 }
 
-// 全局规则编辑器：作用于整条工作流，而不是单个节点。映射 AgentSpec 的 system_prompt / approval / skills / isolation。
+function renderPresetRulesPage() {
+  $("view").innerHTML=`<section class="presets-page preset-rules-page">${navigation.header("方案设置",currentAgent.name||"当前预案",'<button class="button secondary" data-action="back-to-presets">返回预案</button>')}<p class="project-hint">规则、技能与插件设置作用于整个方案，保存后供新任务使用。权限档位与授权路径由管理员在项目运行设置中配置；画布节点不能扩大授权或重新启用宿主停用的插件。</p>${workflowGlobalEditor()}</section>`;
+}
+
+// Scheme-wide rules live outside the canvas and use persisted AgentSpec fields.
 function workflowGlobalEditor() {
   const a = ensureAgent(currentAgent || {});
   a.heartbeat_policy ||= {};
   a.default_task_budget ||= {};
   a.enabled_skills ||= [];
-  a.plugin_blacklist ||= [];
   const skills = state.skills || [];
   const enabledSkills = new Set(a.enabled_skills || []);
-  const blacklisted = new Set(a.plugin_blacklist || []);
+  const blacklisted = new Set(Object.entries(a.plugin_overrides||{}).filter(([,enabled])=>enabled===false).map(([name])=>name));
   const skillRows = skills.length
     ? skills.map((sk) => {
         const name = String(sk.name || sk.id || "").trim();
         return `<label class="check-line"><input type="checkbox" data-global-skill="${esc(name)}" ${enabledSkills.has(name) ? "checked" : ""} /> <span>${esc(name)}</span><small>${esc(sk.path || sk.description || "")}</small></label>`;
       }).join("")
     : `<div class="empty">还没有可用的技能。请确认 AstrBot 已加载技能后刷新。</div>`;
-  const pluginList = (state.plugins || []).filter((p) => p.name !== "astrbot_plugin_agent_lab");
+  const pluginList = (state.plugins || []).filter((p) => p.name !== "astrbot_plugin_agent_lab" && !p.reserved);
   const pluginRows = pluginList.length
-    ? pluginList.map((p) => `<label class="check-line"><input type="checkbox" data-global-plugin-blacklist="${esc(p.name)}" ${blacklisted.has(p.name) ? "checked" : ""} /> <span>${esc(p.display_name || p.name)}</span><small>${esc(p.name)}</small></label>`).join("")
+    ? pluginList.map((p) => `<label class="check-line"><input type="checkbox" data-global-plugin-blacklist="${esc(p.name)}" ${blacklisted.has(p.name)||p.activated===false ? "checked" : ""} ${p.activated===false?"disabled":""} /> <span>${esc(p.display_name || p.name)}</span><small>${esc(p.name)}${p.activated===false?" · 宿主已停用":""}</small></label>`).join("")
     : `<div class="empty">没有检测到第三方插件。</div>`;
   return `
     <div class="detail-box workflow-editor">
       <section class="workflow-editor-section simple-editor">
-        <p class="simple-editor-lead">这里只放对整条工作流都生效的规则。入口 / 出口 / 审批 / 生效范围已分别改到对应的节点里设置。</p>
+        <p class="simple-editor-lead">整套方案共用的行为规则。任务权限以项目中管理员选择的档位和授权范围为准。</p>
         <label class="simple-field">整套安全准则 / 行为基调（系统提示词）
           <textarea id="global-system-prompt" rows="5" placeholder="例如：所有写操作前先说明影响；不碰生产数据库；引用资料要给出处。">${esc(a.system_prompt || "")}</textarea>
           <small class="field-hint">相当于给整个 bot 定的总规矩，每个节点执行时都会带上。</small>
@@ -4705,12 +4704,12 @@ function workflowGlobalEditor() {
       </section>
       <section class="workflow-editor-section simple-editor">
         <h4>插件黑名单</h4>
-        <p class="simple-editor-lead">勾选的插件会被本方案<strong>全程禁用</strong>，绝不会在任务流里被调用；没勾的插件，也只有被画布节点引用时才会启用。</p>
+        <p class="simple-editor-lead">勾选后在本方案中禁用；取消勾选恢复方案原有隔离规则。宿主全局停用的插件始终不可启用。</p>
         <div class="capability-list">${pluginRows}</div>
       </section>
       <div class="button-row">
-        <button class="button" data-action="apply-workflow-global" type="button">应用全局规则</button>
-        <button class="button secondary" data-action="close-workflow-global" type="button">关闭</button>
+        <button class="button" data-action="save-preset-rules" type="button">保存方案设置</button>
+        <button class="button secondary" data-action="back-to-presets" type="button">返回预案</button>
       </div>
     </div>
   `;
@@ -4729,10 +4728,15 @@ function applyWorkflowGlobalRules() {
   }
   const blBoxes = document.querySelectorAll("[data-global-plugin-blacklist]");
   if (blBoxes.length) {
-    a.plugin_blacklist = Array.from(blBoxes).filter((b) => b.checked).map((b) => b.dataset.globalPluginBlacklist);
     a.plugin_overrides ||= {};
-    a.plugin_blacklist.forEach((name) => { a.plugin_overrides[name] = false; });
+    blBoxes.forEach(box=>{
+      if(box.disabled)return;
+      const name=box.dataset.globalPluginBlacklist;
+      if(box.checked)a.plugin_overrides[name]=false;
+      else if(a.plugin_overrides[name]===false)delete a.plugin_overrides[name];
+    });
   }
+  delete a.plugin_blacklist;
 }
 
 function renderMemoryPage() {
@@ -8191,7 +8195,6 @@ function pluginEffective(plugin) {
   if (!plugin) return true;
   const override = currentAgent?.plugin_overrides?.[plugin.name];
   if (plugin.locked || plugin.name === "astrbot_plugin_agent_lab") return true;
-  if ((currentAgent?.plugin_blacklist || []).includes(plugin.name)) return false;
   if (!plugin.activated) return false;
   return typeof override === "boolean" ? override : true;
 }
@@ -10231,21 +10234,16 @@ document.addEventListener("click", async (event) => {
       workflowEditorMode = target.dataset.id === "advanced" ? "advanced" : "simple";
       renderWorkflowStable();
     }
-    if (action === "open-workflow-global") {
+    if (action === "open-preset-rules") {
+      if(workflowInspectorOpen)applyWorkflowNodeFromInspector();
       readAgentForm();
-      workflowGlobalOpen = true;
-      renderWorkflowStable();
+      openPresetRules(selectedAgentId,true);
     }
-    if (action === "close-workflow-global") {
+    if (action === "back-to-presets") {route="presets";render();}
+    if (action === "save-preset-rules") {
       applyWorkflowGlobalRules();
-      await animatePanelClose(".workflow-global-drawer");
-      workflowGlobalOpen = false;
-      renderWorkflowStable();
-    }
-    if (action === "apply-workflow-global") {
-      applyWorkflowGlobalRules();
-      setFeedback("全局规则已应用。记得点 SAVE 保存方案。");
-      renderWorkflowStable();
+      await saveAgent();
+      render();
     }
     if (action === "add-workflow-node") {
       readAgentForm();
