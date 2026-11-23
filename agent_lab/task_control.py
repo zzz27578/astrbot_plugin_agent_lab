@@ -15,6 +15,7 @@ from .models import ApprovalRequest, now_iso
 from .execution_settings import BUDGET_LIMITS, integer, lines, normalize
 from .continuity import working_context
 from .task_permissions import authorized_roots, execution_guidance
+from .context_views import arguments_view
 
 
 def control(task) -> dict:
@@ -28,12 +29,12 @@ def prompt(task) -> str:
     evidence = []
     # Reserve the prompt budget for recent results instead of silently clipping
     # every result at 1000 characters. Older/longer evidence remains readable.
-    remaining = 12000
+    remaining = 2500
     for row in reversed(state.get("journal", [])[-8:]):
         result = str(row.get("result", ""))
-        shown = result[:max(0, min(remaining, 12000 if row.get("approval_id") else 3000))]
+        shown = result[:max(0, min(remaining, 600 if row.get("approval_id") else 160))]
         remaining -= len(shown)
-        evidence.append({"id": row["id"], "name": row.get("name"), "arguments": row.get("arguments", {}),
+        evidence.append({"id": row["id"], "name": row.get("name"), "arguments": arguments_view(row.get("arguments", {}), 240),
                          "status": row.get("status"), "step_id": row.get("step_id"), "result": shown,
                          "approval_id": row.get("approval_id", ""),
                          "result_chars": row.get("result_chars", len(result)),
@@ -56,6 +57,7 @@ def prompt(task) -> str:
         "guidance": state.get("guidance", [])[-8:],
         "questions": state.get("questions", [])[-5:],
         "recent_tool_evidence": list(reversed(evidence)),
+        "file_read_index": [{"id": r["id"], **r["file_read"]} for r in state.get("journal", [])[-30:] if r.get("file_read")],
         "permission_policy": execution_guidance(state),
         "guard_refusals": state.get("guard_refusals", {}),
         "instruction": "按当前有效计划执行。大文件先 grep/rg 定位再按行局部读；已读取的文件、查询优先复用证据，文件修改后才重读。工具结果过长用 agent_lab_read_tool_evidence 分页读回。默认每轮最多24次工具调用，到限后保存事实与下一步，由系统交接继续，不要重新搜一遍。普通拆分、重排、补测试可修订计划；目标、验收、预算或解除约束才重新审批。危险操作由你主动提交确切工具与参数，不要撞审批或重试已拒绝动作。进展、请示和交付保持当前 Bot 的自然语气，不必固定四段模板。阶段结束保存成果、原因、位置和验证；无画布不调用流程推进。",

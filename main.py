@@ -81,10 +81,11 @@ from .agent_lab.execution_settings import native_steps, normalize as normalize_e
 from .agent_lab.task_messages import TaskMessages
 from .agent_lab.task_commands import task_command
 from .agent_lab.task_permissions import apply_mode, execution_guidance
+from .agent_lab.context_views import state_summary
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.3.1"
+PLUGIN_VERSION = "v0.3.2"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -999,25 +1000,7 @@ class AgentLabPlugin(Star):
         self.storage.save_task(task)
         if format == "markdown":
             return self.storage.render_markdown(task)
-        runtime_summary = self.agent_runtime.summary(task)
-        return (
-            f"task_id: {task.task_id}\n"
-            f"{task_plan_prompt(task)}\n"
-            f"status: {task.status}\n"
-            f"root_goal: {task.root_goal}\n"
-            f"completion_conditions: {task.completion_conditions}\n"
-            f"workflow: {self._workflow_runtime_text(task)}\n"
-            f"runtime: current={runtime_summary.get('current_node_id') or '-'} "
-            f"capabilities={runtime_summary.get('capability_count', 0)} "
-            f"verdicts={runtime_summary.get('verdicts', 0)}\n"
-            f"entry_summary: {self._compact_text(task.entry_summary or task.task_brief, 1600)}\n"
-            f"current_summary: {task.current_summary or '-'}\n"
-            f"last_confirmed_progress: {task.last_confirmed_progress or '-'}\n"
-            f"next_step: {task.next_step or '-'}\n"
-            f"last_observation: {self._compact_text(task.last_observation, 1200) or '-'}\n"
-            f"pending_approvals: {len(task.pending_approvals())}\n"
-            f"state_path: {self.storage.task_markdown_path(task.umo, task.task_id)}"
-        )
+        return state_summary(task)
 
     @filter.llm_tool(name="agent_lab_read_runtime")
     async def agent_lab_read_runtime(self, event: AstrMessageEvent, format: str = "summary") -> str:

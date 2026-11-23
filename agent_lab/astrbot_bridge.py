@@ -13,6 +13,8 @@ from .task_control import control
 from .task_permissions import apply_mode, assess, signature, full_guard, record_guard_refusal, GUARD_RETRY_LIMIT, read_only_call, UNRESOLVED_PATH_REASON
 from .continuity import HandoffError, StageContextManager, TaskContinuity, estimate
 from .bot_identity import persona_prompt, host_skills_prompt
+from .context_views import arguments_view, history_view
+from .read_cache import ReadCache
 
 
 class ExecutionStopped(Exception):
@@ -32,6 +34,7 @@ class AstrBotBridge:
         self.owner = owner
         self._tool_locks = {}
         self.continuity = TaskContinuity(owner)
+        self.read_cache = ReadCache(owner)
 
     def tool(self, name, event=None):
         name = {"astrbot_sandboxed_shell": "astrbot_execute_shell", "astrbot_sandboxed_python": "astrbot_execute_ipython"}.get(name, name)
@@ -195,6 +198,7 @@ class AstrBotBridge:
         approved_row = approved_call = None
         read_only = not internal and read_only_call(tool.name, arguments)
         round_id = event.get_extra("agent_lab_round_id", "")
+        read_plan = None
         if not internal:
             scope_state = state
             if state.get("execution_settings", {}).get("mode") == "full":
@@ -216,7 +220,12 @@ class AstrBotBridge:
                 raise ValueError("项目当前为只读档位，不能执行该动作。")
             self.ensure_not_rejected(task, [call])
             journal = state.get("journal", [])
-            if read_only and action == "allow" and round_id:
+            if tool.name == "astrbot_file_read_tool" and action == "allow":
+                try:
+                    read_plan = self.read_cache.plan(task, arguments, scope_state.get("execution_cwd"))
+                except (OSError, ValueError, KeyError):
+                    read_plan = None  # A cache failure must not prevent a fresh authorized read.
+            if read_plan is None and read_only and action == "allow" and round_id:
                 for previous in reversed(journal):
                     if previous.get("round_id") != round_id or not previous.get("read_only"):
                         break  # Any intervening write invalidates this read window.
@@ -301,9 +310,40 @@ class AstrBotBridge:
                                       tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
         chunks, native_results, failed = [], [], False
 
+        async def results():
+            if read_plan is None:
+                async with aclosing(FunctionToolExecutor.execute(tool, context, **arguments)) as stream:
+                    async for result in stream:
+                        yield result
+                return
+            from mcp.types import CallToolResult, TextContent
+            selected = []
+            for piece in read_plan["pieces"]:
+                if piece["text"] is not None:
+                    selected.append(piece["text"])
+                    continue
+                args = {**arguments, "offset": piece["start"], "limit": piece["end"] - piece["start"]}
+                parts = []
+                async with aclosing(FunctionToolExecutor.execute(tool, context, **args)) as stream:
+                    async for result in stream:
+                        if result is None:
+                            continue
+                        text = result if isinstance(result, str) else "\n".join(str(getattr(p, "text", "")) for p in getattr(result, "content", []) if getattr(p, "type", "") == "text")
+                        if getattr(result, "isError", False) or text.lower().startswith(("error", "traceback")):
+                            yield CallToolResult(content=[TextContent(type="text", text=text)], isError=True)
+                            return
+                        if not isinstance(result, str) and any(getattr(p, "type", "") != "text" for p in getattr(result, "content", [])):
+                            yield result
+                            return
+                        parts.append(text)
+                text = self.owner._redact_known_secrets("\n".join(parts))
+                read_plan["new_entries"].append({**piece, "text": text})
+                selected.append(text)
+            yield CallToolResult(content=[TextContent(type="text", text="".join(selected) or "No content found at the requested line offset.")])
+
         async def execute():
             nonlocal failed
-            async with aclosing(FunctionToolExecutor.execute(tool, context, **arguments)) as stream:
+            async with aclosing(results()) as stream:
                 async for result in stream:
                     if result is None:
                         continue
@@ -311,10 +351,23 @@ class AstrBotBridge:
                     text = self.owner._redact_known_secrets(text)
                     chunks.append(text or "工具返回非文本内容；原生模型循环保留图片/文件结果。")
                     from mcp.types import CallToolResult, TextContent
-                    limit = len(text) if internal else 8000 if read_only else 12000
+                    limit = len(text) if internal else 5000 if read_only else 12000
                     visible = text[:limit]
+                    if read_plan is not None and len(text) > limit:
+                        boundary = text.rfind("\n", 0, limit)
+                        if boundary >= 0:
+                            visible = text[:boundary+1]
                     if len(text) > limit:
-                        visible += f"\n（输出共{len(text)}字符，已显示前{limit}字符；完整结果保存为证据 {identifier}，可用 agent_lab_read_tool_evidence 分页读回。）"
+                        visible += f"\n（输出共{len(text)}字符，当前只显示前{len(visible)}字符；完整结果保存为证据 {identifier}，可用 agent_lab_read_tool_evidence 分页读回。）"
+                    if read_plan is not None:
+                        cached = [p for p in read_plan["pieces"] if p["text"] is not None]
+                        visible += (f"\n[文件工作视图：0基行范围 {read_plan['start']}:{read_plan['end']}；"
+                                    f"复用{len(cached)}段，实际新读{len(read_plan['new_entries'])}段。证据 {identifier}]")
+                        if read_plan["limited"]:
+                            visible += f"\n单次只提供至多120行；需要后续行时从 offset={read_plan['end']} 局部读取，已读行勿重复请求。"
+                        if len(text) > limit:
+                            displayed = text[:text.rfind("\n", 0, limit)+1] if "\n" in text[:limit] else text[:limit]
+                            visible += f"\n本次还有已缓存但未显示的内容：用 agent_lab_read_tool_evidence，offset={len(displayed)} 按字符接读，不要跳过这段。"
                     content = [TextContent(type="text", text=visible)] if text else []
                     content.extend(part for part in getattr(result, "content", []) if getattr(part, "type", "") != "text")
                     native_results.append(CallToolResult(content=content, isError=bool(getattr(result, "isError", False))))
@@ -343,6 +396,13 @@ class AstrBotBridge:
                                 result_truncated=len(output) > 12000,
                                 result_path=str(result_path.relative_to(self.owner.storage.root)), fingerprint=hashlib.sha256(
                         json.dumps([tool.name, arguments, output], sort_keys=True, ensure_ascii=False).encode()).hexdigest())
+                    if read_plan is not None and status == "completed":
+                        item["file_read"] = {"path": read_plan["version"]["path"], "start": read_plan["start"], "end": read_plan["end"],
+                                             "reused_segments": sum(p["text"] is not None for p in read_plan["pieces"])}
+                        try:
+                            self.read_cache.commit(latest, read_plan, identifier)
+                        except (OSError, ValueError, KeyError):
+                            latest.add_log("read_cache", "缓存未保存；原始工具证据仍可回查，下次重新读取。")
                     if status == "unknown":
                         latest.status = "paused"
                         latest.next_step = f"核对工具结果：{identifier}；不要盲目重试。"
@@ -355,6 +415,8 @@ class AstrBotBridge:
                 combined.append(TextContent(type="text", text=evidence))
             return [CallToolResult(content=combined or [TextContent(type="text", text="工具未返回内容。")], isError=status != "completed")]
         visible = "\n".join(chunks)
+        if read_plan is not None:
+            visible = "\n".join(str(getattr(part, "text", "")) for result in native_results for part in result.content if getattr(part, "type", "") == "text")
         if not internal and tool.name != "agent_lab_call_custom_api" and len(visible) > 12000:
             visible = visible[:12000] + f"\n（完整结果已保存，可用证据 {identifier} 分页读取。）"
         return visible + evidence
@@ -376,8 +438,9 @@ class AstrBotBridge:
             raise ValueError("offset 不能小于0，limit 必须在1–24000之间。")
         # Derive the path from the verified journal ID; never trust a caller path.
         output = self._evidence_text(task, row)
-        return json.dumps({"id": row["id"], "name": row.get("name"), "arguments": row.get("arguments", {}),
+        return json.dumps({"id": row["id"], "name": row.get("name"), "arguments": arguments_view(row.get("arguments", {})),
                            "status": row.get("status"), "result": output[offset:offset+limit],
+                           "file_read": row.get("file_read"),
                            "total_chars": len(output), "next_offset": offset+limit if offset+limit < len(output) else None}, ensure_ascii=False)
 
     def execution_context(self, event):
@@ -499,6 +562,8 @@ class AstrBotBridge:
                 used = latest.workflow_data.get("tick_budget", {}).get("tokens_used", 0)
                 if latest.budget.max_tokens_per_tick and used >= latest.budget.max_tokens_per_tick:
                     raise BudgetStopped("本轮 Token 预算已用尽，自动从检查点续轮。")
+                if isinstance(kwargs.get("contexts"), list):
+                    kwargs["contexts"] = history_view(kwargs["contexts"], latest)
                 response = await provider.text_chat(**kwargs)
                 latest = bridge.owner.storage.load_active_task(task.umo)
                 if latest and latest.task_id == task.task_id:

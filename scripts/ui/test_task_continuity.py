@@ -266,9 +266,9 @@ class ContinuityTests(ProjectRuntime):
             await continuity.compact(self.event(task.umo), task, incomplete, self.provider(), 'context_capacity')
         self.assertFalse(self.summaries)
         async def empty(**kwargs): return SimpleNamespace(completion_text='')
-        with self.assertRaises(C.HandoffError):
-            await continuity.compact(self.event(task.umo), task, [{'role': 'user', 'content': 'important'}], SimpleNamespace(text_chat=empty), 'stage_completed')
-        self.assertFalse(C.lane_state(self.load(task)).get('record_id'))
+        reduced = await continuity.compact(self.event(task.umo), task, [{'role': 'user', 'content': 'important'}], SimpleNamespace(text_chat=empty), 'stage_completed')
+        self.assertIn(C.MARKER, reduced[0]['content'])
+        self.assertEqual(C.lane_state(self.load(task))['quality'], 'degraded')
 
     async def test_native_bridge_rounds_keep_history_then_handoff_on_stage_change(self):
         await self._bridge_rounds()

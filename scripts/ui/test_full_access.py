@@ -126,7 +126,8 @@ class FullRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(journal['result_chars'], len(output))
             evidence = json.loads(Control.prompt(task).split(']\n', 1)[1])['recent_tool_evidence'][-1]
             self.assertEqual(evidence['arguments'], args)
-            self.assertGreater(len(evidence['result']), 1000)
+            self.assertTrue(evidence['result_truncated'])
+            self.assertLessEqual(len(evidence['result']), 600)
             tail = json.loads(bridge.read_evidence(event, journal['id'], 12000))
             self.assertIn('last directory', tail['result'])
             self.assertEqual(tail['total_chars'], len(output))
