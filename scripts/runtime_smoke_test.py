@@ -1435,18 +1435,13 @@ async def main() -> None:
             final_summary="premature finish",
             memory_candidates="",
         )
-        assert "暂不能完成任务" in blocked_finish
+        assert "交付前还需补齐证据" in blocked_finish
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         assert task.status == "paused"
         assert task.workflow_data["agent_runtime"]["last_verdict"]["status"] == "finish_blocked"
-        finish_approval = next(
-            item for item in task.approvals
-            if item.get("status") == "pending" and item.get("approval_type") == "finish_override"
-        )
-        plugin._resolve_approval(
-            event.unified_msg_origin, finish_approval["approval_id"], False, "runtime-smoke"
-        )
+        assert not any(item.get("status") == "pending" and item.get("approval_type") == "finish_override"
+                       for item in task.approvals), "missing evidence must not create an automatic approval"
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         task.status = "running"
@@ -1512,13 +1507,8 @@ async def main() -> None:
         assert "special artifact generated" in finish_verdict["missing"]
         assert "special artifact generated" in blocked_finish
 
-        finish_approval = next(
-            item for item in task.approvals
-            if item.get("status") == "pending" and item.get("approval_type") == "finish_override"
-        )
-        plugin._resolve_approval(
-            event.unified_msg_origin, finish_approval["approval_id"], False, "runtime-smoke"
-        )
+        assert not any(item.get("status") == "pending" and item.get("approval_type") == "finish_override"
+                       for item in task.approvals), "missing evidence must not create an automatic approval"
         task = plugin.storage.load_active_task(event.unified_msg_origin)
         assert task is not None
         task.status = "running"
@@ -1917,32 +1907,13 @@ async def main() -> None:
                 "summary": "administrator reviewed the remaining gap",
             },
         )
-        blocked_payload = await blocked_response.get_json()
-        assert blocked_payload["ok"] is False
-        assert blocked_payload["status"] == "paused"
-        assert blocked_payload["approval"]["approval_type"] == "finish_override"
-        approval_id = blocked_payload["approval"]["approval_id"]
-        assert approval_id in blocked_payload["error"]
-        denied = plugin._resolve_approval(event.unified_msg_origin, approval_id, True, "not-admin")
-        assert "workflow_admin_ids" in denied
-        approved_response = await client.post(
-            "/api/task/approval",
-            json={
-                "umo": event.unified_msg_origin,
-                "approval_id": approval_id,
-                "approved": True,
-            },
-        )
-        approved_payload = await approved_response.get_json()
-        assert approved_payload["ok"] is True
-        assert approved_payload["archived"] is True
+        delivered_payload = await blocked_response.get_json()
+        assert delivered_payload["ok"] is True
         assert plugin.storage.load_active_task(event.unified_msg_origin) is None
         archived = plugin.storage.list_archives(event.unified_msg_origin)[0]
-        decisions = archived.workflow_data.get("finish_decisions") or []
-        assert decisions and decisions[-1]["approval_id"] == approval_id
-        assert decisions[-1]["approved_by"] == "webui"
-        reports = archived.workflow_data.get("reports") or []
-        assert any(item.get("kind") == "finish_override_report" for item in reports)
+        assert archived.status == "completed"
+        assert archived.workflow_data["task_control"]["administrator_decision"]["status"] == "completed"
+        assert not any(item.get("status") == "pending" for item in archived.approvals)
 
     with TemporaryDirectory() as tmp:
         debug("third runtime fixture")

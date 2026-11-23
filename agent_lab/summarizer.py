@@ -67,9 +67,13 @@ class AgentSummarizer:
         return await self._summarize(event, prompt, system_prompt, provided_brief)
 
     async def summarize_exit(self, event, task: TaskState, provided: str = "") -> str:
+        # The acting Bot already wrote its delivery. Preserve its voice and do
+        # not send the entire tool journal through a second summary model.
+        if provided.strip():
+            return provided.strip()
         prompt = (
             "请将下面 Agent Mode 任务状态压缩成出口归档摘要。\n\n"
-            f"{json.dumps(task.to_dict(), ensure_ascii=False, indent=2)}\n\n"
+            f"{json.dumps({'goal': task.root_goal, 'summary': task.current_summary, 'progress': task.last_confirmed_progress, 'next_step': task.next_step}, ensure_ascii=False)}\n\n"
             "请输出：\n"
             "1. 完成/未完成状态。\n"
             "2. 关键进度和修改。\n"

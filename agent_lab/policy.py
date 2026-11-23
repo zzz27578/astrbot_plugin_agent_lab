@@ -9,6 +9,10 @@ class PermissionPolicy:
         name = str(tool_name or "").strip()
         if not name:
             return False
+        aliases = {"astrbot_sandboxed_shell": "astrbot_execute_shell", "astrbot_sandboxed_python": "astrbot_execute_ipython"}
+        disabled = {aliases.get(value, value) for value in getattr(spec, "disabled_tools", [])}
+        if aliases.get(name, name) in disabled:
+            return False
         if name in {
             no_external_sentinel,
             "agent_lab_enter_mode",

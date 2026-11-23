@@ -869,6 +869,7 @@ class AgentSpec:
         "你在 Agent Mode 中工作。先读取任务状态，再执行一个有限步骤，随后总结并写回状态。"
     )
     plugin_overrides: dict[str, bool] = field(default_factory=dict)
+    disabled_tools: list[str] = field(default_factory=list)
     enabled_tools: list[str] = field(
         default_factory=lambda: [
             "astrbot_file_read_tool",

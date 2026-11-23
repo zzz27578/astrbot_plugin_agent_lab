@@ -248,6 +248,8 @@ class AgentLabStorage:
         # ended the task. It cannot overwrite that already committed decision.
         if self.ended_path(task.task_id).exists() and not administrator:
             return self.archive_task_markdown_path(task.umo, task.task_id)
+        from .approval_history import close_approvals
+        close_approvals(task)
         task.finished_at = task.finished_at or now_iso()
         task.updated_at = now_iso()
         session_archive_dir = self.archive_session_dir(task.umo)

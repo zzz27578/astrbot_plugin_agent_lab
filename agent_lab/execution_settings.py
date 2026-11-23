@@ -52,6 +52,7 @@ def normalize(payload):
     if any(not (posixpath.isabs(root) or ntpath.isabs(root)) or any(c in root for c in "*?[]") for root in roots):
         raise ValueError("授权范围请填写不含通配符的绝对目录路径。")
     return {"mode": mode, "roots": roots, "continuity": continuity,
+            "round_tool_limit": integer(payload.get("round_tool_limit", 24), 1, 10000),
             "warnings": lines(payload.get("warnings", [])), "task_prompt": task_prompt,
             "budget": {key: integer(value, *BUDGET_LIMITS[key]) for key, value in budget.items() if key in BUDGET_LIMITS}}
 

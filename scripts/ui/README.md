@@ -42,3 +42,7 @@ node browser-check.mjs
 `export_capabilities.py` 从当前 `main.py` 的节点执行器注册表生成 fixture 能力表，避免前端素材目录和后端执行器名单各自维护。
 
 任务消息测试覆盖：进展开关与限频、问题/审批共线、管理员终态优先、发送失败不自动重发，以及消息记录的独立存储。
+
+## v0.3.1 定向验证
+
+`test_scheme_finish.py` 检查完成证据、交付不自动送审、批准历史、人设继承、只读复用、单轮上限、变量路径和小步骤交接。`full-access-ui-smoke.mjs` 验证图形化开关状态，`scheme-settings-check.mjs` 运行三种宽度下的30项浏览器交互，截图和结果保存在 `docs/screenshots/v0.3.1/`。这组验证不调用真实模型或生产任务。

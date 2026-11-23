@@ -19,6 +19,7 @@ CODE_TOOLS = {"astrbot_execute_shell", "astrbot_execute_python", "astrbot_execut
 SECRET_PATH = re.compile(r"(?:^|[/\\])(?:\.env(?:\.[^/\\]*)?|\.ssh|\.git-credentials|credentials(?:\.[^/\\]*)?|id_(?:rsa|ed25519)|[^/\\]+\.pem)(?:$|[/\\])", re.I)
 SAFE_SHELL = {"pwd", "ls", "cat", "head", "tail", "rg", "grep", "wc", "stat", "dir", "type"}
 GUARD_RETRY_LIMIT = 3
+UNRESOLVED_PATH_REASON = "路径变量尚未解析"
 
 
 def record_guard_refusal(task, reason):
@@ -83,6 +84,70 @@ def _tokens(command):
         return []
 
 
+_VARIABLE = re.compile(r"\$\{([A-Za-z_]\w*)\}|\$(?:env:)?([A-Za-z_]\w*)|%([A-Za-z_]\w*)%")
+
+
+def _scope_shell_tokens(command, environment):
+    """Expand declared literal variables only; never execute shell substitution."""
+    env = {str(k):str(v) for k,v in environment.items()} if isinstance(environment, dict) else {}
+    tokens, segment = [], []
+    single_quoted = set(re.findall(r"'([^']*\$[^']*)'", command))
+    def expand(value):
+        if value in single_quoted:
+            return value
+        return _VARIABLE.sub(lambda m: env.get(next(v for v in m.groups() if v is not None), m.group()), value)
+    for token in [*_tokens(command), ";"]:
+        if token in {";", "&&", "||", "|", "\n"}:
+            statement = segment[1:] if segment and segment[0].lower() in {"export", "set"} else segment
+            assignments = []
+            if len(statement) == 3 and statement[1] == "=" and re.fullmatch(r"\$(?:env:)?[A-Za-z_]\w*", statement[0]):
+                assignments = [(statement[0].removeprefix("$env:").removeprefix("$"), statement[2])]
+            elif statement and all(re.match(r"^[A-Za-z_]\w*=", value) for value in statement):
+                assignments = [value.split("=", 1) for value in statement]
+            if assignments:
+                for key, value in assignments:
+                    env[key] = expand(value)
+            else:
+                tokens.extend(expand(value) for value in segment)
+            tokens.append(token)
+            segment = []
+        else:
+            segment.append(token)
+    return tokens
+
+
+def read_only_call(name, args):
+    """Only explicitly read-only tools qualify for in-round result reuse."""
+    if name in READ_TOOLS:
+        return True
+    if name not in {"astrbot_execute_shell", "astrbot_sandboxed_shell"}:
+        return False
+    command = args.get("command", "")
+    if not isinstance(command, str) or re.search(r"[`$]", command):
+        return False
+    tokens = _tokens(command)
+    if not tokens:
+        return False
+    segment, segments = [], []
+    for token in [*tokens, ";"]:
+        if token in {";", "&&", "||", "|", "\n"}:
+            if segment:
+                segments.append(segment)
+            segment = []
+        else:
+            segment.append(token)
+    for argv in segments:
+        if any(v in {">", ">>", "<", "&", "(", ")"} for v in argv):
+            return False
+        exe = ntpath.basename(argv[0]).lower().removesuffix(".exe")
+        if exe not in SAFE_SHELL | {"find"}:
+            return False
+        if any(v.startswith(("--pre", "--exec", "--config", "--files-from")) or
+               v in {"-delete", "-exec", "-execdir", "-fprint", "-fprintf", "-fls"} for v in argv[1:]):
+            return False
+    return bool(segments)
+
+
 def _destructive_query(text):
     return bool(re.search(r"\b(?:drop\s+(?:database|schema|table)|truncate\s+(?:table\s+)?[\w.]+)\b", text, re.I)
                 or re.search(r"\bdelete\s+from\b", text, re.I) and not re.search(r"\bwhere\b", text, re.I)
@@ -106,7 +171,7 @@ def full_guard(name, args, state, _depth=0):
     database_command = False
     command = args.get("command", "") if name in CODE_TOOLS else ""
     if isinstance(command, str):
-        tokens = _tokens(command)
+        tokens = _scope_shell_tokens(command, args.get("env", {}))
         segment = []
         redirect = False
         for token in [*tokens, ";"]:
@@ -126,6 +191,13 @@ def full_guard(name, args, state, _depth=0):
                         operands = [v for v in segment[1:] if not v.startswith("-") and not v.isdecimal()
                                     and v.lower() not in {"/s", "/q", "/f", "/b", "/a", "/d"}]
                         paths.extend(operands if operands else [cwd] if cwd else [])
+                    if exe == "find":
+                        bases = []
+                        for value in segment[1:]:
+                            if value.startswith("-") or value in {"(", ")"}:
+                                break
+                            bases.append(value)
+                        paths.extend(bases or ([cwd] if cwd else []))
                     if exe in {"rm", "unlink", "rmdir", "del", "erase", "rd", "remove-item", "ri"}:
                         targets = [v for v in segment[1:] if not v.startswith("-") and v.lower() not in {"/s", "/q", "/f"}]
                         deletions.extend(targets)
@@ -210,8 +282,12 @@ def full_guard(name, args, state, _depth=0):
         deletions.extend(paths)
     paths.extend(deletions)
     resolved = []
+    unresolved = []
     for path in paths:
         if "://" in path:
+            continue
+        if _VARIABLE.search(path) or "$(" in path:
+            unresolved.append(path)
             continue
         if not _absolute(path) and cwd:
             module = ntpath if ntpath.splitdrive(cwd)[0] else posixpath
@@ -235,6 +311,8 @@ def full_guard(name, args, state, _depth=0):
     sensitive = any(SECRET_PATH.search(p) for p in resolved)
     if outside:
         return "超出管理员授权路径：" + "、".join(outside), outside
+    if unresolved:
+        return UNRESOLVED_PATH_REASON + "：" + "、".join(dict.fromkeys(unresolved)) + "。请在同一命令内明确赋值或改用绝对路径；未执行，也不计作危险尝试。", []
     if destructive or len(set(deletions)) > 20 or re.search(r"(?:^|_)(?:delete_all|remove_all|wipe|drop_database|drop_schema|drop_table)(?:_|$)", name, re.I):
         return "清空目录、批量删除或其他破坏性操作需要先主动申请批准。", []
     if sensitive or re.search(r"(?:^|_)(?:secret|credential|password)(?:_|$)", name, re.I):

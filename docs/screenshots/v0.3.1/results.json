@@ -1,0 +1,23 @@
+{
+  "results": [
+    {
+      "width": 1440,
+      "graphWidth": 1129,
+      "contentWidth": 1129,
+      "checks": 10
+    },
+    {
+      "width": 1100,
+      "graphWidth": 829,
+      "contentWidth": 829,
+      "checks": 10
+    },
+    {
+      "width": 390,
+      "graphWidth": 335,
+      "contentWidth": 335,
+      "checks": 10
+    }
+  ],
+  "errors": []
+}

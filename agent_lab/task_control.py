@@ -28,10 +28,10 @@ def prompt(task) -> str:
     evidence = []
     # Reserve the prompt budget for recent results instead of silently clipping
     # every result at 1000 characters. Older/longer evidence remains readable.
-    remaining = 24000
+    remaining = 12000
     for row in reversed(state.get("journal", [])[-8:]):
         result = str(row.get("result", ""))
-        shown = result[:max(0, remaining)]
+        shown = result[:max(0, min(remaining, 12000 if row.get("approval_id") else 3000))]
         remaining -= len(shown)
         evidence.append({"id": row["id"], "name": row.get("name"), "arguments": row.get("arguments", {}),
                          "status": row.get("status"), "step_id": row.get("step_id"), "result": shown,
@@ -58,7 +58,7 @@ def prompt(task) -> str:
         "recent_tool_evidence": list(reversed(evidence)),
         "permission_policy": execution_guidance(state),
         "guard_refusals": state.get("guard_refusals", {}),
-        "instruction": "按当前有效计划执行，阶段按实际任务划分，不必凑固定数量。优先使用已有工具结果，不重复执行已经批准且完成的操作；结果不全时调用 agent_lab_read_tool_evidence 读取，不要重新申请或执行。普通拆分、重排、补测试可用 agent_lab_submit_plan 修订并说明原因，涉及目标、验收条件、预算或解除用户约束才重新审批。返工已完成步骤需提供 reopen_reason。危险操作先汇总成一批，用 agent_lab_request_approval 的 operations_json 提交确切工具与参数，中文说明影响和恢复方式。不要先调用危险工具撞审批，也不要改写已拒绝的同一动作后重试。阶段内及时用 agent_lab_checkpoint 保存实际成果、决定原因、文件位置、验证和遗留事项；完成阶段后自动交接。无画布时不调用流程推进。只有缺少关键答案时反问。",
+        "instruction": "按当前有效计划执行。大文件先 grep/rg 定位再按行局部读；已读取的文件、查询优先复用证据，文件修改后才重读。工具结果过长用 agent_lab_read_tool_evidence 分页读回。默认每轮最多24次工具调用，到限后保存事实与下一步，由系统交接继续，不要重新搜一遍。普通拆分、重排、补测试可修订计划；目标、验收、预算或解除约束才重新审批。危险操作由你主动提交确切工具与参数，不要撞审批或重试已拒绝动作。进展、请示和交付保持当前 Bot 的自然语气，不必固定四段模板。阶段结束保存成果、原因、位置和验证；无画布不调用流程推进。",
     }, ensure_ascii=False)
 
 
@@ -360,6 +360,7 @@ class TaskControl:
 
     def approval(self, task, row: dict, approved: bool):
         state = control(task)
+        row["decision"] = "approved" if approved else "rejected"
         if row.get("approval_type") == "task_plan":
             if row.get("plan_version") != state.get("version"):
                 raise ValueError("计划已变更，请审阅最新版本。")
@@ -403,8 +404,8 @@ class TaskControl:
                     evidence=list(dict.fromkeys([*step.get("evidence", []), *evidence])))
         if completed:
             step["completed_at"] = now_iso()
-            stage = step.get("stage") or step_id
-            if all(s.get("status") == "completed" for s in state["steps"] if (s.get("stage") or s["id"]) == stage):
+            stage = step.get("stage")
+            if stage and all(s.get("status") == "completed" for s in state["steps"] if s.get("stage") == stage):
                 state.setdefault("continuity", {}).setdefault("lanes", {}).setdefault("", {})["pending_reason"] = "stage_completed"
         task.last_confirmed_progress = summary[:4000]
         task.next_step = next((s["instruction"] for s in state["steps"] if s["status"] != "completed"), "核对全部成果并结束归档")

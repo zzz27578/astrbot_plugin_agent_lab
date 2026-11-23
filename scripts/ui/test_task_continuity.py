@@ -129,6 +129,7 @@ class ContinuityTests(ProjectRuntime):
     async def test_completed_stage_requests_handoff_without_marking_next_done(self):
         task, _ = self.running_task()
         state = Control.control(task)
+        state['steps'][0]['stage'] = 'inspection'
         state['steps'].append({'id': 'two', 'title': 'Next', 'instruction': 'test', 'status': 'pending', 'evidence': []})
         state['journal'] = [{'id': 'e1', 'status': 'completed', 'plan_version': 1, 'step_id': 'one'}]
         self.storage.save_task(task)
@@ -281,9 +282,13 @@ class ContinuityTests(ProjectRuntime):
         await self._bridge_rounds(ToolLoopAgentRunner)
 
     async def _bridge_rounds(self, installed_runner=None):
+        # Provider entities depend on the real message classes. Load them before
+        # replacing only the runner's message adapter in the deterministic test.
+        import astrbot.core.provider.entities
         from uuid import uuid5, NAMESPACE_URL
         Bridge = importlib.import_module('review_agent_lab.astrbot_bridge').AstrBotBridge
         task, _ = self.running_task()
+        Control.control(task)['steps'][0]['stage'] = 'inspection'
         Control.control(task)['steps'].append({'id': 'two', 'title': 'Test', 'instruction': 'run tests', 'status': 'pending', 'evidence': []})
         Control.control(task)['journal'] = [{'id': 'e1', 'status': 'completed', 'plan_version': 1, 'step_id': 'one'}]
         self.storage.save_task(task)

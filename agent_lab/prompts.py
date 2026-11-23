@@ -245,8 +245,7 @@ def build_agent_mode_policy(spec: AgentSpec) -> str:
 {_lines_or_none(spec.approval_policy.require_approval)}
 - enabled_tools：
 {_lines_or_none(spec.enabled_tools)}
-- enabled_skills：
-{_lines_or_none(spec.enabled_skills)}
+- skills：沿用 AstrBot 已启用技能及当前人设选择。
 
 [当前工作流]
 {_workflow_text(spec)}
@@ -342,8 +341,7 @@ def build_task_system_prompt(spec: AgentSpec, task: TaskState, modules_prompt: s
 {_lines_or_none(spec.approval_policy.require_approval)}
 - enabled_tools:
 {_lines_or_none(spec.enabled_tools)}
-- enabled_skills:
-{_lines_or_none(spec.enabled_skills)}
+- skills: inherit AstrBot active skills and the source persona configuration.
 
 [Workflow]
 {_workflow_text(spec)}

@@ -85,6 +85,12 @@ class AgentVerifier:
         )
 
     def verify_validation_checkpoint(self, task: Any) -> VerificationResult:
+        state = (getattr(task, "workflow_data", {}) or {}).get("task_control", {})
+        if state.get("steps") and all(step.get("status") == "completed" for step in state["steps"]):
+            missing = self._plan_evidence_gaps(task)
+            return VerificationResult(passed=not missing, status="needs_evidence" if missing else "passed",
+                                      reason="任务步骤仍需补齐有效执行证据。" if missing else "全部步骤已有匹配的成功工具证据。",
+                                      missing=missing, next_action="collect_evidence" if missing else "continue")
         text = "\n".join(
             [
                 str(getattr(task, "current_summary", "") or ""),
@@ -137,6 +143,12 @@ class AgentVerifier:
                 next_action="write_final_summary",
             )
         data = getattr(task, "workflow_data", {}) if isinstance(getattr(task, "workflow_data", {}), dict) else {}
+        state = data.get("task_control", {})
+        if state.get("steps"):
+            missing = self._plan_evidence_gaps(task)
+            return VerificationResult(passed=not missing, status="needs_evidence" if missing else "completed",
+                reason="还有步骤缺少有效执行证据，请补齐后交付。" if missing else "全部批准步骤已完成，并有对应成功记录；无需逐字重复验收条件。",
+                missing=missing, next_action="collect_finish_evidence" if missing else "archive")
         node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
         observations = data.get("observations") if isinstance(data.get("observations"), list) else []
         reports = data.get("reports") if isinstance(data.get("reports"), list) else []
@@ -175,6 +187,9 @@ class AgentVerifier:
         )
 
     def missing_completion_conditions(self, task: Any, *, final_summary: str = "") -> list[str]:
+        state = (getattr(task, "workflow_data", {}) or {}).get("task_control", {})
+        if state.get("steps"):
+            return self._plan_evidence_gaps(task)
         evidence_text = self._finish_evidence_text(task, final_summary=final_summary)
         missing: list[str] = []
         for condition in getattr(task, "completion_conditions", []) or []:
@@ -183,6 +198,29 @@ class AgentVerifier:
                 continue
             if not self._condition_has_evidence(condition_text, evidence_text):
                 missing.append(condition_text)
+        return missing
+
+    @staticmethod
+    def _plan_evidence_gaps(task):
+        state = (getattr(task, "workflow_data", {}) or {}).get("task_control", {})
+        journal = {row.get("id"): row for row in state.get("journal", [])}
+        authority = state.get("authorization_version", state.get("approved_version", 0))
+        missing = []
+        if not state.get("approved_version") or state.get("approved_version") != state.get("version"):
+            missing.append("当前计划尚未批准")
+        for step in state.get("steps", []):
+            if step.get("status") != "completed":
+                missing.append(f"{step.get('title', step['id'])}：尚未完成")
+                continue
+            rows = [journal.get(identifier, {}) for identifier in step.get("evidence", [])]
+            valid = [row for row in rows if row.get("status") == "completed"
+                     and row.get("step_id") == step.get("id")
+                     and row.get("step_revision", 0) == step.get("revision", 0)
+                     and row.get("authorization_version", row.get("plan_version")) == authority]
+            if not step.get("summary") or not rows or len(valid) != len(rows):
+                missing.append(f"{step.get('title', step['id'])}：需要当前版本的成功工具记录和结果说明")
+        if any(row.get("status") in {"started", "unknown"} for row in journal.values()):
+            missing.append("存在执行中或结果未知的操作，需先核对")
         return missing
 
     def _finish_evidence_text(self, task: Any, *, final_summary: str = "") -> str:
@@ -212,6 +250,12 @@ class AgentVerifier:
             getattr(task, "parallel_runs", []),
             getattr(task, "progress_log", []),
             getattr(task, "state_snapshots", []),
+            [lane.get("summary", "") for lane in data.get("task_control", {}).get("continuity", {}).get("lanes", {}).values()
+             if isinstance(lane, dict)],
+            [dict(summary=s.get("summary", ""), evidence=s.get("evidence", []))
+             for s in data.get("task_control", {}).get("steps", []) if s.get("status") == "completed"],
+            [dict(id=r.get("id"), status=r.get("status"), result=r.get("result", ""))
+             for r in data.get("task_control", {}).get("journal", []) if r.get("status") == "completed"],
         ]
         return "\n".join(_text(part) for part in parts if part)
 

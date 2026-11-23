@@ -32,7 +32,9 @@ def settings(task):
 def stage_of(task):
     state = state_of(task)
     step = next((s for s in state.get("steps", []) if s["id"] == state.get("current_step_id")), {})
-    return str(step.get("stage") or step.get("id") or "verification")
+    # Ungrouped checklist items share one execution stage. A two-call item is
+    # a checkpoint, not automatically an expensive context handoff.
+    return str(step.get("stage") or "task_execution")
 
 
 def lane_state(task, lane=""):

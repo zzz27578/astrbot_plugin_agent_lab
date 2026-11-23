@@ -23,7 +23,7 @@ assert len(list((root / "modules").glob("*.json"))) == 5
 for source in (root / "modules").glob("*.json"):
     json.loads(source.read_text(encoding="utf-8"))
 page = root / "pages" / "agent-lab"
-assert all((page / name).exists() for name in ["index.html", "app.js", "style.css", "ui-runtime.js", "project-ui.js", "workspace.css", "navigation.js", "theme.css", "vendor/connectors.js"])
+assert all((page / name).exists() for name in ["index.html", "app.js", "style.css", "ui-runtime.js", "project-ui.js", "workspace.css", "navigation.js", "theme.css", "scheme-settings.js", "scheme-settings.css", "vendor/connectors.js"])
 js = (page / "app.js").read_text(encoding="utf-8")
 assert "sessionStorage." not in js
 assert "function taskControlDetail(" in js

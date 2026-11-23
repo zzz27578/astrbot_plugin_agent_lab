@@ -16,6 +16,7 @@ from .models import TaskState, new_id, now_iso
 from .task_control import control
 from .identities import source_platform
 from .execution_settings import integer, normalize as normalize_execution_settings
+from .approval_history import close_approvals
 
 
 TERMINAL = {"completed", "cancelled"}
@@ -257,8 +258,7 @@ class Projects:
         async with self.lock:
             task = await self.pause_execution(task)
             missing = [step.get("title") for step in control(task).get("steps", []) if step.get("status") != "completed"]
-            for item in task.approvals:
-                if item.get("status") in {"pending", "approved"}: item["status"] = "expired"
+            close_approvals(task)
             state = control(task)
             state.update(human_paused=True, automatic=False, phase="ended",
                          administrator_decision={"actor": actor, "status": status, "time": now_iso(), "unfinished_steps": missing})

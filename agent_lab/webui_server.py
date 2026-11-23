@@ -117,6 +117,14 @@ class StandaloneWebUIServer:
         async def navigation():
             return await send_from_directory(self.static_dir, "navigation.js")
 
+        @app.get("/scheme-settings.js")
+        async def scheme_settings_js():
+            return await send_from_directory(self.static_dir, "scheme-settings.js")
+
+        @app.get("/scheme-settings.css")
+        async def scheme_settings_css():
+            return await send_from_directory(self.static_dir, "scheme-settings.css")
+
         @app.get("/motion.js")
         async def motion():
             return await send_from_directory(self.static_dir, "motion.js")

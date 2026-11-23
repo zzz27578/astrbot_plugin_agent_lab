@@ -219,9 +219,10 @@ export class ProjectUI {
         <fieldset><legend>预算与上限</legend>
           <div class="project-settings-grid">
             ${number("native_steps","AstrBot 原生每轮工具上限",1,10000,current.native_steps)}
+            ${number("round_tool_limit","任务单轮工具上限",1,10000,current.round_tool_limit??24)}
             ${budgetFields.map(([key,label,min,max])=>number(key,label+(min===0?"（0 不限）":""),min,max,current.budget[key])).join("")}
           </div>
-          <p class="project-hint">原生上限写入${current.bound_session?"项目会话使用的 AstrBot 配置档":" AstrBot 默认配置档"}，影响共用此档的会话。其余设置由新任务继承。</p>
+          <p class="project-hint">任务单轮默认24次，与 AstrBot 原生上限取较小值；到限保存交接后继续，避免一轮反复携带大段文件。任务上限下轮生效，不改宿主配置；原生上限仍写入共用的 AstrBot 配置档。</p>
         </fieldset>
         <div class="project-settings-footer"><button type="submit" class="button" data-project-action="save-execution">${icon("check",16)}保存运行设置</button></div>
       </form>`}
@@ -343,7 +344,7 @@ export class ProjectUI {
         const form=button.closest("form"), projectId=this.projectId, taskId=this.taskId;
         if(!form.reportValidity()) {rerender=false;return;}
         const fields=new FormData(form), current=this.execution.get(projectId), native=fields.get("native_steps");
-        await this.request("save_execution_settings",{project_id:projectId,...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode:fields.get("mode"),roots:splitLines(fields.get("roots")),warnings:splitLines(fields.get("warnings")),task_prompt:fields.get("task_prompt"),continuity:Object.fromEntries(continuityFields.map(([key])=>[key,fields.get(key)])),budget:Object.fromEntries(budgetFields.map(([key])=>[key,fields.get(key)]))}});
+        await this.request("save_execution_settings",{project_id:projectId,...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode:fields.get("mode"),round_tool_limit:fields.get("round_tool_limit"),roots:splitLines(fields.get("roots")),warnings:splitLines(fields.get("warnings")),task_prompt:fields.get("task_prompt"),continuity:Object.fromEntries(continuityFields.map(([key])=>[key,fields.get(key)])),budget:Object.fromEntries(budgetFields.map(([key])=>[key,fields.get(key)]))}});
         form.querySelectorAll("[id]").forEach(el=>this.drafts.delete(`${projectId}:${taskId}:${el.id}`));
         await this.loadExecution(projectId);this.notify("项目运行设置已保存。");
       } else if(action==="task-budget") {

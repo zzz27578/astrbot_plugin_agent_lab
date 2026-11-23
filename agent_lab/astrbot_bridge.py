@@ -10,8 +10,9 @@ from uuid import uuid5, NAMESPACE_URL
 
 from .models import ApprovalRequest, new_id, now_iso
 from .task_control import control
-from .task_permissions import apply_mode, assess, signature, full_guard, record_guard_refusal, GUARD_RETRY_LIMIT
+from .task_permissions import apply_mode, assess, signature, full_guard, record_guard_refusal, GUARD_RETRY_LIMIT, read_only_call, UNRESOLVED_PATH_REASON
 from .continuity import HandoffError, StageContextManager, TaskContinuity, estimate
+from .bot_identity import persona_prompt, host_skills_prompt
 
 
 class ExecutionStopped(Exception):
@@ -62,7 +63,7 @@ class AstrBotBridge:
         return {"tool_name": tool.name, "arguments": arguments,
                 "call_signature": signature(tool.name, arguments, control(task), resource), "status": "queued"}
 
-    def request_batch(self, event, operations, reason, impact, rollback):
+    def request_batch(self, event, operations, reason, impact, rollback, operation=""):
         from .models import AgentSpec
 
         task = self.check(event)
@@ -91,7 +92,7 @@ class AstrBotBridge:
             if call["call_signature"] not in {existing["call_signature"] for existing in calls}:
                 calls.append(call)
         self.ensure_not_rejected(task, calls)
-        self.pause_for_batch(task, calls, reason, impact, rollback)
+        self.pause_for_batch(task, calls, reason, impact, rollback, operation)
         return task.task_id
 
     @staticmethod
@@ -100,8 +101,8 @@ class AstrBotBridge:
         if any((call["tool_name"], call["arguments"]) in denied for call in calls):
             raise ValueError("这一动作已经被拒绝。请改用其他方案。")
 
-    def pause_for_batch(self, task, calls, reason, impact, rollback=""):
-        row = ApprovalRequest(operation=f"危险操作批次（{len(calls)} 项）", reason=reason,
+    def pause_for_batch(self, task, calls, reason, impact, rollback="", operation=""):
+        row = ApprovalRequest(operation=operation or f"待确认操作（{len(calls)} 项）", reason=reason,
                               impact=impact, rollback=rollback, approval_type="tool_batch").to_dict()
         row["calls"] = calls
         task.approvals.append(row)
@@ -192,6 +193,8 @@ class AstrBotBridge:
             raise ExecutionStopped("工具不在当前任务允许范围：" + tool.name)
         risk = self.owner._effective_tool_risk(spec, tool.name, self.owner._infer_tool_risk(tool.name, tool.description))
         approved_row = approved_call = None
+        read_only = not internal and read_only_call(tool.name, arguments)
+        round_id = event.get_extra("agent_lab_round_id", "")
         if not internal:
             scope_state = state
             if state.get("execution_settings", {}).get("mode") == "full":
@@ -213,6 +216,22 @@ class AstrBotBridge:
                 raise ValueError("项目当前为只读档位，不能执行该动作。")
             self.ensure_not_rejected(task, [call])
             journal = state.get("journal", [])
+            if read_only and action == "allow" and round_id:
+                for previous in reversed(journal):
+                    if previous.get("round_id") != round_id or not previous.get("read_only"):
+                        break  # Any intervening write invalidates this read window.
+                    if previous.get("status") == "completed" and previous.get("call_signature") == call["call_signature"]:
+                        reason = self.owner._consume_tool_budget(task, tool.name) if count else ""
+                        self.owner.storage.save_task(task)
+                        if reason:
+                            raise ExecutionStopped(reason)
+                        text = (f"本轮已读取过，复用证据 {previous['id']}；没有再次执行。\n"
+                                + self._evidence_text(task, previous)[:1500]
+                                + f"\n完整结果可用 agent_lab_read_tool_evidence({previous['id']}) 读取。")
+                        if native:
+                            from mcp.types import CallToolResult, TextContent
+                            return [CallToolResult(content=[TextContent(type="text", text=text)])]
+                        return text
             previous = journal[-1] if journal else {}
             if (previous.get("approval_id") and previous.get("status") == "completed"
                     and previous.get("call_signature") == call["call_signature"]):
@@ -233,6 +252,12 @@ class AstrBotBridge:
                     reason, _ = full_guard(tool.name, arguments, scope_state)
                     reason = self.owner._redact_known_secrets(reason)
                     budget_reason = self.owner._consume_tool_budget(task, tool.name) if count else ""
+                    if reason.startswith(UNRESOLVED_PATH_REASON):
+                        task.add_log("path_clarification", reason)
+                        self.owner.storage.save_task(task)
+                        if budget_reason:
+                            raise ExecutionStopped(budget_reason)
+                        raise OperationBlocked(reason)
                     paused = record_guard_refusal(task, reason)
                     task.add_log("operation_blocked", self.owner._redact_known_secrets(reason))
                     self.owner.storage.save_task(task)
@@ -258,6 +283,7 @@ class AstrBotBridge:
                 raise ExecutionStopped(reason)
         identifier = new_id("call")
         record = {"id": identifier, "name": tool.name, "arguments": arguments, "status": "started", "time": now_iso(),
+                  "read_only": read_only, "round_id": round_id,
                   "call_signature": call["call_signature"] if not internal else "",
                   "approval_id": approved_row["approval_id"] if approved_row else "",
                   "plan_version": state.get("version", 0), "step_id": state.get("current_step_id", ""),
@@ -285,7 +311,11 @@ class AstrBotBridge:
                     text = self.owner._redact_known_secrets(text)
                     chunks.append(text or "工具返回非文本内容；原生模型循环保留图片/文件结果。")
                     from mcp.types import CallToolResult, TextContent
-                    content = [TextContent(type="text", text=text)] if text else []
+                    limit = len(text) if internal else 8000 if read_only else 12000
+                    visible = text[:limit]
+                    if len(text) > limit:
+                        visible += f"\n（输出共{len(text)}字符，已显示前{limit}字符；完整结果保存为证据 {identifier}，可用 agent_lab_read_tool_evidence 分页读回。）"
+                    content = [TextContent(type="text", text=visible)] if text else []
                     content.extend(part for part in getattr(result, "content", []) if getattr(part, "type", "") != "text")
                     native_results.append(CallToolResult(content=content, isError=bool(getattr(result, "isError", False))))
                     failed |= bool(getattr(result, "isError", False)) or text.lower().startswith(("error", "traceback"))
@@ -324,7 +354,10 @@ class AstrBotBridge:
             if evidence:
                 combined.append(TextContent(type="text", text=evidence))
             return [CallToolResult(content=combined or [TextContent(type="text", text="工具未返回内容。")], isError=status != "completed")]
-        return "\n".join(chunks) + evidence
+        visible = "\n".join(chunks)
+        if not internal and tool.name != "agent_lab_call_custom_api" and len(visible) > 12000:
+            visible = visible[:12000] + f"\n（完整结果已保存，可用证据 {identifier} 分页读取。）"
+        return visible + evidence
 
     def _evidence_text(self, task, row):
         path = self.owner.storage.task_memory_dir(task.umo, task.task_id) / "tool_results" / f"{row['id']}.txt"
@@ -371,6 +404,7 @@ class AstrBotBridge:
         event = copy.copy(event)
         event._extras = dict(getattr(event, "_extras", {}))
         event.set_extra("agent_lab_runtime", task.task_id)
+        event.set_extra("agent_lab_round_id", new_id("round"))
         system_prompt += self.owner.projects.filtered_context(task)
         # Always resolve the model selected on the source bot. No new provider UI.
         provider_id = provider_id or await self.owner.context.get_current_chat_provider_id(task.umo)
@@ -392,9 +426,9 @@ class AstrBotBridge:
             platform_name=(event.get_platform_name() if event.get_platform_name() != "cron" else task.umo.split(":", 1)[0]),
             provider_settings=(self.owner._context_config(task.umo) or {}).get("provider_settings", {}))
         if persona:
-            identity = str(persona.get("name") or persona.get("persona_id") or "")[:80]
-            if identity:
-                system_prompt = f"当前 Bot 身份：{identity}。以任务执行和中文清晰沟通为主。\n\n" + system_prompt
+            system_prompt = persona_prompt(persona) + "\n\n" + system_prompt
+        cfg = (self.owner._context_config(task.umo) or {}).get("provider_settings", {})
+        system_prompt += "\n" + host_skills_prompt(self.owner.context, cfg, persona)
         cid = str(uuid5(NAMESPACE_URL, "agent-lab:" + task.task_id + ":" + lane))
         conv = await manager.db.get_conversation_by_id(cid)
         if conv is None:
@@ -520,4 +554,12 @@ class AstrBotBridge:
                     safe.append(msg); index += 1
             if not self.owner.storage.ended_path(task.task_id).exists():
                 await manager.update_conversation(task.umo, cid, history=safe)
+                latest = self.owner.storage.load_active_task(task.umo)
+                if latest and latest.task_id == task.task_id and latest.status == "running":
+                    calls = [r for r in control(latest).get("journal", [])
+                             if r.get("round_id") == event.get_extra("agent_lab_round_id")]
+                    if len(calls) >= min(max_steps, control(latest).get("execution_settings", {}).get("round_tool_limit", 24)):
+                        lane_state = control(latest).setdefault("continuity", {}).setdefault("lanes", {}).setdefault(lane, {})
+                        lane_state.setdefault("pending_reason", "tool_round_limit")
+                        self.owner.storage.save_task(latest)
         return runner.get_final_llm_resp()

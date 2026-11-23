@@ -84,7 +84,7 @@ from .agent_lab.task_permissions import apply_mode, execution_guidance
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.3.0"
+PLUGIN_VERSION = "v0.3.1"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -1190,7 +1190,7 @@ class AgentLabPlugin(Star):
         """危险操作前请求用户审批，不要直接执行危险操作。
 
         Args:
-            operation(string): 准备执行的危险操作。
+            operation(string): 用当前 Bot 的自然语气说明准备执行的操作，保留称呼，不必写公文标题。
             reason(string): 为什么需要做。
             impact(string): 影响范围。
             rollback(string): 可回滚方案。
@@ -1205,7 +1205,7 @@ class AgentLabPlugin(Star):
                 if len(operations_json) > 18000:
                     raise ValueError("请把批次缩小到可完整审阅的范围。")
                 operations = json.loads(operations_json)
-                task_id = self.astrbot_bridge.request_batch(event, operations, reason[:800], impact[:1200], rollback[:700])
+                task_id = self.astrbot_bridge.request_batch(event, operations, reason[:800], impact[:1200], rollback[:700], operation[:800])
             except ValueError as exc:
                 return str(exc)
             return f"任务 {task_id} 已在执行前保存审批批次，等待管理员批准；不再派发新动作。"
@@ -2301,21 +2301,6 @@ class AgentLabPlugin(Star):
         approved_override = self._approved_finish_override(task, finish_approval_id, status)
         finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
         if not finish_verdict.passed and approved_override is None:
-            approval = self._ensure_finish_approval(
-                task,
-                status=status,
-                final_summary=final_summary,
-                memory_candidates=memory_candidates,
-                verdict=finish_verdict,
-            )
-            task.status = "paused"
-            task.set_wait(
-                wait_reason="need_finish_approval",
-                message=finish_verdict.reason,
-                source="verifier_finish",
-                resume_command=f"/agentlab approve {approval.approval_id}",
-                required_input=finish_verdict.missing,
-            )
             self.agent_runtime.record_verdict(
                 task,
                 node_id=task.workflow_current_node_id,
@@ -2323,16 +2308,15 @@ class AgentLabPlugin(Star):
                 status=finish_verdict.status,
                 reason=finish_verdict.reason,
                 missing=finish_verdict.missing,
-                next_action="approve_finish_override_or_collect_evidence",
+                next_action="collect_finish_evidence",
             )
             self.storage.save_task(task)
-            await self.task_messages.state(event, task.task_id)
             missing_text = "、".join(finish_verdict.missing or [])
             suffix = f"；缺少：{missing_text}" if missing_text else ""
             return (
-                f"暂不能完成任务：{finish_verdict.reason}{suffix}\n"
-                f"已创建管理员结束审批：{approval.approval_id}。"
-                f"管理员批准后将自动结束，并在归档报告中记录被豁免的证据缺口。"
+                f"交付前还需补齐证据：{finish_verdict.reason}{suffix}\n"
+                "请读取已有工具记录、核对或补测，然后再完成任务；无需申请强制结束审批。"
+                "管理员明确要求按现状交付时走管理员交付入口。"
             )
         if approved_override is not None:
             self._record_finish_override(
@@ -2680,7 +2664,8 @@ class AgentLabPlugin(Star):
             for tool in list(toolset.tools):
                 if (
                     tool.name not in essential
-                    and not self._tool_available_for_agent(tool, disabled_plugins)
+                    and (not self._tool_available_for_agent(tool, disabled_plugins)
+                         or not self._tool_allowed_by_agent_profile(spec, tool.name))
                 ):
                     toolset.remove_tool(tool.name)
             for name in essential:
@@ -2701,7 +2686,7 @@ class AgentLabPlugin(Star):
             except Exception as exc:
                 logger.warning("[AgentLab] cannot resolve tool %s: %s", name, exc)
                 continue
-            if tool and self._tool_available_for_agent(tool, disabled_plugins):
+            if tool and self._tool_available_for_agent(tool, disabled_plugins) and self._tool_allowed_by_agent_profile(spec, tool.name):
                 toolset.add_tool(tool)
         for name in essential:
             try:
@@ -2887,7 +2872,8 @@ class AgentLabPlugin(Star):
         task.lease.reason = ""
 
     def _configure_task_budget(self, task: TaskState) -> None:
-        task.budget.max_tools_per_tick = native_steps(self, task.umo)
+        local_limit = task_control(task).get("execution_settings", {}).get("round_tool_limit", 24)
+        task.budget.max_tools_per_tick = min(native_steps(self, task.umo), max(1, int(local_limit)))
 
     @staticmethod
     def _total_budget_reason(task: TaskState) -> str:
@@ -3586,6 +3572,8 @@ class AgentLabPlugin(Star):
 
     def _tool_allowed_by_runtime_profile(self, spec: AgentSpec, tool_name: str) -> bool:
         name = str(tool_name or "").strip()
+        if name in getattr(spec, "disabled_tools", []):
+            return False
         if not name or name in {"agent_lab_enter_mode", "agent_lab_tick"}:
             return False
         selected = set(spec.enabled_tools or [])
@@ -6719,11 +6707,12 @@ class AgentLabPlugin(Star):
         )
         archived = self.storage.load_active_task(ctx.task.umo) is None
         return NodeExecutionResult(
-            ok=archived,
-            status="completed" if archived else "blocked",
+            ok=True,
+            status="completed" if archived else "needs_evidence",
             outcome=result_text,
             data={"route": "success" if archived else "failed", "archived": archived},
-            blocked=not archived,
+            blocked=False,
+            needs_react=not archived,
             terminal=archived,
             advance=False,
             note="node_executor_archive_task",
@@ -6749,21 +6738,6 @@ class AgentLabPlugin(Star):
         approved_override = self._approved_finish_override(task, finish_approval_id, status)
         finish_verdict = self.verifier.verify_finish(task, status=status, final_summary=final_summary)
         if not finish_verdict.passed and approved_override is None:
-            approval = self._ensure_finish_approval(
-                task,
-                status=status,
-                final_summary=final_summary,
-                memory_candidates="\n".join(memory_candidates or []),
-                verdict=finish_verdict,
-            )
-            task.status = "paused"
-            task.set_wait(
-                wait_reason="need_finish_approval",
-                message=finish_verdict.reason,
-                source="workflow_archive_verifier",
-                resume_command=f"/agentlab approve {approval.approval_id}",
-                required_input=finish_verdict.missing,
-            )
             self.agent_runtime.record_verdict(
                 task,
                 node_id=task.workflow_current_node_id,
@@ -6771,12 +6745,12 @@ class AgentLabPlugin(Star):
                 status=finish_verdict.status,
                 reason=finish_verdict.reason,
                 missing=finish_verdict.missing,
-                next_action="approve_finish_override_or_collect_evidence",
+                next_action="collect_finish_evidence",
             )
             self.storage.save_task(task)
             return (
-                f"Workflow archive blocked: {finish_verdict.reason}; "
-                f"approval={approval.approval_id}; missing={finish_verdict.missing}"
+                f"交付前请补齐证据：{finish_verdict.reason}；缺少：{finish_verdict.missing}。"
+                "未创建审批，请由主 Agent 补齐后重试；管理员仍可按现状交付。"
             )
         if approved_override is not None:
             self._record_finish_override(task, approved_override, status=status, final_summary=final_summary)
@@ -7778,9 +7752,6 @@ class AgentLabPlugin(Star):
         modules_prompt = self.modules.build_prompt(spec.module_ids, settings)
         if modules_prompt.strip():
             sections.append(modules_prompt)
-        skills_prompt = self._build_selected_skills_prompt(spec)
-        if skills_prompt.strip():
-            sections.append(skills_prompt)
         agent_mode_rule = self._build_agent_mode_skill_rule_prompt()
         if agent_mode_rule.strip():
             sections.append(agent_mode_rule)
@@ -7882,31 +7853,9 @@ class AgentLabPlugin(Star):
         return "\n".join(lines)
 
     def _build_selected_skills_prompt(self, spec: AgentSpec) -> str:
-        selected = [name.strip() for name in spec.enabled_skills if str(name).strip()]
-        if not selected:
-            return ""
-        try:
-            from astrbot.core.skills.skill_manager import SkillManager, build_skills_prompt
-
-            skills = SkillManager().list_skills(active_only=False)
-            by_name = {item.name: item for item in skills}
-            chosen = [by_name[name] for name in selected if name in by_name]
-            missing = [name for name in selected if name not in by_name]
-            parts = [
-                "[方案启用技能]",
-                "以下 skills 是当前 AgentSpec 为任务模式选择的行为协议。使用前仍需按 Skill 规则读取 SKILL.md；未选择的 skill 不应作为本任务的主要依据。",
-            ]
-            if chosen:
-                parts.append(build_skills_prompt(chosen))
-            if missing:
-                parts.append("未找到的 selected skills：" + ", ".join(missing))
-            return "\n\n".join(parts)
-        except Exception as exc:
-            logger.warning("[AgentLab] selected skills prompt failed: %s", exc)
-            return (
-                "[方案启用技能]\n"
-                f"当前 AgentSpec 选择了 skills：{', '.join(selected)}，但运行时读取失败：{exc}。"
-            )
+        # Compatibility entry point. The bridge inherits AstrBot's active skills
+        # and persona filters; a scheme no longer has a separate skill switch.
+        return ""
 
     def _refresh_summarizer_rules(self) -> None:
         self.summarizer.config["entry_summary_system_prompt"] = self._summary_rule_content(
@@ -9307,6 +9256,8 @@ class AgentLabPlugin(Star):
             for name, item in plugin_rows.items()
             if not bool(item.get("activated", True))
         }
+        disabled.update(name for name, enabled in (spec.plugin_overrides or {}).items() if enabled is False
+                        and name != PLUGIN_NAME and not plugin_rows.get(name, {}).get("reserved"))
         for plugin_name, enabled in effective_overrides.items():
             if plugin_name == PLUGIN_NAME:
                 disabled.discard(plugin_name)
@@ -10889,6 +10840,9 @@ class AgentLabPlugin(Star):
                 spec.identity_label_source = "manual"
 
     def _sanitize_agent_enabled_tools(self, spec: AgentSpec) -> None:
+        spec.enabled_skills = []  # Legacy field; the source Bot now owns skill selection.
+        spec.disabled_tools = [name for name in self._clean_string_list(spec.disabled_tools)
+                               if not name.startswith("agent_lab_") or name == CUSTOM_API_TOOL_NAME]
         if spec.isolation_policy.tool_mode == "no_external":
             spec.enabled_tools = [NO_EXTERNAL_TOOLS_SENTINEL]
             return

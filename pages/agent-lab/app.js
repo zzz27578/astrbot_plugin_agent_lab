@@ -1,6 +1,7 @@
+import { renderCapabilityGraph, toggleCapability } from './scheme-settings.js?v=031-scheme-graph';
 import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=026";
-import { ProjectUI } from "./project-ui.js?v=030-full-access";
-import { Navigation, settingsIcon } from "./navigation.js?v=030-full-access";
+import { ProjectUI } from "./project-ui.js?v=031-scheme-graph";
+import { Navigation, settingsIcon } from "./navigation.js?v=031-scheme-graph";
 import {getBezierPath, Position} from "./vendor/connectors.js?v=026";
 import {routeEdge} from "./connections.js?v=026";
 import "./motion.js?v=026";
@@ -4663,81 +4664,46 @@ function renderWorkflowPage() {
   `;
 }
 
+const schemeExpanded = new Set();
 function renderPresetRulesPage() {
-  $("view").innerHTML=`<section class="presets-page preset-rules-page">${navigation.header("方案设置",currentAgent.name||"当前预案",'<button class="button secondary" data-action="back-to-presets">返回预案</button>')}<p class="project-hint">规则、技能与插件设置作用于整个方案，保存后供新任务使用。权限档位与授权路径由管理员在项目运行设置中配置；画布节点不能扩大授权或重新启用宿主停用的插件。</p>${workflowGlobalEditor()}</section>`;
+  $("view").innerHTML=`<section class="presets-page preset-rules-page">${navigation.header("方案设置",currentAgent.name||"当前预案",'<button class="button secondary" data-action="back-to-presets">返回预案</button><button class="button" data-action="save-preset-rules">保存方案</button>')}<p class="scheme-settings-intro">在连接图里管理整个方案的能力。展开插件查看工具，保存后用于新任务。</p>${workflowGlobalEditor()}</section>`;
 }
-
-// Scheme-wide rules live outside the canvas and use persisted AgentSpec fields.
 function workflowGlobalEditor() {
-  const a = ensureAgent(currentAgent || {});
-  a.heartbeat_policy ||= {};
-  a.default_task_budget ||= {};
-  a.enabled_skills ||= [];
-  const skills = state.skills || [];
-  const enabledSkills = new Set(a.enabled_skills || []);
-  const blacklisted = new Set(Object.entries(a.plugin_overrides||{}).filter(([,enabled])=>enabled===false).map(([name])=>name));
-  const skillRows = skills.length
-    ? skills.map((sk) => {
-        const name = String(sk.name || sk.id || "").trim();
-        return `<label class="check-line"><input type="checkbox" data-global-skill="${esc(name)}" ${enabledSkills.has(name) ? "checked" : ""} /> <span>${esc(name)}</span><small>${esc(sk.path || sk.description || "")}</small></label>`;
-      }).join("")
-    : `<div class="empty">还没有可用的技能。请确认 AstrBot 已加载技能后刷新。</div>`;
-  const pluginList = (state.plugins || []).filter((p) => p.name !== "astrbot_plugin_agent_lab" && !p.reserved);
-  const pluginRows = pluginList.length
-    ? pluginList.map((p) => `<label class="check-line"><input type="checkbox" data-global-plugin-blacklist="${esc(p.name)}" ${blacklisted.has(p.name)||p.activated===false ? "checked" : ""} ${p.activated===false?"disabled":""} /> <span>${esc(p.display_name || p.name)}</span><small>${esc(p.name)}${p.activated===false?" · 宿主已停用":""}</small></label>`).join("")
-    : `<div class="empty">没有检测到第三方插件。</div>`;
-  return `
-    <div class="detail-box workflow-editor">
-      <section class="workflow-editor-section simple-editor">
-        <p class="simple-editor-lead">整套方案共用的行为规则。任务权限以项目中管理员选择的档位和授权范围为准。</p>
-        <label class="simple-field">整套安全准则 / 行为基调（系统提示词）
-          <textarea id="global-system-prompt" rows="5" placeholder="例如：所有写操作前先说明影响；不碰生产数据库；引用资料要给出处。">${esc(a.system_prompt || "")}</textarea>
-          <small class="field-hint">相当于给整个 bot 定的总规矩，每个节点执行时都会带上。</small>
-        </label>
-        <label class="simple-field">任务执行基调（任务提示词）
-          <textarea id="global-task-prompt" rows="3" placeholder="例如：每轮只推进一小步，先读状态再动手，做完写回状态。">${esc(a.task_prompt || "")}</textarea>
-        </label>
-      </section>
-      <section class="workflow-editor-section simple-editor">
-        <h4>整条流程启用的技能（参考规则）</h4>
-        ${skillRows}
-      </section>
-      <section class="workflow-editor-section simple-editor">
-        <h4>插件黑名单</h4>
-        <p class="simple-editor-lead">勾选后在本方案中禁用；取消勾选恢复方案原有隔离规则。宿主全局停用的插件始终不可启用。</p>
-        <div class="capability-list">${pluginRows}</div>
-      </section>
-      <div class="button-row">
-        <button class="button" data-action="save-preset-rules" type="button">保存方案设置</button>
-        <button class="button secondary" data-action="back-to-presets" type="button">返回预案</button>
-      </div>
-    </div>
-  `;
+  const a=ensureAgent(currentAgent||{});
+  return `${renderCapabilityGraph(a,state,esc,schemeExpanded)}
+    <details class="scheme-guidance"><summary>行为与任务指引</summary><div class="scheme-prompt-grid">
+      <label>方案行为准则<textarea id="global-system-prompt" rows="6" placeholder="保留 Bot 的表达习惯，补充此方案的工作约定。">${esc(a.system_prompt||"")}</textarea></label>
+      <label>任务执行指引<textarea id="global-task-prompt" rows="6" placeholder="例如：大文件先搜索定位，再局部读取。">${esc(a.task_prompt||"")}</textarea></label>
+    </div></details><div class="scheme-savebar"><small>权限档位与授权路径仍在项目运行设置中。技能沿用 AstrBot；宿主停用能力保持关闭。</small><button class="button" data-action="save-preset-rules" type="button">保存方案设置</button></div>`;
 }
-
-// 把全局规则抽屉里的字段写回 AgentSpec（整条工作流级别）。
 function applyWorkflowGlobalRules() {
-  const a = ensureAgent(currentAgent || {});
-  const sp = document.getElementById("global-system-prompt");
-  const tp = document.getElementById("global-task-prompt");
-  if (sp) a.system_prompt = sp.value;
-  if (tp) a.task_prompt = tp.value;
-  const skillBoxes = document.querySelectorAll("[data-global-skill]");
-  if (skillBoxes.length) {
-    a.enabled_skills = Array.from(skillBoxes).filter((b) => b.checked).map((b) => b.dataset.globalSkill);
-  }
-  const blBoxes = document.querySelectorAll("[data-global-plugin-blacklist]");
-  if (blBoxes.length) {
-    a.plugin_overrides ||= {};
-    blBoxes.forEach(box=>{
-      if(box.disabled)return;
-      const name=box.dataset.globalPluginBlacklist;
-      if(box.checked)a.plugin_overrides[name]=false;
-      else if(a.plugin_overrides[name]===false)delete a.plugin_overrides[name];
-    });
-  }
+  const a=ensureAgent(currentAgent||{});
+  const sp=document.getElementById("global-system-prompt"),tp=document.getElementById("global-task-prompt");
+  if(sp)a.system_prompt=sp.value;
+  if(tp)a.task_prompt=tp.value;
+  a.enabled_skills=[];
   delete a.plugin_blacklist;
 }
+document.addEventListener("toggle",event=>{
+  const id=event.target?.dataset?.capabilityGroup;
+  if(id)event.target.open?schemeExpanded.add(id):schemeExpanded.delete(id);
+},true);
+document.addEventListener("click",event=>{
+  const button=event.target.closest?.("[data-capability-action]");
+  if(!button||route!=="preset-settings")return;
+  event.preventDefault();event.stopPropagation();
+  applyWorkflowGlobalRules();
+  const guidanceOpen=Boolean(document.querySelector(".scheme-guidance[open]"));
+  const action=button.dataset.capabilityAction;
+  const targetId=button.dataset.capabilityId;
+  const scrolls=new Map([...document.querySelectorAll('[data-capability-group]')].map(node=>[node.dataset.capabilityGroup,node.querySelector('.scheme-tool-branches')?.scrollTop||0]));
+  toggleCapability(currentAgent,state,action.endsWith("-all")?"all":action,button.dataset.capabilityId,
+    action==="enable-all"||!action.endsWith("-all")&&button.getAttribute("aria-checked")!=="true");
+  renderPresetRulesPage();
+  if(guidanceOpen)document.querySelector(".scheme-guidance").open=true;
+  document.querySelectorAll('[data-capability-group]').forEach(node=>{const tools=node.querySelector('.scheme-tool-branches');if(tools)tools.scrollTop=scrolls.get(node.dataset.capabilityGroup)||0;});
+  [...document.querySelectorAll('[data-capability-action]')].find(node=>node.dataset.capabilityAction===action&&node.dataset.capabilityId===targetId)?.focus({preventScroll:true});
+});
 
 function renderMemoryPage() {
   currentAgent = ensureAgent(currentAgent || {});

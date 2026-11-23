@@ -302,7 +302,7 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         server=Server(owner=self.owner,static_dir=ROOT/'pages'/'agent-lab',host='127.0.0.1',port=0,token='test')
         client=server.app.test_client()
         for path in ['/', '/app.js', '/project-ui.js', '/ui-runtime.js', '/navigation.js','/motion.js','/connections.js',
-                     '/style.css', '/workspace.css', '/theme.css', '/vendor/connectors.js']:
+                     '/style.css', '/workspace.css', '/theme.css', '/scheme-settings.js', '/scheme-settings.css', '/vendor/connectors.js']:
             response=await client.get(path)
             self.assertEqual(response.status_code,200,path)
             self.assertTrue(await response.get_data(),path)
