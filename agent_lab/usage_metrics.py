@@ -37,6 +37,11 @@ def ledger(task):
                                                           "phases": {}, "last_rounds": []})
 
 
+def budget_tokens(task):
+    """Reported usage plus conservative estimates for unreported requests."""
+    return task.budget.tokens_used + int(ledger(task).get("unreported_estimated_tokens", 0))
+
+
 def request_size(raw, sent):
     fields = ("contexts", "system_prompt", "prompt", "func_tool", "tools")
     raw_payload = {key: raw[key] for key in fields if key in raw}
@@ -59,6 +64,8 @@ def record_request(task, sizes, usage=None, *, phase="execution", status="comple
     if tokens:
         for key, value in tokens.items():
             data["tokens"][key] += value
+    else:
+        data["unreported_estimated_tokens"] = data.get("unreported_estimated_tokens", 0) + sizes["estimated_tokens"]
     entry = {"time": now_iso(), "phase": phase, "round_id": round_id, "status": status,
              "elapsed_ms": int(elapsed_ms), **sizes, "reported_tokens": tokens}
     data["last_request"] = entry
@@ -86,7 +93,7 @@ def record_handoff(task, record):
     row = {"record_id": record["record_id"], "time": now_iso(), "reason": record["reason"],
            "raw_chars": record.get("raw_history_chars", 0), "source_chars": record.get("source_chars", 0),
            "summary_chars": len(record.get("summary", "")), "summary_limit": record.get("summary_limit", 0),
-           "quality": record.get("quality", "normal"), "repairs": len(record.get("summary_issues", [])),
+           "quality": "normal", "outcome": record.get("summary_outcome", "normal"), "repairs": len(record.get("summary_issues", [])),
            "model_calls": record.get("model_calls", 0), "reported_tokens": record.get("reported_tokens", 0),
            "unreported_calls": record.get("unreported_calls", 0)}
     ledger(task)["handoff"] = row
@@ -120,7 +127,7 @@ def write_task_line(owner, task, *, event_id, event="round"):
     if handoff:
         text += (f"\n最近交接：{handoff['raw_chars']:,} 字符原记录 / {handoff['source_chars']:,} 字符总结材料 → "
                  f"{handoff['summary_chars']:,}/{handoff['summary_limit']:,} 字符摘要；"
-                 f"{'降级，需回查证据' if handoff['quality']=='degraded' else '正常'}，修正 {handoff['repairs']} 次。")
+                 f"处理：{handoff.get('outcome', 'normal')}；摘要调用 {handoff.get('model_calls', 0)} 次。")
     digest = hashlib.sha256(f"metrics:{event}:{event_id}".encode()).hexdigest()[:16]
     path = owner.storage.task_memory_dir(task.umo, task.task_id) / "messages.json"
     stream = owner.storage._read_json(path) if path.exists() else {"messages": [], "delivery": {}}

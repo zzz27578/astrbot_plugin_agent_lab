@@ -1,5 +1,4 @@
 """Bot-authored output is sent once with only an ownership title added."""
-import ast
 import importlib
 import json
 import unittest
@@ -72,38 +71,77 @@ class AuthoredDelivery(unittest.IsolatedAsyncioTestCase):
         result=await self.messages.publish(event,task.task_id,'超长角色文案'*1000,'stage')
         self.assertIn('过长',result);self.assertEqual(len(self.sent),before)
 
-    async def test_evidenced_stage_handoff_uses_bot_checkpoint_without_summarizer(self):
+    async def test_stage_compaction_uses_one_summary_call_and_preserves_authored_checkpoint(self):
         task,_=self.f.task(status='running');state=Control.control(task)
         state['current_step_id']='one';state['steps'][0]['stage']='inspection'
         state['journal']=[{'id':'call_x','name':'astrbot_file_read_tool','arguments':{'path':'/project/a.py'},'status':'completed',
                            'step_id':'one','plan_version':1,'authorization_version':1,'step_revision':0}]
         self.storage.save_task(task)
-        self.owner.task_control.checkpoint(self.f.event(task.umo),'one','原因已确定，src/a.py没有空值保护；下一段补测试。','["call_x"]',True)
+        authored='原因已确定，src/a.py没有空值保护；下一段补测试。'
+        self.owner.task_control.checkpoint(self.f.event(task.umo),'one',authored,completed=True)
         task=self.storage.load_active_task(task.umo)
-        async def forbidden(**kwargs):raise AssertionError('checkpoint handoff should not summarize twice')
+        calls=[]
+        async def summarize(**kwargs):
+            calls.append(kwargs)
+            request=json.loads(kwargs['prompt'])
+            self.assertEqual(request['current_plan']['steps'][0]['summary'],authored)
+            return S(completion_text='保留空值保护结论，下一步补测试。')
         history=[{'role':'user','content':'old phase source'}]
-        reduced=await C.TaskContinuity(self.owner).compact(self.f.event(task.umo),task,history,S(text_chat=forbidden),'stage_completed')
+        reduced=await C.TaskContinuity(self.owner).compact(self.f.event(task.umo),task,history,S(text_chat=summarize),'stage_completed')
         saved=self.storage.load_active_task(task.umo);lane=C.lane_state(saved)
-        self.assertEqual(lane['summary'],state['steps'][0].get('summary','原因已确定，src/a.py没有空值保护；下一段补测试。'))
+        self.assertEqual(Control.control(saved)['steps'][0]['summary'],authored)
+        self.assertEqual(lane['summary'],'保留空值保护结论，下一步补测试。')
+        self.assertEqual(len(calls),1)
         record=self.storage._read_json(self.storage.root/lane['record_path'])
-        self.assertEqual(record['model_calls'],0);self.assertEqual(record['summary_author'],'checkpoint_bot')
+        self.assertEqual(record['model_calls'],1)
         self.assertEqual(record['history'],history)
+        self.assertEqual(reduced[-1],history[-1])
+        self.assertEqual(self.sent,[])
 
-    async def test_analysis_only_step_progress_counts_once_when_evidenced(self):
+    async def test_analysis_and_quiet_ticks_do_not_trigger_a_write_based_stall(self):
         Guard=importlib.import_module('review_agent_lab.progress_guard')
         task,_=self.f.task(status='running');state=Control.control(task);state['current_step_id']='one'
         before=Guard.snapshot(task)
         state['journal'].append({'id':'report_one','name':'report','status':'completed','step_id':'one',
                                  'plan_version':1,'authorization_version':1,'step_revision':0,'result':'已完成用户所给材料的分析，未声称运行测试。'})
-        self.assertEqual(Guard.snapshot(task).evidence,before.evidence)
         self.storage.save_task(task)
-        self.owner.task_control.checkpoint(self.f.event(task.umo),'one','分析结论已保存，不代表外部校验。','["report_one"]',True)
+        self.owner.task_control.checkpoint(self.f.event(task.umo),'one','分析结论已保存，不代表外部校验。',completed=True)
         saved=self.storage.load_active_task(task.umo)
-        self.assertEqual(len(Guard.snapshot(saved).completed-before.completed),1)
-        Guard.after_tick(saved,before,reason='research')
-        self.assertEqual(saved.workflow_data['progress_guard']['decision'],'progress')
-        again=Guard.snapshot(saved);Guard.after_tick(saved,again,reason='repeat')
-        self.assertEqual(saved.workflow_data['progress_guard']['decision'],'no_progress')
+        self.assertEqual(Control.control(saved)['steps'][0]['status'],'completed')
+        self.assertEqual(Guard.after_tick(saved,before,reason='research'),'')
+        for _ in range(30):
+            again=Guard.snapshot(saved)
+            self.assertEqual(Guard.after_tick(saved,again,reason='quiet research'),'')
+        self.assertEqual(saved.status,'running')
+        self.assertEqual(saved.wait.wait_reason,'')
+        self.assertFalse(Guard.take_notice(saved))
+        self.assertFalse(saved.workflow_data.get('progress_guard',{}).get('read_window'))
+
+    async def test_new_research_paths_continue_and_equivalent_errors_warn_before_pause(self):
+        Guard=importlib.import_module('review_agent_lab.progress_guard')
+        task,_=self.f.task(status='running')
+        for index in range(30):
+            notice=Guard.observe_tool(task,dict(id=f'read_{index}',name='astrbot_file_read_tool',
+                arguments={'path':f'/project/research/{index}.md','offset':0,'limit':500},
+                status='completed',result=f'new source {index}'))
+            self.assertEqual(notice,'')
+            self.assertEqual(task.status,'running')
+        guard=task.workflow_data['progress_guard']
+        self.assertEqual(len(guard['seen_paths']),30)
+        self.assertEqual(guard['signals']['writes'],0)
+        self.assertEqual(guard['decision'],'progress')
+        notices=[]
+        for index in range(Guard.ERROR_PAUSE_AFTER):
+            notice=Guard.observe_tool(task,dict(id=f'error_{index}',name='astrbot_execute_shell',
+                arguments={'command':'python missing.py'},status='failed',result='FileNotFoundError: missing.py'))
+            if notice:
+                notices.append((task.workflow_data['progress_guard']['decision'],notice))
+            if index < Guard.ERROR_PAUSE_AFTER-1:
+                self.assertEqual(task.status,'running')
+        self.assertEqual([decision for decision,_ in notices],['warning','paused'])
+        self.assertEqual(task.status,'paused')
+        self.assertEqual(task.wait.wait_reason,'repeated_tool_error')
+        self.assertEqual(task.approvals,[])
 
 
 if __name__=='__main__':unittest.main()

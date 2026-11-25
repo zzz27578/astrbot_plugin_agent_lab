@@ -1,5 +1,4 @@
-"""Focused regressions for visual controls, evidence-based finish and cheaper rounds."""
-import ast
+"""v0.4 delivery, native tool output and permission boundaries."""
 import importlib
 import json
 import sys
@@ -17,14 +16,7 @@ Policy = importlib.import_module('review_agent_lab.policy').PermissionPolicy
 Identity = importlib.import_module('review_agent_lab.bot_identity')
 
 
-def actual_method(name, **namespace):
-    tree = ast.parse((ROOT / 'main.py').read_text(encoding='utf-8'))
-    method = next(n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
-    method.decorator_list = []
-    namespace.update(TaskState=Models.TaskState, AgentSpec=Models.AgentSpec, AstrMessageEvent=object,
-                     task_control=Control.control, now_iso=Models.now_iso)
-    exec(compile(ast.Module(body=[method], type_ignores=[]), '<actual-method>', 'exec'), namespace)
-    return namespace[name]
+actual_method = F.actual_method
 
 
 class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
@@ -35,30 +27,45 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.f.tearDown()
 
+    def test_ast_method_resolution_includes_canvas_mixin_and_shared_constants(self):
+        task, _ = self.f.task()
+        task.workflow_data['variables'] = {'result': {'value': 42}}
+        method = actual_method('_workflow_variable',
+                               resolve_path=importlib.import_module('review_agent_lab.conditions').resolve_path)
+        self.owner._ensure_workflow_data = lambda task: task.workflow_data
+        self.assertEqual(method(self.owner, task, 'result.value'), 42)
+        self.assertEqual(method(self.owner, task, 'missing', 'fallback'), 'fallback')
+        self.assertEqual(method.__globals__['CUSTOM_API_TOOL_NAME'], 'agent_lab_call_custom_api')
+
     def finished(self):
         task, _ = self.f.task(status='running')
         task.completion_conditions = ['通过 JSON 与 JS 语法及基础挂载逻辑校验', '生成模块且声明完整']
         state = Control.control(task)
         state.update(current_step_id='one', authorization_version=1)
-        state['steps'][0].update(status='completed', summary='模块文件和配置已写入，ESM挂载与node语法检查均正常。', evidence=['call_ok'])
+        state['steps'][0].update(status='completed', summary='模块文件和配置已写入，ESM挂载与node语法检查均正常。', evidence=[])
         state['journal'] = [dict(id='call_ok', name='astrbot_execute_shell', status='completed', step_id='one',
-                                authorization_version=1, step_revision=0, result='exit_code=0\n全部自检正常')]
+                                authorization_version=1, step_revision=0,
+                                arguments={'command':'node --check module.js'}, result='exit_code=0\n全部自检正常')]
         self.storage.save_task(task)
         return task
 
-    def test_finish_uses_valid_all_step_evidence_not_chinese_phrase_match(self):
+    def test_finish_uses_real_journal_without_manual_step_citations(self):
         task = self.finished()
         verdict = Verifier().verify_finish(task, status='completed', final_summary='老爸，监工台做好啦，文件和自检都齐了。')
         self.assertTrue(verdict.passed, verdict)
         self.assertTrue(Verifier().verify_validation_checkpoint(task).passed)
         self.assertIn('exit_code=0', Verifier()._finish_evidence_text(task))
-        for change in ['failed', 'unknown', 'stale', 'unlinked']:
+        for change in ['failed', 'unknown', 'stale', 'wrong_authority']:
             copy = deepcopy(task); state = Control.control(copy)
             if change in {'failed', 'unknown'}: state['journal'][0]['status'] = change
             elif change == 'stale': state['journal'][0]['step_revision'] = 3
-            else: state['steps'][0]['evidence'] = ['does_not_exist']
+            else: state['journal'][0]['authorization_version'] = 0
             with self.subTest(change=change):
                 self.assertFalse(Verifier().verify_finish(copy, status='completed', final_summary='全部完成').passed)
+        Control.control(task)['steps'][0]['evidence'] = ['does_not_exist']
+        self.assertTrue(Verifier().verify_finish(task, status='completed', final_summary='实际自检正常。').passed)
+        Verifier.link_step_evidence(task)
+        self.assertEqual(Control.control(task)['steps'][0]['evidence'], ['call_ok'])
 
     async def test_missing_evidence_returns_to_ai_without_auto_approval(self):
         task = self.finished(); Control.control(task)['journal'][0]['status'] = 'failed'; self.storage.save_task(task)
@@ -96,15 +103,19 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(Policy.tool_allowed_by_agent_profile(spec, 'astrbot_execute_shell', '__none__'))
         self.assertTrue(Policy.tool_allowed_by_agent_profile(spec, 'astrbot_file_read_tool', '__none__'))
 
-    def test_round_limit_is_separate_from_host_steps(self):
+    def test_plain_tasks_have_no_fragmenting_round_cap_and_canvas_honors_settings(self):
         task, _ = self.f.task(); method = actual_method('_configure_task_budget', native_steps=lambda *args:80)
-        method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,24)
+        method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,0)
         Control.control(task)['execution_settings'] = {'round_tool_limit':12}
+        method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,0)
+        Control.control(task)['workflow'] = 'selected'
         method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,12)
+        Control.control(task)['execution_settings']['round_tool_limit'] = 200
+        method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,80)
         settings = importlib.import_module('review_agent_lab.execution_settings')
-        self.assertEqual(settings.normalize({})['round_tool_limit'],24)
+        self.assertEqual(settings.normalize({})['round_tool_limit'],0)
 
-    async def test_duplicate_reads_reuse_until_a_write_and_outputs_are_bounded(self):
+    async def test_native_reads_remain_verbatim_and_large_output_spills_once(self):
         from mcp.types import CallToolResult, TextContent
         task, _ = self.f.task(status='running'); state = Control.control(task)
         state.update(current_step_id='one',execution_settings={'mode':'full','roots':['/project']});self.storage.save_task(task)
@@ -115,31 +126,35 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         self.owner._tool_allowed_by_agent_profile=self.owner._tool_available_for_agent=lambda *args:True
         self.owner._disabled_plugin_names=lambda *args:[]
         self.owner._effective_tool_risk=self.owner._infer_tool_risk=lambda *args:'work'
-        self.owner._budget_remaining_tools=lambda task:24
+        self.owner._budget_remaining_tools=lambda task:1000
         self.owner._consume_tool_budget=lambda *args:''
         self.owner._cfg_value=lambda key,default:default
-        calls=[]
+        calls=[]; output=['body'*3000]
         async def execute(tool,context,**args):
-            calls.append(tool.name);yield CallToolResult(content=[TextContent(type='text',text='body'*3000)])
+            calls.append(tool.name);yield CallToolResult(content=[TextContent(type='text',text=output[0])])
         modules={'astrbot.core.astr_agent_context':S(AstrAgentContext=S,AgentContextWrapper=S),
                  'astrbot.core.astr_agent_tool_exec':S(FunctionToolExecutor=S(execute=execute))}
         with patch.dict(sys.modules,modules):
-            # Queries with no filesystem version use the same-round cache.
-            # File content instead requires the versioned range-cache tests.
             first=await bridge.invoke(event,tools['astrbot_grep_tool'],{'path':'/project/app.css','pattern':'button'},native=True)
-            self.assertLess(len(first[0].content[0].text),8500)
+            self.assertEqual(first[0].content[0].text,output[0])
             second=await bridge.invoke(event,tools['astrbot_grep_tool'],{'path':'/project/app.css','pattern':'button'})
-            self.assertIn('没有再次执行',second);self.assertLess(len(second),1800)
-            self.assertEqual(len(calls),1)
+            self.assertEqual(second,output[0]);self.assertEqual(len(calls),2)
             await bridge.invoke(event,tools['astrbot_file_write_tool'],{'path':'/project/app.css','content':'changed'})
             await bridge.invoke(event,tools['astrbot_grep_tool'],{'path':'/project/app.css','pattern':'button'})
-            self.assertEqual(len(calls),3)
-            for _ in range(3):
-                with self.assertRaises(Bridge.OperationBlocked):
-                    await bridge.invoke(event,tools['astrbot_execute_shell'],{'command':'ls "$MOD_DIR"'})
+            self.assertEqual(len(calls),4)
+            output[0]='源码内容\n'*10000
+            large=await bridge.invoke(event,tools['astrbot_grep_tool'],{'path':'/project/app.css','pattern':'large'})
+            self.assertIn('完整原文：',large)
+            self.assertNotIn('证据 ID',large)
+            saved=self.storage.load_active_task(task.umo)
+            row=Control.control(saved)['journal'][-1]
+            full_path=self.storage.root/row['result_path']
+            self.assertEqual(full_path.read_text(encoding='utf-8'),output[0])
+            self.assertIn(str(full_path),large)
+            self.assertEqual(first[0].content[0].text,'body'*3000)
             saved=self.storage.load_active_task(task.umo)
             self.assertEqual(saved.status,'running')
-            self.assertNotIn('guard_refusals',Control.control(saved))
+            self.assertEqual(saved.pending_approvals(),[])
 
     async def test_delivery_preserves_original_voice_without_second_model(self):
         task=self.finished();summary='笨蛋老爸，监工台搞定啦，语法和挂载都测过了。'
@@ -179,8 +194,7 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
                         'find /project/modules -name "*.json" -maxdepth 2']:
             with self.subTest(command=command):
                 self.assertEqual(permissions.assess('astrbot_execute_shell',{'command':command},state)[0],'allow')
-        reason,_=permissions.full_guard('astrbot_execute_shell',{'command':'find "$MOD_DIR" -type f'},state)
-        self.assertTrue(reason.startswith(permissions.UNRESOLVED_PATH_REASON),reason)
+        self.assertEqual(permissions.assess('astrbot_execute_shell',{'command':'find "$MOD_DIR" -type f'},state)[0],'allow')
         self.assertEqual(permissions.assess('astrbot_execute_shell',{'command':'MOD_DIR=/outside; ls "$MOD_DIR"'},state)[0],'review')
         self.assertEqual(permissions.assess('astrbot_execute_shell',{'command':'ls "$MOD_DIR"','env':{'MOD_DIR':'/project'}},state)[0],'allow')
 
@@ -191,7 +205,7 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         state['steps'].append(dict(id='two',title='Next',instruction='next',status='pending',evidence=[]))
         self.storage.save_task(task)
         stage=continuity.stage_of(task)
-        self.owner.task_control.checkpoint(self.f.event(task.umo),'one','校验通过','["call_ok"]',True)
+        self.owner.task_control.checkpoint(self.f.event(task.umo),'one','校验通过',completed=True)
         saved=self.storage.load_active_task(task.umo)
         self.assertNotIn('pending_reason',continuity.lane_state(saved))
         Control.control(saved)['current_step_id']='two'

@@ -74,8 +74,8 @@
   "max_total_tool_calls": {
     "type": "int",
     "description": "任务最大工具调用次数",
-    "default": 240,
-    "hint": "限制整个任务期间的工具或接口调用总数。"
+    "default": 0,
+    "hint": "管理员显式工具总预算；0不限。普通任务不按每轮调用数强制切片，实际空转另行检测。"
   },
   "max_total_tokens": {
     "type": "int",
@@ -100,5 +100,11 @@
     "description": "完全关闭群聊任务入口",
     "default": true,
     "hint": "默认仅管理员私聊和已登录的控制台可操作。"
+  },
+  "max_total_seconds": {
+    "type": "int",
+    "description": "任务总耗时硬预算（秒，0不限）",
+    "default": 0,
+    "hint": "从创建时开始计时，包含等待审批与暂停时间，到达即停止派发。"
   }
 }

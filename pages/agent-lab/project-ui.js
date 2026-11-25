@@ -18,8 +18,8 @@ const icon = (name, size = 18) => {
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shapes[name] || shapes.task}</svg>`;
 };
 const labels = {running:"执行中",paused:"已暂停",blocked:"待处理",completed:"已交付",cancelled:"已停止",pending:"待审批",approved:"已批准",consumed:"已使用",rejected:"已拒绝",expired:"已失效"};
-const budgetFields = [["max_total_tokens","总 Token 预算",0,50000000],["max_tokens_per_tick","每轮 Token 预算",0,1000000],["max_total_tool_calls","任务工具总上限",0,100000],["max_total_ticks","总轮数",0,100000],["max_nodes_per_tick","每轮节点上限",1,200],["max_seconds_per_tick","每轮秒数",1,3600]];
-const continuityFields = [["context_tokens","任务上下文容量（Token）",2000,10000000,1000000],["context_percent","整理触发比例（%）",30,90,70],["max_stage_ticks","阶段连续轮数上限",1,1000,8],["summary_chars","交接摘要最多字数",1000,20000,6000]];
+const budgetFields = [["max_total_seconds","总耗时（秒，含等待）",0,604800],["max_total_tokens","总 Token 预算",0,50000000],["max_tokens_per_tick","每轮 Token 预算",0,1000000],["max_total_tool_calls","任务工具总上限",0,100000],["max_total_ticks","总轮数",0,100000],["max_nodes_per_tick","每轮节点上限",1,200],["max_seconds_per_tick","每轮秒数",1,3600]];
+const continuityFields = [["context_tokens","任务上下文容量（Token）",2000,10000000,128000],["context_percent","整理触发比例（%）",30,90,70],["summary_chars","交接摘要最多字数",1000,20000,6000]];
 const splitLines = value => value.split(/\r?\n/).map(v=>v.trim()).filter(Boolean);
 export const bytes = value => {const n=Number(value)||0;return n < 1024 ? `${n} B` : n < 1048576 ? `${(n/1024).toFixed(1)} KB` : `${(n/1048576).toFixed(1)} MB`;};
 const number = value => Number(value||0).toLocaleString('zh-CN');
@@ -215,15 +215,15 @@ export class ProjectUI {
           <div class="project-settings-grid">
             ${continuityFields.map(([key,label,min,max,fallback])=>number(key,label,min,max,current.continuity?.[key]??fallback)).join("")}
           </div>
-          <p class="project-hint">默认上下文容量为 1M Token；模型配置容量更小时取较小值。阶段结束、达到连续轮数或容量比例时，先保存交接再整理历史，阶段未完成会接着执行。此组设置下轮生效，累计预算不会重置。</p>
+          <p class="project-hint">未知模型时默认上下文容量为 128k Token；管理员可设置更大容量；模型配置容量更小时取较小值。显式阶段切换或达到容量比例时，先保存交接再整理历史，阶段未完成会接着执行。此组设置下轮生效，累计预算不会重置。</p>
         </fieldset>
         <fieldset><legend>预算与上限</legend>
           <div class="project-settings-grid">
             ${number("native_steps","AstrBot 原生每轮工具上限",1,10000,current.native_steps)}
-            ${number("round_tool_limit","任务单轮工具上限",1,10000,current.round_tool_limit??24)}
+
             ${budgetFields.map(([key,label,min,max])=>number(key,label+(min===0?"（0 不限）":""),min,max,current.budget[key])).join("")}
           </div>
-          <p class="project-hint">任务单轮默认24次，与 AstrBot 原生上限取较小值；到限保存交接后继续，避免一轮反复携带大段文件。任务上限下轮生效，不改宿主配置；原生上限仍写入共用的 AstrBot 配置档。</p>
+          <p class="project-hint">普通任务持续执行，不按每轮工具数切片；总 Token、总耗时和管理员明确设置的总调用预算为硬上限。AstrBot 原生每轮上限仅用于可选画布执行。</p>
         </fieldset>
         <div class="project-settings-footer"><button type="submit" class="button" data-project-action="save-execution">${icon("check",16)}保存运行设置</button></div>
       </form>`}
@@ -263,7 +263,7 @@ export class ProjectUI {
       <p class="project-hint">当前任务权限：${e({readonly:"只读",standard:"标准开发",full:"完全权限 · 自主执行"}[c.execution_settings?.mode||"standard"])} · 授权路径：${e((c.execution_settings?.roots?.length?c.execution_settings.roots:c.authorized_scope_roots||c.scope_roots||[]).join("、")||"沿用宿主访问权限")}</p>
       <section class="project-task-plan" aria-labelledby="project-task-plan-title"><div class="project-plan-heading"><h3 id="project-task-plan-title">任务清单</h3><span>${(c.steps||[]).filter(s=>s.status==="completed").length} / ${(c.steps||[]).length} 已完成</span></div><ol class="project-steps">${(c.steps||[]).map((step,i)=>`<li class="${step.id===c.current_step_id&&step.status!=="completed"?"current":""}"><span>${step.status==="completed"?icon("check",13):i+1}</span><div><strong>${e(step.title)}</strong><p>${e(step.summary||step.instruction)}</p></div><small class="project-step-status">${e({pending:"待执行",running:"进行中",completed:"已完成"}[step.status]||step.status)}</small></li>`).join("")||"<li>尚未形成具体计划。</li>"}</ol></section>
       ${questions.map(q=>`<section class="project-question"><div class="project-question-title">${icon("chat")}<strong>Bot 需要你确认</strong></div><h3>${e(q.question)}</h3><p>${e(q.recommendation||"")}</p><div class="project-options">${q.options.map((option,i)=>`<button data-project-action="answer-option" data-question-id="${e(q.id)}" data-option-index="${i}">${e(option)}</button>`).join("")}</div><label>也可以自由回答<input id="answer-${e(q.id)}" placeholder="补充你希望的处理方式…"/></label><button class="button secondary" data-project-action="answer" data-question-id="${e(q.id)}">提交回答</button></section>`).join("")}
-      <p class="project-hint">Token：${e(task.budget?.tokens_used ?? 0)} / ${e(task.budget?.max_total_tokens || "不限")} · 任务每轮工具上限：${e(task.budget?.max_tools_per_tick ?? Math.min(this.detail.native_steps||24,c.execution_settings?.round_tool_limit||24))}</p>
+      <p class="project-hint">Token：${e(task.budget?.tokens_used ?? 0)} / ${e(task.budget?.max_total_tokens || "不限")} · 普通任务不按工具次数切轮</p>
       ${this.renderUsageMetrics(task)}
       ${task.wait?.message?`<p class="project-detail-summary">${e(task.wait.message)}</p>`:""}
       ${pending.map(a=>`<details class="project-approval" open><summary>${e(a.operation)}</summary>${a.message?`<p>${e(a.message)}</p>`:`<p>${e(a.reason)}</p>`}<details><summary>核对完整范围与影响</summary><pre>${e(a.impact)}</pre></details>${a.rollback?`<p>恢复方式：${e(a.rollback)}</p>`:""}${a.calls?.length?`<details><summary>核对 ${a.calls.length} 个操作的参数</summary><pre>${e(JSON.stringify(a.calls.map(c=>({tool:c.tool_name,arguments:c.arguments})),null,2))}</pre></details>`:""}<div class="project-task-actions"><button class="button" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="true">批准</button><button class="button secondary" data-project-action="approval" data-approval-id="${e(a.approval_id)}" data-approved="false">拒绝</button></div></details>`).join("")}
@@ -357,7 +357,7 @@ export class ProjectUI {
         const form=button.closest("form"), projectId=this.projectId, taskId=this.taskId;
         if(!form.reportValidity()) {rerender=false;return;}
         const fields=new FormData(form), current=this.execution.get(projectId), native=fields.get("native_steps");
-        await this.request("save_execution_settings",{project_id:projectId,...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode:fields.get("mode"),round_tool_limit:fields.get("round_tool_limit"),roots:splitLines(fields.get("roots")),warnings:splitLines(fields.get("warnings")),task_prompt:fields.get("task_prompt"),continuity:Object.fromEntries(continuityFields.map(([key])=>[key,fields.get(key)])),budget:Object.fromEntries(budgetFields.map(([key])=>[key,fields.get(key)]))}});
+        await this.request("save_execution_settings",{project_id:projectId,...(String(current.native_steps)!==native?{native_steps:native}:{}),settings:{mode:fields.get("mode"),round_tool_limit:current.round_tool_limit??0,roots:splitLines(fields.get("roots")),warnings:splitLines(fields.get("warnings")),task_prompt:fields.get("task_prompt"),continuity:{...current.continuity,...Object.fromEntries(continuityFields.map(([key])=>[key,fields.get(key)]))},budget:Object.fromEntries(budgetFields.map(([key])=>[key,fields.get(key)]))}});
         form.querySelectorAll("[id]").forEach(el=>this.drafts.delete(`${projectId}:${taskId}:${el.id}`));
         await this.loadExecution(projectId);this.notify("项目运行设置已保存。");
       } else if(action==="task-budget") {

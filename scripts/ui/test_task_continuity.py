@@ -8,25 +8,30 @@ from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from test_project_runtime import ProjectRuntime, ROOT
+import test_project_runtime as F
+ROOT = F.ROOT
 
 C = importlib.import_module('review_agent_lab.continuity')
 Control = importlib.import_module('review_agent_lab.task_control')
 Settings = importlib.import_module('review_agent_lab.execution_settings')
 
 
-class ContinuityTests(ProjectRuntime):
+class ContinuityTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        super().setUp()
+        self.fixture = F.ProjectRuntime()
+        self.fixture.setUp()
+        for name in ('owner', 'storage', 'projects', 'db', 'task', 'event'):
+            setattr(self, name, getattr(self.fixture, name))
         self.summaries = []
-        self.review = {'routine': True, 'reason': '增加测试并保留原验收要求'}
         async def provider_id(umo):
             return 'configured-bot-model'
-        async def review(**kwargs):
-            self.review_request = kwargs
-            return SimpleNamespace(completion_text=json.dumps(self.review, ensure_ascii=False))
+        async def forbidden(**kwargs):
+            raise AssertionError('routine plan changes must not call a review model')
         self.owner.context.get_current_chat_provider_id = provider_id
-        self.owner.context.llm_generate = review
+        self.owner.context.llm_generate = forbidden
+
+    def tearDown(self):
+        self.fixture.tearDown()
 
     def running_task(self):
         task, project = self.task(status='running')
@@ -78,20 +83,25 @@ class ContinuityTests(ProjectRuntime):
         with self.assertRaises(ValueError):
             continuity.read(latest, '../another-task')
 
-    async def test_failure_retains_history_and_success_can_retry(self):
+    async def test_provider_failure_preserves_archive_and_continues_with_recent_window(self):
         task, _ = self.running_task()
         continuity = C.TaskContinuity(self.owner)
         history = [{'role': 'user', 'content': 'do not forget'}]
         original = deepcopy(history)
-        with self.assertRaises(C.HandoffError):
-            await continuity.compact(self.event(task.umo), task, history, self.provider(fail=True), 'stage_round_limit')
+        reduced = await continuity.compact(self.event(task.umo), task, history, self.provider(fail=True), 'context_capacity')
         self.assertEqual(history, original)
-        task = self.load(task)
-        draft = C.lane_state(task)['draft_record_id']
-        self.assertEqual(self.storage._read_json(continuity.directory(task)/f'{draft}.json')['history'], original)
-        reduced = await continuity.compact(self.event(task.umo), task, history, self.provider(), 'stage_round_limit')
+        saved = self.load(task)
+        lane = C.lane_state(saved)
+        record = self.storage._read_json(self.storage.root / lane['record_path'])
+        self.assertEqual(record['history'], original)
+        self.assertEqual(record['summary_outcome'], 'recent_window')
+        self.assertEqual(record['model_calls'], 1)
+        self.assertEqual(len(self.summaries), 1)
+        self.assertEqual(saved.status, 'running')
         self.assertIn(C.MARKER, reduced[0]['content'])
-        self.assertEqual(C.lane_state(self.load(task))['record_id'], draft)
+        self.assertEqual(reduced[1:], original)
+        self.assertNotIn('必须回查', reduced[0]['content'])
+        self.assertNotIn('draft_record_id', lane)
 
     async def test_disk_failure_and_pause_do_not_authorize_discard(self):
         task, _ = self.running_task()
@@ -107,24 +117,31 @@ class ContinuityTests(ProjectRuntime):
         self.assertEqual(self.load(task).status, 'paused')
         self.assertFalse(C.lane_state(self.load(task)).get('record_id'))
 
-    async def test_stage_group_round_limit_and_project_setting_reload(self):
+    async def test_round_counts_do_not_compact_and_project_capacity_reloads(self):
         task, project = self.running_task()
         continuity = C.TaskContinuity(self.owner)
-        self.projects.update(project['project_id'], {'execution_settings': {'continuity': {'max_stage_ticks': 2}}})
+        self.projects.update(project['project_id'], {'execution_settings': {'continuity': {
+            'max_stage_ticks': 2, 'context_tokens': 1000000, 'summary_chars': 4500}}})
         Control.control(task)['steps'].append({'id': 'two', 'title': 'Test', 'instruction': 'test', 'stage': 'development', 'status': 'pending', 'evidence': []})
         Control.control(task)['steps'][0]['stage'] = 'development'
         Control.control(task)['journal'] = [{'id': 'e1', 'status': 'completed', 'plan_version': 1, 'step_id': 'one'}]
         self.storage.save_task(task)
         continuity.begin_round(task)
-        self.owner.task_control.checkpoint(self.event(task.umo), 'one', '修改已完成，还需测试', '["e1"]', True)
+        self.owner.task_control.checkpoint(self.event(task.umo), 'one', '修改已完成，还需测试', completed=True)
         latest = self.load(task)
         self.assertNotIn('pending_reason', C.lane_state(latest))
         Control.control(latest)['current_step_id'] = 'two'
-        continuity.begin_round(latest)
-        self.assertNotIn('pending_reason', C.lane_state(latest))
-        continuity.begin_round(latest)
-        self.assertEqual(C.lane_state(self.load(task))['pending_reason'], 'stage_round_limit')
+        for _ in range(30):
+            continuity.begin_round(latest)
+        self.assertNotIn('pending_reason', C.lane_state(self.load(task)))
+        self.assertEqual(self.load(task).status, 'running')
+        self.assertFalse(self.summaries)
         self.assertEqual(C.settings(latest)['context_tokens'], 1000000)
+        self.assertEqual(C.settings(latest)['summary_chars'], 4500)
+        self.projects.update(project['project_id'], {'execution_settings': {'continuity': {
+            'context_tokens': 256000, 'summary_chars': 6000}}})
+        continuity.begin_round(latest)
+        self.assertEqual(C.settings(self.load(task))['context_tokens'], 256000)
 
     async def test_completed_stage_requests_handoff_without_marking_next_done(self):
         task, _ = self.running_task()
@@ -133,7 +150,7 @@ class ContinuityTests(ProjectRuntime):
         state['steps'].append({'id': 'two', 'title': 'Next', 'instruction': 'test', 'status': 'pending', 'evidence': []})
         state['journal'] = [{'id': 'e1', 'status': 'completed', 'plan_version': 1, 'step_id': 'one'}]
         self.storage.save_task(task)
-        self.owner.task_control.checkpoint(self.event(task.umo), 'one', '已定位原因，src/api.py需兼容修复', '["e1"]', True)
+        self.owner.task_control.checkpoint(self.event(task.umo), 'one', '已定位原因，src/api.py需兼容修复', completed=True)
         latest = self.load(task)
         self.assertEqual(C.lane_state(latest)['pending_reason'], 'stage_completed')
         self.assertEqual(Control.control(latest)['steps'][1]['status'], 'pending')
@@ -160,13 +177,15 @@ class ContinuityTests(ProjectRuntime):
         self.assertEqual(current['steps'][1]['evidence'], ['e2'])
         self.assertEqual(latest.budget.tokens_used, 12345)
         self.assertEqual(latest.status, 'running')
-        self.owner.task_control.checkpoint(self.event(task.umo), 'two', '改动核对通过', '["e2"]', True)
+        self.owner.task_control.checkpoint(self.event(task.umo), 'two', '改动核对通过', completed=True)
+        self.assertNotIn('pending_reason', C.lane_state(self.load(task)))
 
     async def test_reopen_retains_old_revision_and_requires_new_evidence(self):
         task, _ = self.running_task()
         state = Control.control(task)
         state['steps'][0].update(status='completed', summary='旧结论', evidence=['e1'])
-        state['journal'] = [{'id': 'e1', 'status': 'completed', 'plan_version': 1, 'step_id': 'one'}]
+        state['journal'] = [{'id': 'e1', 'name': 'astrbot_execute_shell', 'status': 'completed', 'plan_version': 1,
+                             'step_id': 'one', 'arguments': {'command': 'python -m unittest'}, 'result': '{"exit_code":0}'}]
         self.storage.save_task(task)
         await self.owner.task_control.submit_plan(self.event(task.umo), json.dumps({'steps': [{'id': 'one', 'title': 'Inspect', 'instruction': 'Read code', 'reopen_reason': '发现遗漏空值情况'}]}))
         latest = self.load(task)
@@ -175,24 +194,33 @@ class ContinuityTests(ProjectRuntime):
         self.assertEqual(step['evidence'], [])
         archive = self.storage._read_json(self.storage.root / Control.control(latest)['plan_changes'][-1]['record_path'])
         self.assertEqual(archive['before'][0]['summary'], '旧结论')
-        with self.assertRaisesRegex(ValueError, '成功工具记录'):
-            self.owner.task_control.checkpoint(self.event(task.umo), 'one', '假装已验证', '["e1"]', True)
+        self.owner.task_control.checkpoint(self.event(task.umo), 'one', '完成返工，尚需重新验证', completed=True)
+        Verifier = importlib.import_module('review_agent_lab.verifier').AgentVerifier
+        self.assertFalse(Verifier().verify_finish(self.load(task), status='completed', final_summary='测试通过').passed)
+        latest = self.load(task)
         Control.control(latest)['journal'].append({'id': 'e2', 'status': 'completed', 'plan_version': 2,
-            'authorization_version': 1, 'step_revision': 1, 'step_id': 'one'})
+            'authorization_version': 1, 'step_revision': 1, 'step_id': 'one', 'name': 'astrbot_execute_shell',
+            'arguments': {'command': 'python -m unittest'}, 'result': '{"exit_code":0}'})
         self.storage.save_task(latest)
-        self.owner.task_control.checkpoint(self.event(task.umo), 'one', '新验证通过', '["e2"]', True)
+        self.owner.task_control.checkpoint(self.event(task.umo), 'one', '新验证通过', completed=True)
+        self.assertEqual(Control.control(self.load(task))['steps'][0]['evidence'], ['e2'])
+        self.assertTrue(Verifier().verify_finish(self.load(task), status='completed', final_summary='测试通过').passed)
 
     async def test_material_revision_and_budget_require_human_approval(self):
         task, _ = self.running_task()
-        self.review = {'routine': False, 'reason': '拟删除兼容性验收，影响交付要求'}
-        await self.owner.task_control.submit_plan(self.event(task.umo), '[{"id":"one","title":"直接交付","instruction":"跳过测试"}]')
+        original_conditions = list(task.completion_conditions)
+        await self.owner.task_control.submit_plan(self.event(task.umo), json.dumps({
+            'steps': [{'id':'one','title':'调整交付','instruction':'整理资料'}],
+            'completion_conditions': ['交付整理资料']}))
         latest = self.load(task)
         self.assertEqual(latest.status, 'paused')
         self.assertEqual(Control.control(latest)['approved_version'], 0)
         row = latest.approvals[-1]
         self.assertEqual(row['approval_type'], 'task_plan')
+        self.assertEqual(latest.completion_conditions, original_conditions)
         # A budget request cannot modify limits until its exact proposal is approved.
         self.owner.task_control.approval(latest, row, True)
+        self.assertEqual(latest.completion_conditions, ['交付整理资料'])
         row['status'] = 'approved'; latest.status = 'running'
         self.storage.save_task(latest)
         old_limit = latest.budget.max_total_tokens
@@ -206,16 +234,18 @@ class ContinuityTests(ProjectRuntime):
         task, _ = self.running_task()
         with self.assertRaisesRegex(ValueError, '权限'):
             await self.owner.task_control.submit_plan(self.event(task.umo), '{"steps":["write"],"execution_settings":{"mode":"full"}}')
-        async def interrupted(**kwargs):
-            latest = self.load(task); Control.control(latest)['human_paused'] = True; latest.status = 'paused'; self.storage.save_task(latest)
-            return SimpleNamespace(completion_text='{"routine":true,"reason":"拆分步骤"}')
-        self.owner.context.llm_generate = interrupted
-        with self.assertRaisesRegex(ValueError, '记录已变化'):
-            await self.owner.task_control.submit_plan(self.event(task.umo), '["新增测试"]')
+        latest = self.load(task)
+        latest.status = 'paused'
+        Control.control(latest)['human_paused'] = True
+        self.storage.save_task(latest)
+        await self.owner.task_control.submit_plan(self.event(task.umo), '["新增测试"]')
         self.assertEqual(self.load(task).status, 'paused')
-        self.assertEqual(Control.control(self.load(task))['version'], 1)
+        self.assertTrue(Control.control(self.load(task))['human_paused'])
+        self.assertFalse(self.owner.task_control.ready(self.load(task)))
+        with self.assertRaises(ValueError):
+            await self.owner.task_control.submit_plan(self.event(task.umo), '', completed_step='step_1')
 
-    async def test_capacity_wrapper_keeps_large_history_under_1m_and_uses_model_limit(self):
+    async def test_capacity_wrapper_respects_configured_capacity_and_model_limit(self):
         task, _ = self.running_task()
         class Message:
             def __init__(self, row): self.row = row
@@ -233,32 +263,37 @@ class ContinuityTests(ProjectRuntime):
             result = await adapter.process(messages)
         self.assertEqual(result[0].row['role'], 'system')
         self.assertIn(C.MARKER, result[1].row['content'])
-        self.assertTrue(self.summaries)
-        for request in self.summaries:
-            self.assertLess(C.estimate([request['system_prompt'], request['prompt']]) + (4096 * 70 // 100 // 6) * 4 // 3 + 128,
-                            4096 * 70 // 100)
+        self.assertEqual(len(self.summaries), 1)
+        self.assertEqual(json.loads(self.summaries[0]['prompt'])['messages'],
+                         [message.row for message in messages])
+        self.assertLess(adapter.count_tokens(result), 4096 * 70 // 100)
+        lane = C.lane_state(self.load(task))
+        record = self.storage._read_json(self.storage.root / lane['record_path'])
+        self.assertEqual(record['history'], [message.row for message in messages])
+        self.assertEqual(record['recent_budget_tokens'], (4096 * 70 // 100) // 4)
 
-    async def test_partial_handoff_resumes_without_replaying_first_chunk(self):
+    async def test_single_summary_call_preserves_hard_budget_stop_and_source_archive(self):
         task, _ = self.running_task()
         continuity = C.TaskContinuity(self.owner)
         history = [{'role': 'user', 'content': 'logs-' * 1500}]
+        original = deepcopy(history)
         class BudgetStopped(Exception): pass
         calls = []
         async def provider(**kwargs):
-            calls.append(json.loads(kwargs['prompt'])['source_chunk'])
-            if len(calls) == 2:
-                raise BudgetStopped('per tick')
-            return SimpleNamespace(completion_text='已记录原因，文件 src/a.py，验证未完成，继续测试。')
+            calls.append(json.loads(kwargs['prompt']))
+            raise BudgetStopped('administrator total token budget exhausted')
         model = SimpleNamespace(text_chat=provider)
         with self.assertRaises(BudgetStopped):
-            await continuity.compact(self.event(task.umo), task, history, model, 'stage_round_limit', token_limit=4000)
+            await continuity.compact(self.event(task.umo), task, history, model, 'context_capacity', token_limit=4000)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]['messages'], original)
+        self.assertEqual(history, original)
         latest = self.load(task)
-        reduced = await continuity.compact(self.event(task.umo), latest, history, model, 'stage_round_limit', token_limit=4000)
-        self.assertEqual(calls[1], calls[2])
-        self.assertNotEqual(calls[0], calls[2])
-        self.assertIn(C.MARKER, reduced[0]['content'])
+        draft = C.lane_state(latest)['draft_record_id']
+        self.assertEqual(self.storage._read_json(continuity.directory(latest)/f'{draft}.json')['history'], original)
+        self.assertNotIn('record_id', C.lane_state(latest))
 
-    async def test_invalid_summary_and_incomplete_tool_groups_never_discard(self):
+    async def test_incomplete_tool_groups_block_but_empty_summary_keeps_recent_window(self):
         task, _ = self.running_task()
         continuity = C.TaskContinuity(self.owner)
         incomplete = [{'role': 'assistant', 'content': '', 'tool_calls': [{'id': 'pending'}]}]
@@ -266,9 +301,37 @@ class ContinuityTests(ProjectRuntime):
             await continuity.compact(self.event(task.umo), task, incomplete, self.provider(), 'context_capacity')
         self.assertFalse(self.summaries)
         async def empty(**kwargs): return SimpleNamespace(completion_text='')
-        reduced = await continuity.compact(self.event(task.umo), task, [{'role': 'user', 'content': 'important'}], SimpleNamespace(text_chat=empty), 'stage_completed')
+        history = [{'role': 'user', 'content': 'important'}]
+        reduced = await continuity.compact(self.event(task.umo), task, history, SimpleNamespace(text_chat=empty), 'stage_completed')
         self.assertIn(C.MARKER, reduced[0]['content'])
-        self.assertEqual(C.lane_state(self.load(task))['quality'], 'degraded')
+        self.assertEqual(reduced[1:], history)
+        lane = C.lane_state(self.load(task))
+        self.assertEqual(lane['quality'], 'normal')
+        self.assertEqual(self.load(task).status, 'running')
+        record = self.storage._read_json(self.storage.root / lane['record_path'])
+        self.assertEqual(record['model_calls'], 1)
+        self.assertEqual(record['summary_outcome'], 'recent_window')
+
+    async def test_long_summary_is_trimmed_once_at_configured_limit(self):
+        task, project = self.running_task()
+        self.projects.update(project['project_id'], {'execution_settings': {'continuity': {'summary_chars': 4000}}})
+        continuity = C.TaskContinuity(self.owner)
+        continuity.begin_round(task)
+        calls = []
+        async def long_summary(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(completion_text=('已确认文件 src/a.py；仍需测试。\n\n' * 500))
+        history = [{'role': 'user', 'content': 'original material'}]
+        await continuity.compact(self.event(task.umo), task, history,
+                                 SimpleNamespace(text_chat=long_summary), 'stage_completed')
+        lane = C.lane_state(self.load(task))
+        record = self.storage._read_json(self.storage.root / lane['record_path'])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(record['summary_limit'], 4000)
+        self.assertLessEqual(len(lane['summary']), 4000)
+        self.assertGreater(len(lane['summary']), 3000)
+        self.assertEqual(record['summary_outcome'], 'truncated')
+        self.assertEqual(record['history'], history)
 
     async def test_native_bridge_rounds_keep_history_then_handoff_on_stage_change(self):
         await self._bridge_rounds()
@@ -277,7 +340,9 @@ class ContinuityTests(ProjectRuntime):
         # Import the real plugin too: decorators must accept every tool schema.
         sys.path.insert(0, str(ROOT.parent))
         plugin = importlib.import_module(f'{ROOT.name}.main')
-        self.assertTrue(hasattr(plugin.AgentLabPlugin, 'agent_lab_read_handoff'))
+        for name in ('task_plan', 'task_progress', 'task_ask', 'task_approve', 'task_finish'):
+            self.assertTrue(hasattr(plugin.AgentLabPlugin, name), name)
+        self.assertTrue(hasattr(plugin.AgentLabPlugin, '_workflow_variable'))
         from astrbot.core.agent.runners.tool_loop_agent_runner import ToolLoopAgentRunner
         await self._bridge_rounds(ToolLoopAgentRunner)
 
@@ -309,10 +374,10 @@ class ContinuityTests(ProjectRuntime):
         async def chat(**kwargs):
             from astrbot.core.provider.entities import LLMResponse
             calls.append(kwargs)
-            if kwargs.get('system_prompt', '').startswith('你是 Agent Lab 的阶段交接记录员'):
+            if kwargs.get('system_prompt', '').startswith('生成接续当前任务的工作笔记'):
                 return LLMResponse(role='assistant', completion_text='已确认空值错误，文件 src/api.py，决定保持接口，修复已完成，待运行测试。')
             if installed_runner and Control.control(self.load(task))['steps'][0]['status'] != 'completed':
-                self.owner.task_control.checkpoint(event, 'one', '定位和文件已确认，待验证', '["e1"]', True)
+                self.owner.task_control.checkpoint(event, 'one', '定位和文件已确认，待验证', completed=True)
             return LLMResponse(role='assistant', completion_text='本轮结束')
         async def model(key): return SimpleNamespace(text_chat=chat, provider_config={'max_context_tokens': 1000000})
         self.owner.context.provider_manager = SimpleNamespace(get_provider_by_id=model)
@@ -337,7 +402,7 @@ class ContinuityTests(ProjectRuntime):
                 self.observed.append([m.row for m in self.context.messages])
                 await self.provider.text_chat(prompt='continue')
                 if len(self.observed) == 1:
-                    owner.task_control.checkpoint(self.context.context.event, 'one', '定位和文件已确认，待验证', '["e1"]', True)
+                    owner.task_control.checkpoint(self.context.context.event, 'one', '定位和文件已确认，待验证', completed=True)
                 self.context.messages.append(Message({'role': 'assistant', 'content': 'saved round'}))
                 if False: yield None
             def get_final_llm_resp(self): return SimpleNamespace(completion_text='本轮结束')
@@ -374,7 +439,9 @@ class ContinuityTests(ProjectRuntime):
         else:
             stored = json.loads(self.db.rows[cid].history)
             self.assertIn(C.MARKER, stored[0]['content'])
-            self.assertNotIn('finding 54', str(stored))
+            self.assertIn('finding 54', str(stored))
+            # This tiny history fits inside the recent-window allocation.
+            self.assertTrue(all(row in stored for row in original))
         self.assertFalse(any('_agent_lab_handoff' in call for call in calls))
         self.assertEqual(Control.control(self.load(task))['steps'][1]['status'], 'pending')
         metrics = self.load(task).workflow_data['usage_metrics']
@@ -419,16 +486,14 @@ class ContinuityTests(ProjectRuntime):
         self.assertFalse(owner._running_ticks)
 
     def test_continuity_settings_validate_all_limits(self):
-        self.assertEqual(Settings.normalize({})['continuity']['context_tokens'], 1000000)
+        self.assertEqual(Settings.normalize({})['continuity']['context_tokens'], 128000)
+        configured = Settings.normalize({'continuity': {'context_tokens': 1000000, 'summary_chars': 6000}})
+        self.assertEqual(configured['continuity']['context_tokens'], 1000000)
+        self.assertEqual(configured['continuity']['summary_chars'], 6000)
         for values in ({'context_tokens': 0}, {'context_percent': 99}, {'max_stage_ticks': 0}, {'summary_chars': 100}, {'unexpected': 1}):
             with self.assertRaises(ValueError):
                 Settings.normalize({'continuity': values})
 
-
-# Reuse the fixtures, without running the inherited project suite a second time.
-for name in list(vars(ProjectRuntime)):
-    if name.startswith('test_'):
-        setattr(ContinuityTests, name, None)
 
 if __name__ == '__main__':
     suite = unittest.defaultTestLoader.loadTestsFromTestCase(ContinuityTests)

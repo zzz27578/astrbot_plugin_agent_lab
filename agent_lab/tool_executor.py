@@ -114,7 +114,7 @@ class AstrBotToolExecutor:
                 note="node_executor_tool_permission_blocked",
             )
         try:
-            result = await self.owner.astrbot_bridge.invoke(event, tool, call_args, task.task_id)
+            result = await self.owner.astrbot_bridge.invoke(event, tool, call_args, task.task_id, native=True)
             latest = self.owner.storage.load_active_task(task.umo)
             if latest and latest.task_id == task.task_id:
                 task.__dict__.update(latest.__dict__)
@@ -137,8 +137,10 @@ class AstrBotToolExecutor:
                 blocked=True,
                 note="node_executor_tool_error",
             )
-        text = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
-        if "status=failed]" in text or "status=unknown]" in text:
+        text = result if isinstance(result, str) else "\n".join(
+            str(getattr(part, "text", "")) for item in result for part in getattr(item, "content", [])
+            if getattr(part, "type", "") == "text")
+        if not isinstance(result, str) and any(getattr(item, "isError", False) for item in result):
             return ToolExecutionResult(ok=False, blocked=True, status="blocked", outcome=text[:2400])
         return ToolExecutionResult(
             outcome=self.owner._compact_text(text, 1000) or f"Tool {tool_name} completed.",

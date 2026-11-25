@@ -211,6 +211,7 @@ class Projects:
         current = self.storage.load_active_task(task.umo)
         if current and current.task_id == task.task_id:
             current.status = "paused"
+            control(current).pop("finishing_nonce", None)
             control(current)["human_paused"] = True
             self.storage.save_task(current)
         operation = self.owner.task_control.running.get(task.umo) if current and current.task_id == task.task_id else None

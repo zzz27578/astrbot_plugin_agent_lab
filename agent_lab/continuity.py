@@ -1,27 +1,26 @@
-"""Stage handoffs owned by Agent Lab, before any conversation is discarded.
-
-The task ledger remains authoritative. Summaries are a bounded working view;
-the original messages and stage evidence stay in independently readable files.
-"""
+"""Append-only working history with durable, single-call stage compaction."""
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 import json
 import re
-import asyncio
 import time
-import hashlib
 
 from .models import new_id, now_iso
-from .context_views import history_view, state_summary
 from .usage_metrics import record_context, record_handoff, write_task_line
 
 
-DEFAULTS = {"max_stage_ticks": 8, "context_tokens": 1000000, "context_percent": 70, "summary_chars": 6000}
+DEFAULTS = {"max_stage_ticks": 8, "context_tokens": 128000, "context_percent": 70, "summary_chars": 6000}
 LIMITS = {"max_stage_ticks": (1, 1000), "context_tokens": (2000, 10000000),
           "context_percent": (30, 90), "summary_chars": (1000, 20000)}
 MARKER = "[Agent Lab 阶段交接记录]"
 SUMMARY_TIMEOUT_SECONDS = 30
-MAX_WORKING_HISTORY_TOKENS = 24000
+STAGE_REASONS = frozenset({"stage_changed", "stage_completed"})
+SUMMARY_METADATA = frozenset({"reasoning", "reasoning_content", "reasoning_signature", "reasoning_details", "thinking",
+                              "signature", "thought_signature", "thinking_signature", "encrypted", "encrypted_content",
+                              "extra_content", "provider_specific_fields", "response_metadata"})
+THINK_PARTS = frozenset({"think", "thinking", "redacted_thinking", "reasoning"})
 
 
 class HandoffError(Exception):
@@ -39,8 +38,6 @@ def settings(task):
 def stage_of(task):
     state = state_of(task)
     step = next((s for s in state.get("steps", []) if s["id"] == state.get("current_step_id")), {})
-    # Ungrouped checklist items share one execution stage. A two-call item is
-    # a checkpoint, not automatically an expensive context handoff.
     return str(step.get("stage") or "task_execution")
 
 
@@ -55,12 +52,12 @@ def guard(task):
 
 
 def estimate(messages):
-    # Conservative fallback when a provider has no tokenizer/context limit.
+    # Fallback only: prefer the host's counter or reported usage when available.
     return max(1, len(json.dumps(messages, ensure_ascii=False, default=str).encode("utf-8")) // 3)
 
 
 def bounded_text(text, tokens):
-    """Bound a working view; the complete source stays in its archive."""
+    """Compatibility helper; never applied to messages already in history."""
     if estimate(text) <= tokens:
         return text
     low, high = 0, len(text)
@@ -70,16 +67,65 @@ def bounded_text(text, tokens):
             low = middle
         else:
             high = middle - 1
-    return text[:low] + "\n（完整计划保存在任务记录中。）"
+    return text[:low]
+
+
+def trim_summary(text, limit):
+    """Prefer a paragraph/sentence boundary without another model request."""
+    if len(text) <= limit:
+        return text
+    prefix = text[:limit]
+    paragraphs = list(re.finditer(r"\n\s*\n", prefix))
+    boundary = paragraphs[-1].start() if paragraphs else -1
+    if boundary < limit // 2:
+        boundary = max(prefix.rfind("\n"), prefix.rfind("。") + 1)
+    return prefix[:boundary if boundary >= limit // 2 else limit].rstrip()
+
+
+def context_capacity(task, provider=None, native_manager=None):
+    capacity = settings(task)["context_tokens"]
+    provider_config = getattr(provider, "provider_config", None) or {}
+    limits = (provider_config.get("max_context_tokens", 0),
+              getattr(getattr(native_manager, "config", None), "max_context_tokens", 0))
+    for limit in limits:
+        if isinstance(limit, (int, float)) and limit > 0:
+            capacity = min(capacity, int(limit))
+    return capacity
+
+
+def summary_messages(history):
+    """Build materials once, after archival; never edit the working history.
+
+    Compaction may omit transport signatures and internal thought parts. Tool
+    arguments/results remain verbatim, including payload keys named signature.
+    """
+    rows = []
+    for row in history:
+        material = {key: deepcopy(value) for key, value in row.items()
+                    if key not in SUMMARY_METADATA and key not in {"content", "tool_calls"}}
+        if row.get("role") == "assistant" and isinstance(row.get("content"), list):
+            material["content"] = [
+                {key: deepcopy(value) for key, value in part.items() if key not in SUMMARY_METADATA}
+                for part in row["content"] if part.get("type") not in THINK_PARTS]
+        elif "content" in row:
+            material["content"] = deepcopy(row["content"])
+        if row.get("tool_calls"):
+            material["tool_calls"] = [
+                {key: deepcopy(value) for key, value in call.items() if key not in SUMMARY_METADATA}
+                for call in row["tool_calls"]]
+        elif "tool_calls" in row:
+            material["tool_calls"] = deepcopy(row["tool_calls"])
+        rows.append(material)
+    return rows
 
 
 def message_groups(history):
-    """Keep assistant calls and *all* their results in the same unit."""
+    """Keep assistant calls and every corresponding result in one unit."""
     groups, index = [], 0
     while index < len(history):
         row = history[index]
         if row.get("role") == "tool":
-            raise HandoffError("发现未配对工具结果，请先核对任务记录，历史未整理。")
+            raise HandoffError("工具结果尚未配对，原历史保留。")
         group = [row]
         calls = row.get("tool_calls") or []
         index += 1
@@ -87,20 +133,47 @@ def message_groups(history):
             while index < len(history) and history[index].get("role") == "tool":
                 group.append(history[index])
                 index += 1
-            if {c["id"] for c in calls} != {r.get("tool_call_id") for r in group[1:]}:
-                raise HandoffError("工具调用尚未完整返回，历史未整理。")
+            ids = [c.get("id") for c in calls]
+            results = [r.get("tool_call_id") for r in group[1:]]
+            if (row.get("role") != "assistant" or not all(ids) or len(set(ids)) != len(ids)
+                    or len(results) != len(ids) or set(ids) != set(results)):
+                raise HandoffError("工具调用尚未完整返回，原历史保留。")
         groups.append(group)
     return groups
+
+
+def recent_window(groups, token_budget, count_tokens=estimate, *, fits=None):
+    """Keep a suffix of whole groups; the newest tool group gets fit priority."""
+    recent, candidates = [], []
+    for group in reversed(groups):
+        if any(isinstance(row.get("content"), str) and row["content"].startswith(MARKER) for row in group):
+            break
+        candidates.append(group)
+    candidates.reverse()
+    for group in reversed(candidates):
+        proposed = [*group, *recent]
+        if count_tokens(proposed) > token_budget:
+            break
+        recent = proposed
+    # The 25% allocation is a target, not permission to forget the current
+    # code when the single summary request times out. Include any newer tail.
+    latest_tool = next((i for i in range(len(candidates)-1, -1, -1)
+                        if candidates[i][0].get("tool_calls")), len(candidates)-1)
+    required = [row for group in candidates[latest_tool:] for row in group] if candidates else []
+    if len(required) > len(recent) and fits:
+        if fits(required):
+            recent = required
+        elif candidates and fits(candidates[latest_tool]):
+            recent = list(candidates[latest_tool])
+    return recent
 
 
 def working_context(task, lane=""):
     saved = lane_state(task, lane)
     return {"stage": stage_of(task), "handoff": saved.get("summary", ""),
             "record_id": saved.get("record_id", ""), "record_path": saved.get("record_path", ""),
-            "ticks_since_handoff": saved.get("ticks", 0),
-            "quality": saved.get("quality", "normal"),
-            "instruction": ("交接摘要是线索，用户要求、当前计划和工具证据优先。需要细节时用 agent_lab_read_handoff 回查原记录，修改过的成果须重新验证。"
-                            + ("本摘要降级，请先回查交接记录与相关证据再执行，不得据此宣称完成。" if saved.get("quality") == "degraded" else ""))}
+            "ticks_since_handoff": saved.get("ticks", 0), "quality": "normal",
+            "instruction": "接续工作笔记和最近工作窗口继续执行当前任务；需要此前细节时可读取原始归档。"}
 
 
 class TaskContinuity:
@@ -121,11 +194,13 @@ class TaskContinuity:
         stage = stage_of(task)
         if saved.get("stage") and saved["stage"] != stage:
             saved["pending_reason"] = "stage_changed"
-            saved["previous_stage"] = saved["stage"]
+            saved.setdefault("previous_stage", saved["stage"])
         saved["stage"] = stage
         saved["ticks"] = int(saved.get("ticks", 0)) + 1
-        if saved["ticks"] > settings(task)["max_stage_ticks"]:
-            saved.setdefault("pending_reason", "stage_round_limit")
+        # max_stage_ticks remains readable for existing settings/UI callers.
+        # Ticks and routine plan revisions never initiate compaction.
+        if saved.get("pending_reason") not in STAGE_REASONS:
+            saved.pop("pending_reason", None)
         self.owner.storage.save_task(task)
 
     def read(self, task, record_id="", offset=0, limit=12000):
@@ -148,58 +223,43 @@ class TaskContinuity:
         return {"record_id": record_id, "offset": offset, "text": text[offset:offset+limit],
                 "next_offset": offset+limit if len(text) > offset+limit else None}
 
+    def current_task(self, task, before):
+        latest = self.owner.storage.load_active_task(task.umo)
+        if not latest or guard(latest) != before or task.task_id in self.owner.projects.cleaning:
+            raise HandoffError("整理期间任务状态发生变化，原历史已保留。")
+        return latest
+
     async def summarize_chunk(self, event, task, provider, request, system_prompt, limit, record, path, before):
-        """One correction only; an output length issue must not freeze a task."""
-        original = request
-        text = ""
-        for attempt in range(2):
-            started = time.monotonic()
-            timed_out = False
-            try:
-                response = await asyncio.wait_for(provider.text_chat(prompt=request, system_prompt=system_prompt,
-                                                 contexts=[], _agent_lab_handoff=True), timeout=SUMMARY_TIMEOUT_SECONDS)
-                text = self.owner._redact_known_secrets(str(response.completion_text or "").strip())
-                usage = getattr(response, "usage", None)
-            except asyncio.TimeoutError:
-                timed_out, text, usage = True, "", None
-            record["model_calls"] = record.get("model_calls", 0)+1
-            record["reported_tokens"] = record.get("reported_tokens", 0)+int(getattr(usage, "total", 0) or 0)
-            record["unreported_calls"] = record.get("unreported_calls", 0)+int(usage is None)
-            latest = self.owner.storage.load_active_task(task.umo)
-            if not latest or guard(latest) != before or task.task_id in self.owner.projects.cleaning:
-                raise HandoffError("总结期间任务状态发生变化，原记录已保留。")
-            if text and len(text) <= limit:
-                return text
-            issue = "timeout" if timed_out else "empty" if not text else "too_long"
-            record.setdefault("summary_issues", []).append({"cursor": record.get("cursor", 0), "attempt": attempt+1,
-                "reason": issue, "actual_chars": len(text), "limit": limit, "text": text,
-                "elapsed_ms": int((time.monotonic()-started)*1000)})
-            record["last_invalid_summary"] = text
-            self.owner.storage._write_json(path, record)
-            if attempt == 0:
-                if text:
-                    # Previous calls were already bounded. Keep repair requests
-                    # no larger than that source request, even for a bad model.
-                    candidate = text[:max(limit, len(original)//2)]
-                    request = json.dumps({"candidate": candidate,
-                                          "instruction": f"上一摘要共{len(text)}字符，超过{limit}。只保留下一步所需的成果、未完成项、文件/证据ID，删除代码、历史复述和重复红线；压到{limit}字符内。"}, ensure_ascii=False)
-                else:
-                    request = original
-                    system_prompt += "\n上次返回空正文。请直接给出简短交接事实，不要只输出思考或空内容。"
-        # The complete source AND rejected output are already durable. Clearly
-        # mark this working view as degraded, never invent completion or passes.
-        record["quality"] = "degraded"
-        candidate = text or record.get("summary") or state_summary(task)
-        marker = "\n[摘要降级；完整原文见本交接记录。先按证据核对再继续，不视作验证通过。]"
-        available = max(0, limit-len(marker))
-        boundary = max(candidate.rfind("\n", available//2, available), candidate.rfind("。", available//2, available))
-        return candidate[:boundary if boundary > 0 else available] + marker
+        """Legacy method signature; one whole-history call, no chunks/retries."""
+        started = time.monotonic()
+        text, usage, issue = "", None, ""
+        record["model_calls"] = record.get("model_calls", 0) + 1
+        try:
+            response = await asyncio.wait_for(provider.text_chat(
+                prompt=request, system_prompt=system_prompt, contexts=[], _agent_lab_handoff=True),
+                timeout=SUMMARY_TIMEOUT_SECONDS)
+            usage = getattr(response, "usage", None)
+            text = self.owner._redact_known_secrets(str(response.completion_text or "").strip())
+            issue = "empty" if not text else "too_long" if len(text) > limit else ""
+        except asyncio.TimeoutError:
+            issue = "timeout"
+        except Exception as exc:
+            # Keep the bridge's hard budget and stop signals authoritative.
+            if type(exc).__name__ in {"BudgetStopped", "ExecutionStopped"}:
+                raise
+            issue = "provider_error"
+        record["reported_tokens"] = int(getattr(usage, "total", 0) or 0)
+        record["unreported_calls"] = int(usage is None)
+        self.current_task(task, before)
+        if issue:
+            record["summary_issues"] = [{"reason": issue, "actual_chars": len(text), "limit": limit,
+                                         "text": text, "elapsed_ms": int((time.monotonic()-started)*1000)}]
+        record["summary_outcome"] = "truncated" if issue == "too_long" else "recent_window" if issue else "normal"
+        return trim_summary(text, limit)
 
-    async def compact(self, event, task, history, provider, reason, *, lane="", token_limit=24000):
-        """Commit raw history, then its model handoff, before returning less history."""
-        from .task_control import prompt as plan_prompt
-
-        groups = message_groups(history)
+    async def compact(self, event, task, history, provider, reason, *, lane="", token_limit=None, count_tokens=None):
+        """Archive the unchanged source before summarizing or replacing history."""
+        groups = message_groups([row for row in history if row.get("role") not in {"system", "_checkpoint"}])
         if not groups:
             saved = lane_state(task, lane)
             saved.pop("pending_reason", None)
@@ -207,145 +267,105 @@ class TaskContinuity:
             self.owner.storage.save_task(task)
             return history
         before = guard(task)
-        cfg = settings(task)
-        saved = lane_state(task, lane)
-        draft_id = saved.get("draft_record_id", "")
-        draft_path = self.directory(task) / f"{draft_id}.json"
-        record = self.owner.storage._read_json(draft_path) if (re.fullmatch(r"handoff_[a-f0-9]+", draft_id)
-                  and draft_path.exists() and self.owner.projects.safe_path(draft_path)) else {}
-        previous_history = record.get("history", [])
-        reusable = bool(record.get("status") == "preparing" and record.get("guard") == before
-                        and history[:len(previous_history)] == previous_history)
-        if not reusable:
-            record = {"record_id": new_id("handoff"), "task_id": task.task_id, "lane": lane,
-                      "stage": saved.get("previous_stage", saved.get("stage", stage_of(task))),
-                      "next_stage": stage_of(task), "reason": reason, "created_at": now_iso(),
-                      "status": "preparing", "plan_version": state_of(task).get("version"), "guard": before,
-                      "previous_handoff": saved.get("summary", ""), "cursor": 0,
-                      "steps": state_of(task).get("steps", [])}
-        record_id = record["record_id"]
+        cfg, saved = settings(task), lane_state(task, lane)
+        if token_limit is None:
+            token_limit = context_capacity(task, provider) * cfg["context_percent"] // 100
+        record_id = new_id("handoff")
         path = self.directory(task) / f"{record_id}.json"
-        record["history"] = history
-        if record.get("source_format") != "evidence_index_v1":
-            # A legacy cursor addressed raw JSON, not this new evidence view.
-            if record.get("cursor") or record.get("summary"):
-                record["legacy_progress"] = {"cursor": record.get("cursor", 0), "summary": record.get("summary", "")}
-            record.update(cursor=0, summary="", source_format="evidence_index_v1")
-        # The full source is durable even when the model or a later write fails.
-        record = json.loads(self.owner._redact_known_secrets(json.dumps(record, ensure_ascii=False)))
+        record = {"record_id": record_id, "task_id": task.task_id, "lane": lane,
+                  "stage": saved.get("previous_stage", saved.get("stage", stage_of(task))),
+                  "next_stage": stage_of(task), "reason": reason, "created_at": now_iso(),
+                  "status": "preparing", "plan_version": state_of(task).get("version"), "guard": before,
+                  "previous_handoff": saved.get("summary", ""), "steps": deepcopy(state_of(task).get("steps", [])),
+                  "history": deepcopy(history), "summary_limit": cfg["summary_chars"],
+                  "raw_history_chars": len(json.dumps(history, ensure_ascii=False)),
+                  "recent_budget_tokens": token_limit // 4, "model_calls": 0}
         try:
+            # No secret filter or working-view transformation may alter this archive.
             self.owner.storage._write_json(path, record)
-            saved["draft_record_id"] = record_id
-            saved["pending_reason"] = reason
+            saved.update(draft_record_id=record_id, pending_reason=reason)
             self.owner.storage.save_task(task)
         except OSError as exc:
-            raise HandoffError("无法保存阶段原记录，历史未整理；请检查存储后恢复。") from exc
+            raise HandoffError("无法保存阶段原记录，原历史保留。") from exc
         try:
-            # Summarize in bounded chunks instead of dropping the start of a big log.
-            target = min(1600, 600 + 200*len(state_of(task).get("steps", [])))
-            summary_chars = min(cfg["summary_chars"], max(256, token_limit // 6), max(800, target))
-            source = json.dumps({"previous_handoff": record["previous_handoff"][:summary_chars],
-                                 "messages": history_view(history, task, for_summary=True)}, ensure_ascii=False)
-            record.update(source_chars=len(source), raw_history_chars=len(json.dumps(history, ensure_ascii=False)),
-                          summary_limit=summary_chars)
-            summary = record.get("summary", "")
-            ledger = bounded_text(plan_prompt(task), max(128, token_limit // 4))
-            start = record.get("cursor", 0)
-            if start and record.get("source_prefix_sha256") != hashlib.sha256(source[:start].encode()).hexdigest():
-                record["previous_progress"] = {"cursor": start, "summary": summary}
-                record["source_restart_reason"] = "工作视图源发生变化，重新汇总，避免沿用旧游标跳过内容。"
-                start, summary = 0, ""
-                record.update(cursor=0, summary="")
-            checkpoint=state_of(task).get("checkpoint_handoff",{})
-            if (reason in {"stage_completed","stage_changed"} and checkpoint.get("summary")
-                    and checkpoint.get("stage")==record.get("stage")
-                    and checkpoint.get("version")==state_of(task).get("version")
-                    and checkpoint.get("input_revision",0)==state_of(task).get("input_revision",0)
-                    and len(checkpoint["summary"])<=summary_chars and checkpoint.get("evidence")):
-                # The acting Bot already wrote and evidenced the phase. Archive
-                # its handoff verbatim instead of paying a second summarizer.
-                summary=checkpoint["summary"]
-                start=len(source)
-                record.update(summary_author="checkpoint_bot",summary=summary,cursor=start,model_calls=0)
-            while start < len(source):
-                system_prompt = ("你是 Agent Lab 的阶段交接记录员，不执行工具。只服务本任务的下一步，不写全程报告。当前计划和用户要求优先。"
-                        "保留已改文件/证据ID、实际验证、尚未完成和接下来的具体动作；丢弃已过时细节与重复约束，代码和完整日志从原记录回查。"
-                        "合并而不是追加旧摘要；不复述思考、加密签名和大段代码。不能把未完成写成完成，不能新增授权。"
-                        f"仅返回交接正文，最多 {summary_chars} 字；不要写密钥或大段日志。")
-                chunk_limit = min(24000, len(source) - start)
-                while True:
-                    request = json.dumps({"current_plan": ledger, "previous_chunk_summary": summary,
-                                          "source_chunk": source[start:start+chunk_limit],
-                                          "more_chunks": start+chunk_limit < len(source)}, ensure_ascii=False)
-                    # Reserve space for the summary as well as the full request.
-                    if estimate([system_prompt, request]) + summary_chars * 4 // 3 + 128 < token_limit:
-                        break
-                    if chunk_limit <= 1:
-                        raise HandoffError("交接材料仍超过模型容量，原历史已保留；请提高容量或缩短摘要后继续。")
-                    chunk_limit = max(1, chunk_limit // 2)
-                summary = await self.summarize_chunk(event, task, provider, request, system_prompt,
-                                                     summary_chars, record, path, before)
-                latest = self.owner.storage.load_active_task(task.umo)
-                if not latest or guard(latest) != before or latest.task_id in self.owner.projects.cleaning:
-                    raise HandoffError("总结期间任务状态发生变化，已保留原历史，请从最新状态继续。")
-                start = min(len(source), start+chunk_limit)
-                record.update(summary=summary, cursor=start, source_prefix_sha256=hashlib.sha256(source[:start].encode()).hexdigest())
+            state = state_of(task)
+            request = json.dumps({"current_plan": {"goal": task.root_goal,
+                                  "completion_conditions": task.completion_conditions,
+                                  "constraints": state.get("constraints", []), "steps": record["steps"],
+                                  "current_step_id": state.get("current_step_id"), "next_action": task.next_step},
+                                  "previous_handoff": record["previous_handoff"],
+                                  "messages": summary_messages(record["history"])}, ensure_ascii=False)
+            record["source_chars"] = len(request)
+            system_prompt = ("生成接续当前任务的工作笔记，不执行工具。保留已改文件的真实路径、实际验证结果、"
+                             "未完成项和下一步动作。用户要求和当前计划优先，不新增授权，不把未验证写成通过。"
+                             f"只返回笔记正文，最多 {cfg['summary_chars']} 字符。")
+            summary = await self.summarize_chunk(event, task, provider, request, system_prompt,
+                                                 cfg["summary_chars"], record, path, before)
+            latest = self.current_task(task, before)
+            count = count_tokens or estimate
+            fixed_cost = count([]) if count_tokens else 0
+            context = working_context(latest, lane)
+            context.update(record_id=record_id, record_path=str(path.relative_to(self.owner.storage.root)),
+                           ticks_since_handoff=1)
+            fixed = [row for row in history if row.get("role") == "system"]
+
+            def handoff(note):
+                return {"role": "user", "content": MARKER + "\n" + json.dumps({**context, "handoff": note}, ensure_ascii=False)}
+
+            recent = recent_window(groups, record["recent_budget_tokens"],
+                                   count_tokens=lambda rows: max(0, count(rows) - fixed_cost),
+                                   fits=lambda rows: count([*fixed, handoff(""), *rows]) < token_limit)
+            # Small models still use the configured summary limit. Only actual
+            # context space (including fixed prompts) can shorten the note.
+            while recent and count([*fixed, handoff(""), *recent]) >= token_limit:
+                recent = recent[len(message_groups(recent)[0]):]
+            if count([*fixed, handoff(""), *recent]) >= token_limit:
+                raise HandoffError("固定提示已占满上下文容量，原历史已归档。")
+            if count([*fixed, handoff(summary), *recent]) >= token_limit:
+                record["generated_summary"] = summary
+                low, high = 0, len(summary)
+                while low < high:
+                    middle = (low + high + 1) // 2
+                    if count([*fixed, handoff(summary[:middle]), *recent]) < token_limit:
+                        low = middle
+                    else:
+                        high = middle - 1
+                summary = trim_summary(summary, low)
+                record["context_summary_trimmed"] = True
+            latest_tool = next((group[0] for group in reversed(groups) if group[0].get("tool_calls")), None)
+            if not summary and (not recent or (latest_tool is not None and not any(row is latest_tool for row in recent))):
+                record.update(status="blocked", summary="", summary_chars=0, block_reason="latest_group_exceeds_capacity")
                 self.owner.storage._write_json(path, record)
+                raise HandoffError("摘要为空，最近完整工作组无法放入上下文容量；原历史已归档并保留，未替换上下文。")
+            record["recent_tokens"] = max(0, count(recent) - fixed_cost)
             record.update(status="saved", summary=summary, summary_chars=len(summary))
             self.owner.storage._write_json(path, record)
             index_path = self.directory(task) / "index.json"
             index = self.owner.storage._read_json(index_path) if index_path.exists() else {"records": []}
             index["records"].append({key: record[key] for key in ("record_id", "lane", "stage", "next_stage", "reason", "created_at")})
             self.owner.storage._write_json(index_path, index)
-            latest = self.owner.storage.load_active_task(task.umo)
-            if not latest or guard(latest) != before:
-                raise HandoffError("任务已变化，原历史未整理。")
             lane_data = lane_state(latest, lane)
-            lane_data.update(summary=summary, record_id=record_id,
-                             quality=record.get("quality", "normal"),
+            lane_data.update(summary=summary, record_id=record_id, quality="normal",
                              record_path=str(path.relative_to(self.owner.storage.root)), ticks=1,
                              count=int(lane_data.get("count", 0))+1)
-            lane_data.pop("pending_reason", None)
-            lane_data.pop("previous_stage", None)
-            lane_data.pop("draft_record_id", None)
+            for key in ("pending_reason", "previous_stage", "draft_record_id"):
+                lane_data.pop(key, None)
             latest.add_log("stage_handoff", f"{record['stage']} → {record['next_stage']}: {reason}; {record_id}")
             record_handoff(latest, record)
             self.owner.storage.save_task(latest)
             write_task_line(self.owner, latest, event_id=record_id, event="handoff")
         except Exception as exc:
-            # Budget/pause exceptions keep their original control meaning.
             latest = self.owner.storage.load_active_task(task.umo)
             if latest and latest.task_id == task.task_id and latest.status != "running":
                 raise
-            if type(exc).__name__ in {"BudgetStopped", "ExecutionStopped"}:
+            if type(exc).__name__ in {"BudgetStopped", "ExecutionStopped"} or isinstance(exc, HandoffError):
                 raise
-            if isinstance(exc, HandoffError):
-                raise
-            raise HandoffError("阶段交接未保存成功，原历史已保留；核对模型或存储后恢复任务。") from exc
-        # Retain exact recent tool groups within a capacity budget, never by a
-        # fixed number of messages. A single oversize group is in the archive.
-        recent, used = [], 0
-        recent_budget = max(256, min(token_limit // 6, MAX_WORKING_HISTORY_TOKENS // 6))
-        candidates = groups
-        if reason in {"stage_completed", "stage_changed", "plan_revised"}:
-            # A new stage carries its current request, rather than replaying
-            # the previous stage just because the model has ample capacity.
-            start = next((i for i in range(len(groups)-1, -1, -1) if groups[i][0].get("role") == "user"), len(groups)-1)
-            candidates = groups[start:]
-        for group in reversed(candidates):
-            if any(str(row.get("content", "")).startswith(MARKER) for row in group):
-                break
-            size = estimate(group)
-            if used + size > recent_budget:
-                break
-            recent[0:0] = group
-            used += size
-        handoff = {"role": "user", "content": MARKER + "\n" + json.dumps(working_context(latest, lane), ensure_ascii=False)}
-        return [handoff, *recent]
+            raise HandoffError("阶段交接未保存成功，原历史已保留。") from exc
+        return [handoff(summary), *deepcopy(recent)]
 
 
 class StageContextManager:
-    """Runner context manager with no native fallback that silently drops turns."""
+    """Preserve the exact runner history until a capacity/stage boundary."""
     def __init__(self, continuity, event, task_id, provider, native_manager, *, lane="", prompt_tokens=0):
         self.continuity, self.event, self.task_id = continuity, event, task_id
         self.provider, self.native_manager, self.lane = provider, native_manager, lane
@@ -353,6 +373,12 @@ class StageContextManager:
 
     def __getattr__(self, name):
         return getattr(self.native_manager, name)
+
+    def count_tokens(self, messages, trusted_token_usage=0):
+        counter = getattr(self.native_manager, "token_counter", None)
+        tokens = counter.count_tokens(messages, trusted_token_usage) if counter else (
+            trusted_token_usage if trusted_token_usage > 0 else estimate([m.model_dump() for m in messages]))
+        return tokens + self.prompt_tokens
 
     async def process(self, messages, trusted_token_usage=0):
         from astrbot.core.agent.message import Message
@@ -362,37 +388,30 @@ class StageContextManager:
         if not task or task.task_id != self.task_id or task.status != "running":
             raise HandoffError("任务已经暂停、结束或切换，停止整理历史。")
         raw = [m.model_dump() for m in messages]
-        body = [m for m in raw if m.get("role") not in {"system", "_checkpoint"}]
-        system = [m for m in raw if m.get("role") == "system"]
-        native_limit = getattr(getattr(self.native_manager, "config", None), "max_context_tokens", 0)
         cfg = settings(task)
-        capacity = cfg["context_tokens"]
-        if native_limit and native_limit > 0:
-            capacity = min(capacity, native_limit)
-        limit = max(512, capacity * cfg["context_percent"] // 100)
-        counter = getattr(self.native_manager, "token_counter", None)
-        view = history_view(raw, task)
-        view_messages = [Message.model_validate(row) for row in view]
-        tokens = max(estimate(view), counter.count_tokens(view_messages, 0) if counter else 0) + self.prompt_tokens
-        record_context(task, raw, view, estimated_tokens=tokens, capacity_tokens=capacity, trigger_tokens=limit)
-        self.continuity.owner.storage.save_task(task)
-        reason = lane_state(task, self.lane).get("pending_reason", "")
-        body_view = [row for row in view if row.get("role") not in {"system", "_checkpoint"}]
-        if not reason and estimate(body_view) >= max(2048, min(MAX_WORKING_HISTORY_TOKENS, limit//2)):
-            reason = "working_history_limit"
+        capacity = context_capacity(task, self.provider, self.native_manager)
+        limit = capacity * cfg["context_percent"] // 100
+        tokens = self.count_tokens(messages, trusted_token_usage)
+        record_context(task, raw, raw, estimated_tokens=tokens, capacity_tokens=capacity, trigger_tokens=limit)
+        saved = lane_state(task, self.lane)
+        reason = saved.get("pending_reason", "")
+        if reason not in STAGE_REASONS:
+            reason = ""
+            saved.pop("pending_reason", None)
+        owner.storage.save_task(task)
         if not reason and tokens < limit:
-            # Model-facing views are ephemeral. Keep raw messages in the runner
-            # until a full source-backed handoff is committed.
             return messages
-        reduced = await self.continuity.compact(self.event, task, body, self.provider, reason or "context_capacity",
-                                                 lane=self.lane, token_limit=limit)
-        if native_limit and estimate([*system, *reduced]) + self.prompt_tokens >= native_limit:
-            raise HandoffError("交接已保存，但固定提示或最近结果仍超过模型上下文容量，请调整配置后继续。")
+        if not any(row.get("role") not in {"system", "_checkpoint"} for row in raw):
+            return messages
+        reduced = await self.continuity.compact(self.event, task, raw, self.provider, reason or "context_capacity",
+                                                 lane=self.lane, token_limit=limit,
+                                                 count_tokens=lambda rows: self.count_tokens([Message.model_validate(row) for row in rows]))
+        system = [m for m in messages if m.model_dump().get("role") == "system"]
+        result = [*system, *[Message.model_validate(row) for row in reduced]]
         latest = owner.storage.load_active_task(task.umo)
         if latest and latest.task_id == task.task_id:
-            final_view = history_view([*system, *reduced], latest)
-            record_context(latest, raw, final_view, estimated_tokens=estimate(final_view)+self.prompt_tokens,
+            record_context(latest, raw, [m.model_dump() for m in result], estimated_tokens=self.count_tokens(result),
                            capacity_tokens=capacity, trigger_tokens=limit)
             owner.storage.save_task(latest)
             write_task_line(owner, latest, event_id=lane_state(latest, self.lane).get("record_id", ""), event="handoff")
-        return [Message.model_validate(row) for row in [*system, *reduced]]
+        return result

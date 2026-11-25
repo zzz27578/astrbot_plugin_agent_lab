@@ -37,7 +37,7 @@ M = importlib.import_module('review_agent_lab.task_messages')
 U = importlib.import_module('review_agent_lab.usage_metrics')
 Control = F.Control
 RESULTS = []
-REPORT = F.ROOT / 'docs/validation/v0.3.4-project-scenarios.json'
+REPORT = F.ROOT / 'docs/validation/v0.4.0-project-scenarios.json'
 
 
 def fingerprint_sources():
@@ -298,7 +298,15 @@ class AgentProjectScenarios(unittest.IsolatedAsyncioTestCase):
         second = await self.invoke(task, 'astrbot_file_read_tool', {'path': str(document), 'offset': 0, 'limit': 80})
         self.assertIn('第0条', first)
         self.assertIn('第0条', second)
-        self.assertEqual(len(self.calls), 1, 'repeated source read should reuse real read cache')
+        expected = ''.join(document.read_text(encoding='utf-8').splitlines(keepends=True)[:80])
+        self.assertEqual(first, expected)
+        self.assertEqual(second, expected)
+        self.assertEqual(len(self.calls), 2, 'each requested source read must reach the host executor')
+        reads = Control.control(self.latest(task))['journal']
+        self.assertEqual([row['arguments'] for row in reads],
+                         [{'path': str(document), 'offset': 0, 'limit': 80}] * 2)
+        self.assertTrue(all(row['status'] == 'completed' for row in reads))
+        self.assertEqual(self.latest(task).status, 'running', 'two research reads are not a read loop')
         with self.assertRaisesRegex(ValueError, '只读'):
             await self.invoke(task, 'astrbot_file_write_tool', {'path': str(self.workspace/'forbidden.md'), 'content': 'no'})
         self.checkpoint(task, 'one', '已读取离线文档；结论保留于任务记录，不生成工作目录文件。')
@@ -306,7 +314,41 @@ class AgentProjectScenarios(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ended.status, 'completed')
         self.assertEqual(file_snapshot(self.workspace), before)
         self.metrics.update(workspace_files_unchanged=True, workspace_write_calls=0,
-                            provider_plan_calls=len(self.provider.calls), repeated_read_executor_calls=1)
+                            provider_plan_calls=len(self.provider.calls), repeated_read_executor_calls=len(self.calls))
+
+    async def test_repeated_reads_warn_once_then_pause_without_suppressing_host_reads(self):
+        document = self.workspace / 'repeated.md'
+        document.write_text(''.join(f'line {i}: research material\n' for i in range(180)), encoding='utf-8')
+        before = file_snapshot(self.workspace)
+        task, _ = self.create('重复研究读取保护', mode='readonly')
+        await self.plan(task)
+        args = {'path': str(document), 'offset': 0, 'limit': 80}
+        expected = ''.join(document.read_text(encoding='utf-8').splitlines(keepends=True)[:80])
+        notices = []
+        for number in range(1, 41):
+            output = await self.invoke(task, 'astrbot_file_read_tool', args)
+            self.assertTrue(output.startswith(expected))
+            self.assertEqual(len(self.calls), number, 'admitted reads must not be served from a cache')
+            current = self.latest(task)
+            guard = current.workflow_data.get('progress_guard', {})
+            if guard.get('decision') in {'warning', 'paused'}:
+                notices.append((number, guard['decision']))
+                self.assertIn(guard['message'], output)
+                if guard['decision'] == 'warning':
+                    self.assertEqual(current.status, 'running')
+            if current.status == 'paused':
+                break
+        self.assertEqual([decision for _, decision in notices], ['warning', 'paused'])
+        self.assertGreater(notices[0][0], 2, 'ordinary research repeats must be allowed')
+        self.assertGreater(notices[1][0], notices[0][0], 'the first warning must allow a correction')
+        self.assertEqual(self.latest(task).wait.wait_reason, 'repeated_reads')
+        dispatched = len(self.calls)
+        with self.assertRaises(B.ExecutionStopped):
+            await self.invoke(task, 'astrbot_file_read_tool', args)
+        self.assertEqual(len(self.calls), dispatched, 'paused tasks must not dispatch another read')
+        self.assertEqual(file_snapshot(self.workspace), before)
+        self.metrics.update(repeated_read_executor_calls=dispatched, read_loop_notices=notices,
+                            workspace_files_unchanged=True, dispatch_blocked_after_pause=True)
 
     async def test_plugin_create_update_and_two_named_file_cleanup(self):
         task, _ = self.create('小插件创建更新')
@@ -509,10 +551,16 @@ class AgentProjectScenarios(unittest.IsolatedAsyncioTestCase):
         saved = self.storage._read_json(self.storage.root/lane['record_path'])
         self.assertEqual(saved['history'], history)
         self.assertEqual(saved['status'], 'saved')
-        self.assertLess(len(U.encoded(reduced)), len(U.encoded(history)))
+        self.assertTrue(reduced[0]['content'].startswith(C.MARKER))
+        self.assertEqual(reduced[-len(history):], history, 'the recent working window must remain intact')
+        C.message_groups(reduced)  # Retained calls and results must still form complete groups.
+        self.assertLessEqual(len(lane['summary']), saved['summary_limit'])
+        self.assertLess(C.estimate(reduced),
+                        C.context_capacity(latest, self.provider) * C.settings(latest)['context_percent'] // 100)
         handoff_calls = [r for r in self.provider.calls if r['phase'] == 'handoff']
-        self.assertEqual(len(handoff_calls), 0)
-        self.assertEqual(saved['summary_author'], 'checkpoint_bot')
+        self.assertEqual(len(handoff_calls), 1, 'compaction uses one summary request, not checkpoint text as a substitute')
+        self.assertEqual(saved['model_calls'], 1)
+        self.assertEqual(saved['summary'], lane['summary'])
         self.assertFalse(any(r['status'] != 'completed' for r in Control.control(self.latest(task))['steps']))
         detail = await self.projects.detail(task.task_id)
         for row in detail['files']:
@@ -566,12 +614,18 @@ class AgentProjectScenarios(unittest.IsolatedAsyncioTestCase):
                                   '明确批次模拟', '一个临时文件', '删除临时文件')
         self.decision(task, True)
         self.assertTrue(await self.bridge.resume_batch(self.event(task), self.latest(task)))
+        self.assertEqual(target.read_text(encoding='utf-8'), 'approved content')
+        target.write_text('administrator edit after approved execution', encoding='utf-8')
+        after_approved = file_snapshot(self.workspace)
+        journal = deepcopy(Control.control(self.latest(task))['journal'])
         self.assertTrue(await self.bridge.resume_batch(self.event(task), self.latest(task)))
         result = await self.invoke(task, 'astrbot_file_write_tool', args)
-        self.assertIn('复用已完成审批结果', result)
+        self.assertIn('written approved.txt', result)
         self.assertEqual(len(self.calls), 1)
+        self.assertEqual(file_snapshot(self.workspace), after_approved, 'replay must preserve later administrator edits')
+        self.assertEqual(Control.control(self.latest(task))['journal'], journal)
         self.assertEqual(self.latest(task).approvals[-1]['status'], 'consumed')
-        self.metrics.update(batch_replays=0, consumed_approvals=1)
+        self.metrics.update(batch_replays=0, consumed_approvals=1, administrator_edit_retained=True)
 
     async def test_stop_before_late_tool_and_summary_callbacks(self):
         task, _ = self.create('停止后晚工具回调')
@@ -709,7 +763,7 @@ def main():
     args, unittest_args = parser.parse_known_args()
     # Restrict the only persistent output to the file authorized for this task.
     if args.report.resolve() != REPORT.resolve():
-        parser.error('report output is restricted to docs/validation/v0.3.4-project-scenarios.json')
+        parser.error('report output is restricted to docs/validation/v0.4.0-project-scenarios.json')
     RESULTS.clear()
     start_hashes = fingerprint_sources()
     started = time.perf_counter()
@@ -724,7 +778,7 @@ def main():
             row['failures'] = matches
     report = {
         'schema_version': 1, 'generated_at': datetime.now(timezone.utc).isoformat(),
-        'target_release': 'v0.3.4', 'metadata_at_run': (F.ROOT/'metadata.yaml').read_text(encoding='utf-8'),
+        'target_release': 'v0.4.0', 'metadata_at_run': (F.ROOT/'metadata.yaml').read_text(encoding='utf-8'),
         'command': 'python scripts/ui/test_agent_project_scenarios.py',
         'python': platform.python_version(), 'platform': platform.system(),
         'scope': 'offline end-to-end simulation of real functions; not a running AstrBot or real model test',

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -146,8 +147,9 @@ class AgentVerifier:
         state = data.get("task_control", {})
         if state.get("steps"):
             missing = self._plan_evidence_gaps(task)
+            missing.extend(self._delivery_gaps(task, final_summary))
             return VerificationResult(passed=not missing, status="needs_evidence" if missing else "completed",
-                reason="还有步骤缺少有效执行证据，请补齐后交付。" if missing else "全部批准步骤已完成，并有对应成功记录；无需逐字重复验收条件。",
+                reason="请补齐真实执行、验证或交付说明。" if missing else "批准步骤已完成，交付与真实执行、验证记录一致。",
                 missing=missing, next_action="collect_finish_evidence" if missing else "archive")
         node_outputs = data.get("node_outputs") if isinstance(data.get("node_outputs"), dict) else {}
         observations = data.get("observations") if isinstance(data.get("observations"), list) else []
@@ -201,26 +203,118 @@ class AgentVerifier:
         return missing
 
     @staticmethod
-    def _plan_evidence_gaps(task):
+    def _record_succeeded(row):
+        if row.get("status") != "completed" or row.get("isError") or row.get("ok") is False:
+            return False
+        # Reading an error log or a JSON fixture with ok=false is a successful
+        # read. Only executable tool outputs carry process-result semantics.
+        name = str(row.get("name", "")).lower()
+        if name == "report" or any(part in name for part in ("file_read", "read_file", "grep", "search", "list_directory")):
+            return True
+        text = _text(row.get("result", ""))
+        try:
+            result = json.loads(text)
+        except (ValueError, TypeError):
+            result = {}
+        for data in (row, result if isinstance(result, dict) else {}):
+            if data.get("ok") is False or data.get("isError") or any(data.get(key, 0) not in (0, None) for key in ("exit_code", "returncode")):
+                return False
+        return not re.search(r"(?:exit[_ ]code|returncode)\s*[:=]\s*-?[1-9]\d*|^Traceback \(most recent call last\)", text, re.I | re.M)
+
+    @classmethod
+    def journal_records(cls, task):
+        """Successful current records, including legacy saved reports."""
         state = (getattr(task, "workflow_data", {}) or {}).get("task_control", {})
-        journal = {row.get("id"): row for row in state.get("journal", [])}
         authority = state.get("authorization_version", state.get("approved_version", 0))
+        revisions = {s["id"]: s.get("revision", 0) for s in state.get("steps", [])}
+        return [row for row in state.get("journal", [])
+                if cls._record_succeeded(row)
+                and row.get("authorization_version", row.get("plan_version")) == authority
+                and row.get("step_revision", 0) == revisions.get(row.get("step_id"), row.get("step_revision", 0))]
+
+    @classmethod
+    def execution_records(cls, task):
+        """Model reports and controller calls cannot stand in for actual runs."""
+        return [row for row in cls.journal_records(task) if row.get("name") and row["name"] != "report"
+                and not row["name"].startswith(("agent_lab_", "task_"))]
+
+    @classmethod
+    def link_step_evidence(cls, task):
+        """Persist links derived from the journal, without asking for IDs."""
+        state = (getattr(task, "workflow_data", {}) or {}).get("task_control", {})
+        records = cls.journal_records(task)
+        for step in state.get("steps", []):
+            step["evidence"] = [r["id"] for r in records if r.get("id") and r.get("step_id") == step["id"]]
+
+    @classmethod
+    def _plan_evidence_gaps(cls, task):
+        state = (getattr(task, "workflow_data", {}) or {}).get("task_control", {})
+        journal = state.get("journal", [])
         missing = []
         if not state.get("approved_version") or state.get("approved_version") != state.get("version"):
             missing.append("当前计划尚未批准")
         for step in state.get("steps", []):
             if step.get("status") != "completed":
                 missing.append(f"{step.get('title', step['id'])}：尚未完成")
-                continue
-            rows = [journal.get(identifier, {}) for identifier in step.get("evidence", [])]
-            valid = [row for row in rows if row.get("status") == "completed"
-                     and row.get("step_id") == step.get("id")
-                     and row.get("step_revision", 0) == step.get("revision", 0)
-                     and row.get("authorization_version", row.get("plan_version")) == authority]
-            if not step.get("summary") or not rows or len(valid) != len(rows):
-                missing.append(f"{step.get('title', step['id'])}：需要当前版本的成功工具记录和结果说明")
-        if any(row.get("status") in {"started", "unknown"} for row in journal.values()):
+        # Splitting/reordering a checklist does not invalidate actual work. The
+        # finish boundary checks task execution, not a citation on every item.
+        if not cls.execution_records(task):
+            missing.append("尚无当前授权下的成功执行记录；总结或手填记录ID不能代替执行")
+        if any(row.get("status") in {"started", "unknown"} for row in journal):
             missing.append("存在执行中或结果未知的操作，需先核对")
+        return missing
+
+    @staticmethod
+    def _is_verification(row):
+        name = str(row.get("name", "")).lower()
+        if any(part in name for part in ("file_read", "file_write", "file_edit", "read_file", "write_file", "edit_file", "grep", "search")):
+            return False
+        if row.get("kind") in {"validation", "verification"} or re.search(r"(?:test|verify|validat|lint|compile)", name):
+            return True
+        if not any(part in name for part in ("execute", "shell", "python", "run_command", "exec_command")):
+            return False
+        args = row.get("arguments", {})
+        command = "\n".join(str(args.get(key, "")) for key in ("command", "cmd", "code", "script"))
+        return bool(re.search(r"(?:pytest|unittest|py_compile|compileall|assert\b|\b(?:test|check|typecheck|verify|validate|smoke|lint|ruff|mypy|tsc)\b|(?:test|check|verify|validate|smoke)[_\w-]*\.(?:py|js|sh|ps1)|--(?:check|self-test|selftest))", command, re.I))
+
+    @classmethod
+    def _delivery_gaps(cls, task, summary):
+        state = (getattr(task, "workflow_data", {}) or {}).get("task_control", {})
+        journal = state.get("journal", [])
+        valid = cls.execution_records(task)
+        missing, changed, last_write = [], [], -1
+        valid_objects = {id(row) for row in valid}
+        for index, row in enumerate(journal):
+            if id(row) not in valid_objects:
+                continue
+            name = row["name"].lower()
+            if any(word in name for word in ("file_write", "file_edit", "write_file", "edit_file", "apply_patch")):
+                last_write = index
+                args = row.get("arguments", {})
+                changed.extend(str(args[key]) for key in ("path", "file_path", "filepath", "filename", "file") if args.get(key))
+        summary_normal = summary.replace("\\", "/").lower()
+        for path in dict.fromkeys(changed):
+            if path.replace("\\", "/").rsplit("/", 1)[-1].lower() not in summary_normal:
+                missing.append(f"交付说明缺少改动文件：{path}")
+        verification_needed = last_write >= 0 or bool(re.search(
+            r"测试|自检|验证命令|编译|\b(?:tests?|pytest|unittest|lint|compile)\b",
+            " ".join(getattr(task, "completion_conditions", []) or []), re.I))
+        verification_needed |= bool(re.search(
+            r"(?:测试|验证|自检|编译|检查)[^。\n]{0,30}(?:通过|成功)|\b(?:tests?|checks?|validation)\b[^.\n]{0,40}\b(?:pass\w*|success\w*)\b",
+            summary, re.I))
+        if verification_needed:
+            checks = [row for row in journal[last_write+1:] if cls._is_verification(row)]
+            # A later retry supersedes a failed invocation of the same command.
+            latest = {}
+            for row in checks:
+                key = (row.get("name"), json.dumps(row.get("arguments", {}), ensure_ascii=False, sort_keys=True))
+                latest[key] = row
+            if not any(id(row) in valid_objects for row in latest.values()):
+                missing.append("缺少最后改动之后成功执行的验证记录")
+            if any(not cls._record_succeeded(row) for row in latest.values()):
+                missing.append("存在尚未通过的验证，请修复并重跑后交付")
+            if not re.search(r"验证|测试|自检|编译|检查|\b(?:test|pass|check|validat|lint|compil)\w*", summary, re.I):
+                missing.append("交付说明需写明实际验证方式与结果")
         return missing
 
     def _finish_evidence_text(self, task: Any, *, final_summary: str = "") -> str:

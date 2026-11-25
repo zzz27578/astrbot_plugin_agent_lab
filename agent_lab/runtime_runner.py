@@ -1,17 +1,42 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from .hooks import AgentLabRunHooks
+from .usage_metrics import budget_tokens
 from .models import AgentSpec
-from .prompts import build_task_system_prompt, build_tick_prompt
+from .prompts import build_task_system_prompt
 from .task_control import control, prompt as plan_prompt
 from .astrbot_bridge import BudgetStopped, ExecutionStopped
 from .task_permissions import apply_mode
 from .continuity import HandoffError
-from .progress_guard import ProgressSnapshot, after_tick, snapshot
+from .progress_guard import ProgressSnapshot, after_tick, snapshot, take_notice
+
+
+def total_remaining_seconds(task: Any) -> float | None:
+    """Wall-clock task budget from created_at, including administrator waits.
+
+    None means unlimited. getattr keeps legacy/simple adapter budgets usable.
+    Invalid timestamps cannot safely grant a fresh budget; treat as exhausted.
+    """
+    settings = task.workflow_data.get("task_control", {}).get("execution_settings", {})
+    limit = getattr(task.budget, "max_total_seconds", None)
+    if limit is None:
+        limit = settings.get("budget", {}).get("max_total_seconds", 0)
+    if not limit:
+        return None
+    try:
+        stamp = datetime.fromisoformat(str(task.created_at).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        elapsed = max(0, (datetime.now(timezone.utc) - stamp).total_seconds())
+        return max(0, float(limit) - elapsed)
+    except (AttributeError, TypeError, ValueError):
+        return 0.0
 
 
 def _cfg(config: Any, key: str, default: Any = None) -> Any:
@@ -40,8 +65,8 @@ class AgentRuntimeRunner:
 
     def _watchdog_after_tick(self, task: Any, *, before_hash: ProgressSnapshot,
                              reason: str, error: str = "", error_reason: str = "blocked_by_error") -> None:
-        # The adapter's legacy hash can change for accounting/prose alone and
-        # excludes legitimate incremental reads. Keep liveness independent.
+        # Bridge observes results in the live loop. This fallback deduplicates
+        # journal rows and never treats quiet ticks as a lack of progress.
         if self._execution_stopped(task) or self._pause_for_total_budget(task):
             return
         message = after_tick(task, before_hash, reason=reason, error=error, error_reason=error_reason)
@@ -59,16 +84,46 @@ class AgentRuntimeRunner:
         if prepare:
             prepare(task, reason=reason)
 
-    @staticmethod
-    def _liveness_notice(task: Any) -> str:
-        message = task.workflow_data.get("progress_guard", {}).get("message", "")
+    def _liveness_notice(self, task: Any) -> str:
+        message = take_notice(task)
+        if message:
+            # A provider lookup or the next tick reloads from storage. Persist
+            # only notice consumption, preserving newer administrator state.
+            latest = self.storage.load_active_task(task.umo)
+            if latest and latest.task_id == task.task_id:
+                guard = latest.workflow_data.get("progress_guard", {})
+                if guard.get("pending_notice") == message:
+                    guard.pop("pending_notice", None)
+                    self.storage.save_task(latest)
         return f"\n\n{message}" if message else ""
+
+    def _task_prompts(self, task: Any, spec: Any, reason: str) -> tuple[str, str]:
+        state = control(task)
+        if state.get("workflow") == "none":
+            system = ("你正在 Agent Lab 任务模式中执行任务，保持来源 Bot 的人设与自然语气。"
+                      "使用宿主工具完成读取、编辑和测试。控制工具只有 task_plan、task_progress、task_ask、task_approve、task_finish。"
+                      "初始计划需批准；授权内自由调整步骤，高危或扩大授权先请示。"
+                      "缺少关键决策时提问，及时报告重要进展，最终交付说明实际成果和真实验证结果。")
+            system += "\n项目任务指引：" + state.get("execution_settings", {}).get("task_prompt", "")
+            header, separator, payload = plan_prompt(task).partition("]\n")
+            plan = json.loads(payload)
+            # Preserve both handoff sources if they differ, without duplicating
+            # the usual identical entry summary and task brief. Keep them in the
+            # user plan so mutable task context cannot change the system prefix.
+            plan["brief"] = "\n\n".join(dict.fromkeys(value for value in
+                (getattr(task, "task_brief", ""), getattr(task, "entry_summary", "")) if value))
+            return system, "继续推进当前任务。" + header + separator + json.dumps(plan, ensure_ascii=False)
+        modules = self._build_task_extensions_prompt(spec, task=task)
+        system = build_task_system_prompt(spec, task, modules)
+        system += "\n项目任务指引：" + state.get("execution_settings", {}).get("task_prompt", "")
+        return system, self._workflow_react_prompt(task=task, spec=spec, reason=reason) + plan_prompt(task)
 
     @staticmethod
     def _execution_revision(task: Any) -> tuple:
         state = control(task)
-        return (state.get("version"), state.get("approved_version"),
-                state.get("authorization_version", state.get("approved_version")), state.get("input_revision", 0))
+        # Routine task_plan revisions advance both plan versions while retaining
+        # authority. Only new authority or administrator input invalidates work.
+        return (state.get("authorization_version", state.get("approved_version")), state.get("input_revision", 0))
 
     @staticmethod
     def _execution_stopped(task: Any, revision: tuple | None = None) -> bool:
@@ -83,8 +138,16 @@ class AgentRuntimeRunner:
         # ticks_used includes the current admitted tick. It must be allowed to
         # finish, while exhausted tool/token totals forbid another dispatch.
         budget = task.budget
+        remaining = total_remaining_seconds(task)
+        if remaining is not None and remaining <= 0:
+            limit = getattr(budget, "max_total_seconds", None)
+            if limit is None:
+                limit = control(task).get("execution_settings", {}).get("budget", {}).get("max_total_seconds", 0)
+            message = f"任务总耗时预算已用尽：{limit}s（从任务创建起计算，含等待时间）"
+            self._pause_task_for_budget(task, message)
+            return message
         limits = [(budget.max_total_tool_calls, budget.tool_calls_used, "工具调用"),
-                  (budget.max_total_tokens, budget.tokens_used, "token")]
+                  (budget.max_total_tokens, budget_tokens(task), "token（含未报告估算）")]
         if tick_finished:
             limits.insert(0, (budget.max_total_ticks, budget.ticks_used, "tick"))
         for limit, used, label in limits:
@@ -136,9 +199,14 @@ class AgentRuntimeRunner:
         before_hash = snapshot(task)
         _gate = getattr(self, "_global_tick_semaphore", None)
         _gate_held = False
+        canvas = control(task).get("workflow") != "none"
         try:
             if _gate is not None:
-                await _gate.acquire()
+                remaining = total_remaining_seconds(task)
+                if remaining is None:
+                    await _gate.acquire()
+                else:
+                    await asyncio.wait_for(_gate.acquire(), timeout=remaining)
                 _gate_held = True
             # Waiting for a global slot must not revive a paused/replaced task
             # through the lease writer's older snapshot.
@@ -155,13 +223,23 @@ class AgentRuntimeRunner:
             task = self.storage.load_active_task(event.unified_msg_origin) or task
             execution_revision = self._execution_revision(task)
             before_hash = snapshot(task)
-            deadline = time.monotonic() + max(1, float(task.budget.max_seconds_per_tick or 240))
+            remaining = total_remaining_seconds(task)
+            deadline = time.monotonic() + remaining if remaining is not None else None
+            canvas = control(task).get("workflow") != "none"
+            if canvas:
+                tick_deadline = time.monotonic() + max(1, float(task.budget.max_seconds_per_tick or 240))
+                deadline = min(deadline, tick_deadline) if deadline is not None else tick_deadline
 
             async def bounded(awaitable):
-                # One deadline covers batch resumption, workflow, provider lookup
-                # and model/tool execution, rather than timing only the model.
+                # Plain tasks have no round deadline. Individual provider/tool
+                # timeouts remain the host's responsibility.
+                if deadline is None:
+                    return await awaitable
                 return await asyncio.wait_for(awaitable, timeout=max(0, deadline - time.monotonic()))
 
+            if budget_message := self._pause_for_total_budget(task, tick_finished=False):
+                self.storage.save_task(task)
+                return budget_message
             watchdog_message = self._watchdog_before_tick(task, reason)
             if watchdog_message:
                 self.storage.save_task(task)
@@ -253,17 +331,7 @@ class AgentRuntimeRunner:
 
             task_updated_at_before_tick = task.updated_at
             task_log_count_before_tick = len(task.progress_log)
-            modules_prompt = self._build_task_extensions_prompt(spec, task=task)
-            system_prompt = build_task_system_prompt(spec, task, modules_prompt)
-            prompt = (build_tick_prompt(task, reason) if control(task).get("workflow") == "none"
-                      else self._workflow_react_prompt(task=task, spec=spec, reason=reason))
-            if control(task).get("workflow") == "none":
-                system_prompt = ("你正在 Agent Lab 任务模式中执行已批准计划。"
-                                 "按检查点继续；只有验证通过才完成。遵守当前任务权限，保护凭证，未知副作用不得重放。"
-                                 f"\n验收条件：{task.completion_conditions}\n{modules_prompt}")
-                prompt = "推进当前批准计划的具体步骤。每个工作单元结束调用 agent_lab_checkpoint。全部步骤完成再调用 agent_lab_finish。"
-            system_prompt += "\n项目任务指引：" + control(task).get("execution_settings", {}).get("task_prompt", "")
-            system_prompt += plan_prompt(task)
+            system_prompt, prompt = self._task_prompts(task, spec, reason)
             notice = self._liveness_notice(task)
             if notice:
                 prompt += notice
@@ -372,7 +440,10 @@ class AgentRuntimeRunner:
             task = latest
             if self._execution_stopped(task, execution_revision):
                 return "任务已暂停、终止或计划已变化，已停止保存旧执行异常。"
-            detail = (f"tick 超时（整轮上限 {task.budget.max_seconds_per_tick}s）"
+            if isinstance(exc, asyncio.TimeoutError) and self._pause_for_total_budget(task, tick_finished=False):
+                self.storage.save_task(task)
+                return task.watchdog.paused_reason
+            detail = ((f"画布轮次超时（上限 {task.budget.max_seconds_per_tick}s）" if canvas else "单次模型或工具调用超时")
                       if isinstance(exc, asyncio.TimeoutError) else f"{type(exc).__name__}: {exc}")
             error_reason = "runtime_timeout" if isinstance(exc, asyncio.TimeoutError) else "blocked_by_error"
             count = task.add_blocker(type(exc).__name__, str(exc))

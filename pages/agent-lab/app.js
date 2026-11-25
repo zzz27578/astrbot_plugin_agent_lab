@@ -1,13 +1,13 @@
 import { renderCapabilityGraph, toggleCapability } from './scheme-settings.js?v=031-scheme-graph';
 import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=026";
-import { ProjectUI } from "./project-ui.js?v=034-authored-stages";
+import { ProjectUI } from "./project-ui.js?v=040-thin-harness";
 import { Navigation, settingsIcon } from "./navigation.js?v=031-scheme-graph";
 import {getBezierPath, Position} from "./vendor/connectors.js?v=026";
 import {routeEdge} from "./connections.js?v=026";
 import "./motion.js?v=026";
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20261122-v029";
+const AGENT_LAB_WEBUI_BUILD = "20261125-v040";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [

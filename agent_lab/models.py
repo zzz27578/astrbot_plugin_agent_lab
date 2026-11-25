@@ -130,12 +130,13 @@ class TaskBudget:
     max_seconds_per_tick: int = 240
     max_tokens_per_tick: int = 12000
     max_total_ticks: int = 120
-    max_total_tool_calls: int = 240
+    max_total_tool_calls: int = 0
     max_total_tokens: int = 240000
     ticks_used: int = 0
     nodes_used: int = 0
     tool_calls_used: int = 0
     tokens_used: int = 0
+    max_total_seconds: int = 0
     tick_started_at: str = ""
 
     @classmethod
@@ -154,6 +155,7 @@ class TaskBudget:
             "max_total_ticks",
             "max_total_tool_calls",
             "max_total_tokens",
+            "max_total_seconds",
             "ticks_used",
             "nodes_used",
             "tool_calls_used",

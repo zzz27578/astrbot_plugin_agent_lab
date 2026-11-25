@@ -13,6 +13,7 @@ BUDGET_LIMITS = {
     "max_nodes_per_tick": (1, 200), "max_seconds_per_tick": (1, 3600),
     "max_tokens_per_tick": (0, 1_000_000), "max_total_ticks": (0, 100_000),
     "max_total_tool_calls": (0, 100_000), "max_total_tokens": (0, 50_000_000),
+    "max_total_seconds": (0, 604800),
 }
 MODES = {"readonly", "standard", "full"}
 
@@ -52,7 +53,7 @@ def normalize(payload):
     if any(not (posixpath.isabs(root) or ntpath.isabs(root)) or any(c in root for c in "*?[]") for root in roots):
         raise ValueError("授权范围请填写不含通配符的绝对目录路径。")
     return {"mode": mode, "roots": roots, "continuity": continuity,
-            "round_tool_limit": integer(payload.get("round_tool_limit", 24), 1, 10000),
+            "round_tool_limit": integer(payload.get("round_tool_limit", 0), 0, 10000),
             "warnings": lines(payload.get("warnings", [])), "task_prompt": task_prompt,
             "budget": {key: integer(value, *BUDGET_LIMITS[key]) for key, value in budget.items() if key in BUDGET_LIMITS}}
 
@@ -94,6 +95,6 @@ async def save_native_steps(owner, umo, value):
 def effective(owner, project, budget=None):
     settings = normalize(project.get("execution_settings") or {})
     base = budget or TaskBudget()
-    settings["budget"] = {key: settings["budget"].get(key, getattr(base, key)) for key in BUDGET_LIMITS}
+    settings["budget"] = {key: settings["budget"].get(key, getattr(base, key, 0)) for key in BUDGET_LIMITS}
     settings["native_steps"] = native_steps(owner, project.get("source_umo") or None)
     return settings

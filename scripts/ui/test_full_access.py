@@ -3,6 +3,7 @@ import ast
 import asyncio
 import importlib
 import json
+from pathlib import Path
 import unittest
 from types import SimpleNamespace as S
 from unittest.mock import patch
@@ -54,9 +55,11 @@ class FullPolicyTests(unittest.TestCase):
                  'authorized_scope_roots': ['/project'], 'scope_roots': ['/project', '/outside']}
         self.assertEqual(Permissions.authorized_roots(state), ['/project'])
         self.assertEqual(Permissions.assess('astrbot_file_write_tool', {'path': '/outside/x'}, state)[0], 'review')
-        for mode, expected in [('standard', 'review'), ('readonly', 'deny'), ('full', 'allow')]:
+        for mode, expected in [('standard', 'allow'), ('readonly', 'allow'), ('full', 'allow')]:
             self.assertEqual(Permissions.assess('astrbot_execute_shell', {'command': 'ls /project && ls /project/modules'},
                              {'execution_settings': {'mode': mode, 'roots': ['/project']}})[0], expected)
+        self.assertEqual(Permissions.assess('astrbot_execute_shell', {'command': 'python -m pytest'},
+                         {'execution_settings': {'mode': 'readonly', 'roots': ['/project']}})[0], 'deny')
         settings = importlib.import_module('review_agent_lab.execution_settings')
         for root in ['relative/path', '/project/*']:
             with self.assertRaises(ValueError):
@@ -80,16 +83,17 @@ class FullRuntimeTests(unittest.IsolatedAsyncioTestCase):
     def tearDown(self):
         self.fixture.tearDown()
 
-    async def test_guard_does_not_send_card_and_approval_results_are_readable_once(self):
+    def bridge_fixture(self, output='command completed'):
         from mcp.types import CallToolResult, TextContent
         task, _ = self.fixture.task(status='running')
         Control.control(task).update(current_step_id='one', execution_settings={'mode': 'full', 'roots': ['/project']})
         self.storage.save_task(task)
         event = self.fixture.event(task.umo)
         event.get_extra = lambda k, default=None: default
-        tool = S(name='astrbot_execute_shell', description='')
+        tools = {name: S(name=name, description='') for name in ('astrbot_execute_shell', 'astrbot_file_read_tool')}
+        tool = tools['astrbot_execute_shell']
         bridge = Bridge.AstrBotBridge(self.owner)
-        bridge.tool = lambda *args: tool
+        bridge.tool = lambda name, event=None: tools.get(name)
         bridge.execution_context = lambda event: self.owner.context
         self.owner._tool_allowed_by_agent_profile = self.owner._tool_available_for_agent = lambda *args: True
         self.owner._disabled_plugin_names = lambda *args: []
@@ -98,14 +102,25 @@ class FullRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.owner._budget_remaining_tools = lambda task: 8
         self.owner._consume_tool_budget = lambda *args: ''
         calls = []
-        output = 'first\n' + 'a' * 13000 + '\nlast directory'
         async def execute(tool, context, **args):
             calls.append(args)
-            yield CallToolResult(content=[TextContent(type='text', text=output)])
+            result = Path(args['path']).read_text(encoding='utf-8') if tool.name == 'astrbot_file_read_tool' else output
+            yield CallToolResult(content=[TextContent(type='text', text=result)])
         modules = {'astrbot.core.astr_agent_context': S(AstrAgentContext=S, AgentContextWrapper=S),
                    'astrbot.core.astr_agent_tool_exec': S(FunctionToolExecutor=S(execute=execute))}
+        return task, event, tools, bridge, calls, modules
+
+    async def test_guard_does_not_send_card_and_approved_result_is_reused_without_execution(self):
+        output = 'first\n' + 'a' * 40000 + '\nlast directory'
+        task, event, tools, bridge, calls, modules = self.bridge_fixture(output)
+        tool = tools['astrbot_execute_shell']
         with patch.dict(__import__('sys').modules, modules):
-            await bridge.invoke(event, tool, {'command': 'ls /project && ls /project/modules'})
+            visible = await bridge.invoke(event, tool, {'command': 'ls /project && ls /project/modules'})
+            first = Control.control(self.storage.load_active_task(task.umo))['journal'][-1]
+            first_path = (self.storage.root / first['result_path']).resolve()
+            self.assertTrue(first_path.is_file())
+            self.assertEqual(first_path.read_text(encoding='utf-8'), output)
+            self.assertIn(str(first_path), visible)
             await bridge.invoke(event, tool, {'command': 'rm /project/a.tmp /project/b.tmp'})
             with self.assertRaises(Bridge.OperationBlocked):
                 await bridge.invoke(event, tool, {'command': 'rm -rf /project'})
@@ -118,46 +133,106 @@ class FullRuntimeTests(unittest.IsolatedAsyncioTestCase):
             task.status = 'running'; task.approvals[-1]['status'] = 'approved'
             self.storage.save_task(task)
             self.assertTrue(await bridge.resume_batch(event, task))
-            await bridge.invoke(event, tool, args)
+            reused = await bridge.invoke(event, tool, args)
             self.assertEqual(len(calls), 3)
+            self.assertIn('last directory', reused)
             task = self.storage.load_active_task(task.umo)
             journal = Control.control(task)['journal'][-1]
             self.assertEqual(journal['status'], 'completed')
             self.assertEqual(journal['result_chars'], len(output))
-            evidence = json.loads(Control.prompt(task).split(']\n', 1)[1])['recent_tool_evidence'][-1]
-            self.assertEqual(evidence['arguments'], args)
-            self.assertTrue(evidence['result_truncated'])
-            self.assertLessEqual(len(evidence['result']), 600)
-            tail = json.loads(bridge.read_evidence(event, journal['id'], 12000))
-            self.assertIn('last directory', tail['result'])
-            self.assertEqual(tail['total_chars'], len(output))
+            plan_prompt = Control.prompt(task)
+            plan = json.loads(plan_prompt.split(']\n', 1)[1])
+            self.assertNotIn('recent_tool_evidence', plan)
+            self.assertNotIn('agent_lab_read_tool_evidence', plan_prompt)
+            recent = plan['recent_tools'][-1]
+            self.assertEqual(recent['arguments'], args)
+            self.assertEqual(recent['result_path'], journal['result_path'])
+            self.assertLessEqual(len(recent['result']), 600)
+            archived_path = (self.storage.root / journal['result_path']).resolve()
+            self.assertTrue(archived_path.is_relative_to(self.storage.task_memory_dir(task.umo, task.task_id).resolve()))
+            self.assertEqual(archived_path.read_text(encoding='utf-8'), output)
             self.assertEqual(task.approvals[-1]['status'], 'consumed')
-            # Refusals count attempts, not identical strings. An intervening
-            # harmless query cannot keep a stubborn model running forever.
-            for i, command in enumerate(['rm -rf /project', 'ls /outside/changed', 'rm /project/*']):
-                expected = Bridge.ExecutionStopped if i == 2 else Bridge.OperationBlocked
-                with self.assertRaises(expected):
-                    await bridge.invoke(event, tool, {'command': command})
-                if i == 0:
-                    await bridge.invoke(event, tool, {'command': 'ls /project'})
+            # The same native file tool used for source files reads the archive.
+            await bridge.invoke(event, tools['astrbot_file_read_tool'], {'path': str(archived_path)})
+            self.assertEqual(calls[-1], {'path': str(archived_path)})
+            self.assertEqual(len(calls), 4)
+            archive_read = Control.control(self.storage.load_active_task(task.umo))['journal'][-1]
+            self.assertEqual(archive_read['status'], 'completed')
+            self.assertEqual((self.storage.root / archive_read['result_path']).read_text(encoding='utf-8'), output)
+
+    async def test_three_different_dangerous_refusals_do_not_pause_or_execute(self):
+        task, event, tools, bridge, calls, modules = self.bridge_fixture()
+        with patch.dict(__import__('sys').modules, modules):
+            for command in ['rm -rf /project', 'ls /outside/changed', 'cat /project/.env']:
+                with self.assertRaises(Bridge.OperationBlocked):
+                    await bridge.invoke(event, tools['astrbot_execute_shell'], {'command': command})
+                current = self.storage.load_active_task(task.umo)
+                self.assertEqual(current.status, 'running')
+                self.assertFalse(current.pending_approvals())
+                self.assertEqual(Control.control(current)['journal'][-1]['status'], 'failed')
+            current = self.storage.load_active_task(task.umo)
+            self.assertEqual(Control.control(current)['guard_refusals']['count'], 3)
+            self.assertEqual(current.workflow_data['progress_guard']['failure_ticks'], 1)
+            self.assertEqual(calls, [])
+
+    async def test_equivalent_refusals_warn_before_pausing_and_administrator_can_resume(self):
+        task, event, tools, bridge, calls, modules = self.bridge_fixture()
+        tool = tools['astrbot_execute_shell']
+        with patch.dict(__import__('sys').modules, modules):
+            for attempt in range(1, 6):
+                expected = Bridge.ExecutionStopped if attempt == 5 else Bridge.OperationBlocked
+                with self.assertRaises(expected) as caught:
+                    await bridge.invoke(event, tool, {'command': 'rm -rf /project'})
+                current = self.storage.load_active_task(task.umo)
+                self.assertEqual(current.status, 'paused' if attempt == 5 else 'running')
+                self.assertFalse(current.pending_approvals())
+                if attempt == 3:
+                    self.assertEqual(current.workflow_data['progress_guard']['decision'], 'warning')
+                    self.assertIn('调整参数或换一种方法', str(caught.exception))
+                if attempt == 4:
+                    self.assertEqual(current.workflow_data['progress_guard']['decision'], 'observed')
+                    self.assertNotIn('调整参数或换一种方法', str(caught.exception))
             task = self.storage.load_active_task(task.umo)
-            self.assertEqual(task.status, 'paused')
-            self.assertEqual(task.wait.wait_reason, 'guard_retry_limit')
-            self.assertEqual(Control.control(task)['guard_refusals']['count'], 3)
-            self.assertFalse(task.pending_approvals())
+            self.assertEqual(task.wait.wait_reason, 'repeated_tool_error')
+            self.assertEqual(Control.control(task)['guard_refusals']['count'], 5)
+            self.assertEqual(len([log for log in task.progress_log if log['kind'] == 'liveness_warning']), 1)
+            self.assertEqual(calls, [])
             self.assertFalse(self.owner.task_control.ready(task))
-            # Execute the actual administrator resume branch, without starting
-            # a background model loop. It must release this pause and counter.
-            tree = ast.parse((ROOT / 'main.py').read_text(encoding='utf-8'))
-            method = next(n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name == '_handle_command')
-            ns = {'AstrMessageEvent': object, 'task_control': Control.control, 'now_iso': Models.now_iso}
-            exec(compile(ast.Module(body=[method], type_ignores=[]), '<actual-resume>', 'exec'), ns)
+            # A further dispatch is stopped before it can execute.
+            with self.assertRaises(Bridge.ExecutionStopped):
+                await bridge.invoke(event, tool, {'command': 'ls /project'})
+            self.assertEqual(calls, [])
+            resume = Fixture.actual_method('_handle_command')
             self.owner._total_budget_reason = lambda task: ''
             with patch.object(self.owner.task_control, 'schedule', lambda event: None):
-                await ns[method.name](self.owner, event, 'resume')
+                await resume(self.owner, event, 'resume')
             resumed = self.storage.load_active_task(task.umo)
             self.assertEqual(resumed.status, 'running')
             self.assertNotIn('guard_refusals', Control.control(resumed))
+            self.assertNotIn('progress_guard', resumed.workflow_data)
+
+    async def test_successful_tool_interrupts_equivalent_refusal_streak(self):
+        task, event, tools, bridge, calls, modules = self.bridge_fixture()
+        tool = tools['astrbot_execute_shell']
+        with patch.dict(__import__('sys').modules, modules):
+            for _ in range(2):
+                for _ in range(3):
+                    with self.assertRaises(Bridge.OperationBlocked):
+                        await bridge.invoke(event, tool, {'command': 'rm -rf /project'})
+                current = self.storage.load_active_task(task.umo)
+                self.assertEqual(current.status, 'running')
+                self.assertEqual(current.workflow_data['progress_guard']['decision'], 'warning')
+                await bridge.invoke(event, tool, {'command': 'ls /project'})
+                current = self.storage.load_active_task(task.umo)
+                self.assertEqual(current.workflow_data['progress_guard']['failure_ticks'], 0)
+                self.assertEqual(current.status, 'running')
+            with self.assertRaises(Bridge.OperationBlocked):
+                await bridge.invoke(event, tool, {'command': 'rm -rf /project'})
+            current = self.storage.load_active_task(task.umo)
+            self.assertEqual(current.workflow_data['progress_guard']['failure_ticks'], 1)
+            self.assertEqual(Control.control(current)['guard_refusals']['count'], 7)
+            self.assertEqual(current.status, 'running')
+            self.assertEqual(len(calls), 2)
 
     async def test_project_policy_refresh_clears_only_legacy_auto_cards(self):
         task, project = self.fixture.task(status='running')

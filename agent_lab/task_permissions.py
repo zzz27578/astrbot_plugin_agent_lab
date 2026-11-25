@@ -16,29 +16,27 @@ READ_TOOLS = {"astrbot_file_read_tool", "astrbot_grep_tool", "astrbot_list_direc
 WRITE_TOOLS = {"astrbot_file_write_tool", "astrbot_file_edit_tool"}
 CODE_TOOLS = {"astrbot_execute_shell", "astrbot_execute_python", "astrbot_execute_ipython",
               "astrbot_sandboxed_shell", "astrbot_sandboxed_python", "astrbot_shell_session"}
-SECRET_PATH = re.compile(r"(?:^|[/\\])(?:\.env(?:\.[^/\\]*)?|\.ssh|\.git-credentials|credentials(?:\.[^/\\]*)?|id_(?:rsa|ed25519)|[^/\\]+\.pem)(?:$|[/\\])", re.I)
-SAFE_SHELL = {"pwd", "ls", "cat", "head", "tail", "rg", "grep", "wc", "stat", "dir", "type"}
-GUARD_RETRY_LIMIT = 3
+SECRET_PATH = re.compile(r"(?:^|[/\\])(?:\.env(?:\.[^/\\]*)?|\.ssh|\.aws|\.git-credentials|\.npmrc|\.pypirc|credentials(?:\.[^/\\]*)?|id_(?:rsa|ecdsa|ed25519)|[^/\\]+\.(?:pem|key|p12|pfx))(?:$|[/\\])", re.I)
+SAFE_SHELL = {"pwd", "ls", "cat", "head", "tail", "rg", "grep", "wc", "stat", "dir", "type",
+              "get-content", "get-childitem", "get-location", "select-string", "test-path",
+              "select-object", "measure-object"}
+GUARD_RETRY_LIMIT = 3  # Compatibility/telemetry only; never a pause threshold.
 UNRESOLVED_PATH_REASON = "路径变量尚未解析"
 
 
 def record_guard_refusal(task, reason):
-    """Bound repeated refusals across parameter changes and harmless read calls."""
+    """Record a refusal without stopping execution (legacy bridge API).
+
+    Always return an empty string: older callers interpret any nonempty return
+    as an instruction to stop. Feed failed results to progress_guard.observe_tool
+    for actual consecutive-error detection and its warning-before-pause policy.
+    """
     state = task.workflow_data.setdefault("task_control", {})
     key = state.get("current_step_id", "")
     previous = state.get("guard_refusals", {})
     count = previous.get("count", 0) + 1 if previous.get("key") == key else 1
     state["guard_refusals"] = {"key": key, "count": count, "reason": reason}
-    if count < GUARD_RETRY_LIMIT:
-        return ""
-    message = f"本阶段已有 {count} 次操作被安全兜底拒绝，已暂停自动执行，避免反复尝试。最后原因：{reason}"
-    state["human_paused"] = True
-    task.status = "paused"
-    task.watchdog.paused_reason = message
-    task.watchdog.last_decision = "guard_retry_limit"
-    task.set_wait(wait_reason="guard_retry_limit", message=message, source="execution_guard", resume_command="任务继续")
-    task.add_log("guard_retry_limit", message)
-    return message
+    return ""
 
 
 def authorized_roots(state):
@@ -55,21 +53,32 @@ def authorized_roots(state):
 
 def execution_guidance(state):
     mode = (state.get("execution_settings") or {}).get("mode", "standard")
-    if mode == "full":
-        return ("完全权限：已授权范围内自主执行目录查询、搜索、新建和修改文件、Shell/Python、测试及少量明确文件清理，"
-                "无需逐项申请，不因连接命令、重定向或工具类型而送审。只在越出授权范围、清空项目/目录、批量破坏数据、"
-                "读取凭证或命中管理员明确审批线时，先主动调用 agent_lab_request_approval，提交确切工具与参数。"
-                "后端拒绝仅表示该动作未执行，不会自动代你申请；改用合规方案或主动申请。"
-                "同一阶段累计3次被兜底拒绝会暂停自动执行，修改危险参数或插入普通查询不会清零；不要反复试探。"
-                "当前权限档位优先于通用工具风险标签；不能因为工具标签为 high 或旧说明泛称删除危险就为普通清理申请。"
-                "授权范围只能由管理员扩大；未配置路径范围时沿用宿主访问限制，不能声称已经具备文件系统隔离。")
     if mode == "readonly":
         return "只读权限：只做读取与查询，不写入、不清理、不执行有副作用的动作；审批不能代替管理员切换权限档位。"
-    return "标准开发：普通读取、明确文件写入和常规测试直接执行；危险操作先主动汇总工具与参数申请审批。预计范围外普通关联操作提醒管理员。"
+    return ("授权目录内普通读取、搜索、写入、Shell/Python 和测试直接执行，无需逐项申请。"
+            "明确越界、清空或递归删除目录、访问敏感凭据、破坏数据库或系统以及管理员明确审批规则需先请示。"
+            "被拒绝的动作未执行；调整方法或主动提交确切工具与参数申请。"
+            "授权范围只能由管理员扩大；未配置目录时沿用宿主访问限制，本检查不替代系统隔离。")
 
 
 def _absolute(value):
     return posixpath.isabs(value) or ntpath.isabs(value)
+
+
+def _resolve(value, cwd):
+    if not _absolute(value) and cwd:
+        module = ntpath if ntpath.splitdrive(cwd)[0] else posixpath
+        return module.normpath(module.join(cwd, value))
+    return value
+
+
+def _sensitive(path):
+    if SECRET_PATH.search(path):
+        return True
+    try:
+        return Path(path).is_absolute() and bool(SECRET_PATH.search(str(Path(path).resolve())))
+    except (OSError, RuntimeError, ValueError):
+        return True
 
 
 def _tokens(command):
@@ -140,6 +149,10 @@ def read_only_call(name, args):
         if any(v in {">", ">>", "<", "&", "(", ")"} for v in argv):
             return False
         exe = ntpath.basename(argv[0]).lower().removesuffix(".exe")
+        if exe == "git" and argv[1:2] and argv[1] in {"status", "diff", "log", "show", "ls-files", "rev-parse"}:
+            if any(v.startswith(("--output", "--ext-diff", "--textconv")) for v in argv[2:]):
+                return False
+            continue
         if exe not in SAFE_SHELL | {"find"}:
             return False
         if any(v.startswith(("--pre", "--exec", "--config", "--files-from")) or
@@ -150,7 +163,8 @@ def read_only_call(name, args):
 
 def _destructive_query(text):
     return bool(re.search(r"\b(?:drop\s+(?:database|schema|table)|truncate\s+(?:table\s+)?[\w.]+)\b", text, re.I)
-                or re.search(r"\bdelete\s+from\b", text, re.I) and not re.search(r"\bwhere\b", text, re.I)
+                or any(re.search(r"\bdelete\s+from\b", statement, re.I) and not re.search(r"\bwhere\b", statement, re.I)
+                       for statement in text.split(";"))
                 or re.search(r"\b(?:delete_many|deleteMany)\s*\(\s*\{\s*\}\s*\)", text))
 
 
@@ -162,11 +176,13 @@ def full_guard(name, args, state, _depth=0):
     turned into another blanket approval gate.
     """
     roots = authorized_roots(state)
+    cwd = _resolve(args.get("cwd") or state.get("execution_cwd") or "", state.get("execution_cwd"))
     paths, deletions = [], []
+    def add_paths(values):
+        paths.extend(_resolve(value, cwd) for value in values)
     for key in ("path", "file_path", "directory", "cwd", "target", "source", "destination", "dest", "paths", "files", "targets"):
         value = args.get(key)
-        paths.extend([value] if isinstance(value, str) else [v for v in value if isinstance(v, str)] if isinstance(value, list) else [])
-    cwd = args.get("cwd") or state.get("execution_cwd")
+        add_paths([value] if isinstance(value, str) else [v for v in value if isinstance(v, str)] if isinstance(value, list) else [])
     destructive = False
     database_command = False
     command = args.get("command", "") if name in CODE_TOOLS else ""
@@ -181,7 +197,7 @@ def full_guard(name, args, state, _depth=0):
             if redirect:
                 redirect = False
                 if token not in {"/dev/null", "/dev/stdout", "/dev/stderr", "NUL", "nul"}:
-                    paths.append(token)
+                    add_paths([token])
                 continue
             if token in {";", "&&", "||", "|", "&", "\n", "(", ")"} or token and set(token) <= {";", "\n"}:
                 if segment:
@@ -190,27 +206,31 @@ def full_guard(name, args, state, _depth=0):
                     if exe in SAFE_SHELL - {"rg", "grep", "wc", "pwd"} | {"mkdir", "touch", "cp", "mv", "rm", "unlink", "rmdir", "del", "erase", "rd", "remove-item", "ri"}:
                         operands = [v for v in segment[1:] if not v.startswith("-") and not v.isdecimal()
                                     and v.lower() not in {"/s", "/q", "/f", "/b", "/a", "/d"}]
-                        paths.extend(operands if operands else [cwd] if cwd else [])
+                        add_paths(operands if operands else [cwd] if cwd else [])
                     if exe == "find":
                         bases = []
                         for value in segment[1:]:
                             if value.startswith("-") or value in {"(", ")"}:
                                 break
                             bases.append(value)
-                        paths.extend(bases or ([cwd] if cwd else []))
+                        add_paths(bases or ([cwd] if cwd else []))
                     if exe in {"rm", "unlink", "rmdir", "del", "erase", "rd", "remove-item", "ri"}:
                         targets = [v for v in segment[1:] if not v.startswith("-") and v.lower() not in {"/s", "/q", "/f"}]
-                        deletions.extend(targets)
+                        deletions.extend(_resolve(v, cwd) for v in targets)
                         recursive = any(v.lower() in {"--recursive", "-recurse", "/s"} or
                                         v.startswith("-") and "r" in v[1:].lower() and not v.startswith("--") for v in segment[1:])
-                        destructive |= recursive and any(not posixpath.splitext(v.replace("\\", "/"))[1] for v in targets)
+                        destructive |= recursive
                     if exe == "find" and ("-delete" in segment or any(v in {"rm", "unlink", "rmdir"} for v in segment[1:])):
                         narrowed = any(v in {"-name", "-iname", "-path", "-ipath"} and i+1 < len(segment)
                                        and segment[i+1] not in {"*", "**", "./*"} for i, v in enumerate(segment))
                         destructive |= not narrowed
-                    if exe in {"mkfs", "format", "diskpart", "wipefs", "shred"} or exe.startswith("mkfs."):
+                    if exe in {"mkfs", "format", "diskpart", "wipefs", "shred", "shutdown", "reboot", "halt",
+                               "stop-computer", "restart-computer", "clear-disk", "remove-partition"} or exe.startswith("mkfs."):
                         destructive = True
-                    if exe == "git" and any(v in {"clean", "--hard"} for v in segment[1:]):
+                    if exe == "redis-cli" and any(v.upper() in {"FLUSHALL", "FLUSHDB"} for v in segment[1:]):
+                        destructive = True
+                    if exe == "git" and ("--hard" in segment[1:] or
+                            "clean" in segment[1:] and not any(v in {"-n", "--dry-run"} for v in segment[1:])):
                         destructive = True
                     if exe == "dd" and any(v.startswith("of=/dev/") for v in segment[1:]):
                         destructive = True
@@ -222,15 +242,18 @@ def full_guard(name, args, state, _depth=0):
                             module = ntpath if ntpath.splitdrive(cwd)[0] else posixpath
                             cwd = module.normpath(module.join(cwd, target))
                         else:
-                            paths.append(target)
+                            add_paths([target])
+                        if cwd:
+                            paths.append(cwd)
                     segment = []
             elif token not in {">", ">>", "<", "2", "1"}:
                 segment.append(token)
             candidate = token.split("=", 1)[-1] if "=" in token else token
             if candidate.lower() in {"/s", "/q", "/f", "/b", "/a", "/d", "/c"} and segment and ntpath.basename(segment[0]).lower() in {"cmd", "cmd.exe", "del", "erase", "rd", "rmdir", "dir"}:
                 continue
-            if _absolute(candidate) or candidate.startswith(("./", "../", ".\\", "..\\")):
-                paths.append(candidate)
+            literal_output = segment and ntpath.basename(segment[0]).lower() in {"echo", "printf", "write-output"}
+            if not literal_output and (_absolute(candidate) or candidate.startswith(("./", "../", ".\\", "..\\"))):
+                add_paths([candidate])
         if database_command and _destructive_query(command):
             destructive = True
     code = args.get("code", args.get("script", "")) if name in CODE_TOOLS else ""
@@ -264,36 +287,44 @@ def full_guard(name, args, state, _depth=0):
                 if func in {"execute", "executemany", "executescript", "query"} and any(_destructive_query(v) for v in literals):
                     destructive = True
                 if func in {"open", "Path", "remove", "unlink", "rmdir", "rmtree", "listdir", "scandir", "chdir", "walk", "rename"}:
-                    paths.extend(literals[:2] if func in {"rename", "replace"} else literals[:1])
+                    add_paths(literals[:2] if func in {"rename", "replace"} else literals[:1])
                 if func in {"remove", "unlink", "rmdir", "rmtree"}:
-                    deletions.extend(literals[:1])
+                    deletions.extend(_resolve(v, cwd) for v in literals[:1])
                     destructive |= func == "rmtree"
                     if not literals and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call):
-                        deletions.extend(a.value for a in node.func.value.args if isinstance(a, ast.Constant) and isinstance(a.value, str))
-                if func in {"system", "run", "Popen", "check_call", "check_output"} and literals and _depth < 3:
-                    nested_reason, nested_outside = full_guard("astrbot_execute_shell", {"command": literals[0]}, state, _depth+1)
+                        deletions.extend(_resolve(a.value, cwd) for a in node.func.value.args if isinstance(a, ast.Constant) and isinstance(a.value, str))
+                if func in {"system", "run", "Popen", "check_call", "check_output"} and node.args and _depth < 3:
+                    nested = literals[0] if literals else ""
+                    if isinstance(node.args[0], (ast.List, ast.Tuple)):
+                        argv = node.args[0].elts
+                        if all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in argv):
+                            nested = shlex.join([a.value for a in argv])
+                    nested_reason, nested_outside = full_guard("astrbot_execute_shell", {"command": nested, "cwd": cwd}, state, _depth+1)
                     if nested_reason:
                         return nested_reason, nested_outside
-        if re.search(r"\b(?:drop_database|drop_collection|delete_many|truncate)\s*\(", code):
+        if re.search(r"\b(?:drop_database|drop_collection)\s*\(", code) or re.search(r"\b(?:delete_many|deleteMany)\s*\(\s*\{\s*\}\s*\)", code):
             destructive = True
     if any(isinstance(args.get(key), str) and _destructive_query(args[key]) for key in ("sql", "query", "statement")):
         destructive = True
     if re.search(r"(?:^|_)(?:delete|remove|unlink|rmdir)(?:_|$)", name, re.I):
         deletions.extend(paths)
+        destructive |= bool(args.get("recursive") or args.get("recurse"))
     paths.extend(deletions)
     resolved = []
-    unresolved = []
     for path in paths:
         if "://" in path:
             continue
         if _VARIABLE.search(path) or "$(" in path:
-            unresolved.append(path)
             continue
-        if not _absolute(path) and cwd:
-            module = ntpath if ntpath.splitdrive(cwd)[0] else posixpath
-            path = module.normpath(module.join(cwd, path))
         resolved.append(path)
-    outside = list(dict.fromkeys(p for p in resolved if roots and (
+    # Result archives are readable through host file tools, but never become
+    # general execution/write roots. within() resolves symlinks before approval.
+    archive_root = state.get("task_data_root")
+    def archive_read(path):
+        return (name in READ_TOOLS and isinstance(archive_root, str)
+                and posixpath.splitext(path.replace("\\", "/"))[1].lower() in {".txt", ".log", ".md", ".json", ".jsonl"}
+                and within(path, archive_root) and not _sensitive(path))
+    outside = list(dict.fromkeys(p for p in resolved if roots and not archive_read(p) and (
         (_absolute(p) and not any(within(p, root) for root in roots))
         or (not _absolute(p) and ".." in p.replace("\\", "/").split("/")))))
     for target in deletions:
@@ -308,12 +339,10 @@ def full_guard(name, args, state, _depth=0):
             destructive = True
     warnings = (state.get("execution_settings") or {}).get("warnings", []) + state.get("risk_lines", [])
     matched = any(rule.startswith("审批:") and any(fnmatch.fnmatchcase(v, rule[3:].strip()) for v in [name, *resolved]) for rule in warnings)
-    sensitive = any(SECRET_PATH.search(p) for p in resolved)
+    sensitive = any(_sensitive(p) for p in [*resolved, *paths])
     if outside:
         return "超出管理员授权路径：" + "、".join(outside), outside
-    if unresolved:
-        return UNRESOLVED_PATH_REASON + "：" + "、".join(dict.fromkeys(unresolved)) + "。请在同一命令内明确赋值或改用绝对路径；未执行，也不计作危险尝试。", []
-    if destructive or len(set(deletions)) > 20 or re.search(r"(?:^|_)(?:delete_all|remove_all|wipe|drop_database|drop_schema|drop_table)(?:_|$)", name, re.I):
+    if destructive or len(set(deletions)) > 20 or re.search(r"(?:^|_)(?:delete_all|remove_all|wipe|drop_database|drop_schema|drop_table|delete_directory|remove_directory|clear_directory|rmtree)(?:_|$)", name, re.I):
         return "清空目录、批量删除或其他破坏性操作需要先主动申请批准。", []
     if sensitive or re.search(r"(?:^|_)(?:secret|credential|password)(?:_|$)", name, re.I):
         return "访问凭证或敏感路径需要先主动申请批准。", []
@@ -340,62 +369,26 @@ def within(path, root):
     module = ntpath if ntpath.splitdrive(path)[0] or ntpath.splitdrive(root)[0] else posixpath
     if not module.isabs(path) or not module.isabs(root):
         return False
-    # Resolve local symlinks where possible. This is a guard, not OS isolation.
-    if Path(path).is_absolute() and Path(root).is_absolute():
-        path, root = str(Path(path).resolve()), str(Path(root).resolve())
     try:
+        # Resolve local symlinks where possible. This is a guard, not OS isolation.
+        if Path(path).is_absolute() and Path(root).is_absolute():
+            path, root = str(Path(path).resolve()), str(Path(root).resolve())
         p, r = (module.normcase(module.normpath(v)) for v in (path, root))
         return module.commonpath((p, r)) == r
-    except ValueError:
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
 def assess(name, args, state, risk="work", description=""):
+    """Both development modes use the same narrow guard; risk labels are hints.
+
+    The bridge must supply execution_cwd (the host's actual working directory)
+    for relative paths. Unknown program effects belong to host isolation, not
+    a speculative per-command approval gate.
+    """
     policy = state.get("execution_settings") or {}
     mode = policy.get("mode", "standard")
-    if mode == "full":
-        reason, outside = full_guard(name, args, state)
-        return ("review" if reason else "allow"), outside
-    roots = policy.get("roots", []) + state.get("scope_roots", [])
-    warnings = policy.get("warnings", []) + state.get("risk_lines", [])
-    paths = [args[k] for k in ("path", "file_path", "directory", "cwd", "target", "url") if isinstance(args.get(k), str)]
-    command = args.get("command") if name in CODE_TOOLS else None
-    read = name in READ_TOOLS or (name not in WRITE_TOOLS | CODE_TOOLS and risk == "safe" and not re.search(r"send|upload|publish|delete|write|edit|exec", name, re.I))
-    dangerous = risk == "high" or name == "agent_lab_call_custom_api" or bool(re.search(
-        r"send|upload|publish|deploy|restart|secret|credential|delete|truncate|revoke|reset|(?:^|_)drop(?:_|$)", name, re.I))
-
-    if isinstance(command, str) and not re.search(r"[;&|<>`$\r\n%!*?{}^~\\]", command):
-        try:
-            argv = shlex.split(command, posix=True)
-        except ValueError:
-            argv = []
-        if argv:
-            exe = argv[0]
-            paths.extend(a for a in argv[1:] if a.startswith("/") or ntpath.splitdrive(a)[0])
-            if exe in SAFE_SHELL and not any(a.startswith(("--pre", "--exec", "--config", "--files-from")) for a in argv[1:]):
-                dangerous, read = False, True
-            elif exe == "git" and len(argv) >= 2 and argv[1] in {"status", "diff", "log", "show", "ls-files", "rev-parse"} and not any(a.startswith(("--output", "--ext-diff", "--textconv")) for a in argv[2:]):
-                dangerous, read = False, True
-            elif exe in {"python", "python3", "py"} and (argv[1:3] in (["-m", "pytest"], ["-m", "unittest"], ["-m", "compileall"]) or argv[1:] == ["--version"]):
-                dangerous = False
-            elif exe in {"pytest", "ruff"} or (exe in {"npm", "pnpm"} and argv[1:] in (["test"], ["run", "build"], ["run", "test"], ["run", "lint"])):
-                dangerous = False
-            elif exe in {"rm", "unlink"} and len(argv) > 1 and all(not target.startswith("-") and (
-                target in state.get("approved_cleanup_paths", []) or any(within(target, root) and not within(root, target)
-                for root in policy.get("roots", []))) for target in argv[1:]):
-                dangerous = False  # Explicit administrator root; named files, never recursive/glob.
-            else:
-                dangerous = True
-    elif name in CODE_TOOLS:
-        dangerous = True
-
-    if name in WRITE_TOOLS and args.get("path") and Path(str(args["path"])).name.lower() in {"cmd_config.json", "config.json"} and not any(within(str(args["path"]), r) for r in policy.get("roots", [])):
-        dangerous = True
-    if any(SECRET_PATH.search(path) for path in paths):
-        dangerous = True
-    selector = [name, *paths]
-    matched = [rule for rule in warnings if rule.startswith("审批:") and any(fnmatch.fnmatchcase(v, rule[3:].strip()) for v in selector)]
-    if matched:
-        dangerous = True
-    outside = [path for path in dict.fromkeys(paths) if roots and (path.startswith("/") or ntpath.splitdrive(path)[0]) and not any(within(path, root) for root in roots)]
-    return ("deny" if mode == "readonly" and not read else "review" if dangerous else "allow"), outside
+    reason, outside = full_guard(name, args, state)
+    read = read_only_call(name, args) or (name not in WRITE_TOOLS | CODE_TOOLS and risk == "safe"
+            and not re.search(r"send|upload|publish|delete|write|edit|exec", name, re.I))
+    return ("deny" if mode == "readonly" and not read else "review" if reason else "allow"), outside

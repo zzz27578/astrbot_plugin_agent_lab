@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[2]
+sys.dont_write_bytecode = True
 # Avoid the package initializer that imports AstrBot; tested modules are real.
 package=types.ModuleType('review_agent_lab');package.__path__=[str(ROOT/'agent_lab')]
 sys.modules['review_agent_lab']=package
@@ -25,6 +26,50 @@ Storage=importlib.import_module('review_agent_lab.storage').AgentLabStorage
 Projects=importlib.import_module('review_agent_lab.projects').Projects
 Control=importlib.import_module('review_agent_lab.task_control')
 Identities=importlib.import_module('review_agent_lab.identities')
+
+
+def actual_method(name, **overrides):
+    """Resolve saved plugin methods through its local mixin inheritance.
+
+    Avoid importing the plugin/decorators, but retain the real constants moved
+    into adapter_support and the defining module for relative imports.
+    """
+    sources = [(ROOT / 'main.py', ROOT.name),
+               (ROOT / 'agent_lab/canvas_extension.py', 'review_agent_lab')]
+    classes = {}
+    for path, package_name in sources:
+        tree = ast.parse(path.read_text(encoding='utf-8'))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                classes[node.name] = (node, path, package_name)
+
+    def resolve(class_name):
+        if class_name not in classes:
+            return None
+        node, path, package_name = classes[class_name]
+        for method in node.body:
+            if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)) and method.name == name:
+                return method, path, package_name
+        for base in node.bases:
+            result = resolve(base.id) if isinstance(base, ast.Name) else None
+            if result:
+                return result
+        return None
+
+    found = resolve('AgentLabPlugin')
+    if found is None:
+        raise LookupError(f'Plugin method not found: {name}')
+    method, path, package_name = found
+    method.decorator_list = []
+    namespace = dict(vars(importlib.import_module('review_agent_lab.adapter_support')))
+    namespace.update(TaskState=Models.TaskState, AgentSpec=Models.AgentSpec, AstrMessageEvent=object,
+                     task_control=Control.control, now_iso=Models.now_iso, json=json,
+                     ApprovalRequest=Models.ApprovalRequest, __package__=package_name)
+    namespace.update(overrides)
+    future = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
+    module = ast.fix_missing_locations(ast.Module(body=[future, method], type_ignores=[]))
+    exec(compile(module, str(path), 'exec'), namespace)
+    return namespace[name]
 
 class Database:
     def __init__(self):self.rows={};self.deleted=[]
@@ -89,11 +134,12 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
 
     async def test_bridge_scope_batch_resume_rejection_and_result_pairing(self):
         from mcp.types import CallToolResult, TextContent
-        Bridge = importlib.import_module('review_agent_lab.astrbot_bridge').AstrBotBridge
+        bridge_module = importlib.import_module('review_agent_lab.astrbot_bridge')
+        Bridge = bridge_module.AstrBotBridge
         Messages = importlib.import_module('review_agent_lab.task_messages').TaskMessages
         task, _ = self.task(status='running')
         state = Control.control(task)
-        state.update(current_step_id='one', execution_settings={'mode': 'standard', 'roots': ['/project']})
+        state.update(current_step_id='one', execution_settings={'mode': 'full', 'roots': ['/project']})
         self.storage.save_task(task)
         event = self.event(task.umo)
         event.get_extra = lambda key, default=None: default
@@ -118,8 +164,7 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         async def provider(umo):
             return 'model'
         async def summarize(**kwargs):
-            self.assertIn('恢复方式', kwargs['system_prompt'])
-            return SimpleNamespace(completion_text='删除两项旧文件。恢复时使用保留的备份。')
+            raise AssertionError('approval messages must not call another model')
         self.owner.context.get_current_chat_provider_id = provider
         self.owner.context.llm_generate = summarize
         modules = {
@@ -127,10 +172,19 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
             'astrbot.core.astr_agent_tool_exec': SimpleNamespace(FunctionToolExecutor=SimpleNamespace(execute=execute)),
         }
         with patch.dict(sys.modules, modules):
-            result = await bridge.invoke(event, tools['astrbot_file_read_tool'], {'path': '/outside/reference'}, native=True)
+            with self.assertRaises(bridge_module.OperationBlocked):
+                await bridge.invoke(event, tools['astrbot_file_read_tool'], {'path': '/outside/reference'}, native=True)
+            refused = self.storage.load_active_task(task.umo)
+            self.assertEqual(actions, [])
+            self.assertEqual(refused.status, 'running')
+            self.assertEqual(refused.pending_approvals(), [])
+            result = await bridge.invoke(event, tools['astrbot_file_read_tool'], {'path': '/project/reference'}, native=True)
             self.assertEqual(len(result), 1)
             self.assertEqual(result[0].content[0].text, 'file body')
-            self.assertIn('证据 ID', result[0].content[-1].text)
+            self.assertNotIn('证据 ID', result[0].content[0].text)
+            row = Control.control(self.storage.load_active_task(task.umo))['journal'][-1]
+            self.assertEqual(row['arguments'], {'path': '/project/reference'})
+            self.assertEqual((self.storage.root / row['result_path']).read_text(encoding='utf-8'), 'file body')
             await bridge.invoke(event, tools['astrbot_execute_shell'], {'command': 'ls /project'})
             ops = [{'tool_name': 'astrbot_execute_shell', 'arguments': {'command': 'rm /outside/' + suffix}} for suffix in ('one', 'two')]
             bridge.request_batch(event, ops, '清理旧文件', '影响两个对象', '恢复备份', message='删除两项旧文件。恢复时使用保留的备份。')
@@ -147,7 +201,8 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
             await bridge.resume_batch(event, current)
             self.assertEqual(actions[-2:], [(op['tool_name'], op['arguments']) for op in ops])
             self.assertEqual(len(actions), 4)
-            self.assertEqual(Control.control(current)['scope_notices'][0]['path'], '/outside/reference')
+            self.assertEqual(Control.control(current)['execution_settings']['roots'], ['/project'])
+            self.assertTrue(Control.control(current)['journal'][0]['blocked'])
             bridge.request_batch(event, ops[:1], '测试拒绝', '单项', '')
             current = self.storage.load_active_task(task.umo)
             current.approvals[-1]['status'] = 'rejected'; current.status = 'running'
@@ -378,22 +433,20 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
 
     async def test_archived_notification_keeps_explicit_owner_in_web_request(self):
         # Execute the actual factory without importing the entire AstrBot plugin.
-        source=ast.parse((ROOT/'main.py').read_text(encoding='utf-8'))
-        method=next(n for n in ast.walk(source) if isinstance(n,ast.FunctionDef) and n.name=='_make_cron_event')
         class CronEvent:
             def __init__(self,**kwargs):
                 self.unified_msg_origin='qq-a:FriendMessage:123';self.message_obj=SimpleNamespace(sender=SimpleNamespace(user_id=''))
             def set_extra(self,*args):pass
         cron=types.ModuleType('astrbot.core.cron.events');cron.CronMessageEvent=CronEvent
         session=types.ModuleType('astrbot.core.platform.message_session');session.MessageSession=SimpleNamespace(from_str=lambda umo:SimpleNamespace(message_type='FriendMessage'))
-        namespace={'task_control':Control.control,'has_request_context':lambda:True,'g':SimpleNamespace(username='web-admin'),'logger':SimpleNamespace(warning=lambda *args:None)}
-        exec(compile(ast.Module(body=[method],type_ignores=[]),'actual_event_factory','exec'),namespace)
+        method=actual_method('_make_cron_event',has_request_context=lambda:True,
+                             g=SimpleNamespace(username='web-admin'),logger=SimpleNamespace(warning=lambda *args:None))
         with patch.dict(sys.modules,{'astrbot.core.cron.events':cron,'astrbot.core.platform.message_session':session}):
             task,_=self.task();await self.projects.administrator_end(task.task_id,'completed','done','web-admin')
-            event=namespace['_make_cron_event'](self.owner,task.umo,'delivery',actor_id='123')
+            event=method(self.owner,task.umo,'delivery',actor_id='123')
             self.assertEqual(event.message_obj.sender.user_id,'123')
             another,_=self.task();state=Control.control(another);state['owner_id']='another-admin';self.storage.save_task(another)
-            event=namespace['_make_cron_event'](self.owner,task.umo,'old delivery',actor_id='123')
+            event=method(self.owner,task.umo,'old delivery',actor_id='123')
             self.assertEqual(event.message_obj.sender.user_id,'123')
 
     async def test_progress_merge_and_cleanup_during_transport(self):
@@ -414,17 +467,13 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(path.exists())
 
     async def test_direct_approval_tool_uses_same_task_stream(self):
-        source=ast.parse((ROOT/'main.py').read_text(encoding='utf-8'))
-        method=next(n for n in ast.walk(source) if isinstance(n,ast.AsyncFunctionDef) and n.name=='agent_lab_request_approval')
-        method.decorator_list=[]
-        namespace={'AstrMessageEvent':object,'ApprovalRequest':Models.ApprovalRequest}
-        exec(compile(ast.Module(body=[method],type_ignores=[]),'actual_approval_tool','exec'),namespace)
+        method=actual_method('agent_lab_request_approval')
         task,_=self.task(status='running');sent=[]
         async def send(umo,text):sent.append((umo,text))
         self.owner.task_messages=importlib.import_module('review_agent_lab.task_messages').TaskMessages(self.owner,send=send)
         self.owner.agent_runtime=SimpleNamespace(record_pause=lambda *args,**kwargs:None)
         authored='老爸，要动一下这份配置，备份已留好，你点头我再改。'
-        result=await namespace[method.name](self.owner,self.event(task.umo),'Write config','Fix issue','One file','Restore backup',message=authored)
+        result=await method(self.owner,self.event(task.umo),'Write config','Fix issue','One file','Restore backup',message=authored)
         self.assertEqual(len(sent),1);self.assertIn(task.task_id,sent[0][1]);self.assertEqual(sent[0][1].split('\n',1)[1],authored)
         self.assertIn('原任务消息线',result)
         self.assertEqual((await self.projects.detail(task.task_id))['messages'][0]['kind'],'approval')
