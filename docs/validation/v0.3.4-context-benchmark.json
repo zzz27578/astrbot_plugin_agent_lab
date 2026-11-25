@@ -1,0 +1,2494 @@
+{
+  "schema_version": 1,
+  "target_release": "v0.3.4",
+  "generated_at": "2026-11-25T07:52:58.120766+00:00",
+  "command": "python -B scripts/ui/test_agent_context_benchmark.py",
+  "python": "3.10.11",
+  "platform": "Windows-10-10.0.26200-SP0",
+  "simulation": true,
+  "real_api_calls": 0,
+  "scope": "real context_views, ReadCache and AgentLabStorage; temporary projects; simulated executor contract; no bridge/continuity/task_control execution",
+  "measurement_notes": {
+    "time": "time.perf_counter wall time; milliseconds; local disk/cache work only; no model latency or production speed claim",
+    "chars": "Unicode code points of json.dumps(ensure_ascii=False), unless field explicitly names source/output chars",
+    "estimated_tokens": "ceil(serialized UTF-8 bytes / 3), minimum 1; heuristic only; no tokenizer, API usage, billing or monetary costs",
+    "baseline": "same capped line requests read from disk without cache; cached path includes plan, executor and commit; local cache can cost more wall time while avoiding executor calls",
+    "rounds": "scripted requests and synthetic messages, no model-generated decisions; a new ReadCache instance per request tests persistent reuse",
+    "repeat_timing": "seven samples including first call, median/min/max; no brittle absolute speed threshold"
+  },
+  "summary": {
+    "tests_run": 16,
+    "failures": 0,
+    "errors": 0,
+    "passed": 16,
+    "successful": true,
+    "elapsed_ms": 5431.16,
+    "simulated_projects": 3,
+    "simulated_rounds": 12,
+    "baseline_executor_calls": 120,
+    "cached_executor_calls": 45,
+    "baseline_output_chars": 453592,
+    "fresh_output_chars": 189598
+  },
+  "source_sha256_at_start": {
+    "agent_lab/context_views.py": "5a91d12f982665201e4031b5acae7a1d0b6297a1c1052031a8f90cdc0c72ab02",
+    "agent_lab/read_cache.py": "1858849a4d9f9b1753ba7606684dea67e84f766790474f7c2aa18cef6f7b06a8",
+    "scripts/ui/test_agent_context_benchmark.py": "429da33d8ca981ec6ed65175432ff1791c334e4ebc594db938fad35809abedbf"
+  },
+  "source_sha256_at_end": {
+    "agent_lab/context_views.py": "5a91d12f982665201e4031b5acae7a1d0b6297a1c1052031a8f90cdc0c72ab02",
+    "agent_lab/read_cache.py": "1858849a4d9f9b1753ba7606684dea67e84f766790474f7c2aa18cef6f7b06a8",
+    "scripts/ui/test_agent_context_benchmark.py": "429da33d8ca981ec6ed65175432ff1791c334e4ebc594db938fad35809abedbf"
+  },
+  "sources_unchanged_during_run": true,
+  "scenarios": [
+    {
+      "scenario": "test_completed_pending_calls_models_and_multimodal_content",
+      "elapsed_ms": 5.182,
+      "observations": {
+        "raw": {
+          "chars": 61519,
+          "utf8_bytes": 183143,
+          "estimated_tokens": 61048
+        },
+        "summary": {
+          "chars": 611,
+          "utf8_bytes": 711,
+          "estimated_tokens": 237
+        },
+        "pending_call_preserved": true
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_corrupt_cached_text_is_never_reused",
+      "elapsed_ms": 151.541,
+      "observations": {
+        "corrupt_body_cases": [
+          "same_line_count",
+          "truncated",
+          "invalid_utf8",
+          "missing",
+          "missing_hash"
+        ]
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_corrupt_eof_cannot_hide_unread_lines",
+      "elapsed_ms": 57.141,
+      "observations": {
+        "untrusted_eof_ignored": true
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_corrupt_index_shapes_recover_for_plan_and_commit",
+      "elapsed_ms": 79.679,
+      "observations": {
+        "corrupt_index_cases": 8
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_evidence_lookup_is_lazy_and_repeated_views_are_stable",
+      "elapsed_ms": 4.802,
+      "observations": {
+        "raw": {
+          "chars": 20276,
+          "utf8_bytes": 44288,
+          "estimated_tokens": 14763
+        },
+        "provider": {
+          "chars": 4192,
+          "utf8_bytes": 8792,
+          "estimated_tokens": 2931
+        },
+        "time": {
+          "repeats": 7,
+          "min_ms": 0.0292,
+          "median_ms": 0.0333,
+          "max_ms": 0.1975
+        },
+        "repeated_passes": 60
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_full_hits_do_not_rewrite_cache_index",
+      "elapsed_ms": 53.328,
+      "observations": {
+        "reused": {
+          "offset": 10,
+          "requested_limit": 20,
+          "new_read_ranges": [],
+          "executor_calls": 0,
+          "fresh_output_chars": 0,
+          "reused_output_chars": 640,
+          "output_chars": 640,
+          "plan_ms": 1.4719,
+          "commit_ms": 0.0021,
+          "executor_ms": 0.0
+        },
+        "local_reuse_time": {
+          "repeats": 7,
+          "min_ms": 1.6864,
+          "median_ms": 1.7777,
+          "max_ms": 11.8696
+        },
+        "cache_index_unchanged": true
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_invalid_entry_metadata_and_oversized_tool_results",
+      "elapsed_ms": 125.421,
+      "observations": {
+        "invalid_metadata_cases": 8,
+        "oversized_result_not_cached": true
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_malformed_and_non_object_tool_arguments",
+      "elapsed_ms": 5.564,
+      "observations": {
+        "argument_shapes": 6
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_nested_arguments_are_bounded_without_stringifying_raw_payload",
+      "elapsed_ms": 134.271,
+      "observations": {
+        "raw": {
+          "chars": 19250444,
+          "utf8_bytes": 57658444,
+          "estimated_tokens": 19219482
+        },
+        "bounded": {
+          "chars": 422,
+          "utf8_bytes": 710,
+          "estimated_tokens": 237
+        },
+        "time": {
+          "repeats": 7,
+          "min_ms": 2.8941,
+          "median_ms": 3.0794,
+          "max_ms": 3.2483
+        },
+        "nested_depth": 80
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_policy_file_changes_and_mid_read_race_invalidate",
+      "elapsed_ms": 66.824,
+      "observations": {
+        "policy_mutations": 10,
+        "stale_commit_rejected": true,
+        "reread": {
+          "offset": 0,
+          "requested_limit": 10,
+          "new_read_ranges": [
+            [
+              0,
+              10
+            ]
+          ],
+          "executor_calls": 1,
+          "fresh_output_chars": 287,
+          "reused_output_chars": 0,
+          "output_chars": 287,
+          "plan_ms": 0.6104,
+          "commit_ms": 4.608,
+          "executor_ms": 10.236
+        },
+        "deletion_recreation_verified": true
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_short_outputs_never_grow",
+      "elapsed_ms": 5.0,
+      "observations": {
+        "output_lengths": [
+          499,
+          500,
+          700,
+          1200,
+          3000
+        ]
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_signatures_preserved_for_provider_and_removed_for_summary",
+      "elapsed_ms": 6.402,
+      "observations": {
+        "signature_cases": [
+          {
+            "position": "row",
+            "field": "reasoning_signature"
+          },
+          {
+            "position": "row",
+            "field": "signature"
+          },
+          {
+            "position": "row",
+            "field": "encrypted"
+          },
+          {
+            "position": "row",
+            "field": "extra_content"
+          },
+          {
+            "position": "call",
+            "field": "reasoning_signature"
+          },
+          {
+            "position": "call",
+            "field": "signature"
+          },
+          {
+            "position": "call",
+            "field": "encrypted"
+          },
+          {
+            "position": "call",
+            "field": "extra_content"
+          },
+          {
+            "position": "function",
+            "field": "reasoning_signature"
+          },
+          {
+            "position": "function",
+            "field": "signature"
+          },
+          {
+            "position": "function",
+            "field": "encrypted"
+          },
+          {
+            "position": "function",
+            "field": "extra_content"
+          },
+          {
+            "position": "content",
+            "field": "reasoning_signature"
+          },
+          {
+            "position": "content",
+            "field": "signature"
+          },
+          {
+            "position": "content",
+            "field": "encrypted"
+          },
+          {
+            "position": "content",
+            "field": "extra_content"
+          }
+        ]
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_simulated_projects_1617_lines_multiple_rounds",
+      "elapsed_ms": 1213.003,
+      "observations": {
+        "simulated_projects": [
+          {
+            "project": "web_dashboard",
+            "source_lines": 1617,
+            "source_chars": 93183,
+            "newline": "'\\r\\n'",
+            "final_newline": true,
+            "baseline_executor_calls": 40,
+            "cached_executor_calls": 15,
+            "avoided_executor_calls": 25,
+            "baseline_output_chars": 222912,
+            "fresh_output_chars": 93183,
+            "avoided_fresh_output_chars": 129729,
+            "baseline_local_read_ms": 22.6069,
+            "cached_local_total_ms": 328.9318,
+            "rounds": [
+              {
+                "round": 1,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 100,
+                    "new_read_ranges": [
+                      [
+                        0,
+                        100
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 5480,
+                    "reused_output_chars": 0,
+                    "output_chars": 5480,
+                    "plan_ms": 2.0337,
+                    "commit_ms": 5.2278,
+                    "executor_ms": 0.3186
+                  },
+                  {
+                    "offset": 70,
+                    "requested_limit": 80,
+                    "new_read_ranges": [
+                      [
+                        100,
+                        150
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 2850,
+                    "reused_output_chars": 1650,
+                    "output_chars": 4500,
+                    "plan_ms": 17.3899,
+                    "commit_ms": 4.472,
+                    "executor_ms": 0.4427
+                  },
+                  {
+                    "offset": 20,
+                    "requested_limit": 50,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 2750,
+                    "output_chars": 2750,
+                    "plan_ms": 8.7271,
+                    "commit_ms": 0.0026,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 14608,
+                  "utf8_bytes": 15620,
+                  "estimated_tokens": 5207
+                },
+                "provider_context": {
+                  "chars": 8144,
+                  "utf8_bytes": 8844,
+                  "estimated_tokens": 2948
+                },
+                "summary_context": {
+                  "chars": 3014,
+                  "utf8_bytes": 3418,
+                  "estimated_tokens": 1140
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.0775,
+                  "median_ms": 0.0897,
+                  "max_ms": 0.1466
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.0906,
+                  "median_ms": 0.1028,
+                  "max_ms": 0.168
+                }
+              },
+              {
+                "round": 2,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 350,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6620,
+                    "output_chars": 6620,
+                    "plan_ms": 3.3672,
+                    "commit_ms": 0.0019,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 120,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        150,
+                        240
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 5130,
+                    "reused_output_chars": 1710,
+                    "output_chars": 6840,
+                    "plan_ms": 2.1735,
+                    "commit_ms": 3.7753,
+                    "executor_ms": 0.8395
+                  },
+                  {
+                    "offset": 240,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        240,
+                        360
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 6840,
+                    "reused_output_chars": 0,
+                    "output_chars": 6840,
+                    "plan_ms": 9.0453,
+                    "commit_ms": 3.4227,
+                    "executor_ms": 0.3883
+                  },
+                  {
+                    "offset": 360,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        360,
+                        480
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 6840,
+                    "reused_output_chars": 0,
+                    "output_chars": 6840,
+                    "plan_ms": 6.067,
+                    "commit_ms": 3.2735,
+                    "executor_ms": 0.4654
+                  },
+                  {
+                    "offset": 480,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        480,
+                        600
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 6840,
+                    "reused_output_chars": 0,
+                    "output_chars": 6840,
+                    "plan_ms": 9.8963,
+                    "commit_ms": 3.4577,
+                    "executor_ms": 0.4604
+                  },
+                  {
+                    "offset": 600,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        600,
+                        720
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 6840,
+                    "reused_output_chars": 0,
+                    "output_chars": 6840,
+                    "plan_ms": 8.0643,
+                    "commit_ms": 3.5981,
+                    "executor_ms": 0.3728
+                  },
+                  {
+                    "offset": 720,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        720,
+                        840
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 6840,
+                    "reused_output_chars": 0,
+                    "output_chars": 6840,
+                    "plan_ms": 8.9842,
+                    "commit_ms": 3.2456,
+                    "executor_ms": 0.3715
+                  },
+                  {
+                    "offset": 840,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        840,
+                        960
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 6840,
+                    "reused_output_chars": 0,
+                    "output_chars": 6840,
+                    "plan_ms": 8.161,
+                    "commit_ms": 3.2725,
+                    "executor_ms": 0.417
+                  },
+                  {
+                    "offset": 960,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        960,
+                        1080
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 7000,
+                    "reused_output_chars": 0,
+                    "output_chars": 7000,
+                    "plan_ms": 7.8066,
+                    "commit_ms": 4.1424,
+                    "executor_ms": 0.4426
+                  },
+                  {
+                    "offset": 1080,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1080,
+                        1200
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 7080,
+                    "reused_output_chars": 0,
+                    "output_chars": 7080,
+                    "plan_ms": 10.3611,
+                    "commit_ms": 3.4609,
+                    "executor_ms": 0.7182
+                  },
+                  {
+                    "offset": 1200,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1200,
+                        1320
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 7080,
+                    "reused_output_chars": 0,
+                    "output_chars": 7080,
+                    "plan_ms": 9.5117,
+                    "commit_ms": 3.6746,
+                    "executor_ms": 0.3971
+                  },
+                  {
+                    "offset": 1320,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1320,
+                        1440
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 7080,
+                    "reused_output_chars": 0,
+                    "output_chars": 7080,
+                    "plan_ms": 8.3604,
+                    "commit_ms": 3.7544,
+                    "executor_ms": 0.3956
+                  },
+                  {
+                    "offset": 1440,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1440,
+                        1560
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 7080,
+                    "reused_output_chars": 0,
+                    "output_chars": 7080,
+                    "plan_ms": 8.3209,
+                    "commit_ms": 3.7247,
+                    "executor_ms": 0.3855
+                  },
+                  {
+                    "offset": 1560,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1560,
+                        1680
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3363,
+                    "reused_output_chars": 0,
+                    "output_chars": 3363,
+                    "plan_ms": 7.1202,
+                    "commit_ms": 3.6852,
+                    "executor_ms": 0.3544
+                  }
+                ],
+                "raw_context": {
+                  "chars": 117427,
+                  "utf8_bytes": 125243,
+                  "estimated_tokens": 41748
+                },
+                "provider_context": {
+                  "chars": 21343,
+                  "utf8_bytes": 23855,
+                  "estimated_tokens": 7952
+                },
+                "summary_context": {
+                  "chars": 16895,
+                  "utf8_bytes": 19091,
+                  "estimated_tokens": 6364
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.3848,
+                  "median_ms": 0.3998,
+                  "max_ms": 0.502
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.4989,
+                  "median_ms": 0.5148,
+                  "max_ms": 0.5515
+                }
+              },
+              {
+                "round": 3,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6620,
+                    "output_chars": 6620,
+                    "plan_ms": 11.7291,
+                    "commit_ms": 0.0036,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 120,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6840,
+                    "output_chars": 6840,
+                    "plan_ms": 11.6364,
+                    "commit_ms": 0.0027,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 240,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6840,
+                    "output_chars": 6840,
+                    "plan_ms": 13.7733,
+                    "commit_ms": 0.0031,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 360,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6840,
+                    "output_chars": 6840,
+                    "plan_ms": 2.6163,
+                    "commit_ms": 0.0029,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 480,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6840,
+                    "output_chars": 6840,
+                    "plan_ms": 2.3074,
+                    "commit_ms": 0.0024,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 600,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6840,
+                    "output_chars": 6840,
+                    "plan_ms": 2.4875,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 720,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6840,
+                    "output_chars": 6840,
+                    "plan_ms": 2.6453,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 840,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6840,
+                    "output_chars": 6840,
+                    "plan_ms": 10.6656,
+                    "commit_ms": 0.0029,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 960,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 7000,
+                    "output_chars": 7000,
+                    "plan_ms": 8.7466,
+                    "commit_ms": 0.0034,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1080,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 7080,
+                    "output_chars": 7080,
+                    "plan_ms": 10.1394,
+                    "commit_ms": 0.0037,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1200,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 7080,
+                    "output_chars": 7080,
+                    "plan_ms": 12.6996,
+                    "commit_ms": 0.0036,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1320,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 7080,
+                    "output_chars": 7080,
+                    "plan_ms": 10.8994,
+                    "commit_ms": 0.0029,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1440,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 7080,
+                    "output_chars": 7080,
+                    "plan_ms": 2.4857,
+                    "commit_ms": 0.0018,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1560,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3363,
+                    "output_chars": 3363,
+                    "plan_ms": 10.9213,
+                    "commit_ms": 0.0035,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1580,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 2183,
+                    "output_chars": 2183,
+                    "plan_ms": 1.7155,
+                    "commit_ms": 0.002,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1617,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 1.4633,
+                    "commit_ms": 0.0018,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1700,
+                    "requested_limit": 10,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 1.521,
+                    "commit_ms": 0.0019,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 40,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 6720,
+                    "output_chars": 6720,
+                    "plan_ms": 3.3162,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 231300,
+                  "utf8_bytes": 246644,
+                  "estimated_tokens": 82215
+                },
+                "provider_context": {
+                  "chars": 36287,
+                  "utf8_bytes": 40739,
+                  "estimated_tokens": 13580
+                },
+                "summary_context": {
+                  "chars": 33681,
+                  "utf8_bytes": 37973,
+                  "estimated_tokens": 12658
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.7505,
+                  "median_ms": 0.8007,
+                  "max_ms": 1.1622
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.9835,
+                  "median_ms": 1.0098,
+                  "max_ms": 1.0621
+                }
+              },
+              {
+                "round": 4,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 5480,
+                    "output_chars": 5480,
+                    "plan_ms": 1.912,
+                    "commit_ms": 0.0019,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 70,
+                    "requested_limit": 80,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 4500,
+                    "output_chars": 4500,
+                    "plan_ms": 2.3738,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 20,
+                    "requested_limit": 50,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 2750,
+                    "output_chars": 2750,
+                    "plan_ms": 1.5488,
+                    "commit_ms": 0.0019,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1580,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 2183,
+                    "output_chars": 2183,
+                    "plan_ms": 1.4836,
+                    "commit_ms": 0.0016,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1617,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 1.435,
+                    "commit_ms": 0.0018,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 249023,
+                  "utf8_bytes": 265555,
+                  "estimated_tokens": 88519
+                },
+                "provider_context": {
+                  "chars": 40025,
+                  "utf8_bytes": 44909,
+                  "estimated_tokens": 14970
+                },
+                "summary_context": {
+                  "chars": 38088,
+                  "utf8_bytes": 42916,
+                  "estimated_tokens": 14306
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.8371,
+                  "median_ms": 0.8774,
+                  "max_ms": 0.9796
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 1.1677,
+                  "median_ms": 1.2806,
+                  "max_ms": 1.3875
+                }
+              }
+            ]
+          },
+          {
+            "project": "python_service",
+            "source_lines": 1617,
+            "source_chars": 53868,
+            "newline": "'\\n'",
+            "final_newline": true,
+            "baseline_executor_calls": 40,
+            "cached_executor_calls": 15,
+            "avoided_executor_calls": 25,
+            "baseline_output_chars": 128952,
+            "fresh_output_chars": 53868,
+            "avoided_fresh_output_chars": 75084,
+            "baseline_local_read_ms": 18.094,
+            "cached_local_total_ms": 324.2348,
+            "rounds": [
+              {
+                "round": 1,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 100,
+                    "new_read_ranges": [
+                      [
+                        0,
+                        100
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3190,
+                    "reused_output_chars": 0,
+                    "output_chars": 3190,
+                    "plan_ms": 0.878,
+                    "commit_ms": 3.7453,
+                    "executor_ms": 0.2481
+                  },
+                  {
+                    "offset": 70,
+                    "requested_limit": 80,
+                    "new_read_ranges": [
+                      [
+                        100,
+                        150
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 1650,
+                    "reused_output_chars": 960,
+                    "output_chars": 2610,
+                    "plan_ms": 11.8031,
+                    "commit_ms": 4.0934,
+                    "executor_ms": 0.2859
+                  },
+                  {
+                    "offset": 20,
+                    "requested_limit": 50,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1600,
+                    "output_chars": 1600,
+                    "plan_ms": 12.441,
+                    "commit_ms": 0.003,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 9025,
+                  "utf8_bytes": 15097,
+                  "estimated_tokens": 5033
+                },
+                "provider_context": {
+                  "chars": 7740,
+                  "utf8_bytes": 12670,
+                  "estimated_tokens": 4224
+                },
+                "summary_context": {
+                  "chars": 2955,
+                  "utf8_bytes": 3883,
+                  "estimated_tokens": 1295
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.0747,
+                  "median_ms": 0.0755,
+                  "max_ms": 0.1348
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.0889,
+                  "median_ms": 0.0907,
+                  "max_ms": 0.1239
+                }
+              },
+              {
+                "round": 2,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 350,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3850,
+                    "output_chars": 3850,
+                    "plan_ms": 3.0683,
+                    "commit_ms": 0.0024,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 120,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        150,
+                        240
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 2970,
+                    "reused_output_chars": 990,
+                    "output_chars": 3960,
+                    "plan_ms": 1.4722,
+                    "commit_ms": 3.4948,
+                    "executor_ms": 0.3399
+                  },
+                  {
+                    "offset": 240,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        240,
+                        360
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3960,
+                    "reused_output_chars": 0,
+                    "output_chars": 3960,
+                    "plan_ms": 8.7693,
+                    "commit_ms": 4.123,
+                    "executor_ms": 0.3972
+                  },
+                  {
+                    "offset": 360,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        360,
+                        480
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3960,
+                    "reused_output_chars": 0,
+                    "output_chars": 3960,
+                    "plan_ms": 9.9121,
+                    "commit_ms": 3.7637,
+                    "executor_ms": 0.3693
+                  },
+                  {
+                    "offset": 480,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        480,
+                        600
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3960,
+                    "reused_output_chars": 0,
+                    "output_chars": 3960,
+                    "plan_ms": 9.7572,
+                    "commit_ms": 3.7863,
+                    "executor_ms": 0.421
+                  },
+                  {
+                    "offset": 600,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        600,
+                        720
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3960,
+                    "reused_output_chars": 0,
+                    "output_chars": 3960,
+                    "plan_ms": 9.1261,
+                    "commit_ms": 4.2708,
+                    "executor_ms": 0.366
+                  },
+                  {
+                    "offset": 720,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        720,
+                        840
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3960,
+                    "reused_output_chars": 0,
+                    "output_chars": 3960,
+                    "plan_ms": 10.6614,
+                    "commit_ms": 4.4471,
+                    "executor_ms": 0.5528
+                  },
+                  {
+                    "offset": 840,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        840,
+                        960
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3960,
+                    "reused_output_chars": 0,
+                    "output_chars": 3960,
+                    "plan_ms": 10.1161,
+                    "commit_ms": 12.4085,
+                    "executor_ms": 0.3625
+                  },
+                  {
+                    "offset": 960,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        960,
+                        1080
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 4040,
+                    "reused_output_chars": 0,
+                    "output_chars": 4040,
+                    "plan_ms": 9.3826,
+                    "commit_ms": 3.5436,
+                    "executor_ms": 0.3453
+                  },
+                  {
+                    "offset": 1080,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1080,
+                        1200
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 4080,
+                    "reused_output_chars": 0,
+                    "output_chars": 4080,
+                    "plan_ms": 9.4095,
+                    "commit_ms": 3.8541,
+                    "executor_ms": 0.3481
+                  },
+                  {
+                    "offset": 1200,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1200,
+                        1320
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 4080,
+                    "reused_output_chars": 0,
+                    "output_chars": 4080,
+                    "plan_ms": 10.1814,
+                    "commit_ms": 3.8065,
+                    "executor_ms": 0.3803
+                  },
+                  {
+                    "offset": 1320,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1320,
+                        1440
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 4080,
+                    "reused_output_chars": 0,
+                    "output_chars": 4080,
+                    "plan_ms": 9.7378,
+                    "commit_ms": 3.9373,
+                    "executor_ms": 0.3317
+                  },
+                  {
+                    "offset": 1440,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1440,
+                        1560
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 4080,
+                    "reused_output_chars": 0,
+                    "output_chars": 4080,
+                    "plan_ms": 11.3654,
+                    "commit_ms": 4.7438,
+                    "executor_ms": 0.3362
+                  },
+                  {
+                    "offset": 1560,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1560,
+                        1680
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 1938,
+                    "reused_output_chars": 0,
+                    "output_chars": 1938,
+                    "plan_ms": 9.1685,
+                    "commit_ms": 3.7361,
+                    "executor_ms": 0.3815
+                  }
+                ],
+                "raw_context": {
+                  "chars": 70800,
+                  "utf8_bytes": 119250,
+                  "estimated_tokens": 39750
+                },
+                "provider_context": {
+                  "chars": 20499,
+                  "utf8_bytes": 28613,
+                  "estimated_tokens": 9538
+                },
+                "summary_context": {
+                  "chars": 16556,
+                  "utf8_bytes": 21614,
+                  "estimated_tokens": 7205
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.3697,
+                  "median_ms": 0.3722,
+                  "max_ms": 0.5362
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.4667,
+                  "median_ms": 0.4841,
+                  "max_ms": 0.5311
+                }
+              },
+              {
+                "round": 3,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3850,
+                    "output_chars": 3850,
+                    "plan_ms": 11.6214,
+                    "commit_ms": 0.003,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 120,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3960,
+                    "output_chars": 3960,
+                    "plan_ms": 10.0661,
+                    "commit_ms": 0.0034,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 240,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3960,
+                    "output_chars": 3960,
+                    "plan_ms": 2.9407,
+                    "commit_ms": 0.002,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 360,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3960,
+                    "output_chars": 3960,
+                    "plan_ms": 6.9869,
+                    "commit_ms": 0.003,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 480,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3960,
+                    "output_chars": 3960,
+                    "plan_ms": 2.8065,
+                    "commit_ms": 0.0022,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 600,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3960,
+                    "output_chars": 3960,
+                    "plan_ms": 7.221,
+                    "commit_ms": 0.0028,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 720,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3960,
+                    "output_chars": 3960,
+                    "plan_ms": 2.8394,
+                    "commit_ms": 0.0028,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 840,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3960,
+                    "output_chars": 3960,
+                    "plan_ms": 8.3689,
+                    "commit_ms": 0.0031,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 960,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 4040,
+                    "output_chars": 4040,
+                    "plan_ms": 3.226,
+                    "commit_ms": 0.0027,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1080,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 4080,
+                    "output_chars": 4080,
+                    "plan_ms": 2.4111,
+                    "commit_ms": 0.0025,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1200,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 4080,
+                    "output_chars": 4080,
+                    "plan_ms": 10.0694,
+                    "commit_ms": 0.0042,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1320,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 4080,
+                    "output_chars": 4080,
+                    "plan_ms": 3.539,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1440,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 4080,
+                    "output_chars": 4080,
+                    "plan_ms": 2.6451,
+                    "commit_ms": 0.0024,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1560,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1938,
+                    "output_chars": 1938,
+                    "plan_ms": 8.0074,
+                    "commit_ms": 0.0034,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1580,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1258,
+                    "output_chars": 1258,
+                    "plan_ms": 2.0635,
+                    "commit_ms": 0.0019,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1617,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 1.9174,
+                    "commit_ms": 0.0027,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1700,
+                    "requested_limit": 10,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 2.7696,
+                    "commit_ms": 0.0019,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 40,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3900,
+                    "output_chars": 3900,
+                    "plan_ms": 3.2574,
+                    "commit_ms": 0.0023,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 139695,
+                  "utf8_bytes": 234701,
+                  "estimated_tokens": 78234
+                },
+                "provider_context": {
+                  "chars": 35626,
+                  "utf8_bytes": 47630,
+                  "estimated_tokens": 15877
+                },
+                "summary_context": {
+                  "chars": 33006,
+                  "utf8_bytes": 42836,
+                  "estimated_tokens": 14279
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.7392,
+                  "median_ms": 0.7847,
+                  "max_ms": 0.8815
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 1.0097,
+                  "median_ms": 1.0702,
+                  "max_ms": 1.5623
+                }
+              },
+              {
+                "round": 4,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3190,
+                    "output_chars": 3190,
+                    "plan_ms": 2.0407,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 70,
+                    "requested_limit": 80,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 2610,
+                    "output_chars": 2610,
+                    "plan_ms": 2.8841,
+                    "commit_ms": 0.0022,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 20,
+                    "requested_limit": 50,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1600,
+                    "output_chars": 1600,
+                    "plan_ms": 2.2178,
+                    "commit_ms": 0.0023,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1580,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1258,
+                    "output_chars": 1258,
+                    "plan_ms": 1.7631,
+                    "commit_ms": 0.0037,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1617,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 2.0364,
+                    "commit_ms": 0.0017,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 150856,
+                  "utf8_bytes": 252924,
+                  "estimated_tokens": 84308
+                },
+                "provider_context": {
+                  "chars": 38795,
+                  "utf8_bytes": 51451,
+                  "estimated_tokens": 17151
+                },
+                "summary_context": {
+                  "chars": 37325,
+                  "utf8_bytes": 48381,
+                  "estimated_tokens": 16127
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.8452,
+                  "median_ms": 0.9092,
+                  "max_ms": 0.9992
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 1.1778,
+                  "median_ms": 1.2439,
+                  "max_ms": 1.3707
+                }
+              }
+            ]
+          },
+          {
+            "project": "chinese_documentation",
+            "source_lines": 1617,
+            "source_chars": 42547,
+            "newline": "'\\r\\n'",
+            "final_newline": false,
+            "baseline_executor_calls": 40,
+            "cached_executor_calls": 15,
+            "avoided_executor_calls": 25,
+            "baseline_output_chars": 101728,
+            "fresh_output_chars": 42547,
+            "avoided_fresh_output_chars": 59181,
+            "baseline_local_read_ms": 20.7593,
+            "cached_local_total_ms": 317.7382,
+            "rounds": [
+              {
+                "round": 1,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 100,
+                    "new_read_ranges": [
+                      [
+                        0,
+                        100
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 2490,
+                    "reused_output_chars": 0,
+                    "output_chars": 2490,
+                    "plan_ms": 0.9612,
+                    "commit_ms": 3.832,
+                    "executor_ms": 0.2756
+                  },
+                  {
+                    "offset": 70,
+                    "requested_limit": 80,
+                    "new_read_ranges": [
+                      [
+                        100,
+                        150
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 1300,
+                    "reused_output_chars": 750,
+                    "output_chars": 2050,
+                    "plan_ms": 13.3019,
+                    "commit_ms": 4.4902,
+                    "executor_ms": 0.323
+                  },
+                  {
+                    "offset": 20,
+                    "requested_limit": 50,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1250,
+                    "output_chars": 1250,
+                    "plan_ms": 10.4229,
+                    "commit_ms": 0.0027,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 7703,
+                  "utf8_bytes": 16087,
+                  "estimated_tokens": 5363
+                },
+                "provider_context": {
+                  "chars": 7703,
+                  "utf8_bytes": 16087,
+                  "estimated_tokens": 5363
+                },
+                "summary_context": {
+                  "chars": 3036,
+                  "utf8_bytes": 4464,
+                  "estimated_tokens": 1488
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.0762,
+                  "median_ms": 0.0772,
+                  "max_ms": 0.1529
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.0923,
+                  "median_ms": 0.1007,
+                  "max_ms": 0.1286
+                }
+              },
+              {
+                "round": 2,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 350,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3010,
+                    "output_chars": 3010,
+                    "plan_ms": 11.9913,
+                    "commit_ms": 0.0033,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 120,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        150,
+                        240
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 2340,
+                    "reused_output_chars": 780,
+                    "output_chars": 3120,
+                    "plan_ms": 1.9485,
+                    "commit_ms": 4.5656,
+                    "executor_ms": 0.3912
+                  },
+                  {
+                    "offset": 240,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        240,
+                        360
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3120,
+                    "reused_output_chars": 0,
+                    "output_chars": 3120,
+                    "plan_ms": 7.0775,
+                    "commit_ms": 4.2429,
+                    "executor_ms": 0.4463
+                  },
+                  {
+                    "offset": 360,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        360,
+                        480
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3120,
+                    "reused_output_chars": 0,
+                    "output_chars": 3120,
+                    "plan_ms": 9.23,
+                    "commit_ms": 4.6548,
+                    "executor_ms": 0.4486
+                  },
+                  {
+                    "offset": 480,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        480,
+                        600
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3120,
+                    "reused_output_chars": 0,
+                    "output_chars": 3120,
+                    "plan_ms": 8.8672,
+                    "commit_ms": 4.1762,
+                    "executor_ms": 0.38
+                  },
+                  {
+                    "offset": 600,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        600,
+                        720
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3120,
+                    "reused_output_chars": 0,
+                    "output_chars": 3120,
+                    "plan_ms": 6.9712,
+                    "commit_ms": 4.1066,
+                    "executor_ms": 0.3426
+                  },
+                  {
+                    "offset": 720,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        720,
+                        840
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3120,
+                    "reused_output_chars": 0,
+                    "output_chars": 3120,
+                    "plan_ms": 9.4622,
+                    "commit_ms": 4.9719,
+                    "executor_ms": 0.3712
+                  },
+                  {
+                    "offset": 840,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        840,
+                        960
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3120,
+                    "reused_output_chars": 0,
+                    "output_chars": 3120,
+                    "plan_ms": 7.4514,
+                    "commit_ms": 4.4343,
+                    "executor_ms": 0.44
+                  },
+                  {
+                    "offset": 960,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        960,
+                        1080
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3200,
+                    "reused_output_chars": 0,
+                    "output_chars": 3200,
+                    "plan_ms": 8.2746,
+                    "commit_ms": 4.3188,
+                    "executor_ms": 0.3625
+                  },
+                  {
+                    "offset": 1080,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1080,
+                        1200
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3240,
+                    "reused_output_chars": 0,
+                    "output_chars": 3240,
+                    "plan_ms": 6.6198,
+                    "commit_ms": 4.2616,
+                    "executor_ms": 0.4219
+                  },
+                  {
+                    "offset": 1200,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1200,
+                        1320
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3240,
+                    "reused_output_chars": 0,
+                    "output_chars": 3240,
+                    "plan_ms": 6.9782,
+                    "commit_ms": 4.265,
+                    "executor_ms": 0.4952
+                  },
+                  {
+                    "offset": 1320,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1320,
+                        1440
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3240,
+                    "reused_output_chars": 0,
+                    "output_chars": 3240,
+                    "plan_ms": 9.969,
+                    "commit_ms": 4.403,
+                    "executor_ms": 0.3503
+                  },
+                  {
+                    "offset": 1440,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1440,
+                        1560
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 3240,
+                    "reused_output_chars": 0,
+                    "output_chars": 3240,
+                    "plan_ms": 8.603,
+                    "commit_ms": 4.4979,
+                    "executor_ms": 0.3766
+                  },
+                  {
+                    "offset": 1560,
+                    "requested_limit": 120,
+                    "new_read_ranges": [
+                      [
+                        1560,
+                        1680
+                      ]
+                    ],
+                    "executor_calls": 1,
+                    "fresh_output_chars": 1537,
+                    "reused_output_chars": 0,
+                    "output_chars": 1537,
+                    "plan_ms": 10.2049,
+                    "commit_ms": 5.7719,
+                    "executor_ms": 0.3638
+                  }
+                ],
+                "raw_context": {
+                  "chars": 60010,
+                  "utf8_bytes": 126998,
+                  "estimated_tokens": 42333
+                },
+                "provider_context": {
+                  "chars": 21090,
+                  "utf8_bytes": 34100,
+                  "estimated_tokens": 11367
+                },
+                "summary_context": {
+                  "chars": 16965,
+                  "utf8_bytes": 24683,
+                  "estimated_tokens": 8228
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.3781,
+                  "median_ms": 0.3851,
+                  "max_ms": 0.58
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.4868,
+                  "median_ms": 0.5108,
+                  "max_ms": 0.5828
+                }
+              },
+              {
+                "round": 3,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3010,
+                    "output_chars": 3010,
+                    "plan_ms": 13.3198,
+                    "commit_ms": 0.0024,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 120,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3120,
+                    "output_chars": 3120,
+                    "plan_ms": 9.8543,
+                    "commit_ms": 0.0028,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 240,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3120,
+                    "output_chars": 3120,
+                    "plan_ms": 2.5315,
+                    "commit_ms": 0.0027,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 360,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3120,
+                    "output_chars": 3120,
+                    "plan_ms": 9.6126,
+                    "commit_ms": 0.0026,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 480,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3120,
+                    "output_chars": 3120,
+                    "plan_ms": 7.0482,
+                    "commit_ms": 0.0034,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 600,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3120,
+                    "output_chars": 3120,
+                    "plan_ms": 2.688,
+                    "commit_ms": 0.0019,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 720,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3120,
+                    "output_chars": 3120,
+                    "plan_ms": 10.1013,
+                    "commit_ms": 0.0036,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 840,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3120,
+                    "output_chars": 3120,
+                    "plan_ms": 2.7898,
+                    "commit_ms": 0.0026,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 960,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3200,
+                    "output_chars": 3200,
+                    "plan_ms": 2.5578,
+                    "commit_ms": 0.0023,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1080,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3240,
+                    "output_chars": 3240,
+                    "plan_ms": 2.3804,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1200,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3240,
+                    "output_chars": 3240,
+                    "plan_ms": 8.8719,
+                    "commit_ms": 0.0038,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1320,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3240,
+                    "output_chars": 3240,
+                    "plan_ms": 7.4106,
+                    "commit_ms": 0.0032,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1440,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3240,
+                    "output_chars": 3240,
+                    "plan_ms": 4.7329,
+                    "commit_ms": 0.0027,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1560,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1537,
+                    "output_chars": 1537,
+                    "plan_ms": 2.6117,
+                    "commit_ms": 0.002,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1580,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 997,
+                    "output_chars": 997,
+                    "plan_ms": 1.8674,
+                    "commit_ms": 0.0023,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1617,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 1.9038,
+                    "commit_ms": 0.0026,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1700,
+                    "requested_limit": 10,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 1.7603,
+                    "commit_ms": 0.0024,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 40,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 3060,
+                    "output_chars": 3060,
+                    "plan_ms": 4.3852,
+                    "commit_ms": 0.0027,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 118559,
+                  "utf8_bytes": 249915,
+                  "estimated_tokens": 83305
+                },
+                "provider_context": {
+                  "chars": 35865,
+                  "utf8_bytes": 54199,
+                  "estimated_tokens": 18067
+                },
+                "summary_context": {
+                  "chars": 33823,
+                  "utf8_bytes": 48793,
+                  "estimated_tokens": 16265
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.7709,
+                  "median_ms": 0.7898,
+                  "max_ms": 0.8731
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 1.0491,
+                  "median_ms": 1.1347,
+                  "max_ms": 1.1963
+                }
+              },
+              {
+                "round": 4,
+                "requests": [
+                  {
+                    "offset": 0,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 2490,
+                    "output_chars": 2490,
+                    "plan_ms": 2.1715,
+                    "commit_ms": 0.0022,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 70,
+                    "requested_limit": 80,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 2050,
+                    "output_chars": 2050,
+                    "plan_ms": 2.5941,
+                    "commit_ms": 0.0022,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 20,
+                    "requested_limit": 50,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 1250,
+                    "output_chars": 1250,
+                    "plan_ms": 1.7259,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1580,
+                    "requested_limit": 100,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 997,
+                    "output_chars": 997,
+                    "plan_ms": 1.7757,
+                    "commit_ms": 0.0021,
+                    "executor_ms": 0.0
+                  },
+                  {
+                    "offset": 1617,
+                    "requested_limit": 120,
+                    "new_read_ranges": [],
+                    "executor_calls": 0,
+                    "fresh_output_chars": 0,
+                    "reused_output_chars": 0,
+                    "output_chars": 0,
+                    "plan_ms": 1.8625,
+                    "commit_ms": 0.002,
+                    "executor_ms": 0.0
+                  }
+                ],
+                "raw_context": {
+                  "chars": 128199,
+                  "utf8_bytes": 269307,
+                  "estimated_tokens": 89769
+                },
+                "provider_context": {
+                  "chars": 39837,
+                  "utf8_bytes": 59607,
+                  "estimated_tokens": 19869
+                },
+                "summary_context": {
+                  "chars": 38255,
+                  "utf8_bytes": 55103,
+                  "estimated_tokens": 18368
+                },
+                "provider_view_time": {
+                  "repeats": 7,
+                  "min_ms": 0.8623,
+                  "median_ms": 0.888,
+                  "max_ms": 0.9453
+                },
+                "summary_view_time": {
+                  "repeats": 7,
+                  "min_ms": 1.1033,
+                  "median_ms": 1.1192,
+                  "max_ms": 1.236
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_sparse_overlap_reads_only_missing_ranges",
+      "elapsed_ms": 66.382,
+      "observations": {
+        "offset": 10,
+        "requested_limit": 90,
+        "new_read_ranges": [
+          [
+            30,
+            60
+          ],
+          [
+            90,
+            100
+          ]
+        ],
+        "executor_calls": 2,
+        "fresh_output_chars": 1280,
+        "reused_output_chars": 1600,
+        "output_chars": 2880,
+        "plan_ms": 26.2622,
+        "commit_ms": 4.3691,
+        "executor_ms": 0.7055
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_task_isolation_remote_runtime_and_invalid_ranges",
+      "elapsed_ms": 30.027,
+      "observations": {
+        "invalid_range_cases": 7,
+        "disabled_runtime_cases": 3,
+        "task_isolation": true
+      },
+      "status": "passed"
+    },
+    {
+      "scenario": "test_valid_eof_crlf_and_entry_retention",
+      "elapsed_ms": 3275.996,
+      "observations": {
+        "initial": {
+          "offset": 1580,
+          "requested_limit": 120,
+          "new_read_ranges": [
+            [
+              1580,
+              1700
+            ]
+          ],
+          "executor_calls": 1,
+          "fresh_output_chars": 1293,
+          "reused_output_chars": 0,
+          "output_chars": 1293,
+          "plan_ms": 1.3378,
+          "commit_ms": 4.4393,
+          "executor_ms": 7.4566
+        },
+        "reused": {
+          "offset": 1600,
+          "requested_limit": 80,
+          "new_read_ranges": [],
+          "executor_calls": 0,
+          "fresh_output_chars": 0,
+          "reused_output_chars": 593,
+          "output_chars": 593,
+          "plan_ms": 18.6904,
+          "commit_ms": 0.0029,
+          "executor_ms": 0.0
+        },
+        "beyond_eof": {
+          "offset": 1700,
+          "requested_limit": 10,
+          "new_read_ranges": [],
+          "executor_calls": 0,
+          "fresh_output_chars": 0,
+          "reused_output_chars": 0,
+          "output_chars": 0,
+          "plan_ms": 1.5431,
+          "commit_ms": 0.0022,
+          "executor_ms": 0.0
+        },
+        "retained_entries": 160
+      },
+      "status": "passed"
+    }
+  ],
+  "failures": []
+}

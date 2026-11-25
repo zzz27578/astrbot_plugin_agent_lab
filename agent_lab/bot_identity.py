@@ -1,6 +1,8 @@
 """Resolve the source Bot's configured persona without copying daily history."""
 from __future__ import annotations
 
+from copy import deepcopy
+
 
 async def source_persona(context, umo, provider_settings=None):
     manager = getattr(context, "persona_manager", None)
@@ -9,11 +11,31 @@ async def source_persona(context, umo, provider_settings=None):
         return None
     try:
         cid = await conversations.get_curr_conversation_id(umo)
-        conversation = await conversations.get_conversation(umo, cid) if cid else None
+        conversation = None
+        if cid:
+            # The host's legacy get_conversation() serializes full history.
+            # Identity needs only persona_id; leave daily history in the DB.
+            lookup = getattr(getattr(conversations, "db", None), "get_conversation_by_id", None)
+            conversation = (await lookup(cid) if lookup
+                            else await conversations.get_conversation(umo, cid))
+            if conversation and getattr(conversation, "user_id", umo) != umo:
+                return None
+        if provider_settings is None:
+            get_config = getattr(context, "get_config", None)
+            provider_settings = (get_config(umo=umo) or {}).get("provider_settings", {}) if get_config else {}
+        # UMO starts with the adapter *instance ID*. PersonaManager expects the
+        # adapter name here (notably for the WebChat default-persona branch).
+        platform_name = str(umo).split(":", 1)[0]
+        platforms = getattr(getattr(context, "platform_manager", None), "platform_insts", [])
+        for platform in platforms:
+            meta = platform.meta()
+            if str(meta.id) == platform_name:
+                platform_name = meta.name
+                break
         _, persona, _, _ = await manager.resolve_selected_persona(
             umo=umo, conversation_persona_id=getattr(conversation, "persona_id", None),
-            platform_name=umo.split(":", 1)[0], provider_settings=provider_settings or {})
-        return persona
+            platform_name=platform_name, provider_settings=provider_settings or {})
+        return deepcopy(persona)
     except (AttributeError, KeyError, TypeError, ValueError):
         return None
 

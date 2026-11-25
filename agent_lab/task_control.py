@@ -16,6 +16,8 @@ from .execution_settings import BUDGET_LIMITS, integer, lines, normalize
 from .continuity import working_context
 from .task_permissions import authorized_roots, execution_guidance
 from .context_views import arguments_view
+from .bot_identity import source_persona, persona_prompt
+from .usage_metrics import record_request, request_size
 
 
 def control(task) -> dict:
@@ -60,7 +62,9 @@ def prompt(task) -> str:
         "file_read_index": [{"id": r["id"], **r["file_read"]} for r in state.get("journal", [])[-30:] if r.get("file_read")],
         "permission_policy": execution_guidance(state),
         "guard_refusals": state.get("guard_refusals", {}),
-        "instruction": "按当前有效计划执行。大文件先 grep/rg 定位再按行局部读；已读取的文件、查询优先复用证据，文件修改后才重读。工具结果过长用 agent_lab_read_tool_evidence 分页读回。默认每轮最多24次工具调用，到限后保存事实与下一步，由系统交接继续，不要重新搜一遍。普通拆分、重排、补测试可修订计划；目标、验收、预算或解除约束才重新审批。危险操作由你主动提交确切工具与参数，不要撞审批或重试已拒绝动作。进展、请示和交付保持当前 Bot 的自然语气，不必固定四段模板。阶段结束保存成果、原因、位置和验证；无画布不调用流程推进。",
+        "liveness": {key:task.workflow_data.get("progress_guard",{}).get(key) for key in ("decision","message","no_progress_ticks","failure_ticks","signals")},
+        "notifications": state.get("notifications", {}),
+        "instruction": "按当前有效计划执行。大文件先 grep/rg 定位再按行局部读；已读取的文件、查询优先复用证据，文件修改后才重读。工具结果过长用 agent_lab_read_tool_evidence 分页读回。默认每轮最多24次工具调用，到限后保存事实与下一步，由系统交接继续，不要重新搜一遍。普通拆分、重排、补测试可修订计划；目标、验收、预算或解除约束才重新审批。危险操作由你主动提交确切工具与参数，不要撞审批或重试已拒绝动作。进展、请示和交付保持当前 Bot 的自然语气，不必固定四段模板。阶段结束保存成果、原因、位置和验证；用checkpoint.message提交角色阶段交付，request_approval.message提交完整请示，finish.message提交短交付。可预写notifications供系统暂停时原样通知。无画布不调用流程推进。",
     }, ensure_ascii=False)
 
 
@@ -145,8 +149,15 @@ class TaskControl:
         raw = json.loads(steps_json)
         proposal = raw if isinstance(raw, dict) else {}
         if set(proposal) - {"steps", "scope_roots", "risk_lines", "cleanup_paths", "change_reason",
-                            "goal", "completion_conditions", "budget", "remove_constraints"}:
+                            "goal", "completion_conditions", "budget", "remove_constraints", "message", "notifications"}:
             raise ValueError("计划不能修改权限或运行配置；请通过项目设置由管理员调整。")
+        approval_message = str(proposal.get("message") or "").strip()
+        if len(approval_message)>2000:
+            raise ValueError("审批文案最多2000字符，请用当前Bot的自然表达简洁说明。")
+        notifications=proposal.get("notifications",state.get("notifications",{}))
+        if (not isinstance(notifications,dict) or set(notifications)-{"paused","error","budget","stalled"}
+                or any(not isinstance(value,str) or not 1<=len(value.strip())<=800 for value in notifications.values())):
+            raise ValueError("notifications仅支持paused/error/budget/stalled的Bot自拟正文，每条1–800字符。")
         scope_roots = state.get("scope_roots", [])
         risk_lines = state.get("risk_lines", [])
         cleanup_paths = []
@@ -171,7 +182,7 @@ class TaskControl:
             ids.add(identifier)
             previous = old.get(identifier, {})
             reopen = str(item.get("reopen_reason") or "").strip()
-            stage = str(item.get("stage") or previous.get("stage") or identifier).strip()
+            stage = str(item.get("stage") or previous.get("stage") or "task_execution").strip()
             if not stage or len(stage) > 120 or len(reopen) > 2000:
                 raise ValueError("阶段名称需在120字以内，返工说明需在2000字以内。")
             changed = bool(previous and (title != previous["title"] or instruction != previous["instruction"]))
@@ -225,6 +236,9 @@ class TaskControl:
             if (steps == state.get("steps", []) and retained == state.get("constraints", [])
                     and scope_roots == state.get("scope_roots", []) and risk_lines == state.get("risk_lines", [])
                     and not cleanup_paths and not changes):
+                if notifications != state.get("notifications",{}):
+                    state["notifications"]=notifications
+                    self.owner.storage.save_task(task)
                 return "计划内容未变，继续当前步骤。"
             if not changes and not cleanup_paths and scope_roots == state.get("scope_roots", []):
                 routine, review_reason = await self._review_revision(event, task, steps, retained, review_reason)
@@ -246,6 +260,7 @@ class TaskControl:
                 approval["status"] = "expired"
         previous_authority = state.get("authorization_version", state.get("approved_version", 0))
         state.update(version=int(state.get("version", 0)) + 1, approved_version=0,
+                     notifications=notifications,
                      steps=steps, constraints=retained, scope_roots=scope_roots,
                      risk_lines=risk_lines, phase="awaiting_plan")
         state.setdefault("plan_changes", []).append({"version": state["version"], "reason": review_reason,
@@ -260,6 +275,7 @@ class TaskControl:
             return f"计划 v{state['version']} 已调整并记录：{review_reason}。继续当前任务，原权限和累计预算保留。"
         state["approved_cleanup_paths"] = []
         approval = ApprovalRequest(operation=f"批准任务计划 v{state['version']}", reason=task.root_goal,
+            message=approval_message,
             impact="\n".join(f"{i+1}. {s['title']}: {s['instruction']}" for i, s in enumerate(steps)),
             approval_type="task_plan")
         from .models import AgentSpec
@@ -285,21 +301,26 @@ class TaskControl:
         task.set_wait(wait_reason="need_plan_approval", message="等待管理员审阅计划", source="task_control", resume_command=task.next_step)
         task.add_log("plan_submitted", f"version={state['version']}")
         self.owner.storage.save_task(task)
-        return f"计划 v{state['version']} 已保存，执行前须管理员批准。\n{approval.impact}\n{task.next_step}"
+        return f"计划 v{state['version']} 已保存，等待批准。审批ID {approval.approval_id}；不要在日常再复述完整计划。"
 
     async def _review_revision(self, event, task, steps, constraints, reason):
         """Compare actual plans with the immutable request using a tool-free review."""
         if task.budget.max_total_tokens and task.budget.tokens_used >= task.budget.max_total_tokens:
             raise ValueError("任务总预算已用尽，请先由管理员调整额度。")
         provider_id = await self.owner.context.get_current_chat_provider_id(task.umo)
-        response = await self.owner.context.llm_generate(chat_provider_id=provider_id,
+        def review_steps(rows):
+            return [{key:row.get(key) for key in ("id","title","instruction","stage","status","revision","reopen_reason")
+                     if row.get(key) is not None} for row in rows]
+        request=dict(
             prompt=json.dumps({"goal": task.root_goal, "acceptance": task.completion_conditions,
-                "constraints": constraints, "old_steps": control(task).get("steps", []), "new_steps": steps,
+                "constraints": constraints, "old_steps": review_steps(control(task).get("steps", [])), "new_steps": review_steps(steps),
                 "stated_reason": reason}, ensure_ascii=False),
             system_prompt="审阅任务清单修改，不执行操作，也不批准权限。比较实际前后差异与用户目标、验收和约束，不能只相信修改者声称普通调整。仅拆分、重排、补充排查/测试、保留原目标的返工是普通调整；改变交付目标、取消必要验收、引入费用或放宽用户要求须确认。不确定也须确认。返回JSON：routine布尔值、reason中文简述实际差异。")
+        response=await asyncio.wait_for(self.owner.context.llm_generate(chat_provider_id=provider_id,**request),30)
         # Persist model accounting without replacing concurrently updated state.
         latest = self.load(task.umo, task.task_id)
         usage = getattr(response, "usage", None)
+        record_request(latest,request_size(request,request),usage,phase="plan_review")
         if usage:
             latest.add_token_usage(usage)
             consume = getattr(self.owner, "_consume_token_budget", None)
@@ -312,6 +333,8 @@ class TaskControl:
             self.owner.storage.save_task(latest)
             if exhausted:
                 raise ValueError(exhausted)
+        else:
+            self.owner.storage.save_task(latest)
         text = str(response.completion_text or "").strip()
         if text.startswith("```"):
             text = text.split("\n", 1)[1].rsplit("```", 1)[0].strip()
@@ -329,14 +352,22 @@ class TaskControl:
         if control(task).get("version"):
             return "已有计划，未覆盖。"
         provider_id = await self.owner.context.get_current_chat_provider_id(task.umo)
-        response = await self.owner.context.llm_generate(chat_provider_id=provider_id,
-            prompt=json.dumps({"goal": task.root_goal, "brief": task.task_brief,
+        cfg=(self.owner._context_config(task.umo) or {}).get("provider_settings",{})
+        persona=await source_persona(self.owner.context,task.umo,cfg)
+        request={"prompt":json.dumps({"goal": task.root_goal, "brief": task.task_brief,
                                "completion_conditions": task.completion_conditions,
                                "projects": [{"id": p["project_id"], "title": p["title"], "category": p["category"]}
                                             for p in self.owner.projects.index()["projects"] if p.get("source_umo") == task.umo],
                                "clarifications": control(task).get("questions", [])[-4:]}, ensure_ascii=False),
-            system_prompt="为当前Bot的任务制定具体计划，不执行操作。按实际工作划分阶段，不凑固定数量。返回JSON对象：steps数组(id/title/instruction，可用相同stage名称将几个步骤归入一个阶段)、scope_roots（已知的预计绝对路径）、risk_lines（额外风险线，需审批用 审批:工具名或路径通配，其余作说明）、cleanup_paths（预计清理的具体文件绝对路径，可省略）、project_id、project_title、category。仅关键目标缺失到无法规划时返回question、options、recommendation。不编造路径，最后包含成果核对，用中文。")
+            "system_prompt":persona_prompt(persona)+"\n为当前Bot的任务制定具体计划，不执行操作。按实际工作划分阶段，不凑固定数量。返回JSON对象：steps数组(id/title/instruction，可用相同stage归组)、message（你的角色向管理员请示的完整短正文，需说清范围和验收，可回复批准或拒绝）、notifications（可选paused/error/budget/stalled四种场景下预先自拟的提示，不猜具体错误）、scope_roots、risk_lines、cleanup_paths、project_id、project_title、category。仅关键目标缺失时返回question/options/recommendation。不编造路径，最后包含成果核对。"}
+        response = await asyncio.wait_for(self.owner.context.llm_generate(chat_provider_id=provider_id,**request),60)
         latest = self.load(task.umo, task_id)
+        record_request(latest,request_size(request,request),getattr(response,"usage",None),phase="planning")
+        if getattr(response,"usage",None):
+            latest.add_token_usage(response.usage)
+            consume=getattr(self.owner,"_consume_token_budget",None)
+            if consume:consume(latest,response.usage)
+        self.owner.storage.save_task(latest)
         if control(latest).get("version") or control(latest).get("human_paused"):
             return "任务状态已变化，未覆盖计划。"
         text = str(response.completion_text or "").strip()
@@ -357,7 +388,7 @@ class TaskControl:
                 elif proposal.get("project_title"):
                     self.owner.projects.attach(latest, title=str(proposal["project_title"])[:100], category=str(proposal.get("category") or "项目"))
                 self.owner.storage.save_task(latest)
-            text = json.dumps({key: proposal[key] for key in ("steps", "scope_roots", "risk_lines", "cleanup_paths") if key in proposal}, ensure_ascii=False)
+            text = json.dumps({key: proposal[key] for key in ("steps", "scope_roots", "risk_lines", "cleanup_paths", "message", "notifications") if key in proposal}, ensure_ascii=False)
         return await self.submit_plan(event, text)
 
     def approval(self, task, row: dict, approved: bool):
@@ -409,6 +440,9 @@ class TaskControl:
             stage = step.get("stage")
             if stage and all(s.get("status") == "completed" for s in state["steps"] if s.get("stage") == stage):
                 state.setdefault("continuity", {}).setdefault("lanes", {}).setdefault("", {})["pending_reason"] = "stage_completed"
+                stage_steps=[s for s in state["steps"] if s.get("stage")==stage]
+                state["checkpoint_handoff"]={"stage":stage,"version":state.get("version"),"input_revision":state.get("input_revision",0),
+                                             "summary":"\n".join(s.get("summary","") for s in stage_steps),"evidence":[e for s in stage_steps for e in s.get("evidence",[])]}
         task.last_confirmed_progress = summary[:4000]
         task.next_step = next((s["instruction"] for s in state["steps"] if s["status"] != "completed"), "核对全部成果并结束归档")
         task.add_log("plan_checkpoint", f"{step_id}: {summary[:1000]}")

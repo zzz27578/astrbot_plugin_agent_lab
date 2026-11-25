@@ -1,0 +1,27 @@
+{
+  "tests": 3,
+  "scope": "temporary task DB; actual bridge, metadata and daily injection; fake asynchronous provider",
+  "scenarios": [
+    {
+      "scenario": "legacy_plugin_snapshot_restore",
+      "shared_preference_writes": 0,
+      "new_daily_setting_preserved": true
+    },
+    {
+      "scenario": "persona_metadata_only",
+      "daily_history_serializations": 0,
+      "foreign_conversation_rejected": true
+    },
+    {
+      "scenario": "two_tasks_and_daily_on_shared_provider",
+      "provider_peak_inflight": 3,
+      "scripted_request_ms": 80,
+      "serial_delay_baseline_ms": 240,
+      "observed_overlap_ms": 211.62,
+      "daily_pointer_unchanged": true,
+      "daily_history_preserved": true,
+      "task_histories_isolated": true,
+      "boundary": "fake asynchronous provider; real API TPM/rate limits not measured"
+    }
+  ]
+}

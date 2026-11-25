@@ -13,7 +13,7 @@ from .models import ApprovalRequest, new_id, now_iso
 from .task_control import control
 from .task_permissions import apply_mode, assess, signature, full_guard, record_guard_refusal, GUARD_RETRY_LIMIT, read_only_call, UNRESOLVED_PATH_REASON
 from .continuity import HandoffError, StageContextManager, TaskContinuity, estimate
-from .bot_identity import persona_prompt, host_skills_prompt
+from .bot_identity import source_persona, persona_prompt, host_skills_prompt
 from .context_views import arguments_view, history_view
 from .read_cache import ReadCache
 from .usage_metrics import request_size, record_request, record_round, write_task_line
@@ -68,7 +68,7 @@ class AstrBotBridge:
         return {"tool_name": tool.name, "arguments": arguments,
                 "call_signature": signature(tool.name, arguments, control(task), resource), "status": "queued"}
 
-    def request_batch(self, event, operations, reason, impact, rollback, operation=""):
+    def request_batch(self, event, operations, reason, impact, rollback, operation="", message=""):
         from .models import AgentSpec
 
         task = self.check(event)
@@ -97,7 +97,7 @@ class AstrBotBridge:
             if call["call_signature"] not in {existing["call_signature"] for existing in calls}:
                 calls.append(call)
         self.ensure_not_rejected(task, calls)
-        self.pause_for_batch(task, calls, reason, impact, rollback, operation)
+        self.pause_for_batch(task, calls, reason, impact, rollback, operation, message)
         return task.task_id
 
     @staticmethod
@@ -106,9 +106,9 @@ class AstrBotBridge:
         if any((call["tool_name"], call["arguments"]) in denied for call in calls):
             raise ValueError("这一动作已经被拒绝。请改用其他方案。")
 
-    def pause_for_batch(self, task, calls, reason, impact, rollback="", operation=""):
+    def pause_for_batch(self, task, calls, reason, impact, rollback="", operation="", message=""):
         row = ApprovalRequest(operation=operation or f"待确认操作（{len(calls)} 项）", reason=reason,
-                              impact=impact, rollback=rollback, approval_type="tool_batch").to_dict()
+                              impact=impact, rollback=rollback, message=message, approval_type="tool_batch").to_dict()
         row["calls"] = calls
         task.approvals.append(row)
         task.status = "paused"
@@ -484,12 +484,8 @@ class AstrBotBridge:
             if tool.name in unsupported:
                 tools.remove_tool(tool.name)
         manager = self.owner.context.conversation_manager
-        source_id = await manager.get_curr_conversation_id(task.umo)
-        source_conv = await manager.get_conversation(task.umo, source_id) if source_id else None
-        _, persona, _, _ = await self.owner.context.persona_manager.resolve_selected_persona(
-            umo=task.umo, conversation_persona_id=getattr(source_conv, "persona_id", None),
-            platform_name=(event.get_platform_name() if event.get_platform_name() != "cron" else task.umo.split(":", 1)[0]),
-            provider_settings=(self.owner._context_config(task.umo) or {}).get("provider_settings", {}))
+        persona = await source_persona(self.owner.context, task.umo,
+            (self.owner._context_config(task.umo) or {}).get("provider_settings", {}))
         if persona:
             system_prompt = persona_prompt(persona) + "\n\n" + system_prompt
         cfg = (self.owner._context_config(task.umo) or {}).get("provider_settings", {})

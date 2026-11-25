@@ -1,0 +1,18 @@
+{
+  "checks": [
+    "1440: authored approval body preserved",
+    "1440: exact parameters are in separate detail",
+    "1440: approval controls retained",
+    "1440: stage delivery has its own label",
+    "1440: diagnostic is not impersonated as progress",
+    "1440: no horizontal overflow",
+    "390: authored approval body preserved",
+    "390: exact parameters are in separate detail",
+    "390: approval controls retained",
+    "390: stage delivery has its own label",
+    "390: diagnostic is not impersonated as progress",
+    "390: no horizontal overflow",
+    "no browser exceptions"
+  ],
+  "errors": []
+}

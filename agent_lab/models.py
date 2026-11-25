@@ -1243,6 +1243,7 @@ class ApprovalRequest:
     status: str = "pending"  # pending | approved | rejected | expired
     approval_type: str = "operation"  # operation | finish_override
     operation: str = ""
+    message: str = ""
     reason: str = ""
     impact: str = ""
     rollback: str = ""

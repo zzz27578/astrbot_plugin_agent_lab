@@ -115,7 +115,7 @@ def write_task_line(owner, task, *, event_id, event="round"):
     handoff = data.get("handoff", {})
     text = ((f"上下文记录：原始 {current.get('raw_chars', 0):,} 字符 → 模型工作视图 {current.get('sent_chars', 0):,} 字符；"
             f"约 {current.get('estimated_tokens', 0):,} Token（估算），不等于累计消耗。\n"
-            ) if current else "") + (f"任务累计 {task.budget.tokens_used:,} Token；执行/交接请求已报告 {data.get('tokens', {}).get('total', 0):,} Token；"
+            ) if current else "") + (f"任务累计 {task.budget.tokens_used:,} Token；已计量模型请求报告 {data.get('tokens', {}).get('total', 0):,} Token；"
             f"{data.get('unreported_calls', 0)} 次请求未报告用量。")
     if handoff:
         text += (f"\n最近交接：{handoff['raw_chars']:,} 字符原记录 / {handoff['source_chars']:,} 字符总结材料 → "

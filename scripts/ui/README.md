@@ -51,3 +51,9 @@ node browser-check.mjs
 
 `python scripts/ui/test_context_stress.py` 在临时目录运行7项测试、12个场景，输出 `docs/validation/v0.3.3-context-stress.json`。所有Token数均标记为模拟报告或估算，未调用真实模型。
 `node scripts/ui/usage-metrics-check.mjs` 检查桌面/窄屏统计、任务线和文件字符数，截图在 `docs/screenshots/v0.3.3/`。
+
+## v0.3.4 多代理场景与并发
+
+`test_agent_context_benchmark.py`、`test_agent_liveness.py`、`test_agent_project_scenarios.py` 分别覆盖上下文/缓存/速度、空转/安全/预算/超时、多项目生命周期；脚本直接运行生成同版本JSON报告。`test_agent_isolation_concurrency.py` 检查两任务与日常同供应商并发、对话指针和历史隔离、旧插件快照不覆盖日常。`test_bot_authored_delivery.py` 验证Bot正文不改写/不二次调用模型以及checkpoint零模型交接。所有实验使用临时任务与确定性响应，不能当作真实TPM或账单。
+
+`node scripts/ui/authored-messages-check.mjs` 验证桌面/窄屏的角色原话审批、参数单独展开、阶段与系统诊断标签，报告截图在 `docs/screenshots/v0.3.4/`。专项报告与75项整合回归合计146项Python测试；它们不是生产TPM或收费测量。

@@ -1,0 +1,572 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-11-25T08:03:34.672702+00:00",
+  "target_release": "v0.3.4",
+  "command": "python -B scripts/ui/test_agent_liveness.py",
+  "python": "3.10.11",
+  "platform": "Windows",
+  "environment": "temporary tasks/files; deterministic fake model/tools; transport raises on send; no live SDK/model/network",
+  "tests": 40,
+  "failures": 0,
+  "errors": 0,
+  "successful": true,
+  "skipped": 0,
+  "elapsed_seconds": 16.594,
+  "source_sha256_at_start": {
+    "agent_lab/progress_guard.py": "910eddcfdd21b2377d4f4458ababce24f25fababbc7979ae84d81875793f1890",
+    "agent_lab/runtime_runner.py": "9e869827f0878aa9b8711944ea56a2e542e8938eb5cffba7dac13bd1808a4b8d",
+    "scripts/ui/test_agent_liveness.py": "c7bd8d869eae9de5ca6ad30703027883b0615aa0839c1c9484311106fc20a7e4",
+    "main.py": "6d94129c93968e78c64e330a02eab552080db81585789229a5db688db22cd83d",
+    "agent_lab/task_control.py": "d5b83fb99ce309167944058e0eaa795c4791f510dd0ce4c54a56954af0c18402",
+    "agent_lab/astrbot_bridge.py": "61b520054743a02cf6eb1c6b50ea0ce0553c09f98a6f52b24984617428f8d5ac",
+    "agent_lab/task_messages.py": "561f87b82c66279b70ce5bf7b23c7fd9ac56c18f998ca0fa34e62e43885da806",
+    "agent_lab/continuity.py": "05719a6687eb70855d94f9de60c17bd7c071a6698c7b80d4518767aa254b1daa",
+    "agent_lab/models.py": "036ccfb238760e6bab40b69ee49e361d2b6985f95969ea6d8de961432f8fd9a6",
+    "agent_lab/storage.py": "d7c03bc14df4570157802573f371c5dc4bf322b6cc19da4b32e133088debc387",
+    "agent_lab/task_permissions.py": "18fcbe9df0baed8daef1943d30ffb7646ed473c145b20ef5a5bc4137e6705fcb"
+  },
+  "source_sha256_at_end": {
+    "agent_lab/progress_guard.py": "910eddcfdd21b2377d4f4458ababce24f25fababbc7979ae84d81875793f1890",
+    "agent_lab/runtime_runner.py": "9e869827f0878aa9b8711944ea56a2e542e8938eb5cffba7dac13bd1808a4b8d",
+    "scripts/ui/test_agent_liveness.py": "c7bd8d869eae9de5ca6ad30703027883b0615aa0839c1c9484311106fc20a7e4",
+    "main.py": "6d94129c93968e78c64e330a02eab552080db81585789229a5db688db22cd83d",
+    "agent_lab/task_control.py": "d5b83fb99ce309167944058e0eaa795c4791f510dd0ce4c54a56954af0c18402",
+    "agent_lab/astrbot_bridge.py": "61b520054743a02cf6eb1c6b50ea0ce0553c09f98a6f52b24984617428f8d5ac",
+    "agent_lab/task_messages.py": "561f87b82c66279b70ce5bf7b23c7fd9ac56c18f998ca0fa34e62e43885da806",
+    "agent_lab/continuity.py": "05719a6687eb70855d94f9de60c17bd7c071a6698c7b80d4518767aa254b1daa",
+    "agent_lab/models.py": "036ccfb238760e6bab40b69ee49e361d2b6985f95969ea6d8de961432f8fd9a6",
+    "agent_lab/storage.py": "d7c03bc14df4570157802573f371c5dc4bf322b6cc19da4b32e133088debc387",
+    "agent_lab/task_permissions.py": "18fcbe9df0baed8daef1943d30ffb7646ed473c145b20ef5a5bc4137e6705fcb"
+  },
+  "thresholds": {
+    "warn_after": 2,
+    "pause_after": 3,
+    "handoff_grace": 1
+  },
+  "measurements": {
+    "scenarios_recorded": 40,
+    "model_calls_simulated": 111,
+    "live_model_calls": 0,
+    "transport_calls": 0,
+    "live_tokens_billed": 0,
+    "token_counts": "fixture increments only; no real usage measurement"
+  },
+  "limitations": [
+    "Novel tool inputs, valid completed checkpoints and first completed nodes are progress proxies; no proof of actual effects or goal completion.",
+    "Novel irrelevant parameters can look productive; total task budgets remain necessary. Durable seen sets grow with distinct evidence.",
+    "No live AstrBot/provider/cron transport integration tested by this liveness suite.",
+    "Timeout uses cooperative asyncio cancellation; blocking native calls or cancellation-suppressing tools need host isolation.",
+    "Counters are per bounded tick, not per tool; one tick remains limited by existing tool/time/token budgets. Global slot waiting is outside that deadline and unbilled.",
+    "A same-input read after external changes is conservative unless a new journalled write/checkpoint supplies evidence.",
+    "Scheduler deletion failure retains its unconfirmed heartbeat fields; paused-state preflight still blocks model dispatch."
+  ],
+  "test_failures": [],
+  "scenarios": [
+    {
+      "case": "admin_terminal_success_or_exception",
+      "assertions": "passed",
+      "model_calls_simulated": 2,
+      "transport_calls": 0,
+      "status": "archived",
+      "counters": {},
+      "variants": 2,
+      "no_resurrection": true
+    },
+    {
+      "case": "admin_pause_inflight",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "no_resurrection": true
+    },
+    {
+      "case": "admin_pause_queued",
+      "assertions": "passed",
+      "model_calls_simulated": 0,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "model_dispatches": 0,
+      "ticks_charged": 0
+    },
+    {
+      "case": "single_deadline",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 1,
+        "failure_ticks": 0
+      },
+      "phase_timeouts_seconds": [
+        1.0,
+        0.7,
+        0.4,
+        0.1
+      ]
+    },
+    {
+      "case": "external_cancellation_cleanup",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      }
+    },
+    {
+      "case": "cancelled_gate_wait",
+      "assertions": "passed",
+      "model_calls_simulated": 0,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "model_dispatches": 0
+    },
+    {
+      "case": "new_approved_plan_rejects_old_result",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      }
+    },
+    {
+      "case": "counter_persistence",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "runner_instances": 3,
+      "pause_tick": 3
+    },
+    {
+      "case": "legitimate_paged_read",
+      "assertions": "passed",
+      "model_calls_simulated": 8,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "ticks": 8,
+      "false_stops": 0
+    },
+    {
+      "case": "duplicate_trigger",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 1,
+        "failure_ticks": 0
+      },
+      "model_dispatches": 1
+    },
+    {
+      "case": "empty_batch_deferral",
+      "assertions": "passed",
+      "model_calls_simulated": 0,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "pause_tick": 3
+    },
+    {
+      "case": "handoff_churn_bounded",
+      "assertions": "passed",
+      "model_calls_simulated": 4,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "grace_ticks": 1,
+      "pause_tick": 4
+    },
+    {
+      "case": "scheduler_cleanup_failure",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "extra_model_dispatches": 0,
+      "heartbeat_cleanup_confirmed": false
+    },
+    {
+      "case": "scheduler_cleanup_timeout",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "production_timeout_seconds": 2,
+      "test_timeout_seconds": 0.02
+    },
+    {
+      "case": "approval_inflight_preserved",
+      "assertions": "passed",
+      "model_calls_simulated": 2,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "variants": 2
+    },
+    {
+      "case": "inflight_budget_preserved",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      }
+    },
+    {
+      "case": "last_admitted_tick_finishes",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "tick_limit": 1,
+      "model_dispatches": 1
+    },
+    {
+      "case": "local_warning_storage_error",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "pause_tick": 3,
+      "local_warning_write_confirmed": false
+    },
+    {
+      "case": "logs_tokens_success_noise",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "warning_tick": 2,
+      "pause_tick": 3,
+      "local_warnings": 2,
+      "simulated_tokens": 2331
+    },
+    {
+      "case": "novel_reads_cannot_hide_failures",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 3
+      },
+      "pause_tick": 3
+    },
+    {
+      "case": "work_then_handoff",
+      "assertions": "passed",
+      "model_calls_simulated": 8,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "ticks": 8,
+      "false_stops": 0
+    },
+    {
+      "case": "partial_work_then_timeout",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 3
+      },
+      "pause_tick": 3
+    },
+    {
+      "case": "approval_wait_does_not_stall",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 1,
+        "failure_ticks": 0
+      },
+      "skipped_ticks": 4
+    },
+    {
+      "case": "provider_wait_admin_pause",
+      "assertions": "passed",
+      "model_calls_simulated": 0,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "model_dispatches": 0
+    },
+    {
+      "case": "read_write_read_validate",
+      "assertions": "passed",
+      "model_calls_simulated": 7,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "ticks": 7,
+      "temporary_file_bytes": 10,
+      "false_stops": 0
+    },
+    {
+      "case": "intermittent_errors_recovered",
+      "assertions": "passed",
+      "model_calls_simulated": 8,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "ticks": 8,
+      "historical_same_errors": 4,
+      "false_stops": 0
+    },
+    {
+      "case": "repeated_tool_failures",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 3
+      },
+      "pause_tick": 3
+    },
+    {
+      "case": "repeated_read",
+      "assertions": "passed",
+      "model_calls_simulated": 4,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "pause_tick": 4
+    },
+    {
+      "case": "repeated_write_read_cycle",
+      "assertions": "passed",
+      "model_calls_simulated": 4,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "pause_tick": 4
+    },
+    {
+      "case": "same_success_new_ids_and_output",
+      "assertions": "passed",
+      "model_calls_simulated": 4,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "first_novel_call_tick": 1,
+      "pause_tick": 4
+    },
+    {
+      "case": "compacted_journal_replay",
+      "assertions": "passed",
+      "model_calls_simulated": 4,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "pause_tick": 4
+    },
+    {
+      "case": "empty_round_budget_continuation",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "pause_tick": 3
+    },
+    {
+      "case": "productive_round_budget_continuation",
+      "assertions": "passed",
+      "model_calls_simulated": 6,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "ticks": 6,
+      "false_stops": 0
+    },
+    {
+      "case": "invalid_completion_evidence",
+      "assertions": "passed",
+      "model_calls_simulated": 0,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "variants": 2
+    },
+    {
+      "case": "runtime_errors",
+      "assertions": "passed",
+      "model_calls_simulated": 3,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 3
+      },
+      "warning_tick": 2,
+      "pause_tick": 3
+    },
+    {
+      "case": "timeouts_all_awaited_phases",
+      "assertions": "passed",
+      "model_calls_simulated": 0,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 3
+      },
+      "lanes": 4,
+      "simulated_timeouts": 12,
+      "pause_after_each": 3,
+      "test_deadline_seconds": 0.02,
+      "production_deadline_seconds": 240
+    },
+    {
+      "case": "successful_response_hits_total_budget",
+      "assertions": "passed",
+      "model_calls_simulated": 1,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "pause_tick": 1
+    },
+    {
+      "case": "total_budgets_preflight",
+      "assertions": "passed",
+      "model_calls_simulated": 0,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "budget_types": 3,
+      "model_dispatches": 0
+    },
+    {
+      "case": "completed_checkpoints_with_handoffs",
+      "assertions": "passed",
+      "model_calls_simulated": 6,
+      "transport_calls": 0,
+      "status": "running",
+      "counters": {
+        "no_progress_ticks": 0,
+        "failure_ticks": 0
+      },
+      "ticks": 6,
+      "false_stops": 0
+    },
+    {
+      "case": "workflow_cycle",
+      "assertions": "passed",
+      "model_calls_simulated": 5,
+      "transport_calls": 0,
+      "status": "paused",
+      "counters": {
+        "no_progress_ticks": 3,
+        "failure_ticks": 0
+      },
+      "distinct_nodes": 2,
+      "pause_tick": 5
+    }
+  ]
+}

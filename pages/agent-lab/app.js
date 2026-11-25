@@ -1,6 +1,6 @@
 import { renderCapabilityGraph, toggleCapability } from './scheme-settings.js?v=031-scheme-graph';
 import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=026";
-import { ProjectUI } from "./project-ui.js?v=033-context-metrics";
+import { ProjectUI } from "./project-ui.js?v=034-authored-stages";
 import { Navigation, settingsIcon } from "./navigation.js?v=031-scheme-graph";
 import {getBezierPath, Position} from "./vendor/connectors.js?v=026";
 import {routeEdge} from "./connections.js?v=026";

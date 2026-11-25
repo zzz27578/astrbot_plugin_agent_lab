@@ -85,7 +85,7 @@ from .agent_lab.context_views import state_summary
 
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.3.3"
+PLUGIN_VERSION = "v0.3.4"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"
@@ -736,7 +736,7 @@ class AgentLabPlugin(Star):
         """提交/修订任务计划。普通调整审阅后直接继续，目标/验收/预算变化须批准。
 
         Args:
-            steps_json(string): 数组或对象。steps每步含id/title/instruction，可用stage归组；修订提供change_reason。保留已完成步骤，返工写reopen_reason。修改goal、completion_conditions、budget或remove_constraints须确认。不能修改权限配置。
+            steps_json(string): 数组或对象。steps每步含id/title/instruction，可用stage归组；message为自拟审批原话，notifications可选paused/error/budget/stalled预先自拟警告正文。修订提供change_reason，保留已完成步骤，返工写reopen_reason。目标/验收/预算/解除约束须批准，不能修改权限配置。
             constraints(string): 必须保留的用户要求，每行一项。
         """
         self._require_task_access(event)
@@ -747,7 +747,7 @@ class AgentLabPlugin(Star):
         return result
 
     @filter.llm_tool(name="agent_lab_checkpoint")
-    async def agent_lab_checkpoint(self, event: AstrMessageEvent, step_id: str, summary: str, evidence_json: str = "[]", completed: bool = False) -> str:
+    async def agent_lab_checkpoint(self, event: AstrMessageEvent, step_id: str, summary: str, evidence_json: str = "[]", completed: bool = False, message: str = "") -> str:
         """保存当前计划步骤的位置和执行证据，压缩后可直接续接。
 
         Args:
@@ -755,10 +755,18 @@ class AgentLabPlugin(Star):
             summary(string): 实际进展、决定及原因、文件位置、验证结果和遗留事项。完成阶段前留下可接手的交接记录。
             evidence_json(string): 成功工具返回的证据ID的JSON数组。
             completed(boolean): 本步骤是否已完成。
+            message(string): 可选阶段交付正文，由你按当前Bot角色自拟；最多2000字符，只写成果、未验证项和下一步。
         """
         self._require_task_access(event)
+        if len(message)>2000:
+            return "阶段交付正文最多2000字符，请自行简化后提交。"
         result = self.task_control.checkpoint(event, step_id, summary, evidence_json, completed)
         task = self.task_control.load(event.unified_msg_origin)
+        if message.strip():
+            task_control(task).setdefault("stage_deliveries", []).append({"step_id":step_id,"text":message.strip(),"time":now_iso(),"completed":completed})
+            task_control(task)["stage_deliveries"]=task_control(task)["stage_deliveries"][-20:]
+            self.storage.save_task(task)
+            await self.task_messages.publish(event,task.task_id,message,"stage")
         await self.task_messages.state(event, task.task_id)
         return result
 
@@ -785,16 +793,22 @@ class AgentLabPlugin(Star):
         return self.task_control.steer(event.unified_msg_origin, message)
 
     @filter.llm_tool(name="agent_lab_progress")
-    async def agent_lab_progress(self, event: AstrMessageEvent, message: str) -> str:
-        """向立项管理员发送简洁进展，与反问、审批共用任务消息线。由设置控制与限频。
+    async def agent_lab_progress(self, event: AstrMessageEvent, message: str, kind: str = "progress") -> str:
+        """按Bot角色提交任务进展、状态或阶段交付原话，插件只加标题；不执行外部操作。
 
         Args:
             message(string): 已确认发现、当前动作或下一步，1–600字；不要发送日志或隐私。
+            kind(string): progress受进展开关限频；status用于你核实后的暂停/报错说明；stage用于分段交付。不得冒充审批或最终完成。
         """
-        task = self.astrbot_bridge.check(event)
+        self._require_task_access(event)
+        task = self.task_control.load(event.unified_msg_origin)
+        if kind not in {"progress","status","stage"}:
+            return "只支持progress/status/stage；审批和最终交付请用对应工具。"
+        if kind=="progress":
+            self.astrbot_bridge.check(event)
         if not message.strip() or len(message) > 600:
             raise ValueError("进展简报需要1–600字。")
-        return await self.task_messages.publish(event, task.task_id, message)
+        return await self.task_messages.publish(event, task.task_id, message, kind)
 
     @filter.llm_tool(name="agent_lab_record_report")
     async def agent_lab_record_report(self, event: AstrMessageEvent, report: str) -> str:
@@ -1169,6 +1183,7 @@ class AgentLabPlugin(Star):
         approval_type: str = "operation",
         requested_status: str = "",
         operations_json: str = "",
+        message: str = "",
     ) -> str:
         """危险操作前请求用户审批，不要直接执行危险操作。
 
@@ -1178,22 +1193,27 @@ class AgentLabPlugin(Star):
             impact(string): 影响范围。
             rollback(string): 可回滚方案。
             operations_json(string): 提前合并危险操作；JSON 数组，每项为 {tool_name, arguments}。批准后按原参数续接，无需再次调用。
+            message(string): 给管理员的最终审批正文，按你的角色自拟，最多2000字符；说清动作、范围、影响与恢复，批准/拒绝用语也自行写入。插件只加标题不改写。
         """
         self._require_task_access(event)
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task，无法记录审批。"
+        if len(message)>2000:
+            return "审批正文最多2000字符，请自行简化后提交。"
         if operations_json.strip():
             try:
                 if len(operations_json) > 18000:
                     raise ValueError("请把批次缩小到可完整审阅的范围。")
                 operations = json.loads(operations_json)
-                task_id = self.astrbot_bridge.request_batch(event, operations, reason[:800], impact[:1200], rollback[:700], operation[:800])
+                task_id = self.astrbot_bridge.request_batch(event, operations, reason[:800], impact[:1200], rollback[:700], operation[:800], message.strip())
             except ValueError as exc:
                 return str(exc)
-            return f"任务 {task_id} 已在执行前保存审批批次，等待管理员批准；不再派发新动作。"
+            sent = await self.task_messages.state(event, task_id)
+            return f"任务 {task_id} 审批批次已记录：{sent}；等待处理，不重复发送。"
         approval = ApprovalRequest(
             operation=operation,
+            message=message.strip(),
             reason=reason,
             impact=impact,
             rollback=rollback,
@@ -1228,10 +1248,7 @@ class AgentLabPlugin(Star):
         if sent == "已发送任务消息。":
             return f"审批 {approval.approval_id} 已在原任务消息线发出；等待管理员处理，不重复通知。"
         return (
-            f"已创建审批请求 {approval.approval_id}。请向用户说明：\n"
-            f"- 操作：{operation}\n- 原因：{reason}\n- 影响：{impact}\n"
-            f"- 回滚：{rollback or '未提供'}\n"
-            f"用户可回复 /agentlab approve {approval.approval_id}。"
+            f"审批 {approval.approval_id} 已记录，发送状态：{sent}。原始文案和动作均已保存；不要再次复述完整参数。"
         )
 
     @filter.llm_tool(name="agent_lab_set_heartbeat")
@@ -1258,9 +1275,24 @@ class AgentLabPlugin(Star):
         event: AstrMessageEvent,
         final_summary: str,
         memory_candidates: str = "",
+        message: str = "",
     ) -> str:
-        """任务达到完成条件后归档并退出任务模式。"""
+        """任务达到完成条件后归档并退出任务模式。
+
+        Args:
+            final_summary(string): 任务归档正文，按你的角色表达并说明结果、验证与未完成项。
+            memory_candidates(string): 可选稳定记忆候选。
+            message(string): 可选2000字符以内给管理员的最终交付原话，插件只加标题；归档详细正文保留。
+        """
         self._require_task_access(event)
+        if len(message)>2000:
+            return "给管理员的交付文案最多2000字符，请你自行简化；详细内容可保留在final_summary。"
+        if len(final_summary)>2000 and not message.strip():
+            return "归档正文可保留详细内容，请另外用message提交2000字符以内的对外交付原话后再结束。"
+        task=self.storage.load_active_task(event.unified_msg_origin)
+        if task and message.strip():
+            task.workflow_data["delivery_message"]=message.strip()
+            self.storage.save_task(task)
         return await self._finish_task(
             event,
             status="completed",
@@ -1662,6 +1694,7 @@ class AgentLabPlugin(Star):
             return
         daily_tools = {"agent_lab_enter_mode", "agent_lab_project", "agent_lab_workflow_catalog",
             "agent_lab_control_task",
+            "agent_lab_progress",
             "agent_lab_read_state", "agent_lab_read_runtime", "agent_lab_read_task_memory",
             "agent_lab_recommend_task_patterns", "agent_lab_steer", "agent_lab_submit_plan",
             "agent_lab_update_workflow", "agent_lab_ask_question"}
@@ -1678,6 +1711,7 @@ class AgentLabPlugin(Star):
             "管理员补充要求用agent_lab_steer；明显缺少关键条件才用agent_lab_ask_question给出选项和推荐。"
             "管理员停止和按现状交付优先，不要求所有步骤成功。任务与日常只交换筛选后的摘要，不能粘贴完整日志。"
         )
+        req.system_prompt += "\n日常聊天照常继续，不暂停后台任务。需要解释任务报错或暂停时，先核对短状态，再用agent_lab_progress(kind=status)按角色说明。"
         if task:
             req.system_prompt += f"\n当前任务：{task.task_id}，状态：{task.status}。"
             req.system_prompt += "\n管理员明确说停止任务、结束任务或按现状交付时，优先使用 agent_lab_control_task；不用等待后台模型完工。"
@@ -1725,6 +1759,7 @@ class AgentLabPlugin(Star):
                     question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
             state["human_paused"] = False
             state.pop("guard_refusals", None)
+            task.workflow_data.pop("progress_guard",None)
             task.status = "running"
             task.clear_wait()
             task.watchdog.paused_reason = ""
@@ -2337,7 +2372,7 @@ class AgentLabPlugin(Star):
         )
         await self._disable_heartbeat(task)
         snapshot = task.profile_snapshot.get("session_plugin_snapshot")
-        if bool(task.profile_snapshot.get("restore_session_plugins", True)):
+        if bool(task.profile_snapshot.get("restore_session_plugins", False)):
             await self.guard.restore(task.umo, snapshot)
         task.archive_path = str(self.storage.archive_task_markdown_path(task.umo, task.task_id))
         memory_result = await self.memory_orchestrator.on_task_finish(
@@ -2596,6 +2631,7 @@ class AgentLabPlugin(Star):
         internal_block = {"agent_lab_enter_mode", "agent_lab_tick", "agent_lab_set_heartbeat", "agent_lab_control_task"}
         essential = {
             "agent_lab_read_tool_evidence",
+            "agent_lab_progress",
             "agent_lab_project",
             "agent_lab_read_handoff",
             "agent_lab_ask_question",
@@ -6754,7 +6790,7 @@ class AgentLabPlugin(Star):
         )
         await self._disable_heartbeat(task)
         snapshot = task.profile_snapshot.get("session_plugin_snapshot")
-        if bool(task.profile_snapshot.get("restore_session_plugins", True)):
+        if bool(task.profile_snapshot.get("restore_session_plugins", False)):
             await self.guard.restore(task.umo, snapshot)
         task.archive_path = str(self.storage.archive_task_markdown_path(task.umo, task.task_id))
         memory_result = await self.memory_orchestrator.on_task_finish(
@@ -8645,6 +8681,7 @@ class AgentLabPlugin(Star):
                 question.update(status="skipped", answer="管理员明确恢复，先做不依赖该答案的部分。", answered_at=now_iso())
         state["human_paused"] = False
         state.pop("guard_refusals", None)
+        task.workflow_data.pop("progress_guard",None)
         task.status = "running"
         task.watchdog.paused_reason = ""
         task.watchdog.consecutive_failures = 0

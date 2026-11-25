@@ -133,7 +133,7 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
             self.assertIn('证据 ID', result[0].content[-1].text)
             await bridge.invoke(event, tools['astrbot_execute_shell'], {'command': 'ls /project'})
             ops = [{'tool_name': 'astrbot_execute_shell', 'arguments': {'command': 'rm /outside/' + suffix}} for suffix in ('one', 'two')]
-            bridge.request_batch(event, ops, '清理旧文件', '影响两个对象', '恢复备份')
+            bridge.request_batch(event, ops, '清理旧文件', '影响两个对象', '恢复备份', message='删除两项旧文件。恢复时使用保留的备份。')
             paused = self.storage.load_active_task(task.umo)
             self.assertEqual(paused.status, 'paused')
             self.assertEqual(len(actions), 2)
@@ -160,7 +160,8 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
             current.set_wait(wait_reason='budget_exhausted', message='任务 Token 总预算已用尽：242064/240000', source='budget')
             self.storage.save_task(current)
             await Messages(self.owner, send=send).state(event, task.task_id)
-            self.assertIn('242064/240000', sent[-1]); self.assertNotIn('旧步骤', sent[-1])
+            self.assertIn('budget_exhausted', sent[-1]); self.assertNotIn('旧步骤', sent[-1])
+            self.assertTrue(any('242064/240000' in row['text'] for row in (await self.projects.detail(task.task_id))['messages'] if row['kind']=='warning'))
 
     async def test_same_adapter_two_instances_remain_separate(self):
         a,pa=self.task('qq-a','Same name');b,pb=self.task('qq-b','Same name')
@@ -321,16 +322,16 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(sent),1)
         q=self.owner.task_control.ask(self.event(task.umo),'Which scope?',['a','b'])
         await messages.state(self.event(task.umo),task.task_id)
-        self.assertIn(q['id'],sent[-1][1]);self.assertIn('需要回答',sent[-1][1])
+        self.assertIn('Which scope?',sent[-1][1]);self.assertIn('需要回答',sent[-1][1]);self.assertNotIn('/al answer',sent[-1][1])
         await messages.state(self.event(task.umo),task.task_id)
         self.assertEqual(len(sent),2)
         await messages.preferences.save('admin','qq-a',progress={'enabled':False})
         await messages.publish(self.event(task.umo),task.task_id,'Approve this','approval')
         self.assertEqual(len(sent),3)
-        approval=Models.ApprovalRequest(operation='Large plan',reason='Review',impact='x'*10000)
+        approval=Models.ApprovalRequest(operation='Large plan',reason='Review',impact='x'*10000,message='老爸，这版范围和验收我都列好了，你回复批准或拒绝就行。')
         latest=self.storage.load_active_task(task.umo);Control.control(latest)['questions']=[];latest.approvals=[approval.to_dict()];self.storage.save_task(latest)
         await messages.state(self.event(task.umo),task.task_id)
-        self.assertIn('回复“批准”或“拒绝”',sent[-1][1]);self.assertNotIn(approval.approval_id,sent[-1][1])
+        self.assertIn(approval.message,sent[-1][1]);self.assertNotIn(approval.approval_id,sent[-1][1]);self.assertNotIn('核对完整动作',sent[-1][1])
         with self.assertRaises(PermissionError):await messages.publish(self.event('qq-b:FriendMessage:123'),task.task_id,'wrong')
         detail=await self.projects.detail(task.task_id)
         self.assertEqual([m['kind'] for m in detail['messages']],['progress','question','approval','approval'])
@@ -405,7 +406,7 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         await messages.publish(self.event(task.umo),task.task_id,'Pending finding')
         clock[0]+=61
         await messages.publish(self.event(task.umo),task.task_id,'Next finding')
-        self.assertEqual(len(sent),2);self.assertIn('Pending finding',sent[-1]);self.assertIn('Next finding',sent[-1])
+        self.assertEqual(len(sent),2);self.assertNotIn('Pending finding',sent[-1]);self.assertEqual(sent[-1].split('\n',1)[1],'Next finding')
         path=self.storage.task_memory_dir(task.umo,task.task_id)/'messages.json'
         async def delete_record(umo,text):path.unlink()
         messages.send=delete_record
@@ -422,8 +423,9 @@ class ProjectRuntime(unittest.IsolatedAsyncioTestCase):
         async def send(umo,text):sent.append((umo,text))
         self.owner.task_messages=importlib.import_module('review_agent_lab.task_messages').TaskMessages(self.owner,send=send)
         self.owner.agent_runtime=SimpleNamespace(record_pause=lambda *args,**kwargs:None)
-        result=await namespace[method.name](self.owner,self.event(task.umo),'Write config','Fix issue','One file','Restore backup')
-        self.assertEqual(len(sent),1);self.assertIn(task.task_id,sent[0][1]);self.assertIn('核对完整动作',sent[0][1]);self.assertNotIn('Restore backup',sent[0][1])
+        authored='老爸，要动一下这份配置，备份已留好，你点头我再改。'
+        result=await namespace[method.name](self.owner,self.event(task.umo),'Write config','Fix issue','One file','Restore backup',message=authored)
+        self.assertEqual(len(sent),1);self.assertIn(task.task_id,sent[0][1]);self.assertEqual(sent[0][1].split('\n',1)[1],authored)
         self.assertIn('原任务消息线',result)
         self.assertEqual((await self.projects.detail(task.task_id))['messages'][0]['kind'],'approval')
 

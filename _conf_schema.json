@@ -63,7 +63,7 @@
     "type": "int",
     "description": "单轮最长运行时间（秒）",
     "default": 240,
-    "hint": "超过后任务会暂停，避免单轮执行过久。"
+    "hint": "覆盖批次、流程和模型的整轮deadline；连续超时两轮预警、三轮暂停，未知工具结果立即核对。"
   },
   "max_total_ticks": {
     "type": "int",

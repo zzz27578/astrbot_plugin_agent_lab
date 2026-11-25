@@ -146,7 +146,7 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         Summarizer=importlib.import_module('review_agent_lab.summarizer').AgentSummarizer
         self.assertEqual(await Summarizer(S()).summarize_exit(self.f.event(task.umo),task,summary),summary)
 
-    async def test_approval_summary_inherits_source_persona(self):
+    async def test_approval_summary_keeps_bot_authored_persona_without_extra_model(self):
         task=self.finished();request=[]
         async def cid(umo):return 'daily'
         async def conv(*args):return S(persona_id='mo')
@@ -159,8 +159,9 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         self.owner.context.get_current_chat_provider_id=provider
         self.owner.context.llm_generate=generate
         Messages=importlib.import_module('review_agent_lab.task_messages').TaskMessages
-        result=await Messages(self.owner).approval_summary(task,{'approval_id':'a','reason':'需要越界'})
-        self.assertIn('老爸',result);self.assertIn('亲昵',request[0]['system_prompt']);self.assertIn('不要求动作/对象',request[0]['system_prompt'])
+        authored='老爸，我得动一下授权范围外的配置，点头后再做，备份留好了。'
+        result=await Messages(self.owner).approval_summary(task,{'approval_id':'a','reason':'需要越界','message':authored})
+        self.assertEqual(result,authored);self.assertEqual(request,[])
 
     def test_host_skills_ignore_legacy_scheme_switch(self):
         modules={'astrbot.core.skills.skill_manager':S(SkillManager=lambda:S(list_skills=lambda **kw:[S(name='active'),S(name='other')]),build_skills_prompt=lambda rows:','.join(s.name for s in rows)),

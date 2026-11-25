@@ -256,6 +256,17 @@ class TaskContinuity:
                 record["source_restart_reason"] = "工作视图源发生变化，重新汇总，避免沿用旧游标跳过内容。"
                 start, summary = 0, ""
                 record.update(cursor=0, summary="")
+            checkpoint=state_of(task).get("checkpoint_handoff",{})
+            if (reason in {"stage_completed","stage_changed"} and checkpoint.get("summary")
+                    and checkpoint.get("stage")==record.get("stage")
+                    and checkpoint.get("version")==state_of(task).get("version")
+                    and checkpoint.get("input_revision",0)==state_of(task).get("input_revision",0)
+                    and len(checkpoint["summary"])<=summary_chars and checkpoint.get("evidence")):
+                # The acting Bot already wrote and evidenced the phase. Archive
+                # its handoff verbatim instead of paying a second summarizer.
+                summary=checkpoint["summary"]
+                start=len(source)
+                record.update(summary_author="checkpoint_bot",summary=summary,cursor=start,model_calls=0)
             while start < len(source):
                 system_prompt = ("你是 Agent Lab 的阶段交接记录员，不执行工具。只服务本任务的下一步，不写全程报告。当前计划和用户要求优先。"
                         "保留已改文件/证据ID、实际验证、尚未完成和接下来的具体动作；丢弃已过时细节与重复约束，代码和完整日志从原记录回查。"
