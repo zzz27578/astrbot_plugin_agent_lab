@@ -787,6 +787,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
                 if len(operations_json) > 18000:
                     raise ValueError("请把批次缩小到可完整审阅的范围。")
                 operations = json.loads(operations_json)
+                task = await self.astrbot_bridge.refresh_workspace(event, task)
                 task_id = self.astrbot_bridge.request_batch(event, operations, reason[:800], impact[:1200], rollback[:700], operation[:800], message.strip())
             except ValueError as exc:
                 return str(exc)

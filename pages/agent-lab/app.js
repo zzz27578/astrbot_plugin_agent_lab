@@ -7,7 +7,7 @@ import {routeEdge} from "./connections.js?v=026";
 import "./motion.js?v=026";
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20261125-v041";
+const AGENT_LAB_WEBUI_BUILD = "20261125-v042";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [

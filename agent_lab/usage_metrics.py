@@ -47,10 +47,16 @@ def request_size(raw, sent):
     raw_payload = {key: raw[key] for key in fields if key in raw}
     sent_payload = {key: sent[key] for key in fields if key in sent}
     argument_chars, write_chars = 0, 0
+    system_chars = len(str(sent.get("system_prompt") or ""))
+    user_chars = len(str(sent.get("prompt") or ""))
     for message in sent.get("contexts") or []:
         row = message.model_dump() if callable(getattr(message, "model_dump", None)) else message
         if not isinstance(row, dict):
             continue
+        if row.get("role") == "system":
+            system_chars += len(encoded(row.get("content", "")))
+        if row.get("role") == "user":
+            user_chars += len(encoded(row.get("content", "")))
         for call in row.get("tool_calls") or []:
             function = call.get("function") or {}
             arguments = function.get("arguments", "")
@@ -63,7 +69,7 @@ def request_size(raw, sent):
                 except (TypeError, ValueError):
                     pass
     return {"raw_chars": len(encoded(raw_payload)), "sent_chars": len(encoded(sent_payload)),
-            "system_chars": len(str(sent.get("system_prompt") or "")),
+            "system_chars": system_chars, "user_input_chars": user_chars,
             "prompt_chars": len(str(sent.get("prompt") or "")),
             "tool_call_argument_chars": argument_chars, "file_write_content_chars": write_chars,
             "estimated_tokens": estimate_tokens(sent_payload), "raw_estimated_tokens": estimate_tokens(raw_payload),
@@ -115,6 +121,8 @@ def record_handoff(task, record):
            "quality": "normal", "outcome": record.get("summary_outcome", "normal"), "repairs": len(record.get("summary_issues", [])),
            "model_calls": record.get("model_calls", 0), "reported_tokens": record.get("reported_tokens", 0),
            "unreported_calls": record.get("unreported_calls", 0)}
+    row["operation_receipts"] = len(record.get("payload_receipts", []))
+    row["handoff_material_chars"] = record.get("material_chars", record.get("source_chars", 0))
     ledger(task)["handoff"] = row
     return row
 
@@ -148,6 +156,9 @@ def write_task_line(owner, task, *, event_id, event="round"):
         text += (f"\n最近请求：system {request.get('system_chars', 0):,} 字符；工具定义 {request.get('tools_chars', 0):,} 字符；"
                  f"工具入参 {request.get('tool_call_argument_chars', 0):,} 字符（其中文件全量写入正文 {request.get('file_write_content_chars', 0):,} 字符）。"
                  f"缓存命中输入累计 {data.get('tokens', {}).get('cached', 0):,} Token，以模型报告为准。")
+        if request.get("wake_input"):
+            wake = request["wake_input"]
+            text += f"\n本轮任务输入：{wake['kind']}，新增 {wake['chars']:,} 字符。"
     if handoff:
         text += (f"\n最近交接：{handoff['raw_chars']:,} 字符原记录 / {handoff['source_chars']:,} 字符总结材料 → "
                  f"{handoff['summary_chars']:,}/{handoff['summary_limit']:,} 字符摘要；"

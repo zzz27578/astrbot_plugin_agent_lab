@@ -33,7 +33,8 @@ class ScopeApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.task, _ = self.f.task(status='running')
         state = F.Control.control(self.task)
         state.update(current_step_id='one', workflow='none', authorization_version=1,
-                     execution_cwd=str(self.cwd), execution_settings={'mode':'full','roots':[str(self.project)]})
+                     execution_cwd=str(self.cwd), session_workspace_root=str(self.cwd),
+                     execution_settings={'mode':'full','roots':[str(self.project)]})
         self.storage.save_task(self.task)
         self.event = self.f.event(self.task.umo)
         self.extras = {}; self.event.get_extra = lambda key, default=None: self.extras.get(key, default)
@@ -53,6 +54,9 @@ class ScopeApprovalTests(unittest.IsolatedAsyncioTestCase):
         async def workspace(context):return self.cwd
         async def execute(tool,context,**args):
             self.calls.append((tool.name,copy.deepcopy(args)))
+            if self.result_mode=='subprocess' and tool.name=='astrbot_file_read_tool':
+                yield self.Result(content=[self.Text(type='text',text=Path(args['path']).read_text(encoding='utf-8'))])
+                return
             if self.result_mode == 'exception':
                 raise RuntimeError('host executor unavailable after dispatch')
             if self.result_mode == 'empty':
@@ -97,19 +101,19 @@ class ScopeApprovalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_explicit_cwd_and_actual_relative_targets_still_checked(self):
         state=F.Control.control(self.current())
-        for code in [f"import subprocess; subprocess.run(['node','--check',{str(self.project/'page.js')!r}],cwd={str(self.cwd)!r})",
-                     "import subprocess; subprocess.run(['cat','./outside.txt'])",
-                     "from pathlib import Path; Path('./outside.txt').write_text('bad')",
+        for code in [f"import subprocess; subprocess.run(['node','--check',{str(self.project/'page.js')!r}],cwd={str(self.cwd.parent)!r})",
+                     "import subprocess; subprocess.run(['cat','../outside.txt'])",
+                     "from pathlib import Path; Path('../outside.txt').write_text('bad')",
                      "import subprocess; subprocess.run(['rm','-rf','.'])"]:
             with self.subTest(code=code):
                 self.assertEqual(P.assess('astrbot_execute_python',{'code':code},state)[0],'review')
         task=self.current();F.Control.control(task)['execution_settings']['mode']='standard';self.storage.save_task(task)
         with self.assertRaises(B.OperationBlocked):
-            await self.bridge.invoke(self.event,self.tools['astrbot_execute_shell'],{'command':'cat ./outside.txt'})
+            await self.bridge.invoke(self.event,self.tools['astrbot_execute_shell'],{'command':'cat ../outside.txt'})
         self.assertEqual(self.calls,[])
 
     async def test_approved_exact_call_skips_scope_assessment_and_runs_once(self):
-        args={'code':f"open({str(self.cwd/'outside.txt')!r}).read()"}
+        args={'code':f"open({str(self.cwd.parent/'outside.txt')!r}).read()"}
         approved=self.approve(args)
         with (patch.object(B,'assess',side_effect=AssertionError('approved call assessed twice')),
               patch.object(B,'full_guard',side_effect=AssertionError('approved call guarded twice'))):
@@ -126,7 +130,7 @@ class ScopeApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue((self.storage.root/call['result_path']).is_file())
         with self.assertRaises(B.OperationBlocked):
             await self.bridge.invoke(self.event,self.tools['astrbot_execute_python'],
-                                     {'code':f"open({str(self.cwd/'different.txt')!r}).read()"})
+                                     {'code':f"open({str(self.cwd.parent/'different.txt')!r}).read()"})
         self.assertEqual(len(self.calls),1)
 
     async def test_authority_or_input_changes_expire_saved_grant(self):
@@ -171,8 +175,13 @@ class ScopeApprovalTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_context_setup_error_has_a_durable_failure_record(self):
         approved=self.approve({'code':'print(1)'})
-        def broken(**kwargs):raise RuntimeError('invalid host execution context')
-        with patch.dict(sys.modules,{'astrbot.core.astr_agent_context':S(AstrAgentContext=broken,AgentContextWrapper=S)}):
+        wrapper_calls=0
+        def broken(**kwargs):
+            nonlocal wrapper_calls
+            wrapper_calls+=1
+            if wrapper_calls==3:raise RuntimeError('invalid host execution context')
+            return S(**kwargs)
+        with patch.dict(sys.modules,{'astrbot.core.astr_agent_context':S(AstrAgentContext=S,AgentContextWrapper=broken)}):
             self.assertFalse(await self.bridge.resume_batch(self.event,approved))
         task=self.current();row=F.Control.control(task)['journal'][-1]
         self.assertEqual(row['status'],'failed')
@@ -194,7 +203,7 @@ class ScopeApprovalTests(unittest.IsolatedAsyncioTestCase):
         task=self.current();self.assertEqual(task.wait.wait_reason,'batch_result_unknown')
         self.assertEqual(F.Control.control(task)['journal'][-1]['status'],'unknown')
         task.status='running';self.storage.save_task(task)
-        await self.bridge.resume_batch(self.event,task)
+        with self.assertRaises(B.ExecutionStopped):await self.bridge.resume_batch(self.event,task)
         with self.assertRaises(B.ExecutionStopped):
             await self.bridge.invoke(self.event,self.tools['astrbot_execute_python'],{'code':'print(1)'})
         self.assertEqual(len(self.calls),1)
@@ -265,6 +274,29 @@ class ScopeApprovalTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sizes['tool_call_argument_chars'],len(arguments))
         self.assertEqual(sizes['system_chars'],len(payload['system_prompt']))
         self.assertEqual(payload,before)
+
+    async def test_actual_workspace_create_read_and_execute_do_not_need_new_approvals(self):
+        task=self.current();F.Control.control(task).pop('session_workspace_root',None);self.storage.save_task(task)
+        self.result_mode='subprocess';target=self.cwd/'workspace_job.py'
+        code=f"from pathlib import Path; Path({str(target)!r}).write_text(\"print('WORKSPACE_PASS')\\n\")"
+        written=await self.bridge.invoke(self.event,self.tools['astrbot_execute_python'],{'code':code},native=True)
+        read=await self.bridge.invoke(self.event,self.tools['astrbot_file_read_tool'],{'path':str(target)},native=True)
+        run=await self.bridge.invoke(self.event,self.tools['astrbot_execute_python'],
+                                    {'code':f"import runpy; runpy.run_path({str(target)!r})"},native=True)
+        self.assertFalse(any(result.isError for results in [written,read,run] for result in results))
+        self.assertIn('WORKSPACE_PASS',run[0].content[0].text)
+        current=self.current();state=F.Control.control(current)
+        self.assertEqual(state['session_workspace_root'],str(self.cwd))
+        self.assertEqual(state['execution_settings']['roots'],[str(self.project)])
+        self.assertFalse(current.approvals)
+        self.assertEqual(len(self.calls),3)
+
+    async def test_workspace_change_while_waiting_expires_old_grant(self):
+        approved=self.approve({'code':'print(1)'})
+        self.cwd=self.cwd.parent/'different-session-workspace';self.cwd.mkdir()
+        self.assertFalse(await self.bridge.resume_batch(self.event,approved))
+        self.assertEqual(self.current().wait.wait_reason,'approval_changed')
+        self.assertEqual(self.calls,[])
 
 
 if __name__=='__main__':unittest.main(verbosity=2)

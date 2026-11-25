@@ -1,0 +1,69 @@
+{
+  "release": "v0.4.2",
+  "full_suite": {
+    "command": "python -B -m unittest discover -s scripts/ui -p test_*.py -v",
+    "tests": 261,
+    "passed": 260,
+    "skipped": 1,
+    "failures": 0,
+    "errors": 0,
+    "elapsed_seconds": 83.528,
+    "skip_reason": "Windows current account cannot create real symlinks; junction isolation tests run separately"
+  },
+  "focused_suites": {
+    "wakes": 5,
+    "handoff_payloads": 9,
+    "workspace_permissions": 8
+  },
+  "offline_measurements": {
+    "12_bridge_wakes": {
+      "provider_failures": 1,
+      "full_brief_copies": 1,
+      "new_wake_user_chars": 14269,
+      "old_full_prompt_chars_sum": 157724,
+      "max_delta_chars": 175,
+      "byte_identical_prefix_comparisons": 11
+    },
+    "large_write_at_compaction": {
+      "raw_history_chars": 56619,
+      "continued_chars": 1397,
+      "summary_material_chars": 1007,
+      "original_content_chars": 52211,
+      "receipts": 1,
+      "original_archive_matches": true,
+      "summary_calls": 1
+    },
+    "workspace_bridge": {
+      "real_temp_create_read_run": true,
+      "tool_calls": 3,
+      "approvals": 0,
+      "administrator_roots_unchanged": true
+    },
+    "old_receipts_capacity": {
+      "old_receipts": 150,
+      "retained_fits_configured_context": true,
+      "originals_archived": true
+    }
+  },
+  "checks": [
+    "Python compileall",
+    "app.js JavaScript syntax",
+    "scripts/smoke_test.py",
+    "scripts/runtime_smoke_test.py",
+    "git diff --check"
+  ],
+  "scope": "Offline deterministic providers plus real bridge/storage/files/processes; no live model or production task replay. No claim of real billing reduction, cache hit rate, 5-10w Token limit or one-minute latency.",
+  "source_sha256": {
+    "agent_lab/wake_context.py": "c58984953a31bd1e9707fdb29301e60fbb6d4c675535e756ff1d709aa1f1758b",
+    "agent_lab/astrbot_bridge.py": "324357c2dd338ca6eb9c2256aebe8e4c7212d280557da41f4a2ca483e50880e1",
+    "agent_lab/continuity.py": "1a9b882d47b64908931afb71781a1ef18e1adcf4da394be9a6e5d5dca1d9b4fa",
+    "agent_lab/task_permissions.py": "5469145f2e6932189c9eea497f70da46e746a5c03e5df8d967fdbe2bf14b9eb4",
+    "agent_lab/task_tools.py": "4feeb533c60f0551d42557098f7365b11348913d024c40e45370d95b4efff3b3",
+    "agent_lab/usage_metrics.py": "ab97a70a91c4d227cde68630d99cd2d5db42e9fca55f7eeba2aceb33d16c3b43",
+    "main.py": "01284056947016fa960abd7a4cae94ea41b87ff75e3251892519b5f69510edaf",
+    "scripts/ui/test_wake_inputs.py": "c33daa2f80a30ee7d6d19cf09ffdcffaeaba97114980a8137ddbc60c4f90a819",
+    "scripts/ui/test_handoff_payloads.py": "485089461a6ddb3bb355d9044864a016eb70e91c41a12a0b48ec08eaff3f6efd",
+    "scripts/ui/test_task_workspace.py": "ddcedb8795619f3365f6019bd1434340dca77929f5e9ac19e764fef97ffd6545",
+    "scripts/ui/test_approval_scope_regression.py": "470a30c0babaadfd005e62dc87583ed500f8d3d4b2574b770d0a55ba3130d320"
+  }
+}

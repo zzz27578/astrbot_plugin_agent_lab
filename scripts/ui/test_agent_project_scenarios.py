@@ -610,6 +610,7 @@ class AgentProjectScenarios(unittest.IsolatedAsyncioTestCase):
         await self.plan(task)
         target = self.workspace/'approved.txt'
         args = {'path': str(target), 'content': 'approved content'}
+        await self.bridge.refresh_workspace(self.event(task), self.latest(task))
         self.bridge.request_batch(self.event(task), [{'tool_name': 'astrbot_file_write_tool', 'arguments': args}],
                                   '明确批次模拟', '一个临时文件', '删除临时文件')
         self.decision(task, True)

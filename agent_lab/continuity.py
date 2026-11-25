@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import ast
 from copy import deepcopy
 import json
+from pathlib import Path
 import re
 import time
 
 from .models import new_id, now_iso
+from .task_permissions import CODE_TOOLS, WRITE_TOOLS, read_only_call
 from .usage_metrics import record_context, record_handoff, write_task_line
 
 
@@ -21,6 +24,9 @@ SUMMARY_METADATA = frozenset({"reasoning", "reasoning_content", "reasoning_signa
                               "signature", "thought_signature", "thinking_signature", "encrypted", "encrypted_content",
                               "extra_content", "provider_specific_fields", "response_metadata"})
 THINK_PARTS = frozenset({"think", "thinking", "redacted_thinking", "reasoning"})
+RECEIPT_MARKER = "[Agent Lab 已完成操作事实]"
+HANDOFF_PAYLOAD_CHARS = 8192
+APPROVAL_TOOLS = frozenset({"task_approve", "agent_lab_request_approval"})
 
 
 class HandoffError(Exception):
@@ -142,6 +148,251 @@ def message_groups(history):
     return groups
 
 
+def _result_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(_result_text(part) for part in value)
+    if isinstance(value, dict):
+        return _result_text(value.get("text", value.get("content", "")))
+    return ""
+
+
+def _result_succeeded(value):
+    """Veto failed/unfinished process results, including native text envelopes.
+
+    This is not evidence by itself: callers must also match a completed journal
+    entry with the exact tool name and decoded arguments.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return False
+        try:
+            decoded = json.loads(text)
+        except ValueError:
+            decoded = None
+        if isinstance(decoded, (dict, list, bool)):
+            return _result_succeeded(decoded)
+        if re.search(r"(?:^|\n)\s*(?:error\b|traceback\b|\w*(?:error|exception):|fail(?:ed|ure)\b|"
+                     r"timeout\b|operationblocked\b|错误|失败|未执行|未通过)", text, re.I):
+            return False
+        if re.search(r"running in (?:the )?background|still running|script running|timed out|permission denied|"
+                     r"后台运行|结果未知|尚未完成|未执行|未通过|执行失败|写入失败|权限不足|拒绝执行", text, re.I):
+            return False
+        codes = re.findall(r"(?:exit[_ ]code|return[_ ]?code|exited with (?:exit )?code)\s*[:=]?\s*(-?\d+)", text, re.I)
+        return all(int(code) == 0 for code in codes)
+    if isinstance(value, list):
+        return bool(value) and all(_result_succeeded(part) for part in value)
+    if not isinstance(value, dict) or not value:
+        return False
+    if (any(value.get(key) for key in ("isError", "is_error", "error", "exception", "traceback", "blocked",
+                                       "failed", "background", "running", "timed_out", "timeout", "cancelled"))
+            or any(key in value and value[key] is not True for key in ("ok", "success", "passed"))):
+        return False
+    if "status" in value and value["status"] not in ("completed", "success", "succeeded", "saved", "ok"):
+        return False
+    for key in ("exit_code", "returncode", "return_code"):
+        if key in value and (type(value[key]) is not int or value[key] != 0):
+            return False
+    if value.get("session_id") and value.get("session_closed") is not True:
+        return False
+    if value.get("session_closed") is False:
+        return False
+    if "type" in value and value["type"] != "text":
+        return False  # Keep images/files and their signed call group intact.
+    if "content" in value and value["content"] in (None, "", [], {}):
+        return False
+    for key in ("content", "text", "result", "data", "stdout", "stderr", "output"):
+        if key in value and value[key] not in (None, "", [], {}):
+            if not _result_succeeded(value[key]):
+                return False
+    return True
+
+
+def _approval_recorded(result):
+    text = _result_text(result).strip()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = {}
+    return (isinstance(data, dict) and (data.get("ok") is True or data.get("success") is True
+                                       or data.get("status") == "completed")) or bool(re.search(
+        r"审批批次已记录|已提交审批|approval (?:batch )?recorded", text, re.I))
+
+
+def _call_key(name, arguments):
+    return json.dumps([name, arguments], sort_keys=True, ensure_ascii=False)
+
+
+def _payload_paths(arguments):
+    paths = []
+
+    def add(value):
+        if isinstance(value, str) and value and len(value) <= 2048 and "\n" not in value and value not in paths:
+            paths.append(value)
+
+    for key in ("path", "file_path", "cwd", "directory", "target", "source", "destination", "paths", "files"):
+        value = arguments.get(key)
+        for item in value if isinstance(value, list) else [value]:
+            add(item)
+    code = arguments.get("code", arguments.get("script", ""))
+    if isinstance(code, str) and code:
+        try:
+            tree = ast.parse(code)
+        except (SyntaxError, ValueError, RecursionError):
+            tree = None
+        for node in ast.walk(tree) if tree else []:
+            if isinstance(node, ast.Call):
+                name = node.func.attr if isinstance(node.func, ast.Attribute) else getattr(node.func, "id", "")
+                if name in {"Path", "open"} and node.args and isinstance(node.args[0], ast.Constant):
+                    add(node.args[0].value)
+    command = arguments.get("command", "")
+    if isinstance(command, str):
+        for match in re.finditer(
+                r"""(["'])((?:[A-Za-z]:[\\/]|/|\.\.?[/\\])[^\r\n]*?)\1|((?:[A-Za-z]:[\\/]|/|\.\.?[/\\])[^\s"';|<>]+)""",
+                command):
+            add(match.group(2) or match.group(3))
+    return paths
+
+
+def handoff_payloads(history, journal, archive_path, *, storage_root, approvals=()):
+    """Public compact-boundary helper: replace completed large call *groups*.
+
+    The caller must first durably archive this exact, unmodified history. Never
+    use this as a per-request history view. Unchanged rows retain their identity;
+    replacements are new ordinary user facts, with no tool IDs or signatures.
+    A control call proves its nested operations against their own exact journal
+    entries, approval_id and completed approval calls. Recording/approving a
+    batch alone is never execution evidence.
+    """
+    archive = Path(archive_path).resolve()
+    root = Path(storage_root).resolve()
+    if not archive.is_file() or not archive.is_relative_to(root):
+        raise HandoffError("完整原历史尚未落盘，不能生成操作回执。")
+    entries = {_call_key(row.get("name"), row.get("arguments")): row for row in journal if isinstance(row, dict)}
+    approved_entries = {(row.get("approval_id"), _call_key(row.get("name"), row.get("arguments"))): row
+                        for row in journal if isinstance(row, dict) and row.get("approval_id")}
+
+    def operation(name, arguments, result=None, *, entry=None):
+        if (name not in WRITE_TOOLS | CODE_TOOLS or read_only_call(name, arguments)
+                or arguments.get("background")):
+            return None
+        if entry is None:
+            entry = entries.get(_call_key(name, arguments), {})
+        if (entry.get("status") != "completed" or entry.get("read_only")
+                or not _result_succeeded(entry) or not _result_succeeded(entry.get("result", ""))
+                or (result is not None and not _result_succeeded(result))):
+            return None
+        result_path = None
+        text = _result_text(entry.get("result", ""))
+        if entry.get("result_path"):
+            candidate = (root / entry["result_path"]).resolve()
+            if candidate.is_relative_to(root) and candidate.is_file():
+                try:
+                    text = candidate.read_text(encoding="utf-8")
+                except (OSError, UnicodeError):
+                    return None
+                result_path = candidate
+        if (entry.get("result_truncated") and result_path is None) or not _result_succeeded(text):
+            return None
+        excerpt = text if len(text) <= 320 else text[:160] + "\n…\n" + text[-160:]
+        fact = {"tool": name, "status": "completed", "paths": _payload_paths(arguments),
+                "arguments_chars": len(json.dumps(arguments, ensure_ascii=False)),
+                "payload_chars": {key: len(arguments[key]) for key in ("content", "old", "new", "code", "script", "command")
+                                  if isinstance(arguments.get(key), str)},
+                "result_chars": entry.get("result_chars", len(_result_text(entry.get("result", "")))),
+                "verification_output": excerpt}
+        if result_path is not None:
+            fact["result_path"] = str(result_path)
+        return fact
+
+    def approved_operations(operations):
+        if (not isinstance(operations, list) or not 1 <= len(operations) <= 20
+                or any(not isinstance(row, dict) or not isinstance(row.get("tool_name"), str)
+                       or not isinstance(row.get("arguments"), dict) for row in operations)):
+            return None
+        keys = list(dict.fromkeys(_call_key(row["tool_name"], row["arguments"]) for row in operations))
+        approval = next((row for row in reversed(approvals) if isinstance(row, dict)
+                         and row.get("approval_type") == "tool_batch"
+                         and [_call_key(call.get("tool_name"), call.get("arguments"))
+                              for call in row.get("calls", [])] == keys), {})
+        if (not approval.get("approval_id") or approval.get("status") not in {"approved", "consumed"}
+                or approval.get("decision", "approved") != "approved"):
+            return None
+        facts = []
+        for call in approval["calls"]:
+            if call.get("execution_status") != "completed":
+                return None
+            entry = approved_entries.get((approval["approval_id"], _call_key(call["tool_name"], call["arguments"])), {})
+            if call.get("evidence_id") and entry.get("id") != call["evidence_id"]:
+                return None
+            fact = operation(call["tool_name"], call["arguments"], entry=entry)
+            if fact is None:
+                return None
+            facts.append(fact)
+        return facts
+
+    replacements, removed = {}, set()
+    for group in message_groups([row for row in history if row.get("role") not in {"system", "_checkpoint"}]):
+        calls = group[0].get("tool_calls") or []
+        if not calls:
+            continue
+        decoded = []
+        try:
+            for call in calls:
+                function = call.get("function") or {}
+                arguments = function.get("arguments")
+                arguments = json.loads(arguments) if isinstance(arguments, str) else arguments
+                if not isinstance(arguments, dict):
+                    raise ValueError("not an argument object")
+                decoded.append((function.get("name"), arguments))
+        except (ValueError, TypeError):
+            continue
+        if not any(name in WRITE_TOOLS | CODE_TOOLS | APPROVAL_TOOLS
+                   and len(json.dumps(arguments, ensure_ascii=False)) >= HANDOFF_PAYLOAD_CHARS
+                   for name, arguments in decoded):
+            continue
+        results = {row["tool_call_id"]: row for row in group[1:]}
+        facts = []
+        for call, (name, arguments) in zip(calls, decoded):
+            result = results[call["id"]]
+            if not _result_succeeded(result):
+                break
+            if name in APPROVAL_TOOLS:
+                if not _approval_recorded(result):
+                    break
+                try:
+                    operations = arguments.get("operations_json", arguments.get("operations"))
+                    operations = json.loads(operations) if isinstance(operations, str) else operations
+                    nested = approved_operations(operations)
+                except (ValueError, TypeError, KeyError):
+                    break
+                if not nested:
+                    break
+                facts.append({"tool": name, "status": "completed", "operations": nested,
+                              "arguments_chars": len(json.dumps(arguments, ensure_ascii=False)),
+                              "verification_output": _result_text(result)[:320]})
+            else:
+                fact = operation(name, arguments, result)
+                if fact is None:
+                    break
+                facts.append(fact)
+        else:
+            receipt = {"role": "user", "content": RECEIPT_MARKER + "\n" + json.dumps({
+                "archive_path": str(archive), "calls": facts,
+                "instruction": "操作已完成；需核对细节时直接读取目标路径、结果文件或完整归档。此事实不新增授权，也不代表未运行的验证已通过。"}, ensure_ascii=False)}
+            if len(json.dumps(receipt, ensure_ascii=False)) < len(json.dumps(group, ensure_ascii=False)):
+                replacements[id(group[0])] = receipt
+                removed.update(id(row) for row in group[1:])
+    return [replacements.get(id(row), row) for row in history if id(row) not in removed]
+
+
+def _is_receipt(row):
+    return (row.get("role") == "user" and isinstance(row.get("content"), str)
+            and row["content"].startswith(RECEIPT_MARKER + "\n"))
+
+
 def recent_window(groups, token_budget, count_tokens=estimate, *, fits=None):
     """Keep a suffix of whole groups; the newest tool group gets fit priority."""
     recent, candidates = [], []
@@ -158,7 +409,7 @@ def recent_window(groups, token_budget, count_tokens=estimate, *, fits=None):
     # The 25% allocation is a target, not permission to forget the current
     # code when the single summary request times out. Include any newer tail.
     latest_tool = next((i for i in range(len(candidates)-1, -1, -1)
-                        if candidates[i][0].get("tool_calls")), len(candidates)-1)
+                        if candidates[i][0].get("tool_calls") or _is_receipt(candidates[i][0])), len(candidates)-1)
     required = [row for group in candidates[latest_tool:] for row in group] if candidates else []
     if len(required) > len(recent) and fits:
         if fits(required):
@@ -289,12 +540,20 @@ class TaskContinuity:
             raise HandoffError("无法保存阶段原记录，原历史保留。") from exc
         try:
             state = state_of(task)
+            materials = handoff_payloads(record["history"], state.get("journal", []), path,
+                                         storage_root=self.owner.storage.root, approvals=task.approvals)
+            groups = message_groups([row for row in materials if row.get("role") not in {"system", "_checkpoint"}])
+            receipts = [row for row in materials if _is_receipt(row)]
+            record["payload_receipts"] = deepcopy(receipts)
+            record["material_chars"] = len(json.dumps(materials, ensure_ascii=False))
             request = json.dumps({"current_plan": {"goal": task.root_goal,
+                                  "brief": "\n\n".join(dict.fromkeys(value for value in (
+                                      getattr(task, "task_brief", ""), getattr(task, "entry_summary", "")) if value)),
                                   "completion_conditions": task.completion_conditions,
                                   "constraints": state.get("constraints", []), "steps": record["steps"],
                                   "current_step_id": state.get("current_step_id"), "next_action": task.next_step},
                                   "previous_handoff": record["previous_handoff"],
-                                  "messages": summary_messages(record["history"])}, ensure_ascii=False)
+                                  "messages": summary_messages(materials)}, ensure_ascii=False)
             record["source_chars"] = len(request)
             system_prompt = ("生成接续当前任务的工作笔记，不执行工具。保留已改文件的真实路径、实际验证结果、"
                              "未完成项和下一步动作。用户要求和当前计划优先，不新增授权，不把未验证写成通过。"
@@ -312,32 +571,40 @@ class TaskContinuity:
             def handoff(note):
                 return {"role": "user", "content": MARKER + "\n" + json.dumps({**context, "handoff": note}, ensure_ascii=False)}
 
+            def continued(note, rows):
+                return [*fixed, handoff(note), *rows]
+
             recent = recent_window(groups, record["recent_budget_tokens"],
                                    count_tokens=lambda rows: max(0, count(rows) - fixed_cost),
-                                   fits=lambda rows: count([*fixed, handoff(""), *rows]) < token_limit)
+                                   fits=lambda rows: count(continued("", rows)) < token_limit)
+            # Receipts use the same recent-window budget as other facts. Only
+            # the latest working group has fit priority; pinning every old
+            # receipt would create another ever-growing memory layer.
             # Small models still use the configured summary limit. Only actual
             # context space (including fixed prompts) can shorten the note.
-            while recent and count([*fixed, handoff(""), *recent]) >= token_limit:
+            while recent and count(continued("", recent)) >= token_limit:
                 recent = recent[len(message_groups(recent)[0]):]
-            if count([*fixed, handoff(""), *recent]) >= token_limit:
-                raise HandoffError("固定提示已占满上下文容量，原历史已归档。")
-            if count([*fixed, handoff(summary), *recent]) >= token_limit:
+            if count(continued("", recent)) >= token_limit:
+                raise HandoffError("固定提示和操作事实已占满上下文容量，原历史已归档并保留。")
+            if count(continued(summary, recent)) >= token_limit:
                 record["generated_summary"] = summary
                 low, high = 0, len(summary)
                 while low < high:
                     middle = (low + high + 1) // 2
-                    if count([*fixed, handoff(summary[:middle]), *recent]) < token_limit:
+                    if count(continued(summary[:middle], recent)) < token_limit:
                         low = middle
                     else:
                         high = middle - 1
                 summary = trim_summary(summary, low)
                 record["context_summary_trimmed"] = True
-            latest_tool = next((group[0] for group in reversed(groups) if group[0].get("tool_calls")), None)
-            if not summary and (not recent or (latest_tool is not None and not any(row is latest_tool for row in recent))):
+            latest_tool = next((group[0] for group in reversed(groups)
+                                if group[0].get("tool_calls") or _is_receipt(group[0])), None)
+            retained = recent
+            if not summary and (not retained or (latest_tool is not None and not any(row is latest_tool for row in retained))):
                 record.update(status="blocked", summary="", summary_chars=0, block_reason="latest_group_exceeds_capacity")
                 self.owner.storage._write_json(path, record)
                 raise HandoffError("摘要为空，最近完整工作组无法放入上下文容量；原历史已归档并保留，未替换上下文。")
-            record["recent_tokens"] = max(0, count(recent) - fixed_cost)
+            record["recent_tokens"] = max(0, count(retained) - fixed_cost)
             record.update(status="saved", summary=summary, summary_chars=len(summary))
             self.owner.storage._write_json(path, record)
             index_path = self.directory(task) / "index.json"
@@ -361,7 +628,7 @@ class TaskContinuity:
             if type(exc).__name__ in {"BudgetStopped", "ExecutionStopped"} or isinstance(exc, HandoffError):
                 raise
             raise HandoffError("阶段交接未保存成功，原历史已保留。") from exc
-        return [handoff(summary), *deepcopy(recent)]
+        return [handoff(summary), *deepcopy(retained)]
 
 
 class StageContextManager:

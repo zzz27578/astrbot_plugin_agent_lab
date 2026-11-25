@@ -57,7 +57,8 @@ class TaskToolsTests(unittest.IsolatedAsyncioTestCase):
         self.owner.context.llm_generate = AsyncMock(side_effect=AssertionError('no review model'))
         self.owner.task_messages = S(state=AsyncMock(return_value='已发送任务消息。'),
                                      publish=AsyncMock(return_value='已发送任务消息。'))
-        self.owner.astrbot_bridge = S(check=lambda event: self.load(), request_batch=self.request_batch)
+        self.owner.astrbot_bridge = S(check=lambda event: self.load(), request_batch=self.request_batch,
+                                     refresh_workspace=AsyncMock(side_effect=lambda event,task:task))
         for name in ('agent_lab_progress', 'agent_lab_ask_question', 'agent_lab_request_approval', 'agent_lab_finish'):
             setattr(self.owner, name, MethodType(legacy(name), self.owner))
         self.owner._finish_task = AsyncMock(return_value='archived by owner')

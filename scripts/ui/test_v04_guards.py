@@ -487,7 +487,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         tree = ast.parse((ROOT / "agent_lab/astrbot_bridge.py").read_text(encoding="utf-8"))
         wrapper = next(n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == "MeteredProvider")
         namespace = dict(vars(Bridge), bridge=bridge, provider=S(text_chat=text_chat),
-                         task=task, event=event, boundary_stopped=False, time=time)
+                         task=task, event=event, boundary_stopped=False, time=time, wake_metric=None)
         exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])),
                      str(ROOT / "agent_lab/astrbot_bridge.py"), "exec"), namespace)
         metered = namespace["MeteredProvider"]()

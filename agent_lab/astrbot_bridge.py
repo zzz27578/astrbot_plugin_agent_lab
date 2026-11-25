@@ -17,6 +17,7 @@ from .continuity import HandoffError, StageContextManager, TaskContinuity, estim
 from .bot_identity import source_persona, persona_prompt, host_skills_prompt
 from .result_io import tool_output
 from .canvas_mode import canvas_enabled
+from .wake_context import prepare as prepare_wake
 from .usage_metrics import request_size, record_request, record_round, write_task_line, budget_tokens
 
 
@@ -67,8 +68,38 @@ class AstrBotBridge:
     def call_record(self, task, tool, arguments):
         resource = (self.owner.storage.list_custom_apis() if tool.name == "agent_lab_call_custom_api"
                     else (self.owner._context_config(task.umo) or {}).get("provider_settings", {}))
+        if control(task).get("session_workspace_root"):
+            resource = {"tool_config": resource, "session_workspace_root": control(task)["session_workspace_root"]}
         return {"tool_name": tool.name, "arguments": arguments,
                 "call_signature": signature(tool.name, arguments, control(task), resource), "status": "queued"}
+
+    async def refresh_workspace(self, event, task):
+        """Resolve the host's own session workspace, never a model-supplied cwd."""
+        runtime = (self.owner._context_config(task.umo) or {}).get("provider_settings", {}).get("computer_use_runtime")
+        workspace = ""
+        if runtime == "local":
+            try:
+                from astrbot.core.astr_agent_context import AstrAgentContext, AgentContextWrapper
+                from astrbot.core.tools.computer_tools.util import workspace_root_for_context
+            except ImportError:
+                pass  # Older hosts cannot grant an unverified implicit root.
+            else:
+                wrapper = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
+                                              tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
+                workspace = str(await workspace_root_for_context(wrapper))
+                from .task_permissions import _absolute
+                if not _absolute(workspace):
+                    raise ExecutionStopped("宿主未返回有效的会话工作区绝对路径。")
+        latest = self.check(event, task.task_id)
+        state = control(latest)
+        if workspace:
+            changed = state.get("session_workspace_root") != workspace or state.get("execution_cwd") != workspace
+            state.update(session_workspace_root=workspace, execution_cwd=workspace)
+        else:
+            changed = bool(state.pop("session_workspace_root", None))
+        if changed:
+            self.owner.storage.save_task(latest)
+        return latest
 
     def request_batch(self, event, operations, reason, impact, rollback, operation="", message=""):
         from .models import AgentSpec
@@ -136,6 +167,9 @@ class AstrBotBridge:
         self.owner.storage.save_task(task)
 
     async def resume_batch(self, event, task):
+        # A project/session workspace may have changed while awaiting approval.
+        # Refresh before checking saved signatures; an old grant cannot move.
+        task = await self.refresh_workspace(event, task)
         for row in task.approvals:
             if row.get("status") != "approved" or row.get("approval_type") != "tool_batch":
                 continue
@@ -211,6 +245,7 @@ class AstrBotBridge:
         from mcp.types import CallToolResult, TextContent
 
         task = self.check(event, task_id)
+        task = await self.refresh_workspace(event, task)
         state = control(task)
         if event.get_extra("agent_lab_boundary_stopped", False):
             raise ExecutionStopped("检查点已保存，本轮结束；下一轮从最新计划继续。")
@@ -266,20 +301,6 @@ class AstrBotBridge:
                 action, outside = "allow", []
             else:
                 scope_state = dict(state, task_data_root=str(self.owner.storage.task_memory_dir(task.umo, task.task_id).resolve()))
-                if tool.name in {"astrbot_file_read_tool", "astrbot_file_write_tool", "astrbot_file_edit_tool", "astrbot_grep_tool",
-                                 "astrbot_execute_shell", "astrbot_execute_python"}:
-                    # Use the host's real local workspace for relative paths. A cwd
-                    # guessed from the first configured root would give false safety.
-                    cfg = self.owner._context_config(task.umo) or {}
-                    if cfg.get("provider_settings", {}).get("computer_use_runtime") == "local":
-                        try:
-                            from astrbot.core.tools.computer_tools.util import workspace_root_for_context
-                            wrapper = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
-                                                          tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
-                            workspace = await workspace_root_for_context(wrapper)
-                            scope_state = dict(scope_state, execution_cwd=str(workspace))
-                        except ImportError:
-                            pass  # Older hosts do not expose workspace resolution.
                 action, outside = assess(tool.name, arguments, scope_state, risk, tool.description)
             if action == "review" and not approved_call:
                 reason, _ = full_guard(tool.name, arguments, scope_state)
@@ -482,8 +503,12 @@ class AstrBotBridge:
         if (control(latest).get("version") != control(task).get("version")
                 or control(latest).get("input_revision", 0) != control(task).get("input_revision", 0)):
             raise ExecutionStopped("任务计划或指引已变化，请从最新状态继续。")
-        task = latest
+        task = await self.refresh_workspace(event, latest)
         self.continuity.begin_round(task, lane)
+        if not canvas_enabled(task):
+            prompt, wake_metric = prepare_wake(self.owner, task, contexts, prompt, lane=lane)
+        else:
+            wake_metric = None
         runner = ToolLoopAgentRunner()
         bridge = self
         boundary_stopped = False
@@ -556,6 +581,9 @@ class AstrBotBridge:
                         metric = record_request(current, sizes, getattr(response, "usage", None),
                             phase="handoff" if handoff else "execution", status=outcome,
                             elapsed_ms=(time.monotonic()-started)*1000, round_id=event.get_extra("agent_lab_round_id", ""))
+                        if wake_metric and not handoff and not getattr(self, "wake_recorded", False):
+                            metric["wake_input"] = wake_metric
+                            self.wake_recorded = True
                         try:
                             bridge.owner.storage._append_jsonl(bridge.owner.storage.task_memory_dir(task.umo, task.task_id) / "usage.jsonl", metric)
                         except OSError:

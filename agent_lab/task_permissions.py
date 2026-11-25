@@ -40,7 +40,7 @@ def record_guard_refusal(task, reason):
 
 
 def authorized_roots(state):
-    """Administrator roots win; an approved plan supplies the legacy fallback."""
+    """Explicit project authority only; never persist a session workspace here."""
     configured = (state.get("execution_settings") or {}).get("roots", [])
     if configured:
         return configured
@@ -51,11 +51,34 @@ def authorized_roots(state):
     return []
 
 
+def session_workspace_root(state):
+    """Return only the exact workspace resolved by the trusted host bridge.
+
+    This helper performs no I/O. The bridge must set this field only after
+    workspace_root_for_context succeeds for the current session, and discard
+    stale values before resolving another context. Neither model arguments nor
+    execution_cwd establish workspace authority.
+    """
+    root = state.get("session_workspace_root")
+    if isinstance(root, str) and root and _absolute(root) and "\x00" not in root:
+        return root
+    return ""
+
+
+def execution_roots(state):
+    """Union explicit project roots with one trusted session root, without I/O."""
+    roots = list(authorized_roots(state))
+    workspace = session_workspace_root(state)
+    if workspace and workspace not in roots:
+        roots.append(workspace)
+    return roots
+
+
 def execution_guidance(state):
     mode = (state.get("execution_settings") or {}).get("mode", "standard")
     if mode == "readonly":
         return "只读权限：只做读取与查询，不写入、不清理、不执行有副作用的动作；审批不能代替管理员切换权限档位。"
-    return ("授权目录内普通读取、搜索、写入、Shell/Python 和测试直接执行，无需逐项申请。"
+    return ("授权目录和宿主确认的当前会话工作区内普通读取、搜索、写入、Shell/Python 和测试直接执行，无需逐项申请。"
             "明确越界、清空或递归删除目录、访问敏感凭据、破坏数据库或系统以及管理员明确审批规则需先请示。"
             "被拒绝的动作未执行；调整方法或主动提交确切工具与参数申请。"
             "授权范围只能由管理员扩大；未配置目录时沿用宿主访问限制，本检查不替代系统隔离。")
@@ -68,7 +91,9 @@ def _absolute(value):
 def _resolve(value, cwd):
     if not _absolute(value) and cwd:
         module = ntpath if ntpath.splitdrive(cwd)[0] else posixpath
-        return module.normpath(module.join(cwd, value))
+        # Keep '..' until within() follows local symlinks. Collapsing it first
+        # could turn workspace/link/../file into an apparently in-scope path.
+        return module.join(cwd, value)
     return value
 
 
@@ -175,14 +200,25 @@ def full_guard(name, args, state, _depth=0):
     remains responsible for OS/sandbox isolation; unrecognised code is not
     turned into another blanket approval gate.
     """
-    roots = authorized_roots(state)
-    cwd = _resolve(args.get("cwd") or state.get("execution_cwd") or "", state.get("execution_cwd"))
+    roots = execution_roots(state)
+    host_cwd = state.get("execution_cwd") or session_workspace_root(state)
+    host_cwd = host_cwd if isinstance(host_cwd, str) and _absolute(host_cwd) else ""
+    # File tools resolve from the host workspace; a model-supplied cwd cannot
+    # retarget them. Code tools may explicitly request a different process cwd,
+    # which is itself checked against the same roots below.
+    requested_cwd = args.get("cwd")
+    cwd = (_resolve(requested_cwd, host_cwd)
+           if name in CODE_TOOLS and isinstance(requested_cwd, str) and requested_cwd else host_cwd)
     paths, deletions = [], []
     def add_paths(values):
         paths.extend(_resolve(value, cwd) for value in values)
     for key in ("path", "file_path", "directory", "cwd", "target", "source", "destination", "dest", "paths", "files", "targets"):
         value = args.get(key)
-        add_paths([value] if isinstance(value, str) else [v for v in value if isinstance(v, str)] if isinstance(value, list) else [])
+        values = [value] if isinstance(value, str) else [v for v in value if isinstance(v, str)] if isinstance(value, list) else []
+        if key == "cwd":
+            paths.extend(_resolve(value, host_cwd) for value in values)
+        else:
+            add_paths(values)
     destructive = False
     database_command = False
     command = args.get("command", "") if name in CODE_TOOLS else ""
@@ -239,8 +275,7 @@ def full_guard(name, args, state, _depth=0):
                         if _absolute(target):
                             cwd = target
                         elif cwd:
-                            module = ntpath if ntpath.splitdrive(cwd)[0] else posixpath
-                            cwd = module.normpath(module.join(cwd, target))
+                            cwd = _resolve(target, cwd)
                         else:
                             add_paths([target])
                         if cwd:
@@ -334,7 +369,8 @@ def full_guard(name, args, state, _depth=0):
                 and within(path, archive_root) and not _sensitive(path))
     outside = list(dict.fromkeys(p for p in resolved if roots and not archive_read(p) and (
         (_absolute(p) and not any(within(p, root) for root in roots))
-        or (not _absolute(p) and ".." in p.replace("\\", "/").split("/")))))
+        or (not _absolute(p) and (name in READ_TOOLS | WRITE_TOOLS | CODE_TOOLS
+                                 or ".." in p.replace("\\", "/").split("/"))))))
     for target in deletions:
         normalized = target.replace("\\", "/").rstrip("/")
         if normalized in {"", ".", "..", "*", ".*"} or normalized.rsplit("/", 1)[-1] in {"*", ".*", "**", "*.*"}:
@@ -391,8 +427,10 @@ def assess(name, args, state, risk="work", description=""):
     """Both development modes use the same narrow guard; risk labels are hints.
 
     The bridge must supply execution_cwd (the host's actual working directory)
-    for relative paths. Unknown program effects belong to host isolation, not
-    a speculative per-command approval gate.
+    for relative paths and session_workspace_root only from successful host
+    workspace resolution. The latter adds authority without changing explicit
+    project roots. Unknown program effects belong to host isolation, not a
+    speculative per-command approval gate.
     """
     reason, outside = full_guard(name, args, state)
     return ("deny" if not mode_allows(name, args, state, risk) else "review" if reason else "allow"), outside

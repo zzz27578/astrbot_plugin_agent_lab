@@ -86,6 +86,9 @@ class TaskTools:
     async def task_finish(self, event, final_summary: str, memory_candidates: str = "", message: str = "") -> str:
         from .verifier import AgentVerifier
         task = self.owner.task_control.load(event.unified_msg_origin)
+        state = task.workflow_data.get("task_control", {})
+        if task.status != "running" or state.get("human_paused") or task.pending_approvals():
+            return "任务已暂停或等待管理员决定，自动交付未执行。"
         AgentVerifier.link_step_evidence(task)
         self.owner.storage.save_task(task)
         return await self.owner.agent_lab_finish(
