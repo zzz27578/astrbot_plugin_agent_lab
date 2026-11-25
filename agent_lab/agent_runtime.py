@@ -5,6 +5,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .models import AgentSpec, TaskState, new_id, now_iso
+from .canvas_mode import canvas_enabled, normalize_canvas_mode
 
 
 def _compact(value: Any, limit: int = 1200) -> str:
@@ -183,6 +184,9 @@ class AgentRuntime:
         return runtime["agent_instance"]
 
     def ensure_plan(self, task: TaskState, spec: AgentSpec) -> dict[str, Any]:
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
+            return self.checklist_view(task)
         runtime = self.ensure(task)
         plan = runtime.get("plan") if isinstance(runtime.get("plan"), dict) else {}
         steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
@@ -226,7 +230,28 @@ class AgentRuntime:
         task.add_log("agent_runtime_plan", f"plan initialized with {len(built_steps)} step(s)")
         return plan
 
+    def checklist_view(self, task: TaskState) -> dict[str, Any]:
+        """Project the authoritative checklist into the legacy dashboard view."""
+        runtime = self.ensure(task)
+        state = task.workflow_data.get("task_control", {})
+        old = runtime.get("plan") or {}
+        steps = [{"step_id": row["id"], "node_id": row["id"], "title": row.get("title", row["id"]),
+                  "stage": row.get("stage", "task_execution"), "action": "task_plan", "capability": "task.work",
+                  "status": "done" if row.get("status") == "completed" else row.get("status", "pending"),
+                  "success_condition": row.get("instruction", "")}
+                 for row in state.get("steps", [])]
+        if (old.get("source") != "task_control" or old.get("steps") != steps
+                or old.get("current_node_id") != state.get("current_step_id", "") or old.get("goal") != task.root_goal):
+            runtime["plan"] = {"plan_id": old.get("plan_id") or new_id("plan"), "source": "task_control",
+                               "goal": task.root_goal, "created_at": old.get("created_at") or now_iso(),
+                               "updated_at": now_iso(), "current_node_id": state.get("current_step_id", ""), "steps": steps}
+        return runtime["plan"]
+
     def sync_plan_status(self, task: TaskState) -> None:
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
+            self.checklist_view(task)
+            return
         runtime = self.ensure(task)
         plan = runtime.get("plan") if isinstance(runtime.get("plan"), dict) else {}
         steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
@@ -419,8 +444,8 @@ class AgentRuntime:
             "updated_at": now_iso(),
             "reason": reason,
             "status": task.status,
-            "current_node_id": task.workflow_current_node_id,
-            "resume_node": wait_state.get("resume_node") or task.workflow_current_node_id,
+            "current_node_id": plan.get("current_node_id") or task.workflow_current_node_id,
+            "resume_node": wait_state.get("resume_node") or plan.get("current_node_id") or task.workflow_current_node_id,
             "next_step": task.next_step,
             "resume_command": wait_state.get("resume_command") or self.resume_command(task, wait_reason),
             "waiting": wait_reason,
@@ -435,6 +460,9 @@ class AgentRuntime:
 
     def summary(self, task: TaskState) -> dict[str, Any]:
         runtime = self.ensure(task)
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
+            self.checklist_view(task)
         plan = runtime.get("plan") if isinstance(runtime.get("plan"), dict) else {}
         steps = plan.get("steps") if isinstance(plan.get("steps"), list) else []
         caps = runtime.get("capabilities") if isinstance(runtime.get("capabilities"), list) else []

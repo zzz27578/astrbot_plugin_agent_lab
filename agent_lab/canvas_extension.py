@@ -73,6 +73,7 @@ from .verifier import AgentVerifier
 from .webui_server import StandaloneWebUIServer
 from .workers import normalize_worker_output, worker_spec_for_node
 from .task_control import TaskControl, control as task_control, prompt as task_plan_prompt
+from .canvas_mode import canvas_enabled, canvas_kind, normalize_canvas_mode
 from .astrbot_bridge import AstrBotBridge
 from .web_api import admin_api
 from .node_policy import execute_with_policy
@@ -3200,7 +3201,8 @@ class CanvasRuntimeMixin:
         reason: str,
     ) -> WorkflowRuntimeRun:
         runtime_run = WorkflowRuntimeRun()
-        if task_control(task).get("workflow") == "none":
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
             runtime_run.needs_react = True
             return runtime_run
         self._ensure_workflow_data(task)
@@ -3519,6 +3521,9 @@ class CanvasRuntimeMixin:
         note: str = "",
         status: str = "completed",
     ) -> str:
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
+            return "本任务未应用画布；请使用 task_plan 更新任务计划。"
         self._normalize_agent_workflow(spec)
         node_map = {str(node.get("id") or ""): node for node in spec.workflow_nodes}
         if not node_map:
@@ -3653,6 +3658,9 @@ class CanvasRuntimeMixin:
         api_payloads: dict[str, Any] | None = None,
         max_concurrency: int = 3,
     ) -> dict[str, Any]:
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
+            return {"ok": False, "error": "本任务未应用画布，直接按任务计划运行。"}
         self._normalize_agent_workflow(spec)
         node_map = {str(node.get("id") or ""): node for node in spec.workflow_nodes}
         outgoing = self._workflow_outgoing(spec)
@@ -4123,6 +4131,11 @@ class CanvasRuntimeMixin:
 
     @classmethod
     def _normalize_agent_workflow(cls, spec: AgentSpec) -> None:
+        # Empty canvases must not acquire migrated trigger/default nodes.
+        if canvas_kind(spec) == "blank":
+            spec.workflow_nodes = []
+            spec.workflow_edges = []
+            return
         raw_nodes = spec.workflow_nodes if isinstance(spec.workflow_nodes, list) else []
 
         used_ids: set[str] = set()
@@ -4716,6 +4729,10 @@ class CanvasRuntimeMixin:
 
     def _workflow_report(self, spec: AgentSpec) -> dict[str, Any]:
         self._normalize_agent_workflow(spec)
+        if canvas_kind(spec) == "blank":
+            return {"canvas_kind": "blank", "valid": True, "errors": 0, "warnings": 0,
+                    "nodes": 0, "edges": 0, "entry_nodes": [], "archive_nodes": [],
+                    "terminal_nodes": [], "guard_nodes": [], "memory_nodes": [], "issues": []}
         nodes = [item for item in spec.workflow_nodes if isinstance(item, dict)]
         edges = [item for item in spec.workflow_edges if isinstance(item, dict)]
         node_ids = {str(item.get("id") or "") for item in nodes}

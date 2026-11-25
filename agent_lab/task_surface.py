@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from copy import copy, deepcopy
+from .canvas_mode import canvas_enabled, normalize_canvas_mode
 from .task_tools import CONTROL_TOOL_NAMES, TASK_TOOL_SCHEMAS
 
 CANVAS_TOOLS = {
@@ -18,8 +19,9 @@ HOST_TOOLS = ("astrbot_file_read_tool", "astrbot_grep_tool", "astrbot_file_write
 def build_toolset(owner, spec, event=None):
     from astrbot.core.agent.tool import ToolSet
     task = owner.storage.load_active_task(event.unified_msg_origin) if event else None
-    state = (task.workflow_data or {}).get("task_control", {}) if task else {}
-    canvas = bool(state and state.get("workflow", "none") != "none")
+    if normalize_canvas_mode(task):
+        owner.storage.save_task(task)
+    canvas = canvas_enabled(task)
     controls = CONTROL_TOOL_NAMES | (CANVAS_TOOLS if canvas else set())
     result = ToolSet()
     mode = str(spec.isolation_policy.tool_mode or "whitelist")

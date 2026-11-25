@@ -65,6 +65,9 @@ def actual_method(name, **overrides):
     namespace.update(TaskState=Models.TaskState, AgentSpec=Models.AgentSpec, AstrMessageEvent=object,
                      task_control=Control.control, now_iso=Models.now_iso, json=json,
                      ApprovalRequest=Models.ApprovalRequest, __package__=package_name)
+    canvas = importlib.import_module('review_agent_lab.canvas_mode')
+    namespace.update(canvas_enabled=canvas.canvas_enabled, canvas_kind=canvas.canvas_kind,
+                     normalize_canvas_mode=canvas.normalize_canvas_mode)
     namespace.update(overrides)
     future = ast.ImportFrom(module='__future__', names=[ast.alias(name='annotations')], level=0)
     module = ast.fix_missing_locations(ast.Module(body=[future, method], type_ignores=[]))

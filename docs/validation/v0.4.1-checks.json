@@ -1,0 +1,56 @@
+{
+  "release": "v0.4.1",
+  "date": "2026-11-25",
+  "full_suite": {
+    "command": "python -B -m unittest discover -s scripts/ui -p test_*.py -v",
+    "tests": 237,
+    "passed": 236,
+    "skipped": 1,
+    "failed": 0,
+    "errors": 0,
+    "elapsed_seconds": 73.781,
+    "skip_reason": "Windows account cannot create real filesystem symlinks"
+  },
+  "focused_suites": {
+    "approval_scope": 14,
+    "blank_canvas": 9,
+    "scheme_settings": 12
+  },
+  "checks": [
+    "Python compileall",
+    "JavaScript syntax for app.js/navigation.js",
+    "scripts/smoke_test.py",
+    "scripts/runtime_smoke_test.py",
+    "git diff --check"
+  ],
+  "executed_validation": {
+    "temporary_source": "page.js",
+    "cwd": "temporary session workspace outside authorized source root",
+    "commands": [
+      "node --check <authorized page.js>",
+      "node -e <in-memory mount with assert>"
+    ],
+    "result": "exit_code=0, MOUNT_PASS; no approval, no workspace writes"
+  },
+  "browser_scope": "Headless Edge with local fixture, actual app.js; no live bot or external app writes",
+  "scope": "Offline local tests. Approval/task IDs and 750k Token total were user reports; no new production archive or usage.jsonl was provided locally. No claim of production root cause, online cache hit ratio or saved billing percentage.",
+  "history": "No historical message rewrite, no write-parameter folding, no added forced large-write compaction threshold.",
+  "source_sha256": {
+    "agent_lab/agent_runtime.py": "8df33eae40844c85dc23b0b095831fe2606968fa6a000df8d55dd1cc0c816bd5",
+    "agent_lab/astrbot_bridge.py": "6aa1a4a9aab419282b44767d5f643e803b77aba20db252e31a0fb29efab91324",
+    "agent_lab/task_permissions.py": "ae940baece0e740ab0d520a21886a7757b8e97a55fcb295e839ec46edbac8b46",
+    "agent_lab/canvas_mode.py": "70789b66f72952e4ffafd00dcfc42d1a184f9cab628c1338ef4de5a5584505b9",
+    "agent_lab/runtime_runner.py": "16c9013dcee2115d723469eb26f0f4a3149f7e79d5c45fa709481b3158f9660e",
+    "agent_lab/task_control.py": "3ef166a699b27d808257be50ac2cdeb9b9b5cf5e15aef41a8acfec5b17236a7c",
+    "agent_lab/task_surface.py": "202d1a3092ad61885156e14c9b4180fcef07d2ca337d5022ebc59c8155561077",
+    "agent_lab/usage_metrics.py": "450918b84eb37a63a2f931ade0cad64c005eaa734eacfbee2c8b6c7903487cc5",
+    "main.py": "611d2da2040d6196148b6dc59b3cee38e45fde520ec4150b9df40a8a3bf2f25c",
+    "pages/agent-lab/app.js": "717928208fba3d715116a20c2c0f1d1149be5afad99c4e537da38c4b42cf6c71",
+    "pages/agent-lab/navigation.js": "daee7877c04e598bb56aa4692e864fdcea43a02cb7a09515ed7f4eda2233bb7d",
+    "scripts/ui/test_approval_scope_regression.py": "e33958b69ce7cd6eabd2be7faaa1620b7fa86559ceef1d12d79ccdb2e96d5da1",
+    "scripts/ui/test_blank_canvas.py": "01d6cc0f565753193409db31198d77f9b4172306cfe78f00125da75f3275ddb3",
+    "scripts/ui/test_blank_canvas.mjs": "d1c364e44263038ec8a577207442f94074a2635374b92af3728137e0bc73c41d",
+    "scripts/ui/test_v04_guards.py": "e63218fac07517189c74defe89653adda3d933cf4c0fc8d1b477976041071a48"
+  },
+  "test_isolation": "New task-entry fixture stubs host persona preference API; no global AstrBot preference DB is queried."
+}

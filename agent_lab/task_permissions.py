@@ -299,7 +299,15 @@ def full_guard(name, args, state, _depth=0):
                         argv = node.args[0].elts
                         if all(isinstance(a, ast.Constant) and isinstance(a.value, str) for a in argv):
                             nested = shlex.join([a.value for a in argv])
-                    nested_reason, nested_outside = full_guard("astrbot_execute_shell", {"command": nested, "cwd": cwd}, state, _depth+1)
+                    # An inherited process cwd resolves relative operands; it
+                    # is not itself an additional filesystem access. Only an
+                    # explicitly requested subprocess cwd is a scope target.
+                    nested_args = {"command": nested}
+                    for keyword in node.keywords:
+                        if keyword.arg == "cwd" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+                            nested_args["cwd"] = _resolve(keyword.value.value, cwd)
+                    nested_reason, nested_outside = full_guard(
+                        "astrbot_execute_shell", nested_args, dict(state, execution_cwd=cwd), _depth+1)
                     if nested_reason:
                         return nested_reason, nested_outside
         if re.search(r"\b(?:drop_database|drop_collection)\s*\(", code) or re.search(r"\b(?:delete_many|deleteMany)\s*\(\s*\{\s*\}\s*\)", code):
@@ -386,9 +394,13 @@ def assess(name, args, state, risk="work", description=""):
     for relative paths. Unknown program effects belong to host isolation, not
     a speculative per-command approval gate.
     """
-    policy = state.get("execution_settings") or {}
-    mode = policy.get("mode", "standard")
     reason, outside = full_guard(name, args, state)
+    return ("deny" if not mode_allows(name, args, state, risk) else "review" if reason else "allow"), outside
+
+
+def mode_allows(name, args, state, risk="work"):
+    """A one-off approval never overrides a current read-only policy."""
+    mode = (state.get("execution_settings") or {}).get("mode", "standard")
     read = read_only_call(name, args) or (name not in WRITE_TOOLS | CODE_TOOLS and risk == "safe"
             and not re.search(r"send|upload|publish|delete|write|edit|exec", name, re.I))
-    return ("deny" if mode == "readonly" and not read else "review" if reason else "allow"), outside
+    return mode != "readonly" or read

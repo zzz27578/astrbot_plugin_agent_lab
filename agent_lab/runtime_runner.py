@@ -8,6 +8,7 @@ from typing import Any
 
 from .hooks import AgentLabRunHooks
 from .usage_metrics import budget_tokens
+from .canvas_mode import canvas_enabled, normalize_canvas_mode
 from .models import AgentSpec
 from .prompts import build_task_system_prompt
 from .task_control import control, prompt as plan_prompt
@@ -99,11 +100,17 @@ class AgentRuntimeRunner:
 
     def _task_prompts(self, task: Any, spec: Any, reason: str) -> tuple[str, str]:
         state = control(task)
-        if state.get("workflow") == "none":
+        if not canvas_enabled(task):
             system = ("你正在 Agent Lab 任务模式中执行任务，保持来源 Bot 的人设与自然语气。"
                       "使用宿主工具完成读取、编辑和测试。控制工具只有 task_plan、task_progress、task_ask、task_approve、task_finish。"
                       "初始计划需批准；授权内自由调整步骤，高危或扩大授权先请示。"
                       "缺少关键决策时提问，及时报告重要进展，最终交付说明实际成果和真实验证结果。")
+            system += ("\n修改已有文件时，先搜索定位，优先用 astrbot_file_edit_tool 对唯一片段局部编辑；"
+                       "仅在新建文件或确需整体重构时用 file_write 全量写入。复用当前已读内容，"
+                       "验证优先读取相关片段或运行检查，避免为小改动重复整本读取和回传新旧全文。")
+            guidance = "\n".join(str(getattr(spec, key, "") or "").strip() for key in ("system_prompt", "task_prompt")).strip()
+            if guidance:
+                system += "\n方案行为与任务指引（遵守当前用户要求及授权）：\n" + guidance
             system += "\n项目任务指引：" + state.get("execution_settings", {}).get("task_prompt", "")
             header, separator, payload = plan_prompt(task).partition("]\n")
             plan = json.loads(payload)
@@ -165,6 +172,8 @@ class AgentRuntimeRunner:
         refresh = getattr(self.task_control, "refresh_execution_settings", None)
         if refresh:
             refresh(task)
+        if normalize_canvas_mode(task):
+            self.storage.save_task(task)
         state = control(task)
         if not state:
             self.task_control.initialize(task, event, "selected")
@@ -199,7 +208,7 @@ class AgentRuntimeRunner:
         before_hash = snapshot(task)
         _gate = getattr(self, "_global_tick_semaphore", None)
         _gate_held = False
-        canvas = control(task).get("workflow") != "none"
+        canvas = canvas_enabled(task)
         try:
             if _gate is not None:
                 remaining = total_remaining_seconds(task)
@@ -225,7 +234,7 @@ class AgentRuntimeRunner:
             before_hash = snapshot(task)
             remaining = total_remaining_seconds(task)
             deadline = time.monotonic() + remaining if remaining is not None else None
-            canvas = control(task).get("workflow") != "none"
+            canvas = canvas_enabled(task)
             if canvas:
                 tick_deadline = time.monotonic() + max(1, float(task.budget.max_seconds_per_tick or 240))
                 deadline = min(deadline, tick_deadline) if deadline is not None else tick_deadline

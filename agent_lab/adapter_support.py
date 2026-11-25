@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
-PLUGIN_VERSION = "v0.4.0"
+PLUGIN_VERSION = "v0.4.1"
 PLUGIN_AUTHOR = "zzz27578 & Codex"
 PLUGIN_DESC = "在 AstrBot 内创建、运行和管理个人任务模式。"
 SKILL_NAME = "agent-mode"

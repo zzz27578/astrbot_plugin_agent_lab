@@ -12,10 +12,11 @@ from uuid import uuid5, NAMESPACE_URL
 from .models import ApprovalRequest, new_id, now_iso
 from .task_control import control
 from .task_tools import CONTROL_TOOL_NAMES
-from .task_permissions import apply_mode, assess, signature, full_guard, record_guard_refusal, read_only_call
+from .task_permissions import apply_mode, assess, signature, full_guard, record_guard_refusal, read_only_call, mode_allows
 from .continuity import HandoffError, StageContextManager, TaskContinuity, estimate
 from .bot_identity import source_persona, persona_prompt, host_skills_prompt
 from .result_io import tool_output
+from .canvas_mode import canvas_enabled
 from .usage_metrics import request_size, record_request, record_round, write_task_line, budget_tokens
 
 
@@ -116,6 +117,24 @@ class AstrBotBridge:
         task.set_wait(wait_reason="need_approval", message="等待管理员审阅操作批次。", source="tool_dispatch", resume_command="批准")
         self.owner.storage.save_task(task)
 
+    def record_batch_failure(self, task, approval_id, tool_name, arguments, detail):
+        item = next((r for r in reversed(control(task).get("journal", []))
+                     if r.get("approval_id") == approval_id and r.get("name") == tool_name
+                     and r.get("arguments") == arguments), {})
+        detail = self.owner._redact_known_secrets(item.get("error") or detail or "工具没有返回结果。")[:1800]
+        failure = {"approval_id": approval_id, "tool_name": tool_name,
+                   "phase": item.get("failure_phase", "dispatch_check"),
+                   "result_path": item.get("result_path", ""), "detail": detail, "time": now_iso()}
+        control(task)["last_batch_failure"] = failure
+        if not control(task).get("human_paused"):
+            task.status = "paused"
+            unknown = item.get("status") == "unknown"
+            task.set_wait(wait_reason="batch_result_unknown" if unknown else "batch_failed",
+                          message=f"已批准操作 {tool_name} {'结果未知' if unknown else '失败'}：{detail}。其余动作未派发，请核对记录后继续。",
+                          source="tool_dispatch")
+        task.add_log("batch_failed", json.dumps(failure, ensure_ascii=False))
+        self.owner.storage.save_task(task)
+
     async def resume_batch(self, event, task):
         for row in task.approvals:
             if row.get("status") != "approved" or row.get("approval_type") != "tool_batch":
@@ -134,14 +153,22 @@ class AstrBotBridge:
                     latest.set_wait(wait_reason="approval_changed", message="审批对应的步骤、指引或工具配置已变化，请检查方案后恢复。", source="tool_dispatch")
                     self.owner.storage.save_task(latest)
                     return False
-                result = await self.invoke(event, tool, call["arguments"], task.task_id, native=True)
+                try:
+                    result = await self.invoke(event, tool, call["arguments"], task.task_id, native=True)
+                except ExecutionStopped:
+                    raise  # Administrator controls and budget stops keep precedence.
+                except Exception as exc:
+                    latest = self.owner.storage.load_active_task(task.umo)
+                    if latest and latest.task_id == task.task_id and not self.owner.storage.ended_path(task.task_id).exists():
+                        self.record_batch_failure(latest, row["approval_id"], call["tool_name"], call["arguments"], f"{type(exc).__name__}: {exc}")
+                    return False
                 latest = self.owner.storage.load_active_task(task.umo)
                 if not latest or latest.task_id != task.task_id or latest.status != "running":
                     return False
                 if any(part.isError for part in result):
-                    latest.status = "paused"
-                    latest.set_wait(wait_reason="batch_failed", message="审批批次有操作失败，剩余动作未执行。请查看记录，决定继续或终止。", source="tool_dispatch")
-                    self.owner.storage.save_task(latest)
+                    detail = "\n".join(str(getattr(p, "text", "")) for r in result
+                                       for p in r.content if getattr(p, "type", "") == "text")
+                    self.record_batch_failure(latest, row["approval_id"], call["tool_name"], call["arguments"], detail)
                     return False
         return True
 
@@ -209,23 +236,8 @@ class AstrBotBridge:
         read_only = not internal and read_only_call(tool.name, arguments)
         round_id = event.get_extra("agent_lab_round_id", "")
         if not internal:
-            scope_state = dict(state, task_data_root=str(self.owner.storage.task_memory_dir(task.umo, task.task_id).resolve()))
-            if state.get("execution_settings", {}).get("mode") == "full":
-                # Use the host's real local workspace for relative paths. A cwd
-                # guessed from the first configured root would give false safety.
-                cfg = self.owner._context_config(task.umo) or {}
-                if cfg.get("provider_settings", {}).get("computer_use_runtime") == "local":
-                    try:
-                        from astrbot.core.tools.computer_tools.util import workspace_root_for_context
-                        wrapper = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
-                                                      tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
-                        workspace = await workspace_root_for_context(wrapper)
-                        scope_state = dict(scope_state, execution_cwd=str(workspace))
-                    except ImportError:
-                        pass  # Older hosts do not expose workspace resolution.
-            action, outside = assess(tool.name, arguments, scope_state, risk, tool.description)
             call = self.call_record(task, tool, arguments)
-            if action == "deny":
+            if not mode_allows(tool.name, arguments, state, risk):
                 raise ValueError("项目当前为只读档位，不能执行该动作。")
             self.ensure_not_rejected(task, [call])
             journal = state.get("journal", [])
@@ -240,10 +252,35 @@ class AstrBotBridge:
                 return text + evidence
             for row in task.approvals:
                 if row.get("status") == "approved" and row.get("approval_type") == "tool_batch":
-                    approved_call = next((c for c in row["calls"] if c["status"] == "queued" and c["call_signature"] == call["call_signature"]), None)
+                    approved_call = next((c for c in row["calls"] if c["status"] == "queued"
+                                          and c.get("tool_name") == tool.name and c.get("arguments") == arguments
+                                          and c["call_signature"] == call["call_signature"]), None)
                     if approved_call:
                         approved_row = row
                         break
+            # A current, exact, one-shot grant authorizes these saved arguments.
+            # Do not route it back through the scope rule that prompted review.
+            # Identity, task state, tool availability, read-only mode, signature
+            # and budget checks remain mandatory, and roots are never widened.
+            if approved_call:
+                action, outside = "allow", []
+            else:
+                scope_state = dict(state, task_data_root=str(self.owner.storage.task_memory_dir(task.umo, task.task_id).resolve()))
+                if tool.name in {"astrbot_file_read_tool", "astrbot_file_write_tool", "astrbot_file_edit_tool", "astrbot_grep_tool",
+                                 "astrbot_execute_shell", "astrbot_execute_python"}:
+                    # Use the host's real local workspace for relative paths. A cwd
+                    # guessed from the first configured root would give false safety.
+                    cfg = self.owner._context_config(task.umo) or {}
+                    if cfg.get("provider_settings", {}).get("computer_use_runtime") == "local":
+                        try:
+                            from astrbot.core.tools.computer_tools.util import workspace_root_for_context
+                            wrapper = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
+                                                          tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
+                            workspace = await workspace_root_for_context(wrapper)
+                            scope_state = dict(scope_state, execution_cwd=str(workspace))
+                        except ImportError:
+                            pass  # Older hosts do not expose workspace resolution.
+                action, outside = assess(tool.name, arguments, scope_state, risk, tool.description)
             if action == "review" and not approved_call:
                 reason, _ = full_guard(tool.name, arguments, scope_state)
                 reason = self.owner._redact_known_secrets(reason)
@@ -291,9 +328,8 @@ class AstrBotBridge:
             if not any(c["status"] == "queued" for c in approved_row["calls"]):
                 approved_row["status"] = "consumed"
         self.owner.storage.save_task(task)
-        context = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
-                                      tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
         chunks, native_results, failed = [], [], False
+        phase, error = "context_setup", ""
 
         async def results():
             async with aclosing(FunctionToolExecutor.execute(tool, context, **arguments)) as stream:
@@ -324,20 +360,41 @@ class AstrBotBridge:
                         pass
         status = "unknown"
         try:
+            context = AgentContextWrapper(context=AstrAgentContext(context=self.execution_context(event), event=event),
+                                          tool_call_timeout=int(self.owner._cfg_value("tool_call_timeout", 120)))
+            phase = "tool_execution"
             await asyncio.wait_for(execute(), timeout=context.tool_call_timeout)
             status = "failed" if failed or not native_results else "completed"
+            if status == "failed":
+                phase = "tool_result" if native_results else "no_result"
+                error = "\n".join(chunks) if chunks else "工具执行器未返回任何结果。"
+        except Exception as exc:
+            error = self.owner._redact_known_secrets(f"{type(exc).__name__}: {exc}")
+            if phase == "context_setup":
+                status = "failed"  # No executor or external operation was entered.
+            raise
         finally:
             latest = self.owner.storage.load_active_task(event.unified_msg_origin)
             if latest and latest.task_id == task.task_id and not internal:
                 item = next((row for row in control(latest).get("journal", []) if row["id"] == identifier), None)
                 if item:
                     output = "\n".join(chunks)
+                    if error and not output:
+                        output = error
                     result_path = self.owner.storage.task_memory_dir(latest.umo, latest.task_id) / "tool_results" / f"{identifier}.txt"
                     self.owner.storage._write_text(result_path, output)
                     item.update(status=status, result=output[:12000], result_chars=len(output),
                                 result_truncated=len(output) > 12000,
                                 result_path=str(result_path.relative_to(self.owner.storage.root)), fingerprint=hashlib.sha256(
                         json.dumps([tool.name, arguments, output], sort_keys=True, ensure_ascii=False).encode()).hexdigest())
+                    if error:
+                        item.update(error=error[:1800], failure_phase=phase)
+                    if item.get("approval_id"):
+                        grant = next((r for r in latest.approvals if r["approval_id"] == item["approval_id"]), {})
+                        saved_call = next((c for c in grant.get("calls", []) if c.get("evidence_id") == identifier), None)
+                        if saved_call is not None:
+                            saved_call.update(execution_status=status, failure_phase=phase if error else "",
+                                              result_path=item["result_path"], error=error[:1800])
                     if tool.name == "astrbot_file_read_tool":
                         item["file_read"] = {"path": arguments.get("path", ""),
                                              "start": arguments.get("offset", 0),
@@ -482,7 +539,7 @@ class AstrBotBridge:
                     bridge.owner.storage.save_task(latest)
                     raise BudgetStopped(message)
                 used = latest.workflow_data.get("tick_budget", {}).get("tokens_used", 0)
-                if control(latest).get("workflow", "none") != "none" and latest.budget.max_tokens_per_tick and used >= latest.budget.max_tokens_per_tick:
+                if canvas_enabled(latest) and latest.budget.max_tokens_per_tick and used >= latest.budget.max_tokens_per_tick:
                     raise BudgetStopped("本轮 Token 预算已用尽，自动从检查点续轮。")
                 raw_request = dict(kwargs)
                 sizes = request_size(raw_request, kwargs)

@@ -59,6 +59,8 @@ namespace = dict(Any=Any, TaskState=Models.TaskState, now_iso=Models.now_iso, ne
                  datetime=datetime, timedelta=timedelta, timezone=timezone,
                  task_control=Control.control, budget_tokens=Metrics.budget_tokens,
                  native_steps=lambda *args: 128, _cfg=lambda config, key, default=None: config.get(key, default))
+namespace.update((name, getattr(module("canvas_mode"), name)) for name in
+                 ("canvas_enabled", "canvas_kind", "normalize_canvas_mode"))
 exec(compile(ast.fix_missing_locations(ast.Module(body=[ast.ClassDef(
     name="Adapter", bases=[], keywords=[], body=methods, decorator_list=[])], type_ignores=[])),
     "<actual-adapter>", "exec"), namespace)

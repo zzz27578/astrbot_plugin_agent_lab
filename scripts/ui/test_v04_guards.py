@@ -369,7 +369,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("定位问题", system)
         self.assertIn("定位问题", prompt)
         self.task.workflow_data["task_control"]["steps"][0]["instruction"] = "执行新的验证"
-        other_system, other_prompt = self.runner._task_prompts(self.task, None, "later")
+        other_system, other_prompt = self.runner._task_prompts(self.task, Models.AgentSpec.from_dict(self.task.profile_snapshot.get("agent")), "later")
         self.assertEqual(system, other_system)
         self.assertIn("执行新的验证", other_prompt)
 

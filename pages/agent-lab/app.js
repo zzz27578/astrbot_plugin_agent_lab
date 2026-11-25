@@ -1,13 +1,13 @@
 import { renderCapabilityGraph, toggleCapability } from './scheme-settings.js?v=031-scheme-graph';
 import { safeSession, preserveForm, restoreForm, boundedRequest } from "./ui-runtime.js?v=026";
-import { ProjectUI } from "./project-ui.js?v=040-thin-harness";
-import { Navigation, settingsIcon } from "./navigation.js?v=031-scheme-graph";
+import { ProjectUI } from "./project-ui.js?v=041-approval-cwd";
+import { Navigation, settingsIcon } from "./navigation.js?v=041-blank-canvas";
 import {getBezierPath, Position} from "./vendor/connectors.js?v=026";
 import {routeEdge} from "./connections.js?v=026";
 import "./motion.js?v=026";
 // Agent Lab WebUI
 const $ = (id) => document.getElementById(id);
-const AGENT_LAB_WEBUI_BUILD = "20261125-v040";
+const AGENT_LAB_WEBUI_BUILD = "20261125-v041";
 try { console.log("[Agent Lab webui] build " + AGENT_LAB_WEBUI_BUILD + " loaded"); } catch (e) {}
 const EMPTY_TOOLS_SENTINEL = "__agent_lab_no_external_tools__";
 const DEFAULT_ENABLED_TOOLS = [
@@ -1430,6 +1430,16 @@ function openPreset(id) {
   if(!agent)return setFeedback("预案不存在，请刷新。","error");
   selectedAgentId=id;currentAgent=ensureAgent(clone(agent));route="workflow";workflowViewportInitialized=false;render();
 }
+function canvasKind(agent) {
+  const fields = ["id", "title", "action", "kind", "stage", "instruction", "prompt", "description",
+    "runtime_type", "tool_name", "ref_id", "ref_type", "api_id", "code", "command", "sub_agent_id", "params"];
+  return Array.isArray(agent?.workflow_nodes) && agent.workflow_nodes.some(node =>
+    node && typeof node === "object" && !Array.isArray(node) && fields.some(key => {
+      const value = node[key];
+      return typeof value === "string" ? Boolean(value.trim()) : Array.isArray(value) ? value.length > 0 :
+        value && typeof value === "object" ? Object.keys(value).length > 0 : Boolean(value);
+    })) ? "workflow" : "blank";
+}
 function openPresetRules(id, keepDraft=false) {
   const agent=(state.agents||[]).find(a=>a.agent_id===id);
   if(!agent)return setFeedback("预案不存在，请刷新。","error");
@@ -1467,6 +1477,7 @@ async function presetMutation(kind,id="") {
   finally {presetBusy=false;document.querySelectorAll("[data-nav-action$='preset']").forEach(el=>el.disabled=false);}
 }
 const navigation = new Navigation({esc,projectUI,render,
+  canvasKind,
   editRules:openPresetRules,
   openWorkflow:openPreset,newPreset:()=>presetMutation("new"),savePreset:id=>presetMutation("edit",id),
   duplicatePreset:id=>presetMutation("duplicate",id),deletePreset:id=>presetMutation("delete",id),renderIntegrations,identityChanged:()=>{renderNav();updateStatusBar();},
@@ -2396,7 +2407,8 @@ function ensureAgent(agent) {
   agent.default_task_budget.max_seconds_per_tick ??= 240;
   agent.default_task_budget.max_tokens_per_tick ??= 12000;
   agent.default_task_budget.max_total_ticks ??= 120;
-  agent.default_task_budget.max_total_tool_calls ??= 240;
+  agent.default_task_budget.max_total_tool_calls ??= 0;
+  agent.default_task_budget.max_total_seconds ??= 0;
   agent.default_task_budget.max_total_tokens ??= 240000;
   agent.plugin_overrides ||= {};
   agent.enabled_tools ||= [];
@@ -2504,7 +2516,8 @@ function defaultAgentDraft() {
       max_seconds_per_tick: 240,
       max_tokens_per_tick: 12000,
       max_total_ticks: 120,
-      max_total_tool_calls: 240,
+      max_total_tool_calls: 0,
+      max_total_seconds: 0,
       max_total_tokens: 240000,
     },
   });
@@ -2674,7 +2687,7 @@ function modernDefaultWorkflowEdges() {
 // 内置蓝图（可复用的整套工作流模板）：在「蓝图管理」页和「新建方案」里套用。
 const BUILTIN_BLUEPRINTS = [
   { id: "long_task", name: "内置 · 长任务编排", desc: "入口→记忆→计划→分流→执行/并行→校验→快照→任务记忆→归档的完整长任务流程。", build: () => ({ nodes: clone(modernDefaultWorkflowNodes()), edges: clone(modernDefaultWorkflowEdges()) }) },
-  { id: "blank", name: "无 · 空白方案", desc: "只放一个消息监听入口，从零开始搭。", build: () => ({ nodes: [{ id: "entry", title: "消息监听入口", kind: "trigger", stage: "entry", action: "listen_message", description: "承接命令、关键词、自然语言、WebUI、插件事件等触发。", instruction: "只把命中触发策略的事件送入后续节点。", x: 240, y: 260 }], edges: [] }) },
+  { id: "blank", name: "无 · 空白画布", desc: "零节点，不加载画布，直接按任务计划运行；方案设置独立生效。", build: () => ({ nodes: [], edges: [] }) },
 ];
 function workflowBlueprintById(id) { return BUILTIN_BLUEPRINTS.find((b) => b.id === id) || null; }
 function workflowBlueprintOptions() { return [["long_task", "内置 · 长任务编排"], ["blank", "无 · 空白方案"]]; }
@@ -3333,10 +3346,10 @@ function migrateWorkflowNodeShape(node = {}) {
 function ensureWorkflow() {
   currentAgent = ensureAgent(currentAgent || {});
   if (!Array.isArray(currentAgent.workflow_nodes)) {
-    currentAgent.workflow_nodes = defaultWorkflowNodes();
+    currentAgent.workflow_nodes = [];
   }
   if (!Array.isArray(currentAgent.workflow_edges)) {
-    currentAgent.workflow_edges = defaultWorkflowEdges();
+    currentAgent.workflow_edges = [];
   }
   currentAgent.workflow_nodes = currentAgent.workflow_nodes.map((rawNode, index) => {
     const node = migrateWorkflowNodeShape(rawNode);
@@ -4622,6 +4635,7 @@ function renderWorkflowPage() {
           </select>
         </label>
         <div class="workflow-page-status">
+          ${canvasKind(currentAgent) === "blank" ? badge("空白画布 · 无画布运行", "info") : ""}
           ${badge(`${currentAgent.workflow_nodes.length} 节点 / ${currentAgent.workflow_edges.length} 连线`)}
           ${badge(workflowKindSummary(currentAgent), "info")}
           ${badge(report.valid ? "检查通过" : `${report.errors || 0} 错误 / ${report.warnings || 0} 提醒`, report.valid ? "ok" : "warn")}
@@ -4666,7 +4680,8 @@ function renderWorkflowPage() {
 
 const schemeExpanded = new Set();
 function renderPresetRulesPage() {
-  $("view").innerHTML=`<section class="presets-page preset-rules-page">${navigation.header("方案设置",currentAgent.name||"当前预案",'<button class="button secondary" data-action="back-to-presets">返回预案</button><button class="button" data-action="save-preset-rules">保存方案</button>')}<p class="scheme-settings-intro">在连接图里管理整个方案的能力。展开插件查看工具，保存后用于新任务。</p>${workflowGlobalEditor()}</section>`;
+  const blank = canvasKind(currentAgent) === "blank";
+  $("view").innerHTML=`<section class="presets-page preset-rules-page">${navigation.header("方案设置",esc(currentAgent.name||"当前预案"),'<button class="button secondary" data-action="back-to-presets">返回预案</button><button class="button" data-action="save-preset-rules">保存方案设置</button>')}${blank ? badge("空白画布", "info") : ""}<p class="scheme-settings-intro">${blank ? "当前为无画布运行，直接按任务计划工作。" : ""}方案设置独立于画布，工具、插件和指引保存后用于新任务。</p>${workflowGlobalEditor()}</section>`;
 }
 function workflowGlobalEditor() {
   const a=ensureAgent(currentAgent||{});
@@ -6336,6 +6351,7 @@ function workflowSummaryPanel() {
 
 function localWorkflowReport() {
   ensureWorkflow();
+  if (canvasKind(currentAgent) === "blank") return {valid: true, errors: 0, warnings: 0, issues: []};
   const nodes = currentAgent.workflow_nodes || [];
   const edges = currentAgent.workflow_edges || [];
   const ids = new Set(nodes.map((node) => node.id));
@@ -8585,6 +8601,20 @@ async function saveAgent(makeDefault = false) {
   return result.agent;
 }
 
+async function savePresetSettings() {
+  applyWorkflowGlobalRules();
+  const payload = {action: "save_settings", agent_id: selectedAgentId};
+  for (const key of ["system_prompt", "task_prompt", "plugin_overrides", "disabled_tools",
+    "enabled_tools", "enabled_skills", "tool_risk_overrides", "isolation_policy"]) {
+    if (currentAgent[key] !== undefined) payload[key] = clone(currentAgent[key]);
+  }
+  const result = await api("/api/agents", {method: "POST", body: payload});
+  state.agents = (state.agents || []).map(agent => agent.agent_id === result.agent.agent_id ? result.agent : agent);
+  setFeedback("方案设置已保存。");
+  showToast("保存成功", "ok");
+  return result.agent;
+}
+
 function toggleListValue(listName, value) {
   const next = new Set(currentAgent[listName] || []);
   if (next.has(value)) next.delete(value);
@@ -10207,8 +10237,7 @@ document.addEventListener("click", async (event) => {
     }
     if (action === "back-to-presets") {route="presets";render();}
     if (action === "save-preset-rules") {
-      applyWorkflowGlobalRules();
-      await saveAgent();
+      await savePresetSettings();
       render();
     }
     if (action === "add-workflow-node") {

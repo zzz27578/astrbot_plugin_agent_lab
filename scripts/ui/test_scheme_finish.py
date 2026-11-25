@@ -109,6 +109,9 @@ class SchemeFinishTests(unittest.IsolatedAsyncioTestCase):
         Control.control(task)['execution_settings'] = {'round_tool_limit':12}
         method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,0)
         Control.control(task)['workflow'] = 'selected'
+        task.profile_snapshot['agent'] = {'workflow_nodes': []}
+        method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,0)
+        task.profile_snapshot['agent']['workflow_nodes'] = [{'id':'execute','action':'run_tools'}]
         method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,12)
         Control.control(task)['execution_settings']['round_tool_limit'] = 200
         method(self.owner, task); self.assertEqual(task.budget.max_tools_per_tick,80)

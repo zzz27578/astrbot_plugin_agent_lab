@@ -72,6 +72,7 @@ from .agent_lab.verifier import AgentVerifier
 from .agent_lab.webui_server import StandaloneWebUIServer
 from .agent_lab.workers import normalize_worker_output, worker_spec_for_node
 from .agent_lab.task_control import TaskControl, control as task_control, prompt as task_plan_prompt
+from .agent_lab.canvas_mode import canvas_enabled, canvas_kind, normalize_canvas_mode
 from .agent_lab.astrbot_bridge import AstrBotBridge
 from .agent_lab.web_api import admin_api
 from .agent_lab.node_policy import execute_with_policy
@@ -312,7 +313,8 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
     async def agent_lab_workflow_catalog(self, event: AstrMessageEvent) -> str:
         """按标题和简介查看可选流程；没有合适的方案时直接不应用画布。"""
         self._require_task_access(event)
-        rows = [{"id": spec.agent_id, "title": spec.name, "description": spec.description[:500]}
+        rows = [{"id": spec.agent_id, "title": spec.name, "description": spec.description[:500],
+                 "canvas_kind": canvas_kind(spec)}
                 for spec in self.storage.list_agents() if spec.enabled and self._workflow_scope_allows_event(spec, event)[0]]
         project_id = self.projects.index().get("selected", {}).get(event.unified_msg_origin)
         preferred = self.projects.project(project_id).get("workflow_ids", []) if project_id else []
@@ -641,7 +643,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
-        if task_control(task).get("workflow") == "none":
+        if not canvas_enabled(task):
             return "本任务未应用画布；请使用 agent_lab_checkpoint 更新具体计划步骤。"
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
         self._normalize_agent_workflow(spec)
@@ -1047,7 +1049,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         task = self.storage.load_active_task(event.unified_msg_origin)
         if not task:
             return "当前没有 active task。"
-        if task_control(task).get("workflow") == "none":
+        if not canvas_enabled(task):
             return "本任务未选画布方案；并行工作包属于画布能力，请明确选用方案后使用。"
         if task.pending_approvals():
             return "存在待审批操作，先处理审批再运行并行工作流。"
@@ -1509,7 +1511,8 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
             entry_summary=entry_summary,
             current_summary=(
                 f"任务由 {source} 创建，风险级别：{risk_level}。"
-                f"工作流：{len(spec.workflow_nodes)} 个节点 / {len(spec.workflow_edges)} 条连线。"
+                + ("空白画布：不加载画布，按任务计划运行。" if canvas_kind(spec) == "blank" else
+                   f"工作流：{len(spec.workflow_nodes)} 个节点 / {len(spec.workflow_edges)} 条连线。")
             ),
             next_step="根据入口摘要制定第一轮执行计划，并推进一个有限工作单元。",
             profile_snapshot={
@@ -1528,7 +1531,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         for key, value in execution["budget"].items():
             setattr(task.budget, key, value)
         self._configure_task_budget(task)
-        if workflow_mode == "selected":
+        if canvas_enabled(task):
             self._initialize_task_workflow(task, spec, source=source)
         if trigger_payload:
             data = self._ensure_workflow_data(task)
@@ -2082,6 +2085,8 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         if not self.context.cron_manager:
             return
         for spec in self.storage.list_agents():
+            if canvas_kind(spec) == "blank":
+                continue
             self._normalize_agent_workflow(spec)
             trigger = WorkflowTrigger.from_dict(self._as_plain_dict(getattr(spec, "workflow_trigger", None)))
             if not spec.enabled or not trigger.enabled:
@@ -2228,6 +2233,9 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         )
 
     def _workflow_runtime_view(self, task: TaskState) -> dict[str, Any]:
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
+            return {"current_node_id": "", "current_node": {}, "next_candidates": [], "path": [], "events": []}
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent") or self.storage.get_agent().to_dict())
         self._normalize_agent_workflow(spec)
         current_id = task.workflow_current_node_id or self._workflow_entry_id(spec)
@@ -2259,6 +2267,9 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         )
 
     def _initialize_task_workflow(self, task: TaskState, spec: AgentSpec, source: str = "") -> None:
+        normalize_canvas_mode(task)
+        if not canvas_enabled(task):
+            return
         self._normalize_agent_workflow(spec)
         self._ensure_workflow_data(task)
         entry_id = self._workflow_entry_id(spec)
@@ -2396,7 +2407,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
 
     def _configure_task_budget(self, task: TaskState) -> None:
         local_limit = task_control(task).get("execution_settings", {}).get("round_tool_limit", 0)
-        task.budget.max_tools_per_tick = min(native_steps(self, task.umo), max(1, int(local_limit or 10000))) if task_control(task).get("workflow", "none") != "none" else 0
+        task.budget.max_tools_per_tick = min(native_steps(self, task.umo), max(1, int(local_limit or 10000))) if canvas_enabled(task) else 0
 
     def _total_budget_reason(self, task: TaskState) -> str:
         if task.budget.max_total_seconds:
@@ -2442,7 +2453,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
 
     def _budget_remaining_tools(self, task: TaskState) -> int:
         self._configure_task_budget(task)
-        if task_control(task).get("workflow", "none") == "none":
+        if not canvas_enabled(task):
             return max(0, task.budget.max_total_tool_calls - task.budget.tool_calls_used) if task.budget.max_total_tool_calls else 2**31 - 1
         tick = self._budget_tick_payload(task)
         max_tools = int(tick.get("max_tools") or task.budget.max_tools_per_tick or 1)
@@ -2479,7 +2490,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         tick["tool_calls_used"] = int(tick.get("tool_calls_used") or 0) + 1
         task.budget.tool_calls_used += 1
         max_tools = int(tick.get("max_tools") or task.budget.max_tools_per_tick or 1)
-        if task_control(task).get("workflow", "none") != "none" and tick["tool_calls_used"] > max_tools:
+        if canvas_enabled(task) and tick["tool_calls_used"] > max_tools:
             return f"本轮工具预算已用尽：{tick['tool_calls_used']}/{max_tools}"
         if task.budget.max_total_tool_calls and task.budget.tool_calls_used > task.budget.max_total_tool_calls:
             return f"任务工具调用总预算已用尽：{task.budget.tool_calls_used}/{task.budget.max_total_tool_calls}"
@@ -2494,7 +2505,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         tick = self._budget_tick_payload(task)
         tick["tokens_used"] = int(tick.get("tokens_used") or 0) + total
         task.budget.tokens_used += total
-        if task_control(task).get("workflow", "none") != "none" and task.budget.max_tokens_per_tick and tick["tokens_used"] > task.budget.max_tokens_per_tick:
+        if canvas_enabled(task) and task.budget.max_tokens_per_tick and tick["tokens_used"] > task.budget.max_tokens_per_tick:
             return f"本轮 token 预算已用尽：{tick['tokens_used']}/{task.budget.max_tokens_per_tick}"
         if task.budget.max_total_tokens and task.budget.tokens_used > task.budget.max_total_tokens:
             return f"任务 token 总预算已用尽：{task.budget.tokens_used}/{task.budget.max_total_tokens}"
@@ -3113,6 +3124,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         return tool_mode == "full" or not selected or name in selected
 
     def _sync_agent_runtime(self, task: TaskState, spec: AgentSpec, *, reason: str = "sync") -> None:
+        normalize_canvas_mode(task)
         self._ensure_workflow_data(task)
         spec = apply_mode(spec, task_control(task))
         capabilities = self._runtime_capability_rows(spec)
@@ -3344,7 +3356,9 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
     def _build_task_extensions_prompt(self, spec: AgentSpec, task: TaskState | None = None) -> str:
         sections = []
         # Related work enters only via the explicit project's filtered summary.
-        if task and task_control(task).get("workflow", "none") == "none":
+        if task:
+            normalize_canvas_mode(task)
+        if task and not canvas_enabled(task):
             return "\n".join((self._build_agent_mode_skill_rule_prompt(), execution_guidance(task_control(task))))
         settings = spec.module_settings
         if task and task_control(task).get("execution_settings", {}).get("mode") == "full":
@@ -3681,6 +3695,20 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
                 )
             if not str(payload.get("agent_id") or "").strip():
                 payload.pop("agent_id", None)
+            if payload.get("action") == "save_settings":
+                if previous_spec is None:
+                    return jsonify({"ok": False, "error": "agent not found"})
+                # Merge into the latest saved graph. Settings never normalize,
+                # replace or select a canvas, including when a stale tab saves.
+                settings_payload = previous_spec.to_dict()
+                for key in ("system_prompt", "task_prompt", "plugin_overrides", "disabled_tools",
+                            "enabled_tools", "enabled_skills", "tool_risk_overrides", "isolation_policy"):
+                    if key in payload:
+                        settings_payload[key] = payload[key]
+                spec = AgentSpec.from_dict(settings_payload)
+                self._sanitize_agent_enabled_tools(spec)
+                self.storage.save_agent(spec)
+                return jsonify({"ok": True, "agent": spec.to_dict()})
             spec = AgentSpec.from_dict(payload)
             self._prepare_agent_spec_for_save(spec, previous_spec)
             self.storage.save_agent(spec)
@@ -5189,7 +5217,7 @@ class AgentLabPlugin(CanvasRuntimeMixin, Star):
         default_id = self.storage.default_agent_id()
         specs = sorted(specs, key=lambda item: 0 if item.agent_id == default_id else 1)
         for spec in specs:
-            if not spec.enabled:
+            if not spec.enabled or canvas_kind(spec) == "blank":
                 continue
             self._normalize_agent_workflow(spec)
             allowed, _ = self._workflow_scope_allows_event(spec, event)

@@ -14,6 +14,7 @@ from copy import deepcopy
 from typing import Any
 
 from .models import ApprovalRequest, now_iso
+from .canvas_mode import canvas_enabled, normalize_canvas_mode
 from .execution_settings import BUDGET_LIMITS, integer, lines, normalize
 from .continuity import working_context
 from .task_permissions import authorized_roots
@@ -27,6 +28,7 @@ def control(task) -> dict:
 
 
 def prompt(task) -> str:
+    normalize_canvas_mode(task)
     state = control(task)
     if not state:
         return ""
@@ -67,6 +69,8 @@ class TaskControl:
         task = self.owner.storage.load_active_task(umo)
         if not task or (task_id and task.task_id != task_id):
             raise ValueError("任务已结束或已切换，请重新读取任务状态。")
+        if normalize_canvas_mode(task):
+            self.owner.storage.save_task(task)
         return task
 
     def refresh_execution_settings(self, task):
@@ -123,6 +127,7 @@ class TaskControl:
             "web_admin": bool(event.get_extra("agent_lab_web_admin", False)),
             "automatic": True, "human_paused": False, "phase": "needs_plan",
         }
+        normalize_canvas_mode(task)
         task.status = "paused"
         task.next_step = "Bot 调用 task_plan 提交具体步骤，管理员批准后自动推进。"
         task.set_wait(wait_reason="need_plan", message=task.next_step, source="task_control")
@@ -308,7 +313,7 @@ class TaskControl:
             approval_type="task_plan")
         from .models import AgentSpec
         spec = AgentSpec.from_dict(task.profile_snapshot.get("agent"))
-        approval.impact += "\n画布：" + ("不应用" if state.get("workflow") == "none" else (spec.name or spec.agent_id))
+        approval.impact += "\n画布：" + ((spec.name or spec.agent_id) if canvas_enabled(task) else "不应用")
         if scope_roots:
             approval.impact += "\n预计操作范围：" + "、".join(scope_roots)
         if risk_lines:

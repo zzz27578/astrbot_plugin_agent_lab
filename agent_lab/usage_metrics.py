@@ -46,7 +46,26 @@ def request_size(raw, sent):
     fields = ("contexts", "system_prompt", "prompt", "func_tool", "tools")
     raw_payload = {key: raw[key] for key in fields if key in raw}
     sent_payload = {key: sent[key] for key in fields if key in sent}
+    argument_chars, write_chars = 0, 0
+    for message in sent.get("contexts") or []:
+        row = message.model_dump() if callable(getattr(message, "model_dump", None)) else message
+        if not isinstance(row, dict):
+            continue
+        for call in row.get("tool_calls") or []:
+            function = call.get("function") or {}
+            arguments = function.get("arguments", "")
+            argument_chars += len(arguments) if isinstance(arguments, str) else len(encoded(arguments))
+            if function.get("name") == "astrbot_file_write_tool":
+                try:
+                    values = json.loads(arguments) if isinstance(arguments, str) else arguments
+                    if isinstance(values, dict) and isinstance(values.get("content"), str):
+                        write_chars += len(values["content"])
+                except (TypeError, ValueError):
+                    pass
     return {"raw_chars": len(encoded(raw_payload)), "sent_chars": len(encoded(sent_payload)),
+            "system_chars": len(str(sent.get("system_prompt") or "")),
+            "prompt_chars": len(str(sent.get("prompt") or "")),
+            "tool_call_argument_chars": argument_chars, "file_write_content_chars": write_chars,
             "estimated_tokens": estimate_tokens(sent_payload), "raw_estimated_tokens": estimate_tokens(raw_payload),
             "messages": len(sent.get("contexts") or []), "tools_chars": len(encoded(sent.get("func_tool", sent.get("tools", [])))),
             "raw_role_chars": role_chars(raw.get("contexts") or []), "view_role_chars": role_chars(sent.get("contexts") or [])}
@@ -124,6 +143,11 @@ def write_task_line(owner, task, *, event_id, event="round"):
             f"约 {current.get('estimated_tokens', 0):,} Token（估算），不等于累计消耗。\n"
             ) if current else "") + (f"任务累计 {task.budget.tokens_used:,} Token；已计量模型请求报告 {data.get('tokens', {}).get('total', 0):,} Token；"
             f"{data.get('unreported_calls', 0)} 次请求未报告用量。")
+    request = data.get("last_execution_request", {})
+    if request:
+        text += (f"\n最近请求：system {request.get('system_chars', 0):,} 字符；工具定义 {request.get('tools_chars', 0):,} 字符；"
+                 f"工具入参 {request.get('tool_call_argument_chars', 0):,} 字符（其中文件全量写入正文 {request.get('file_write_content_chars', 0):,} 字符）。"
+                 f"缓存命中输入累计 {data.get('tokens', {}).get('cached', 0):,} Token，以模型报告为准。")
     if handoff:
         text += (f"\n最近交接：{handoff['raw_chars']:,} 字符原记录 / {handoff['source_chars']:,} 字符总结材料 → "
                  f"{handoff['summary_chars']:,}/{handoff['summary_limit']:,} 字符摘要；"
