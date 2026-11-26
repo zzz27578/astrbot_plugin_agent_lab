@@ -1,110 +1,52 @@
 {
-  "standalone_webui_enabled": {
+  "private_only": {
+    "description": "仅允许私聊使用任务模式与管理工具",
     "type": "bool",
-    "description": "启用独立网页控制台",
-    "default": true,
-    "hint": "开启后可通过浏览器管理任务模式方案和工作流画布。"
+    "default": true
+  },
+  "admin_only": {
+    "description": "仅允许 AstrBot 管理员使用任务模式与管理工具",
+    "type": "bool",
+    "default": true
+  },
+  "inject_daily_hint": {
+    "description": "在管理员私聊系统提示词中追加一行极简长任务工具箱入口提示（约50字）",
+    "type": "bool",
+    "default": true
+  },
+  "cleanup_legacy_global_skill": {
+    "description": "启动时自动停用旧版 v0.4.x 写入 AstrBot 全局目录的 agent-mode 技能，消除日常污染",
+    "type": "bool",
+    "default": true
+  },
+  "standalone_webui_enabled": {
+    "description": "启用独立 Quart WebUI 端口（除 AstrBot 原生插件面板外可独立浏览器打开）",
+    "type": "bool",
+    "default": true
   },
   "standalone_webui_host": {
+    "description": "独立 WebUI 监听地址（非本地绑定必须配置 standalone_webui_token）",
     "type": "string",
-    "description": "网页控制台监听地址",
-    "default": "127.0.0.1",
-    "hint": "建议保持 127.0.0.1。只有在可信网络中才改为 0.0.0.0。"
+    "default": "127.0.0.1"
   },
   "standalone_webui_port": {
+    "description": "独立 WebUI 监听端口",
     "type": "int",
-    "description": "网页控制台端口",
-    "default": 8788,
-    "hint": "默认地址：http://127.0.0.1:8788"
+    "default": 8788
   },
   "standalone_webui_token": {
+    "description": "独立 WebUI 访问令牌（为空时独立端口不会启动，确保安全）",
     "type": "string",
-    "description": "独立网页控制台访问 Token",
-    "default": "",
-    "hint": "独立控制台所有监听地址都必须配置Token；原生页面使用Dashboard登录身份。"
+    "default": ""
   },
-  "workflow_admin_ids": {
-    "type": "string",
-    "description": "管理员 QQ 号",
-    "default": "",
-    "hint": "额外授权的管理员ID，逗号或换行分隔；与AstrBot admins_id合并。空值不代表公开授权。"
-  },
-  "inject_agent_mode_policy": {
-    "type": "bool",
-    "description": "注入任务模式触发规则",
-    "default": true,
-    "hint": "允许机器人根据自然语言判断是否进入已配置的任务模式方案。"
-  },
-  "install_agent_mode_skill": {
-    "type": "bool",
-    "description": "同步任务模式技能规则",
-    "default": true,
-    "hint": "同步项目分类、筛选交接、反问、管理员结束与任务计划使用规则。"
-  },
-  "entry_summary_turns": {
+  "max_concurrent_tasks": {
+    "description": "全局同时执行后台任务的并发上限",
     "type": "int",
-    "description": "入口摘要保留轮数",
-    "default": 24,
-    "hint": "进入任务模式时，用最近多少轮对话生成任务摘要。"
+    "default": 3
   },
-  "fallback_summary_provider_id": {
-    "type": "string",
-    "description": "摘要模型供应商 ID",
-    "default": "",
-    "hint": "留空则使用当前会话模型。"
-  },
-  "tool_call_timeout": {
+  "tool_call_timeout_seconds": {
+    "description": "单次宿主工具调用超时时间（秒）",
     "type": "int",
-    "description": "工具调用超时（秒）",
-    "default": 120,
-    "hint": "单次工具调用最长等待时间。"
-  },
-  "max_seconds_per_tick": {
-    "type": "int",
-    "description": "单轮最长运行时间（秒）",
-    "default": 240,
-    "hint": "覆盖批次、流程和模型的整轮deadline；连续超时两轮预警、三轮暂停，未知工具结果立即核对。"
-  },
-  "max_total_ticks": {
-    "type": "int",
-    "description": "任务最大推进轮数",
-    "default": 120,
-    "hint": "限制一次任务模式运行的总推进次数。"
-  },
-  "max_total_tool_calls": {
-    "type": "int",
-    "description": "任务最大工具调用次数",
-    "default": 0,
-    "hint": "管理员显式工具总预算；0不限。普通任务不按每轮调用数强制切片，实际空转另行检测。"
-  },
-  "max_total_tokens": {
-    "type": "int",
-    "description": "任务最大令牌预算",
-    "default": 240000,
-    "hint": "限制整个任务期间累计使用的模型令牌。"
-  },
-  "global_max_concurrent_ticks": {
-    "type": "int",
-    "description": "全局同时推进的任务轮数上限",
-    "default": 3,
-    "hint": "跨任务推进的总并发闸；普通任务按执行事件续接，不依赖心跳。建议2–6。"
-  },
-  "workflow_parallel_concurrency": {
-    "type": "int",
-    "description": "并行分支默认并发上限",
-    "default": 3,
-    "hint": "未指派子Agent 的并行工作包共享的默认并发；上限 6。子Agent 泳道用各自的并发上限。"
-  },
-  "private_only": {
-    "type": "bool",
-    "description": "完全关闭群聊任务入口",
-    "default": true,
-    "hint": "默认仅管理员私聊和已登录的控制台可操作。"
-  },
-  "max_total_seconds": {
-    "type": "int",
-    "description": "任务总耗时硬预算（秒，0不限）",
-    "default": 0,
-    "hint": "从创建时开始计时，包含等待审批与暂停时间，到达即停止派发。"
+    "default": 180
   }
 }

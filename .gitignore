@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+*.pyc
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -8,10 +9,16 @@ venv/
 .idea/
 .vscode/
 data/
+data_preview/
+*.key
+.env
+.env.*
+*.tmp
+*.log
+*.zip
 dist/
 build/
 *.egg-info/
-
 
 # 本地前端预览截图(headless chromium)
 _preview/

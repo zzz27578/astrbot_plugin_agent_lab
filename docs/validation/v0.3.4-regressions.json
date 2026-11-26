@@ -1,8 +1,0 @@
-{
-  "scope": "temporary fixtures, scripted providers/tools; no real API or production data",
-  "tests": 75,
-  "failures": 0,
-  "errors": 0,
-  "successful": true,
-  "details": []
-}

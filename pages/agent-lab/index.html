@@ -4,55 +4,117 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="agent-lab-api-base" content="/api" />
-    <title>任务模式控制台</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%231b2723'/><circle cx='10' cy='16' r='3' fill='%2316c79a'/><circle cx='22' cy='10' r='3' fill='%2316c79a'/><circle cx='22' cy='22' r='3' fill='%232f9e5f'/><path d='M12.5 14.8 19.5 11M12.5 17.2 19.5 21' stroke='%2316c79a' stroke-width='1.6' fill='none'/></svg>" />
-    <link rel="stylesheet" href="./style.css?v=20261111-v026" />
-    <link rel="stylesheet" href="./workspace.css?v=042-incremental-wake" />
-    <link rel="stylesheet" href="./theme.css?v=031-scheme-graph" />
-      <link rel="stylesheet" href="./scheme-settings.css?v=031-scheme-graph" />
+    <title>Agent Lab · 隔离长任务控制台</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2325272a'/><path d='M9 22V10h14v12H9zm3-9h8m-8 3h8m-8 3h5' stroke='%23ffffff' stroke-width='1.8' fill='none' stroke-linecap='round'/></svg>"
+    />
+    <link rel="stylesheet" href="./classic.css?v=1.0.0" />
   </head>
   <body>
     <div class="shell" id="main-app">
-      <!-- 全局状态栏 -->
-      <div id="global-status-bar" class="global-status-bar">
+      <!-- 顶部全局状态栏 (52px) -->
+      <header id="global-status-bar" class="global-status-bar">
         <div class="status-left">
-          <span class="status-agent">
-            <span class="identity-indicator" aria-hidden="true"></span><strong id="current-agent-name">加载中...</strong><code id="identity-instance"></code>
-            <button id="agent-switcher" class="agent-switcher-btn" aria-label="机器人身份设置" title="机器人身份设置">▼</button>
-          </span>
-          <span class="status-indicator">
-            <span id="status-dot" class="status-dot idle"></span>
-            <span id="status-text">空闲</span>
-          </span>
-          <span class="status-task" id="status-task" style="display:none;">
-            任务: <code id="current-task-id">-</code> |
-            已运行: <span id="task-runtime">0s</span>
-          </span>
-        </div>
-        <div class="status-right">
-          <span class="status-actions">
-            <button id="status-view-btn" class="status-action-btn" style="display:none;" title="查看任务详情">查看</button>
-          </span>
-          <button id="refresh" type="button" class="status-refresh-btn icon-button" title="刷新数据" aria-label="刷新数据"></button>
-          <button id="settings-btn" type="button" class="status-refresh-btn settings-gear" title="身份与集成设置" aria-label="设置">⚙</button>
-        </div>
-      </div>
+          <button
+            id="mobile-nav-toggle"
+            type="button"
+            class="mobile-nav-btn"
+            aria-label="展开侧边栏"
+            title="菜单"
+          >
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M2.5 4h11M2.5 8h11M2.5 12h11" />
+            </svg>
+          </button>
 
-      <aside class="rail">
-        <div class="brand">
-          <strong>Agent Lab</strong>
-          <span>Bot 的项目与任务 · v0.4.2</span>
+          <div class="status-agent-wrap">
+            <button
+              id="agent-switcher-btn"
+              type="button"
+              class="status-agent"
+              aria-expanded="false"
+              aria-haspopup="true"
+              title="切换默认机器人身份"
+            >
+              <span class="identity-indicator" aria-hidden="true"></span>
+              <strong id="current-agent-name">加载中...</strong>
+              <code id="identity-instance"></code>
+              <svg class="status-chevron" width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="m4 6 4 4 4-4" />
+              </svg>
+            </button>
+            <div id="bot-switcher-popover" class="bot-switcher-popover" hidden></div>
+          </div>
+
+          <div class="status-active-quiet" id="status-active-bar">
+            <span id="status-dot" class="status-dot idle" aria-hidden="true"></span>
+            <span id="status-text">空闲</span>
+            <span id="status-task" class="status-task" hidden>
+              <span class="status-sep">·</span>
+              <code id="current-task-id">-</code>
+              <span class="status-sep">·</span>
+              <span id="task-runtime">0s</span>
+            </span>
+          </div>
         </div>
-        <nav id="nav" class="nav"></nav>
+
+        <div class="status-right">
+          <button id="status-view-btn" type="button" class="cl-btn cl-btn-sm" hidden title="跳转到当前活跃任务">
+            查看任务
+          </button>
+
+          <button id="refresh-btn" type="button" class="status-icon-btn" title="立即刷新数据" aria-label="立即刷新数据">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M13.5 8a5.5 5.5 0 1 1-1.35-3.61" />
+              <path d="M13.5 2.5v2.75h-2.75" />
+            </svg>
+          </button>
+
+          <button id="settings-btn" type="button" class="status-icon-btn" title="系统设置" aria-label="系统设置">
+            <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="8" cy="8" r="2.2" />
+              <path d="M8 1.8v1.4M8 12.8v1.4M2.9 4.5l1.2.7M11.9 10.8l1.2.7M1.8 8h1.4M12.8 8h1.4M2.9 11.5l1.2-.7M11.9 5.2l1.2-.7" />
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- 左侧导航与项目任务树 (232px) -->
+      <aside class="rail" id="app-rail">
+        <div class="brand">
+          <div class="brand-title-row">
+            <strong>Agent Lab</strong>
+            <span class="brand-version">v1.0.0</span>
+          </div>
+          <span class="brand-sub">隔离长任务控制台</span>
+        </div>
+
+        <nav id="nav" class="nav" aria-label="主导航"></nav>
+
+        <div id="project-sidebar" class="project-sidebar"></div>
+
         <div id="rail-storage" class="rail-bottom"></div>
       </aside>
 
-      <main class="main">
-        <div id="feedback" class="feedback">正在连接 Agent Lab...</div>
+      <div id="mobile-rail-backdrop" class="mobile-rail-backdrop" hidden></div>
+
+      <!-- 主工作区 -->
+      <main class="main" id="main-scroll">
+        <div id="feedback" class="feedback" hidden></div>
         <section id="view" class="view"></section>
       </main>
     </div>
 
-    <script type="module" src="./app.js?v=042-incremental-wake"></script>
+    <div id="modal-root"></div>
+    <div id="toast-root" aria-live="polite"></div>
+
+    <script type="module">
+      import { store } from "./store.js?v=1.0.0";
+      import { mountClassicView } from "./classic-view.js?v=1.0.0";
+
+      mountClassicView(store);
+      store.init();
+    </script>
   </body>
 </html>

@@ -1,249 +1,330 @@
+"""Core data models for Agent Lab v1.0.0.
+
+Single Source of Truth:
+- No canvas nodes/edges, no workflow_data triplication, no dead legacy fields.
+- Clean serialization (`to_dict` / `from_dict`) with strict bounds normalization.
+"""
 from __future__ import annotations
 
-import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
-from uuid import uuid4
+import uuid
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def new_id(prefix: str) -> str:
-    return f"{prefix}_{uuid4().hex[:12]}"
+    return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
 
-def _clean_string_list(value: Any) -> list[str]:
-    if isinstance(value, str):
-        items = re.split(r"[\n,，、;；]+", value)
-    elif isinstance(value, list):
-        items = value
-    else:
-        items = []
-    return [str(item).strip() for item in items if str(item).strip()]
+def _clamp_int(val: Any, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
 
+
+def _str_list(val: Any, limit: int = 200) -> list[str]:
+    if not isinstance(val, (list, tuple)):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in val:
+        s = str(item or "").strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+            if len(out) >= limit:
+                break
+    return out
+
+
+# ── Budget & Continuity ──────────────────────────────────────────────────────
 
 @dataclass
-class HeartbeatPolicy:
-    allowed: bool = True
-    mode: str = "manual"  # off | manual | auto
-    enabled: bool = False
-    cron_expression: str = "*/5 * * * *"
-    job_id: str = ""
-    max_repeated_failures: int = 3
-    last_pulse_at: str = ""
-    next_pulse_hint: str = ""
+class BudgetConfig:
+    max_total_tokens: int = 0            # 0 = unlimited
+    max_tokens_per_tick: int = 0         # 0 = unlimited
+    max_total_tool_calls: int = 0        # 0 = unlimited
+    max_total_ticks: int = 40
+    max_total_seconds: int = 1800
+    native_steps: int = 24
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "HeartbeatPolicy":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        return base
+    def from_dict(cls, raw: dict[str, Any] | None) -> BudgetConfig:
+        d = raw if isinstance(raw, dict) else {}
+        return cls(
+            max_total_tokens=_clamp_int(d.get("max_total_tokens"), 0, 0, 50_000_000),
+            max_tokens_per_tick=_clamp_int(d.get("max_tokens_per_tick"), 0, 0, 10_000_000),
+            max_total_tool_calls=_clamp_int(d.get("max_total_tool_calls"), 0, 0, 100_000),
+            max_total_ticks=_clamp_int(d.get("max_total_ticks"), 40, 1, 1000),
+            max_total_seconds=_clamp_int(d.get("max_total_seconds"), 1800, 30, 86400 * 7),
+            native_steps=_clamp_int(d.get("native_steps"), 24, 1, 200),
+        )
 
 
 @dataclass
-class TaskLease:
-    owner: str = ""
-    token: str = ""
-    acquired_at: str = ""
-    expires_at: str = ""
-    reason: str = ""
+class ContinuityConfig:
+    context_tokens: int = 100_000        # soft ceiling used with context_percent
+    context_percent: int = 55            # compact at 55% (55k default, safer than old 89.6k)
+    summary_chars: int = 5000            # handoff summary hard cap
+    ingress_cap_bytes: int = 14_336      # 14 KiB one-shot tool output cap (full saved to disk)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "TaskLease":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        return base
+    def from_dict(cls, raw: dict[str, Any] | None) -> ContinuityConfig:
+        d = raw if isinstance(raw, dict) else {}
+        return cls(
+            context_tokens=_clamp_int(d.get("context_tokens"), 100_000, 4_000, 10_000_000),
+            context_percent=_clamp_int(d.get("context_percent"), 55, 30, 85),
+            summary_chars=_clamp_int(d.get("summary_chars"), 5000, 1000, 16_000),
+            ingress_cap_bytes=_clamp_int(d.get("ingress_cap_bytes"), 14_336, 2048, 65_536),
+        )
 
 
 @dataclass
-class WatchdogState:
-    last_tick_at: str = ""
-    last_tick_reason: str = ""
-    last_progress_at: str = ""
-    last_progress_hash: str = ""
-    consecutive_failures: int = 0
-    last_error: str = ""
-    last_decision: str = ""
-    paused_reason: str = ""
-    needs_user: bool = False
+class SummarySharingConfig:
+    share_with_daily: bool = False
+    daily_summary_chars: int = 600
+    share_with_tasks: bool = True
+    task_summary_chars: int = 3000
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "WatchdogState":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        try:
-            base.consecutive_failures = int(base.consecutive_failures or 0)
-        except Exception:
-            base.consecutive_failures = 0
-        base.needs_user = bool(base.needs_user)
-        return base
+    def from_dict(cls, raw: dict[str, Any] | None) -> SummarySharingConfig:
+        d = raw if isinstance(raw, dict) else {}
+        return cls(
+            share_with_daily=bool(d.get("share_with_daily", False)),
+            daily_summary_chars=_clamp_int(d.get("daily_summary_chars"), 600, 100, 4000),
+            share_with_tasks=bool(d.get("share_with_tasks", True)),
+            task_summary_chars=_clamp_int(d.get("task_summary_chars"), 3000, 200, 12000),
+        )
 
 
 @dataclass
-class WaitState:
-    active: bool = False
-    wait_reason: str = ""
-    message: str = ""
-    source: str = ""
-    resume_command: str = "/agentlab tick"
-    resume_node: str = ""
-    required_input: list[str] = field(default_factory=list)
-    created_at: str = ""
-    updated_at: str = ""
+class ExecutionSettings:
+    mode: str = "standard"               # readonly | standard | full
+    roots: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    task_prompt: str = ""
+    authorized_credentials: list[str] = field(default_factory=list)
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    continuity: ContinuityConfig = field(default_factory=ContinuityConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "roots": list(self.roots),
+            "warnings": list(self.warnings),
+            "task_prompt": self.task_prompt,
+            "authorized_credentials": list(self.authorized_credentials),
+            "budget": self.budget.to_dict(),
+            "continuity": self.continuity.to_dict(),
+        }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "WaitState":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        base.active = bool(base.active)
-        if isinstance(base.required_input, str):
-            base.required_input = [base.required_input] if base.required_input else []
-        elif not isinstance(base.required_input, list):
-            base.required_input = []
-        base.required_input = [str(item).strip() for item in base.required_input if str(item).strip()]
-        return base
+    def from_dict(cls, raw: dict[str, Any] | None) -> ExecutionSettings:
+        d = raw if isinstance(raw, dict) else {}
+        mode = str(d.get("mode") or "standard").strip().lower()
+        if mode not in {"readonly", "standard", "full"}:
+            mode = "standard"
+        return cls(
+            mode=mode,
+            roots=_str_list(d.get("roots"), limit=50),
+            warnings=_str_list(d.get("warnings"), limit=100),
+            task_prompt=str(d.get("task_prompt") or "").strip()[:4000],
+            authorized_credentials=_str_list(d.get("authorized_credentials"), limit=50),
+            budget=BudgetConfig.from_dict(d.get("budget")),
+            continuity=ContinuityConfig.from_dict(d.get("continuity")),
+        )
 
 
-@dataclass
-class TaskBudget:
-    max_nodes_per_tick: int = 6
-    max_tools_per_tick: int = 12
-    max_seconds_per_tick: int = 240
-    max_tokens_per_tick: int = 12000
-    max_total_ticks: int = 120
-    max_total_tool_calls: int = 0
-    max_total_tokens: int = 240000
-    ticks_used: int = 0
-    nodes_used: int = 0
-    tool_calls_used: int = 0
-    tokens_used: int = 0
-    max_total_seconds: int = 0
-    tick_started_at: str = ""
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "TaskBudget":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        for key in (
-            "max_nodes_per_tick",
-            "max_tools_per_tick",
-            "max_seconds_per_tick",
-            "max_tokens_per_tick",
-            "max_total_ticks",
-            "max_total_tool_calls",
-            "max_total_tokens",
-            "max_total_seconds",
-            "ticks_used",
-            "nodes_used",
-            "tool_calls_used",
-            "tokens_used",
-        ):
-            try:
-                setattr(base, key, int(getattr(base, key) or 0))
-            except Exception:
-                setattr(base, key, int(getattr(cls(), key)))
-        return base
-
+# ── Profile (方案 — clean replacement for Canvas presets) ─────────────────────
 
 @dataclass
-class ApprovalPolicy:
-    mode: str = "work"  # observe | work | high_risk_review | delegated
-    preapproved_scopes: list[str] = field(default_factory=list)
-    require_approval: list[str] = field(
-        default_factory=lambda: [
-            "file_delete",
-            "bulk_overwrite",
-            "git_reset",
-            "git_clean",
-            "deployment",
-            "service_restart",
-            "secret_read",
-            "system_config",
-            "database_destructive",
-        ]
-    )
-    note: str = (
-        "审批优先由 Agent 在危险动作前主动提出；工具层只作为灾难性操作兜底。"
-    )
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "ApprovalPolicy":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        return base
-
-
-@dataclass
-class MemoryPolicy:
-    mode: str = "task_filtered"  # inherit | task_filtered | strict
-    entry_summary_turns: int = 24
-    keep_identity: bool = True
-    allow_long_memory: bool = True
-    exit_memory_candidates: bool = True
-    compression_enabled: bool = True
-    compression_strategy: str = "smart_extract"  # recent_turns | smart_extract | full_preserve
-    compression_max_tokens: int = 6000
-    preserve_keywords: list[str] = field(default_factory=list)
-    notes: str = "任务模式不是失忆，而是把普通上下文压缩成可执行 task_brief。"
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "MemoryPolicy":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        if base.compression_strategy not in {"recent_turns", "smart_extract", "full_preserve"}:
-            base.compression_strategy = "smart_extract"
-        try:
-            base.compression_max_tokens = max(500, min(int(base.compression_max_tokens or 6000), 64000))
-        except Exception:
-            base.compression_max_tokens = 6000
-        if isinstance(base.preserve_keywords, str):
-            base.preserve_keywords = [base.preserve_keywords] if base.preserve_keywords else []
-        elif not isinstance(base.preserve_keywords, list):
-            base.preserve_keywords = []
-        base.preserve_keywords = [str(item).strip() for item in base.preserve_keywords if str(item).strip()]
-        return base
-
-
-@dataclass
-class MemoryFolder:
-    folder_id: str = field(default_factory=lambda: new_id("mf"))
-    name: str = "默认记忆夹"
-    agent_id: str = ""
+class Profile:
+    profile_id: str
+    name: str
     description: str = ""
-    expose_to_normal: bool = False
-    detail_level: str = "summary"  # summary | full
-    retention_days: int = 0
+    is_default: bool = False
+    system_prompt: str = ""
+    task_prompt: str = ""
+    permission_mode: str = "standard"    # readonly | standard | full
+    plugin_blacklist: list[str] = field(default_factory=list)
+    enabled_tools: list[str] = field(default_factory=list)    # empty = allow all non-disabled
+    disabled_tools: list[str] = field(default_factory=list)   # HARD-blocked even in full mode!
+    tool_risk_overrides: dict[str, str] = field(default_factory=dict)  # tool -> safe|work|high
+    authorized_credentials: list[str] = field(default_factory=list)
+    budget: BudgetConfig = field(default_factory=BudgetConfig)
+    continuity: ContinuityConfig = field(default_factory=ContinuityConfig)
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "profile_id": self.profile_id,
+            "name": self.name,
+            "description": self.description,
+            "is_default": self.is_default,
+            "system_prompt": self.system_prompt,
+            "task_prompt": self.task_prompt,
+            "permission_mode": self.permission_mode,
+            "plugin_blacklist": list(self.plugin_blacklist),
+            "enabled_tools": list(self.enabled_tools),
+            "disabled_tools": list(self.disabled_tools),
+            "tool_risk_overrides": dict(self.tool_risk_overrides),
+            "authorized_credentials": list(self.authorized_credentials),
+            "budget": self.budget.to_dict(),
+            "continuity": self.continuity.to_dict(),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> Profile:
+        d = raw if isinstance(raw, dict) else {}
+        mode = str(d.get("permission_mode") or "standard").strip().lower()
+        if mode not in {"readonly", "standard", "full"}:
+            mode = "standard"
+        risks: dict[str, str] = {}
+        for k, v in (d.get("tool_risk_overrides") or {}).items():
+            rv = str(v or "").strip().lower()
+            if k and rv in {"safe", "work", "high"}:
+                risks[str(k)] = rv
+        return cls(
+            profile_id=str(d.get("profile_id") or new_id("prof")),
+            name=str(d.get("name") or "未命名方案").strip()[:80],
+            description=str(d.get("description") or "").strip()[:300],
+            is_default=bool(d.get("is_default", False)),
+            system_prompt=str(d.get("system_prompt") or "").strip()[:3000],
+            task_prompt=str(d.get("task_prompt") or "").strip()[:3000],
+            permission_mode=mode,
+            plugin_blacklist=_str_list(d.get("plugin_blacklist"), limit=200),
+            enabled_tools=_str_list(d.get("enabled_tools"), limit=500),
+            disabled_tools=_str_list(d.get("disabled_tools"), limit=500),
+            tool_risk_overrides=risks,
+            authorized_credentials=_str_list(d.get("authorized_credentials"), limit=50),
+            budget=BudgetConfig.from_dict(d.get("budget")),
+            continuity=ContinuityConfig.from_dict(d.get("continuity")),
+            created_at=str(d.get("created_at") or now_iso()),
+            updated_at=str(d.get("updated_at") or now_iso()),
+        )
+
+
+def default_profiles() -> list[Profile]:
+    return [
+        Profile(
+            profile_id="default",
+            name="标准开发方案",
+            description="常规任务默认方案：先只读探索出计划，审批后在授权目录内读写与测试，高危操作自动请示。",
+            is_default=True,
+            permission_mode="standard",
+            budget=BudgetConfig(max_total_ticks=40, max_total_seconds=1800, native_steps=24),
+            continuity=ContinuityConfig(context_tokens=100_000, context_percent=55, summary_chars=5000, ingress_cap_bytes=14_336),
+        ),
+        Profile(
+            profile_id="readonly_research",
+            name="只读调研方案",
+            description="仅开放读取、搜索与只读命令，严禁写入文件或执行破坏性操作，适合代码审计与资料调研。",
+            is_default=False,
+            permission_mode="readonly",
+            task_prompt="本方案为只读模式：专注信息搜集、代码审计与结构化结论，不做任何文件修改。",
+            budget=BudgetConfig(max_total_ticks=25, max_total_seconds=900, native_steps=20),
+            continuity=ContinuityConfig(context_tokens=80_000, context_percent=55, summary_chars=4500, ingress_cap_bytes=12_288),
+        ),
+        Profile(
+            profile_id="full_autonomous",
+            name="全权限高效方案",
+            description="在授权工作区内放宽常规操作限制，保留禁令工具与高危破坏性操作拦截，适合复杂长周期工程。",
+            is_default=False,
+            permission_mode="full",
+            budget=BudgetConfig(max_total_ticks=80, max_total_seconds=3600, native_steps=32),
+            continuity=ContinuityConfig(context_tokens=128_000, context_percent=55, summary_chars=6000, ingress_cap_bytes=16_384),
+        ),
+    ]
+
+
+# ── Project & Credentials ────────────────────────────────────────────────────
+
+@dataclass
+class Project:
+    project_id: str
+    title: str
+    category: str = "通用"
+    source_umo: str = ""
+    platform_id: str = ""
+    profile_id: str = "default"
+    summary: str = ""
+    summary_kind: str = ""               # automatic_handoff | bot_summary | manual
+    summary_source_task_id: str = ""
+    sharing: SummarySharingConfig = field(default_factory=SummarySharingConfig)
+    execution_settings: ExecutionSettings = field(default_factory=ExecutionSettings)
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "title": self.title,
+            "category": self.category,
+            "source_umo": self.source_umo,
+            "platform_id": self.platform_id,
+            "profile_id": self.profile_id,
+            "summary": self.summary,
+            "summary_kind": self.summary_kind,
+            "summary_source_task_id": self.summary_source_task_id,
+            "sharing": self.sharing.to_dict(),
+            "execution_settings": self.execution_settings.to_dict(),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> Project:
+        d = raw if isinstance(raw, dict) else {}
+        return cls(
+            project_id=str(d.get("project_id") or new_id("proj")),
+            title=str(d.get("title") or "默认项目").strip()[:100],
+            category=str(d.get("category") or "通用").strip()[:40],
+            source_umo=str(d.get("source_umo") or "").strip(),
+            platform_id=str(d.get("platform_id") or "").strip(),
+            profile_id=str(d.get("profile_id") or "default").strip() or "default",
+            summary=str(d.get("summary") or "")[:2000],
+            summary_kind=str(d.get("summary_kind") or ""),
+            summary_source_task_id=str(d.get("summary_source_task_id") or ""),
+            sharing=SummarySharingConfig.from_dict(d.get("sharing")),
+            execution_settings=ExecutionSettings.from_dict(d.get("execution_settings")),
+            created_at=str(d.get("created_at") or now_iso()),
+            updated_at=str(d.get("updated_at") or now_iso()),
+        )
+
+
+@dataclass
+class CredentialMeta:
+    """Public metadata for an encrypted vault item (secret or personal info). Plaintext NEVER lives here."""
+    credential_id: str
+    label: str
+    kind: str = "secret"                 # secret (env-injected token/ssh) | personal (encrypted personal profile/note)
+    provider: str = "generic"            # github | ssh | npm | pypi | personal | generic | ...
+    env_var: str = ""                    # e.g. GITHUB_TOKEN, SSH_KEY_PASS (for kind=secret)
+    inject_mode: str = "env"             # env (direct subprocess env injection) | reference
+    scope: str = "global"                # global | project
+    authorized_projects: list[str] = field(default_factory=list)
+    share_with_tasks: bool = False       # only for kind=personal when user opts in
+    note: str = ""
+    has_value: bool = False
+    masked_value: str = ""
     created_at: str = field(default_factory=now_iso)
     updated_at: str = field(default_factory=now_iso)
 
@@ -251,1330 +332,302 @@ class MemoryFolder:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "MemoryFolder":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        base.folder_id = str(base.folder_id or "").strip() or new_id("mf")
-        base.name = str(base.name or "默认记忆夹").strip()[:80] or "默认记忆夹"
-        base.agent_id = str(base.agent_id or "").strip()[:120]
-        base.description = str(base.description or "").strip()[:500]
-        base.expose_to_normal = bool(base.expose_to_normal)
-        if base.detail_level not in {"summary", "full"}:
-            base.detail_level = "summary"
-        try:
-            base.retention_days = max(0, min(int(base.retention_days or 0), 3650))
-        except Exception:
-            base.retention_days = 0
-        return base
+    def from_dict(cls, raw: dict[str, Any]) -> CredentialMeta:
+        d = raw if isinstance(raw, dict) else {}
+        has_val = bool(d.get("has_value") or d.get("encrypted_value"))
+        kind = str(d.get("kind") or "secret").strip().lower()
+        if kind not in {"secret", "personal"}:
+            kind = "secret"
+        return cls(
+            credential_id=str(d.get("credential_id") or new_id("cred")),
+            label=str(d.get("label") or "未命名条目").strip()[:80],
+            kind=kind,
+            provider=str(d.get("provider") or ("personal" if kind == "personal" else "generic")).strip()[:40],
+            env_var=str(d.get("env_var") or "").strip()[:64],
+            inject_mode=str(d.get("inject_mode") or ("reference" if kind == "personal" else "env")).strip()[:20],
+            scope=str(d.get("scope") or "global").strip()[:20],
+            authorized_projects=_str_list(d.get("authorized_projects"), limit=100),
+            share_with_tasks=bool(d.get("share_with_tasks", False)),
+            note=str(d.get("note") or "").strip()[:300],
+            has_value=has_val,
+            masked_value="********" if has_val else "",
+            created_at=str(d.get("created_at") or now_iso()),
+            updated_at=str(d.get("updated_at") or now_iso()),
+        )
 
+
+# ── Task Entities (Lightweight meta.json < 5KB) ──────────────────────────────
 
 @dataclass
-class SubAgentSpec:
-    """一条子Agent「泳道」：自带模型/API、角色、工具范围、领地与并发上限。
-
-    内嵌在 AgentSpec.sub_agents（方案级），领地(member_node_ids) 只在该方案的
-    workflow_nodes 范围内有意义。复用 save_agent 持久化，无需新存储文件。
-    """
-
-    sub_agent_id: str = field(default_factory=lambda: new_id("sa"))
-    name: str = ""
-    color: str = "#5b8def"          # 领地框 + 节点上色
-    role_prompt: str = ""           # 角色/职责提示词，拼进该泳道 worker 的 system_prompt
-    provider_id: str = ""           # 本泳道独立模型/API；空=继承方案=继承当前会话
-    enabled_tools: list[str] = field(default_factory=list)  # 工具范围(子集，空=继承方案)
-    max_concurrency: int = 2        # 本泳道并发上限(per-lane semaphore)
-    rate_per_minute: int = 0        # 0=不限；>0 本泳道每分钟调用上限
-    member_node_ids: list[str] = field(default_factory=list)  # 领地：归属节点 id（缓存，node.owner 为权威）
-    notes: str = ""
+class TaskStep:
+    id: str
+    title: str
+    instruction: str = ""
+    status: str = "pending"              # pending | running | completed | skipped
+    stage: str = ""
+    summary: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "SubAgentSpec":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        base.sub_agent_id = str(base.sub_agent_id or "").strip() or new_id("sa")
-        base.name = str(base.name or "").strip()[:80]
-        color = str(base.color or "").strip()
-        base.color = color if re.match(r"^#[0-9a-fA-F]{6}$", color) else "#5b8def"
-        base.role_prompt = str(base.role_prompt or "").strip()[:4000]
-        base.provider_id = str(base.provider_id or "").strip()[:120]
-        base.enabled_tools = list(dict.fromkeys(_clean_string_list(base.enabled_tools)))
-        try:
-            base.max_concurrency = max(1, min(int(base.max_concurrency or 2), 6))
-        except Exception:
-            base.max_concurrency = 2
-        try:
-            base.rate_per_minute = max(0, min(int(base.rate_per_minute or 0), 600))
-        except Exception:
-            base.rate_per_minute = 0
-        base.member_node_ids = list(dict.fromkeys(_clean_string_list(base.member_node_ids)))
-        base.notes = str(base.notes or "").strip()[:500]
-        return base
-
-
-def default_workflow_nodes() -> list[dict[str, Any]]:
-    return [
-        {
-            "id": "entry",
-            "title": "消息监听入口",
-            "kind": "trigger",
-            "stage": "entry",
-            "action": "listen_message",
-            "instruction": "只承接消息、命令、暗号、关键词、正则、拍一拍、notice 和自然语言入口；定时、插件事件、Webhook 使用独立入口素材。",
-            "output_variable": "event.message",
-            "x": 70,
-            "y": 240,
-        },
-        {
-            "id": "global_control",
-            "title": "全局控制",
-            "kind": "guard",
-            "stage": "guard",
-            "action": "global_control",
-            "instruction": "统一应用隔离、工具范围、汇报频率、预算、暂停策略和错误累积阈值。",
-            "x": 390,
-            "y": 240,
-        },
-        {
-            "id": "memory_recall",
-            "title": "任务记忆读取",
-            "kind": "retrieval",
-            "stage": "plan",
-            "action": "retrieve_memory",
-            "instruction": "按标签、记忆夹或 source_task_id 读取与当前方案相关的任务记忆。",
-            "x": 710,
-            "y": 80,
-        },
-        {
-            "id": "plan",
-            "title": "计划确认",
-            "kind": "state",
-            "stage": "plan",
-            "action": "plan",
-            "instruction": "把根目标拆成可验证步骤，明确完成条件、风险等级、工具范围和本轮有限工作单元。",
-            "x": 710,
-            "y": 320,
-        },
-        {
-            "id": "risk_router",
-            "title": "风险分流",
-            "kind": "branch",
-            "stage": "plan",
-            "action": "route_condition",
-            "instruction": "按低风险、外部系统、高风险或需要人工判断分流到执行、API、审批或人工接管。",
-            "x": 1040,
-            "y": 320,
-        },
-        {
-            "id": "parallel_branch",
-            "title": "并行分支",
-            "kind": "branch",
-            "stage": "plan",
-            "action": "parallel_branch",
-            "instruction": "把资料检索、代码阅读、测试准备等互不依赖的小任务拆成并行工作包。",
-            "x": 1040,
-            "y": 80,
-        },
-        {
-            "id": "parallel_research",
-            "title": "并行检索包",
-            "kind": "subflow",
-            "stage": "execute",
-            "action": "manual",
-            "instruction": "只读检索资料、接口或代码，输出证据摘要、风险和建议下一步。",
-            "prompt": "你是并行只读检索工作包。只收集证据和结论，不做写入动作；输出：发现、证据来源、风险、建议下一步。",
-            "parallel_group": "default",
-            "x": 1360,
-            "y": 0,
-        },
-        {
-            "id": "parallel_verify",
-            "title": "并行验证包",
-            "kind": "subflow",
-            "stage": "execute",
-            "action": "manual",
-            "instruction": "独立检查完成条件、测试证据、边界情况和可能遗漏。",
-            "prompt": "你是并行验证工作包。只围绕完成条件检查证据强度；输出：已验证、未验证、阻塞、需要主 Agent 决策的点。",
-            "parallel_group": "default",
-            "x": 1360,
-            "y": 580,
-        },
-        {
-            "id": "execute",
-            "title": "工具执行",
-            "kind": "tool",
-            "stage": "execute",
-            "action": "run_tools",
-            "instruction": "只调用 AgentSpec 允许的工具或已注册自定义 API，并保留关键输出。",
-            "x": 1360,
-            "y": 180,
-        },
-        {
-            "id": "api_call",
-            "title": "API 调用",
-            "kind": "api",
-            "stage": "execute",
-            "action": "call_api",
-            "instruction": "使用 agent_lab_call_custom_api 调用已登记 API，凭证由 Agent Lab 注入，不写入任务记忆。",
-            "x": 1360,
-            "y": 420,
-        },
-        {
-            "id": "plugin_prompt",
-            "title": "插件嵌入提示词",
-            "kind": "subflow",
-            "stage": "execute",
-            "action": "plugin_prompt",
-            "instruction": "把目标 AstrBot 插件作为中间能力调用提示词，必要时转人工管理员执行。",
-            "x": 1680,
-            "y": 580,
-        },
-        {
-            "id": "transform",
-            "title": "上下文整理",
-            "kind": "transform",
-            "stage": "execute",
-            "action": "transform_context",
-            "instruction": "把工具/API/插件输出整理成结构化观察，压缩噪声并保留证据。",
-            "x": 1680,
-            "y": 300,
-        },
-        {
-            "id": "approval",
-            "title": "审批闸门",
-            "kind": "guard",
-            "stage": "guard",
-            "action": "request_approval",
-            "instruction": "涉及删除、部署、重启、密钥、破坏性数据库等危险动作前先请求用户审批。",
-            "x": 1360,
-            "y": 760,
-        },
-        {
-            "id": "human_handoff",
-            "title": "人工接管",
-            "kind": "human",
-            "stage": "guard",
-            "action": "handoff",
-            "instruction": "遇到登录、验证码、业务判断、未授权范围或连续阻塞时暂停并等待用户输入。",
-            "x": 1680,
-            "y": 760,
-        },
-        {
-            "id": "validation",
-            "title": "结果校验",
-            "kind": "validation",
-            "stage": "checkpoint",
-            "action": "validate_output",
-            "instruction": "对照完成条件、测试结果和副作用判断是否完成；失败时说明原因并进入有限重试。",
-            "x": 2000,
-            "y": 260,
-        },
-        {
-            "id": "retry_loop",
-            "title": "重试循环",
-            "kind": "loop",
-            "stage": "checkpoint",
-            "action": "retry",
-            "instruction": "只在执行失败或校验不通过时进入；还有次数就绕回执行，用尽后交人工。",
-            "max_retries": 3,
-            "x": 2000,
-            "y": 540,
-        },
-        {
-            "id": "checkpoint",
-            "title": "状态快照",
-            "kind": "state",
-            "stage": "checkpoint",
-            "action": "save_state",
-            "instruction": "每轮结束写回 current_summary、progress、next_step、observation 和阻塞点。",
-            "x": 2320,
-            "y": 260,
-        },
-        {
-            "id": "task_memory",
-            "title": "任务记忆",
-            "kind": "memory",
-            "stage": "checkpoint",
-            "action": "save_memory",
-            "instruction": "把时间点、关键修改、成果、风险和下次续写提示写入任务记忆。",
-            "x": 2640,
-            "y": 160,
-        },
-        {
-            "id": "heartbeat",
-            "title": "心跳续跑",
-            "kind": "guard",
-            "stage": "guard",
-            "action": "heartbeat",
-            "instruction": "长任务由心跳唤醒，醒来先读 task_state，再推进一小步。",
-            "x": 2640,
-            "y": 460,
-        },
-        {
-            "id": "memory_archive",
-            "title": "方案记忆存档",
-            "kind": "memory",
-            "stage": "archive",
-            "action": "archive_memory_folder",
-            "instruction": "把本次任务导出到方案级记忆夹，隔离到当前 agent_id 和 folder_id。",
-            "x": 2960,
-            "y": 160,
-        },
-        {
-            "id": "skill_evolution",
-            "title": "Skill 进化",
-            "kind": "guard",
-            "stage": "archive",
-            "action": "skill_evolution",
-            "instruction": "从已接受任务记忆生成 skill_rules 草稿，默认走人工审批。",
-            "approval_mode": "review",
-            "x": 2960,
-            "y": 460,
-        },
-        {
-            "id": "notify",
-            "title": "完成通知",
-            "kind": "notification",
-            "stage": "archive",
-            "action": "notify",
-            "instruction": "在退出前向用户说明完成情况、验证结果、遗留风险和下次续写入口。",
-            "x": 3280,
-            "y": 260,
-        },
-        {
-            "id": "archive",
-            "title": "结束回流",
-            "kind": "memory",
-            "stage": "archive",
-            "action": "exit_summary",
-            "instruction": "输出任务成果、关键改动、遗留问题和可回流记忆候选，然后恢复会话插件隔离。",
-            "x": 3600,
-            "y": 260,
-        },
-    ]
-
-
-def default_workflow_edges() -> list[dict[str, Any]]:
-    return [
-        {"from": "entry", "to": "global_control", "edge_type": "success"},
-        {"from": "global_control", "to": "memory_recall", "edge_type": "success"},
-        {"from": "memory_recall", "to": "plan", "edge_type": "success"},
-        {"from": "plan", "to": "risk_router", "edge_type": "success"},
-        {"from": "plan", "to": "parallel_branch", "edge_type": "uncertain"},
-        {"from": "parallel_branch", "to": "parallel_research", "edge_type": "always"},
-        {"from": "parallel_branch", "to": "parallel_verify", "edge_type": "always"},
-        {"from": "parallel_research", "to": "transform", "edge_type": "success"},
-        {"from": "parallel_verify", "to": "transform", "edge_type": "success"},
-        {"from": "risk_router", "to": "execute", "edge_type": "success"},
-        {"from": "risk_router", "to": "api_call", "edge_type": "uncertain"},
-        {"from": "risk_router", "to": "approval", "edge_type": "failed"},
-        {"from": "approval", "to": "execute", "edge_type": "approved"},
-        {"from": "approval", "to": "human_handoff", "edge_type": "rejected"},
-        {"from": "human_handoff", "to": "plan", "edge_type": "success"},
-        {"from": "execute", "to": "transform", "edge_type": "success"},
-        {"from": "execute", "to": "retry_loop", "edge_type": "error"},
-        {"from": "api_call", "to": "transform", "edge_type": "success"},
-        {"from": "api_call", "to": "retry_loop", "edge_type": "error"},
-        {"from": "plugin_prompt", "to": "transform", "edge_type": "success"},
-        {"from": "plugin_prompt", "to": "human_handoff", "edge_type": "failed"},
-        {"from": "transform", "to": "validation", "edge_type": "success"},
-        {"from": "validation", "to": "checkpoint", "edge_type": "success"},
-        {"from": "validation", "to": "retry_loop", "edge_type": "failed"},
-        {"from": "retry_loop", "to": "execute", "edge_type": "retry"},
-        {"from": "retry_loop", "to": "human_handoff", "edge_type": "failed"},
-        {"from": "checkpoint", "to": "task_memory", "edge_type": "success"},
-        {"from": "checkpoint", "to": "heartbeat", "edge_type": "uncertain"},
-        {"from": "heartbeat", "to": "plan", "edge_type": "success"},
-        {"from": "task_memory", "to": "memory_archive", "edge_type": "success"},
-        {"from": "memory_archive", "to": "skill_evolution", "edge_type": "success"},
-        {"from": "skill_evolution", "to": "notify", "edge_type": "success"},
-        {"from": "skill_evolution", "to": "human_handoff", "edge_type": "approved"},
-        {"from": "notify", "to": "archive", "edge_type": "success"},
-    ]
-
-
-@dataclass
-class EntryPolicy:
-    trigger_phrases: list[str] = field(
-        default_factory=lambda: [
-            "进入任务模式",
-            "开启任务模式",
-            "进入专业模式",
-            "进入 Agent Mode",
-            "/agentlab start",
-            "/al start",
-        ]
-    )
-    trigger_keywords: list[str] = field(
-        default_factory=lambda: [
-            "持续推进",
-            "长任务",
-            "排查",
-            "部署",
-            "写插件",
-            "改代码",
-            "整理资料",
-        ]
-    )
-    require_confirmation: bool = True
-    confirmation_text: str = (
-        "我会进入任务模式：隔离当前会话插件、压缩上文、创建 task_state，并在高风险动作前请求审批。是否开启？"
-    )
-    confirmation_mode: str = "fixed"  # off | fixed | prompt（require_confirmation=False 时等价 off）
-    default_completion_conditions: list[str] = field(
-        default_factory=lambda: ["用户验收通过", "任务成果已归档", "关键改动和风险已总结"]
-    )
-    exit_phrases: list[str] = field(
-        default_factory=lambda: [
-            "完成任务",
-            "结束任务模式",
-            "退出任务模式",
-            "退出 Agent Mode",
-            "/agentlab finish",
-            "/agentlab cancel",
-        ]
-    )
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "EntryPolicy":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        return base
-
-
-@dataclass
-class IsolationPolicy:
-    mode: str = "strict"  # off | session | strict
-    tool_mode: str = "whitelist"  # full | whitelist | no_external
-    restore_on_exit: bool = True
-    protect_self: bool = True
-    hide_disabled_plugin_tools: bool = True
-    notes: str = (
-        "严格隔离会在当前会话默认关闭普通插件，只保留 Agent Lab、AstrBot 保留插件和用户显式允许的插件；不改 AstrBot 全局插件开关，退出时恢复会话快照。"
-    )
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "IsolationPolicy":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        return base
-
-
-@dataclass
-class WorkflowTrigger:
-    enabled: bool = True
-    types: list[str] = field(default_factory=lambda: ["command"])
-    command_names: list[str] = field(default_factory=lambda: ["agentlab", "al"])
-    keywords: list[str] = field(default_factory=list)
-    regex: list[str] = field(default_factory=list)
-    cron: str = ""
-    cron_expressions: list[str] = field(default_factory=list)
-    schedule_timezone: str = ""
-    schedule_jitter_seconds: int = 0
-    schedule_payload: dict[str, Any] = field(default_factory=dict)
-    schedule_output_variable: str = "event.schedule"
-    plugin_sources: list[str] = field(default_factory=list)
-    plugin_events: list[str] = field(default_factory=list)
-    plugin_match_mode: str = "any"  # any | all
-    plugin_payload_variable: str = "event.payload"
-    webhook_path: str = ""
-    webhook_auth_type: str = "none"  # none | bearer | header
-    webhook_secret_id: str = ""
-    description: str = ""
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "WorkflowTrigger":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        base.enabled = bool(base.enabled)
-        valid_types = {
-            "command",
-            "natural",
-            "silent_global",
-            "message_monitor",
-            "keyword",
-            "regex",
-            "poke",
-            "notice",
-            "schedule",
-            "plugin_event",
-            "webhook",
-            "manual_webui",
-        }
-        if isinstance(base.types, str):
-            base.types = [base.types]
-        elif not isinstance(base.types, list):
-            base.types = []
-        base.types = [
-            str(item).strip()
-            for item in base.types
-            if str(item).strip() in valid_types
-        ] or ["command"]
-        for key in (
-            "command_names",
-            "keywords",
-            "regex",
-            "cron_expressions",
-            "plugin_sources",
-            "plugin_events",
-        ):
-            value = getattr(base, key)
-            if isinstance(value, str):
-                value = [part.strip() for part in value.replace("；", ",").split(",")]
-            elif not isinstance(value, list):
-                value = []
-            setattr(base, key, [str(item).strip() for item in value if str(item).strip()])
-        for key in (
-            "command_names",
-            "keywords",
-            "regex",
-            "cron_expressions",
-            "plugin_sources",
-            "plugin_events",
-        ):
-            setattr(base, key, _clean_string_list(getattr(base, key)))
-        base.cron = str(base.cron or "").strip()[:120]
-        if base.cron and base.cron not in base.cron_expressions:
-            base.cron_expressions.insert(0, base.cron)
-        base.cron_expressions = [item[:120] for item in base.cron_expressions if item.strip()][:12]
-        if not base.cron and base.cron_expressions:
-            base.cron = base.cron_expressions[0]
-        base.schedule_timezone = str(base.schedule_timezone or "").strip()[:80]
-        try:
-            base.schedule_jitter_seconds = max(0, min(int(base.schedule_jitter_seconds or 0), 86400))
-        except Exception:
-            base.schedule_jitter_seconds = 0
-        if not isinstance(base.schedule_payload, dict):
-            base.schedule_payload = {}
-        else:
-            base.schedule_payload = dict(base.schedule_payload)
-        base.schedule_output_variable = (
-            str(base.schedule_output_variable or "event.schedule").strip()[:160]
-            or "event.schedule"
+    def from_dict(cls, raw: dict[str, Any], idx: int = 1) -> TaskStep:
+        d = raw if isinstance(raw, dict) else {}
+        status = str(d.get("status") or "pending").strip().lower()
+        if status not in {"pending", "running", "completed", "skipped"}:
+            status = "pending"
+        return cls(
+            id=str(d.get("id") or f"s{idx}").strip()[:40],
+            title=str(d.get("title") or f"步骤 {idx}").strip()[:160],
+            instruction=str(d.get("instruction") or "").strip()[:600],
+            status=status,
+            stage=str(d.get("stage") or "").strip()[:60],
+            summary=str(d.get("summary") or "").strip()[:500],
         )
-        match_mode = str(base.plugin_match_mode or "any").strip().lower()
-        base.plugin_match_mode = match_mode if match_mode in {"any", "all"} else "any"
-        base.plugin_payload_variable = (
-            str(base.plugin_payload_variable or "event.payload").strip()[:160]
-            or "event.payload"
-        )
-        base.webhook_path = str(base.webhook_path or "").strip()[:200]
-        auth_type = str(base.webhook_auth_type or "none").strip().lower()
-        base.webhook_auth_type = auth_type if auth_type in {"none", "bearer", "header"} else "none"
-        base.webhook_secret_id = str(base.webhook_secret_id or "").strip()[:160]
-        base.description = str(base.description or "").strip()[:500]
-        return base
 
 
 @dataclass
-class WorkflowScope:
-    chat_types: list[str] = field(default_factory=lambda: ["private"])
-    platforms: list[str] = field(default_factory=list)
-    umo_allowlist: list[str] = field(default_factory=list)
-    umo_denylist: list[str] = field(default_factory=list)
-    group_allowlist: list[str] = field(default_factory=list)
-    group_denylist: list[str] = field(default_factory=list)
-    user_allowlist: list[str] = field(default_factory=list)
-    user_denylist: list[str] = field(default_factory=list)
-    admin_only: bool = False
-
-    @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "WorkflowScope":
-        if not isinstance(payload, dict):
-            return cls()
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        valid_chat_types = {"private", "group"}
-        for key in (
-            "chat_types",
-            "platforms",
-            "umo_allowlist",
-            "umo_denylist",
-            "group_allowlist",
-            "group_denylist",
-            "user_allowlist",
-            "user_denylist",
-        ):
-            value = getattr(base, key)
-            if isinstance(value, str):
-                value = [part.strip() for part in value.replace("；", ",").split(",")]
-            elif not isinstance(value, list):
-                value = []
-            cleaned = [str(item).strip() for item in value if str(item).strip()]
-            if key == "chat_types":
-                cleaned = [item for item in cleaned if item in valid_chat_types]
-            setattr(base, key, cleaned)
-        for key in (
-            "chat_types",
-            "platforms",
-            "umo_allowlist",
-            "umo_denylist",
-            "group_allowlist",
-            "group_denylist",
-            "user_allowlist",
-            "user_denylist",
-        ):
-            cleaned = _clean_string_list(getattr(base, key))
-            if key == "chat_types":
-                cleaned = [item for item in cleaned if item in valid_chat_types]
-            setattr(base, key, cleaned)
-        if not base.chat_types:
-            base.chat_types = ["private"]
-        base.admin_only = bool(base.admin_only)
-        return base
-
-
-@dataclass
-class AgentSpec:
-    agent_id: str = field(default_factory=lambda: new_id("agent"))
-    name: str = ""
-    # manual | astrbot_runtime | astrbot_persona(legacy) | astrbot_config(legacy)
-    identity_label_source: str = "astrbot_runtime"
-    description: str = "把 AstrBot 会话切换为可持续执行、可审批、可归档的 Agent 模式。"
-    enabled: bool = True
-    provider_id: str = ""
-    application_scope: str = "entry"  # entry | global
-    entry_channel: str = "command"  # command | natural | webui
-    trigger_mode: str = "confirm"  # manual | confirm | smart | always
-    workflow_trigger: WorkflowTrigger = field(default_factory=WorkflowTrigger)
-    workflow_scope: WorkflowScope = field(default_factory=WorkflowScope)
-    entry_policy: EntryPolicy = field(default_factory=EntryPolicy)
-    isolation_policy: IsolationPolicy = field(default_factory=IsolationPolicy)
-    system_prompt: str = (
-        "你仍然是当前 AstrBot 里的原本角色，但进入 Agent Mode 后必须以任务推进为中心。"
-    )
-    task_prompt: str = (
-        "你在 Agent Mode 中工作。先读取任务状态，再执行一个有限步骤，随后总结并写回状态。"
-    )
-    plugin_overrides: dict[str, bool] = field(default_factory=dict)
-    disabled_tools: list[str] = field(default_factory=list)
-    enabled_tools: list[str] = field(
-        default_factory=lambda: [
-            "astrbot_file_read_tool",
-            "astrbot_grep_tool",
-            "astrbot_file_write_tool",
-            "astrbot_file_edit_tool",
-            "astrbot_execute_shell",
-            "astrbot_execute_python",
-            "astrbot_execute_ipython",
-            "astrbot_sandboxed_shell",
-            "astrbot_sandboxed_python",
-            "future_task",
-            "agent_lab_read_task_memory",
-            "agent_lab_call_custom_api",
-            "agent_lab_recommend_task_patterns",
-            "agent_lab_update_workflow",
-            "agent_lab_run_parallel_workflow",
-            "agent_lab_advance_workflow",
-        ]
-    )
-    tool_risk_overrides: dict[str, str] = field(default_factory=dict)
-    enabled_skills: list[str] = field(default_factory=list)
-    module_ids: list[str] = field(
-        default_factory=lambda: [
-            "checkpoint_state",
-            "approval_guard",
-            "heartbeat_protocol",
-            "memory_gate",
-        ]
-    )
-    module_settings: dict[str, dict[str, Any]] = field(default_factory=dict)
-    default_task_budget: TaskBudget = field(default_factory=TaskBudget)
-    workflow_nodes: list[dict[str, Any]] = field(
-        default_factory=lambda: [
-            {
-                "id": "entry",
-                "title": "入口识别",
-                "kind": "state",
-                "stage": "entry",
-                "action": "summarize_entry",
-                "instruction": "识别暗号、命令、关键词或 WebUI 入口；只在命中 AgentSpec 触发策略时准备进入任务模式。",
-                "x": 70,
-                "y": 260,
-            },
-            {
-                "id": "entry_gate",
-                "title": "开启确认",
-                "kind": "human",
-                "stage": "entry",
-                "action": "confirm_entry",
-                "instruction": "需要确认的触发模式必须先向用户说明将隔离插件、压缩上下文、创建 task_state，并等待明确同意。",
-                "x": 390,
-                "y": 420,
-            },
-            {
-                "id": "context_bridge",
-                "title": "上文压缩",
-                "kind": "memory",
-                "stage": "entry",
-                "action": "summarize_entry",
-                "instruction": "把普通聊天上文压缩为 task_brief；只保留目标、约束、授权、风险和接续语气，避免把日常记忆直接灌入专业模式。",
-                "x": 390,
-                "y": 100,
-            },
-            {
-                "id": "isolation_gate",
-                "title": "隔离快照",
-                "kind": "guard",
-                "stage": "entry",
-                "action": "restore_isolation",
-                "instruction": "进入任务前记录当前会话插件状态，只保留 Agent Lab、保留插件和用户允许的插件；退出时恢复快照。",
-                "x": 710,
-                "y": 260,
-            },
-            {
-                "id": "memory_recall",
-                "title": "任务记忆检索",
-                "kind": "retrieval",
-                "stage": "plan",
-                "action": "retrieve_memory",
-                "instruction": "按标签、关键词或 source_task_id 读取候选任务记忆，只带入与当前目标稳定相关的信息。",
-                "x": 1040,
-                "y": 80,
-            },
-            {
-                "id": "plan",
-                "title": "计划确认",
-                "kind": "state",
-                "stage": "plan",
-                "action": "plan",
-                "instruction": "把根目标拆成可验证步骤，明确完成条件、风险等级、工具范围和本轮只推进一个有限工作单元。",
-                "x": 1040,
-                "y": 300,
-            },
-            {
-                "id": "risk_router",
-                "title": "风险分流",
-                "kind": "branch",
-                "stage": "plan",
-                "action": "route_condition",
-                "instruction": "低风险直接执行；高风险进入审批；需要外部系统时走 API；需要用户判断时交给人工接管。",
-                "x": 1360,
-                "y": 300,
-            },
-            {
-                "id": "parallel_branch",
-                "title": "并行分支",
-                "kind": "branch",
-                "stage": "plan",
-                "action": "parallel_branch",
-                "instruction": "把资料检索、代码阅读、测试准备等互不依赖的步骤拆开推进，再统一进入校验。",
-                "x": 1360,
-                "y": 80,
-            },
-            {
-                "id": "parallel_research",
-                "title": "并行检索包",
-                "kind": "subflow",
-                "stage": "execute",
-                "action": "manual",
-                "instruction": "把资料检索、接口查阅或代码阅读这类只读子任务拆出去，输出证据摘要和风险。",
-                "prompt": "你是并行只读检索工作包。只收集证据和结论，不做写入动作；输出：发现、证据来源、风险、建议下一步。",
-                "parallel_group": "default",
-                "x": 1680,
-                "y": 0,
-            },
-            {
-                "id": "parallel_verify",
-                "title": "并行验证包",
-                "kind": "subflow",
-                "stage": "execute",
-                "action": "manual",
-                "instruction": "把测试准备、验收条件核对或结果复核拆成独立工作包，再回收到上下文整理。",
-                "prompt": "你是并行验证工作包。只围绕完成条件检查证据强度；输出：已验证、未验证、阻塞、需要主 Agent 决策的点。",
-                "parallel_group": "default",
-                "x": 1680,
-                "y": 580,
-            },
-            {
-                "id": "execute",
-                "title": "工具执行",
-                "kind": "tool",
-                "stage": "execute",
-                "action": "run_tools",
-                "instruction": "只调用 AgentSpec 允许的工具或已注册自定义 API，并保留关键输出。",
-                "x": 1680,
-                "y": 160,
-            },
-            {
-                "id": "api_call",
-                "title": "API 调用",
-                "kind": "api",
-                "stage": "execute",
-                "action": "call_api",
-                "instruction": "使用 agent_lab_call_custom_api 调用已登记 API，凭证由 Agent Lab 注入，不写入任务记忆。",
-                "x": 1680,
-                "y": 420,
-            },
-            {
-                "id": "transform",
-                "title": "上下文整理",
-                "kind": "transform",
-                "stage": "execute",
-                "action": "transform_context",
-                "instruction": "把工具/API 返回整理成结构化观察，压缩噪声，保留证据、失败原因和下一步所需字段。",
-                "x": 2000,
-                "y": 260,
-            },
-            {
-                "id": "approval",
-                "title": "审批闸门",
-                "kind": "guard",
-                "stage": "guard",
-                "action": "request_approval",
-                "instruction": "涉及删除、部署、重启、密钥、破坏性数据库等危险动作前先请求用户审批。",
-                "x": 1680,
-                "y": 660,
-            },
-            {
-                "id": "human_handoff",
-                "title": "人工接管",
-                "kind": "human",
-                "stage": "guard",
-                "action": "handoff",
-                "instruction": "遇到登录、验证码、业务判断、未授权范围或连续阻塞时暂停，给出清晰选项等待用户输入。",
-                "x": 2000,
-                "y": 660,
-            },
-            {
-                "id": "validation",
-                "title": "结果校验",
-                "kind": "validation",
-                "stage": "checkpoint",
-                "action": "validate_output",
-                "instruction": "对照完成条件、测试结果和副作用判断是否完成；失败时说明原因并进入有限重试。",
-                "x": 2320,
-                "y": 180,
-            },
-            {
-                "id": "retry_loop",
-                "title": "重试循环",
-                "kind": "loop",
-                "stage": "checkpoint",
-                "action": "retry",
-                "instruction": "每次重试都写清调整点和观察结果；同一阻塞重复三次后停止并请求用户介入。",
-                "x": 2320,
-                "y": 460,
-            },
-            {
-                "id": "checkpoint",
-                "title": "状态快照",
-                "kind": "state",
-                "stage": "checkpoint",
-                "action": "save_state",
-                "instruction": "每轮结束写回 current_summary、progress、next_step、observation 和阻塞点。",
-                "x": 2640,
-                "y": 180,
-            },
-            {
-                "id": "task_memory",
-                "title": "任务记忆",
-                "kind": "memory",
-                "stage": "checkpoint",
-                "action": "save_memory",
-                "instruction": "把时间点、关键修改、成果、风险和下次续写提示写入任务记忆；任务记忆独立于日常记忆，并以标签暴露给普通模式读取。",
-                "x": 2960,
-                "y": 120,
-            },
-            {
-                "id": "heartbeat",
-                "title": "心跳续跑",
-                "kind": "guard",
-                "stage": "guard",
-                "action": "heartbeat",
-                "instruction": "长任务由心跳唤醒，醒来先读 task_state，再推进一小步。",
-                "x": 2960,
-                "y": 420,
-            },
-            {
-                "id": "notify",
-                "title": "完成通知",
-                "kind": "notification",
-                "stage": "archive",
-                "action": "notify",
-                "instruction": "在退出前向用户说明完成情况、验证结果、遗留风险和下次续写入口。",
-                "x": 3280,
-                "y": 180,
-            },
-            {
-                "id": "archive",
-                "title": "结束回流",
-                "kind": "memory",
-                "stage": "archive",
-                "action": "exit_summary",
-                "instruction": "只有完成、取消或用户要求退出时结束任务；输出任务成果、关键改动、遗留问题和可回流记忆候选，然后恢复会话插件隔离。",
-                "x": 3600,
-                "y": 180,
-            },
-        ]
-    )
-    workflow_edges: list[dict[str, Any]] = field(
-        default_factory=lambda: [
-            {"from": "entry", "to": "entry_gate"},
-            {"from": "entry_gate", "to": "context_bridge"},
-            {"from": "context_bridge", "to": "isolation_gate"},
-            {"from": "isolation_gate", "to": "memory_recall"},
-            {"from": "memory_recall", "to": "plan"},
-            {"from": "plan", "to": "risk_router"},
-            {"from": "plan", "to": "parallel_branch"},
-            {"from": "parallel_branch", "to": "parallel_research"},
-            {"from": "parallel_branch", "to": "parallel_verify"},
-            {"from": "parallel_branch", "to": "execute"},
-            {"from": "risk_router", "to": "execute"},
-            {"from": "risk_router", "to": "api_call"},
-            {"from": "risk_router", "to": "approval"},
-            {"from": "approval", "to": "human_handoff"},
-            {"from": "approval", "to": "execute"},
-            {"from": "human_handoff", "to": "plan"},
-            {"from": "execute", "to": "transform"},
-            {"from": "api_call", "to": "transform"},
-            {"from": "parallel_research", "to": "transform"},
-            {"from": "parallel_verify", "to": "transform"},
-            {"from": "transform", "to": "validation"},
-            {"from": "validation", "to": "checkpoint"},
-            {"from": "validation", "to": "retry_loop"},
-            {"from": "retry_loop", "to": "execute"},
-            {"from": "checkpoint", "to": "task_memory"},
-            {"from": "checkpoint", "to": "heartbeat"},
-            {"from": "heartbeat", "to": "plan"},
-            {"from": "task_memory", "to": "notify"},
-            {"from": "notify", "to": "archive"},
-        ]
-    )
-    memory_policy: MemoryPolicy = field(default_factory=MemoryPolicy)
-    approval_policy: ApprovalPolicy = field(default_factory=ApprovalPolicy)
-    heartbeat_policy: HeartbeatPolicy = field(default_factory=HeartbeatPolicy)
-    sub_agents: list[SubAgentSpec] = field(default_factory=list)
+class QuestionItem:
+    question_id: str
+    question: str
+    options: list[str] = field(default_factory=list)
+    recommendation: str = ""
+    status: str = "pending"              # pending | answered | cancelled
+    answer: str = ""
     created_at: str = field(default_factory=now_iso)
-    updated_at: str = field(default_factory=now_iso)
-
-    def __post_init__(self) -> None:
-        legacy_ids = {
-            "entry",
-            "entry_gate",
-            "context_bridge",
-            "isolation_gate",
-            "memory_recall",
-            "plan",
-            "risk_router",
-            "parallel_branch",
-            "parallel_research",
-            "parallel_verify",
-            "execute",
-            "api_call",
-            "transform",
-            "approval",
-            "human_handoff",
-            "validation",
-            "retry_loop",
-            "checkpoint",
-            "task_memory",
-            "heartbeat",
-            "notify",
-            "archive",
-        }
-        current_ids = {str(item.get("id") or "") for item in self.workflow_nodes or [] if isinstance(item, dict)}
-        # Existing user workflows are never replaced merely because their IDs match a legacy template.
+    answered_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "AgentSpec":
-        if not isinstance(payload, dict):
-            return cls()
-        payload = dict(payload)
-        payload["memory_policy"] = MemoryPolicy.from_dict(payload.get("memory_policy"))
-        payload["approval_policy"] = ApprovalPolicy.from_dict(
-            payload.get("approval_policy")
+    def from_dict(cls, raw: dict[str, Any]) -> QuestionItem:
+        d = raw if isinstance(raw, dict) else {}
+        return cls(
+            question_id=str(d.get("question_id") or new_id("q")),
+            question=str(d.get("question") or "").strip()[:800],
+            options=_str_list(d.get("options"), limit=6),
+            recommendation=str(d.get("recommendation") or "").strip()[:400],
+            status=str(d.get("status") or "pending"),
+            answer=str(d.get("answer") or "").strip()[:1500],
+            created_at=str(d.get("created_at") or now_iso()),
+            answered_at=str(d.get("answered_at") or ""),
         )
-        payload["heartbeat_policy"] = HeartbeatPolicy.from_dict(
-            payload.get("heartbeat_policy")
-        )
-        payload["default_task_budget"] = TaskBudget.from_dict(
-            payload.get("default_task_budget")
-        )
-        payload["workflow_trigger"] = WorkflowTrigger.from_dict(
-            payload.get("workflow_trigger")
-        )
-        payload["workflow_scope"] = WorkflowScope.from_dict(
-            payload.get("workflow_scope")
-        )
-        payload["entry_policy"] = EntryPolicy.from_dict(payload.get("entry_policy"))
-        payload["isolation_policy"] = IsolationPolicy.from_dict(
-            payload.get("isolation_policy")
-        )
-        payload["sub_agents"] = [
-            SubAgentSpec.from_dict(x) for x in (payload.get("sub_agents") or [])
-        ]
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        base.__post_init__()
-        return base
 
 
 @dataclass
 class ApprovalRequest:
-    approval_id: str = field(default_factory=lambda: new_id("approval"))
-    status: str = "pending"  # pending | approved | rejected | expired
-    approval_type: str = "operation"  # operation | finish_override
-    operation: str = ""
-    message: str = ""
+    approval_id: str
+    approval_type: str                   # task_plan | tool_batch
+    operation: str
     reason: str = ""
     impact: str = ""
     rollback: str = ""
-    requested_status: str = ""
-    final_summary: str = ""
-    memory_candidates: str = ""
-    verification_missing: list[str] = field(default_factory=list)
-    allow_incomplete: bool = False
+    message: str = ""
+    status: str = "pending"              # pending | approved | rejected | consumed | cancelled
+    decision: str = ""
+    decision_note: str = ""
+    plan_version: int = 0
+    workspace_root: str = ""
+    calls: list[dict[str, Any]] = field(default_factory=list)   # for tool_batch
     created_at: str = field(default_factory=now_iso)
     resolved_at: str = ""
-    resolved_by: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ApprovalRequest":
-        base = cls()
-        if isinstance(payload, dict):
-            for key in asdict(base):
-                if key in payload:
-                    setattr(base, key, payload[key])
-        return base
+    def from_dict(cls, raw: dict[str, Any]) -> ApprovalRequest:
+        d = raw if isinstance(raw, dict) else {}
+        calls = d.get("calls") if isinstance(d.get("calls"), list) else []
+        return cls(
+            approval_id=str(d.get("approval_id") or new_id("apr")),
+            approval_type=str(d.get("approval_type") or "tool_batch"),
+            operation=str(d.get("operation") or "").strip()[:240],
+            reason=str(d.get("reason") or "").strip()[:600],
+            impact=str(d.get("impact") or "").strip()[:600],
+            rollback=str(d.get("rollback") or "").strip()[:400],
+            message=str(d.get("message") or "").strip()[:2000],
+            status=str(d.get("status") or "pending"),
+            decision=str(d.get("decision") or ""),
+            decision_note=str(d.get("decision_note") or "")[:400],
+            plan_version=int(d.get("plan_version") or 0),
+            workspace_root=str(d.get("workspace_root") or ""),
+            calls=calls[:20],
+            created_at=str(d.get("created_at") or now_iso()),
+            resolved_at=str(d.get("resolved_at") or ""),
+        )
 
 
 @dataclass
-class TaskState:
-    task_id: str = field(default_factory=lambda: new_id("task"))
-    agent_id: str = ""
-    agent_name: str = ""
-    umo: str = ""
-    status: str = "running"  # running | paused | blocked | completed | cancelled
-    root_goal: str = ""
-    completion_conditions: list[str] = field(default_factory=list)
-    task_brief: str = ""
-    profile_snapshot: dict[str, Any] = field(default_factory=dict)
-    current_summary: str = ""
-    last_confirmed_progress: str = ""
-    next_step: str = ""
-    last_observation: str = ""
-    progress_log: list[dict[str, str]] = field(default_factory=list)
-    state_snapshots: list[dict[str, Any]] = field(default_factory=list)
-    blockers: list[dict[str, str]] = field(default_factory=list)
-    repeated_issue_counts: dict[str, int] = field(default_factory=dict)
-    approvals: list[dict[str, Any]] = field(default_factory=list)
-    heartbeat: HeartbeatPolicy = field(default_factory=HeartbeatPolicy)
-    lease: TaskLease = field(default_factory=TaskLease)
-    watchdog: WatchdogState = field(default_factory=WatchdogState)
-    wait: WaitState = field(default_factory=WaitState)
-    budget: TaskBudget = field(default_factory=TaskBudget)
-    entry_summary: str = ""
-    exit_summary: str = ""
-    memory_candidates: list[str] = field(default_factory=list)
-    workflow_current_node_id: str = ""
-    workflow_path: list[str] = field(default_factory=list)
-    workflow_events: list[dict[str, Any]] = field(default_factory=list)
-    workflow_data: dict[str, Any] = field(
-        default_factory=lambda: {
-            "node_outputs": {},
-            "variables": {},
-            "react_traces": [],
-            "prompt_injections": [],
-            "api_scopes": {},
-            "execution_counts": {},
-            "blackboard": {
-                "assignments": [],
-                "reports": [],
-                "mailbox": {},
-                "decisions": [],
-            },
-        }
-    )
-    parallel_runs: list[dict[str, Any]] = field(default_factory=list)
-    token_usage: dict[str, int] = field(
-        default_factory=lambda: {
-            "input_other": 0,
-            "input_cached": 0,
-            "output": 0,
-            "total": 0,
-        }
-    )
-    archive_path: str = ""
-    created_at: str = field(default_factory=now_iso)
-    updated_at: str = field(default_factory=now_iso)
-    finished_at: str = ""
-
-    def add_log(self, kind: str, text: str) -> None:
-        self.progress_log.append(
-            {"time": now_iso(), "kind": kind, "text": str(text).strip()}
-        )
-        self.updated_at = now_iso()
-
-    def add_snapshot(self, kind: str, data: dict[str, Any] | None = None) -> None:
-        self.state_snapshots.append(
-            {
-                "time": now_iso(),
-                "kind": str(kind or "state"),
-                "status": self.status,
-                "current_summary": self.current_summary,
-                "last_confirmed_progress": self.last_confirmed_progress,
-                "next_step": self.next_step,
-                "last_observation": self.last_observation,
-                "data": data or {},
-            }
-        )
-        self.state_snapshots = self.state_snapshots[-120:]
-        self.updated_at = now_iso()
-
-    def add_workflow_event(
-        self,
-        node_id: str,
-        *,
-        outcome: str = "",
-        note: str = "",
-        next_node_id: str = "",
-        status: str = "completed",
-    ) -> None:
-        self.workflow_events.append(
-            {
-                "time": now_iso(),
-                "node_id": str(node_id or "").strip(),
-                "status": str(status or "completed").strip(),
-                "outcome": str(outcome or "").strip(),
-                "note": str(note or "").strip(),
-                "next_node_id": str(next_node_id or "").strip(),
-            }
-        )
-        self.workflow_events = self.workflow_events[-120:]
-        self.updated_at = now_iso()
-
-    def add_parallel_run(self, run: dict[str, Any]) -> None:
-        payload = dict(run or {})
-        payload.setdefault("time", now_iso())
-        self.parallel_runs.append(payload)
-        self.parallel_runs = self.parallel_runs[-40:]
-        self.updated_at = now_iso()
-
-    # --- 共享黑板（多Agent 协同）：主agent 派活 / 子agent 汇报 / 意见传达 / 决策 ---
-    def _blackboard(self) -> dict[str, Any]:
-        """惰性返回 blackboard；老任务（无此 key）也能安全使用。"""
-        bb = self.workflow_data.get("blackboard")
-        if not isinstance(bb, dict):
-            bb = {}
-            self.workflow_data["blackboard"] = bb
-        if not isinstance(bb.get("assignments"), list):
-            bb["assignments"] = []
-        if not isinstance(bb.get("reports"), list):
-            bb["reports"] = []
-        if not isinstance(bb.get("mailbox"), dict):
-            bb["mailbox"] = {}
-        if not isinstance(bb.get("decisions"), list):
-            bb["decisions"] = []
-        return bb
-
-    def post_assignment(
-        self,
-        sub_agent_id: str,
-        instruction: str,
-        *,
-        resource_tags: list[str] | None = None,
-        status: str = "pending",
-    ) -> str:
-        bb = self._blackboard()
-        assign_id = new_id("asg")
-        bb["assignments"].append(
-            {
-                "assign_id": assign_id,
-                "sub_agent_id": str(sub_agent_id or "").strip(),
-                "instruction": str(instruction or "").strip(),
-                "resource_tags": [
-                    str(t).strip() for t in (resource_tags or []) if str(t).strip()
-                ],
-                "status": str(status or "pending").strip(),
-                "created_at": now_iso(),
-            }
-        )
-        bb["assignments"] = bb["assignments"][-80:]
-        self.updated_at = now_iso()
-        return assign_id
-
-    def post_report(
-        self,
-        sub_agent_id: str,
-        summary: str,
-        *,
-        assign_id: str = "",
-        evidence: str = "",
-        risks: str = "",
-        next_step: str = "",
-    ) -> None:
-        bb = self._blackboard()
-        bb["reports"].append(
-            {
-                "sub_agent_id": str(sub_agent_id or "").strip(),
-                "assign_id": str(assign_id or "").strip(),
-                "summary": str(summary or "").strip(),
-                "evidence": str(evidence or "").strip(),
-                "risks": str(risks or "").strip(),
-                "next": str(next_step or "").strip(),
-                "time": now_iso(),
-            }
-        )
-        bb["reports"] = bb["reports"][-80:]
-        self.updated_at = now_iso()
-
-    def post_message(
-        self, sub_agent_id: str, text: str, *, sender: str = "orchestrator"
-    ) -> None:
-        target = str(sub_agent_id or "").strip()
-        if not target:
-            return
-        bb = self._blackboard()
-        box = bb["mailbox"].get(target)
-        if not isinstance(box, list):
-            box = []
-        box.append(
-            {
-                "from": str(sender or "orchestrator").strip(),
-                "text": str(text or "").strip(),
-                "time": now_iso(),
-            }
-        )
-        bb["mailbox"][target] = box[-40:]
-        self.updated_at = now_iso()
-
-    def post_decision(
-        self, summary: str, *, basis: str = "", next_step: str = ""
-    ) -> None:
-        bb = self._blackboard()
-        bb["decisions"].append(
-            {
-                "summary": str(summary or "").strip(),
-                "basis": str(basis or "").strip(),
-                "next": str(next_step or "").strip(),
-                "time": now_iso(),
-            }
-        )
-        bb["decisions"] = bb["decisions"][-80:]
-        self.updated_at = now_iso()
-
-    def add_token_usage(self, usage: Any) -> None:
-        if not usage:
-            return
-        input_other = int(getattr(usage, "input_other", 0) or 0)
-        input_cached = int(getattr(usage, "input_cached", 0) or 0)
-        output = int(getattr(usage, "output", 0) or 0)
-        total = int(getattr(usage, "total", input_other + input_cached + output) or 0)
-        self.token_usage["input_other"] = self.token_usage.get("input_other", 0) + input_other
-        self.token_usage["input_cached"] = self.token_usage.get("input_cached", 0) + input_cached
-        self.token_usage["output"] = self.token_usage.get("output", 0) + output
-        self.token_usage["total"] = self.token_usage.get("total", 0) + total
-        self.updated_at = now_iso()
-
-    def add_blocker(self, issue: str, detail: str = "") -> int:
-        key = issue.strip() or "unknown"
-        count = self.repeated_issue_counts.get(key, 0) + 1
-        self.repeated_issue_counts[key] = count
-        self.blockers.append(
-            {
-                "time": now_iso(),
-                "issue": key,
-                "detail": detail.strip(),
-                "count": str(count),
-            }
-        )
-        self.updated_at = now_iso()
-        return count
-
-    def pending_approvals(self) -> list[ApprovalRequest]:
-        return [
-            ApprovalRequest.from_dict(item)
-            for item in self.approvals
-            if isinstance(item, dict) and item.get("status") == "pending"
-        ]
-
-    def set_wait(
-        self,
-        *,
-        wait_reason: str,
-        message: str = "",
-        source: str = "",
-        resume_command: str = "/agentlab tick",
-        resume_node: str = "",
-        required_input: list[str] | None = None,
-    ) -> None:
-        now = now_iso()
-        self.wait = WaitState(
-            active=True,
-            wait_reason=str(wait_reason or "need_user_decision").strip(),
-            message=str(message or wait_reason or "").strip(),
-            source=str(source or "").strip(),
-            resume_command=str(resume_command or "/agentlab tick").strip(),
-            resume_node=str(resume_node or self.workflow_current_node_id or "").strip(),
-            required_input=[str(item).strip() for item in (required_input or []) if str(item).strip()],
-            created_at=self.wait.created_at or now,
-            updated_at=now,
-        )
-        self.watchdog.needs_user = True
-        self.watchdog.paused_reason = self.wait.message or self.wait.wait_reason
-        self.updated_at = now
-
-    def clear_wait(self) -> None:
-        if self.wait.active or self.watchdog.needs_user or self.watchdog.paused_reason:
-            self.wait = WaitState(updated_at=now_iso())
-            self.watchdog.needs_user = False
-            self.watchdog.paused_reason = ""
-            self.updated_at = now_iso()
+class UsageTotals:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    llm_calls: int = 0
+    unreported_calls: int = 0
+    tool_calls: int = 0
+    ticks_used: int = 0
+    last_context_chars: int = 0
+    last_estimated_tokens: int = 0
+    handoff_count: int = 0
+    last_handoff_chars: int = 0
+    last_handoff_tokens: int = 0
 
     def to_dict(self) -> dict[str, Any]:
-        payload = asdict(self)
-        payload["heartbeat"] = asdict(self.heartbeat)
-        payload["lease"] = asdict(self.lease)
-        payload["watchdog"] = asdict(self.watchdog)
-        payload["wait"] = asdict(self.wait)
-        payload["budget"] = asdict(self.budget)
-        return payload
+        return asdict(self)
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any] | None) -> "TaskState":
-        if not isinstance(payload, dict):
-            return cls()
-        payload = dict(payload)
-        payload["heartbeat"] = HeartbeatPolicy.from_dict(payload.get("heartbeat"))
-        payload["lease"] = TaskLease.from_dict(payload.get("lease"))
-        payload["watchdog"] = WatchdogState.from_dict(payload.get("watchdog"))
-        payload["wait"] = WaitState.from_dict(payload.get("wait"))
-        payload["budget"] = TaskBudget.from_dict(payload.get("budget"))
-        base = cls()
-        for key in asdict(base):
-            if key in payload:
-                setattr(base, key, payload[key])
-        return base
+    def from_dict(cls, raw: dict[str, Any] | None) -> UsageTotals:
+        d = raw if isinstance(raw, dict) else {}
+        return cls(
+            prompt_tokens=int(d.get("prompt_tokens") or 0),
+            completion_tokens=int(d.get("completion_tokens") or 0),
+            total_tokens=int(d.get("total_tokens") or 0),
+            llm_calls=int(d.get("llm_calls") or 0),
+            unreported_calls=int(d.get("unreported_calls") or 0),
+            tool_calls=int(d.get("tool_calls") or 0),
+            ticks_used=int(d.get("ticks_used") or 0),
+            last_context_chars=int(d.get("last_context_chars") or 0),
+            last_estimated_tokens=int(d.get("last_estimated_tokens") or 0),
+            handoff_count=int(d.get("handoff_count") or 0),
+            last_handoff_chars=int(d.get("last_handoff_chars") or 0),
+            last_handoff_tokens=int(d.get("last_handoff_tokens") or 0),
+        )
+
+
+@dataclass
+class TaskMeta:
+    """Compact Single-Source-of-Truth task state persisted in meta.json.
+
+    All heavy logs/journal/messages/usage live in append-only events.jsonl,
+    keeping meta.json tiny (<5KB) and O(1) to update.
+    """
+    task_id: str
+    umo: str
+    project_id: str
+    profile_id: str
+    goal: str
+    brief: str = ""
+    status: str = "running"              # running | paused | completed | cancelled
+    phase: str = "planning"              # planning | executing | completed | cancelled
+    wait_reason: str = ""                # "" | need_plan_approval | need_tool_approval | need_answer | unknown_call | human_paused | budget | guard_paused
+    human_paused: bool = False
+    completion_conditions: list[str] = field(default_factory=list)
+    constraints: list[str] = field(default_factory=list)
+    guidance: list[dict[str, str]] = field(default_factory=list)  # bounded to last 30
+    steps: list[TaskStep] = field(default_factory=list)
+    current_step_id: str = ""
+    current_summary: str = ""
+    final_summary: str = ""
+    version: int = 0                     # plan version
+    approved_version: int = 0
+    authorization_version: int = 0
+    input_revision: int = 0
+    scope_roots: list[str] = field(default_factory=list)
+    authorized_scope_roots: list[str] = field(default_factory=list)
+    session_workspace_root: str = ""
+    execution_cwd: str = ""
+    execution_settings: ExecutionSettings = field(default_factory=ExecutionSettings)
+    questions: list[QuestionItem] = field(default_factory=list)
+    approvals: list[ApprovalRequest] = field(default_factory=list)
+    usage: UsageTotals = field(default_factory=UsageTotals)
+    continuity_state: dict[str, Any] = field(default_factory=dict)
+    progress_guard_state: dict[str, Any] = field(default_factory=dict)
+    started_at: str = field(default_factory=now_iso)
+    created_at: str = field(default_factory=now_iso)
+    updated_at: str = field(default_factory=now_iso)
+    ended_at: str = ""
+
+    def pending_approvals(self) -> list[ApprovalRequest]:
+        return [a for a in self.approvals if a.status == "pending"]
+
+    def pending_questions(self) -> list[QuestionItem]:
+        return [q for q in self.questions if q.status == "pending"]
+
+    def is_terminal(self) -> bool:
+        return self.status in {"completed", "cancelled"}
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "umo": self.umo,
+            "project_id": self.project_id,
+            "profile_id": self.profile_id,
+            "goal": self.goal,
+            "brief": self.brief,
+            "status": self.status,
+            "phase": self.phase,
+            "wait_reason": self.wait_reason,
+            "human_paused": self.human_paused,
+            "completion_conditions": list(self.completion_conditions),
+            "constraints": list(self.constraints),
+            "guidance": list(self.guidance[-30:]),
+            "steps": [s.to_dict() for s in self.steps],
+            "current_step_id": self.current_step_id,
+            "current_summary": self.current_summary,
+            "final_summary": self.final_summary,
+            "version": self.version,
+            "approved_version": self.approved_version,
+            "authorization_version": self.authorization_version,
+            "input_revision": self.input_revision,
+            "scope_roots": list(self.scope_roots),
+            "authorized_scope_roots": list(self.authorized_scope_roots),
+            "session_workspace_root": self.session_workspace_root,
+            "execution_cwd": self.execution_cwd,
+            "execution_settings": self.execution_settings.to_dict(),
+            "questions": [q.to_dict() for q in self.questions[-30:]],
+            "approvals": [a.to_dict() for a in self.approvals[-50:]],
+            "usage": self.usage.to_dict(),
+            "continuity_state": dict(self.continuity_state),
+            "progress_guard_state": dict(self.progress_guard_state),
+            "started_at": self.started_at,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "ended_at": self.ended_at,
+        }
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any]) -> TaskMeta:
+        d = raw if isinstance(raw, dict) else {}
+        steps = [TaskStep.from_dict(s, i + 1) for i, s in enumerate(d.get("steps") or []) if isinstance(s, dict)]
+        questions = [QuestionItem.from_dict(q) for q in (d.get("questions") or []) if isinstance(q, dict)]
+        approvals = [ApprovalRequest.from_dict(a) for a in (d.get("approvals") or []) if isinstance(a, dict)]
+        guidance = [g for g in (d.get("guidance") or []) if isinstance(g, dict)][-30:]
+        return cls(
+            task_id=str(d.get("task_id") or new_id("task")),
+            umo=str(d.get("umo") or ""),
+            project_id=str(d.get("project_id") or ""),
+            profile_id=str(d.get("profile_id") or "default"),
+            goal=str(d.get("goal") or "").strip()[:1200],
+            brief=str(d.get("brief") or "").strip()[:3000],
+            status=str(d.get("status") or "running"),
+            phase=str(d.get("phase") or "planning"),
+            wait_reason=str(d.get("wait_reason") or ""),
+            human_paused=bool(d.get("human_paused", False)),
+            completion_conditions=_str_list(d.get("completion_conditions"), limit=30),
+            constraints=_str_list(d.get("constraints"), limit=40),
+            guidance=guidance,
+            steps=steps,
+            current_step_id=str(d.get("current_step_id") or ""),
+            current_summary=str(d.get("current_summary") or "")[:2000],
+            final_summary=str(d.get("final_summary") or "")[:8000],
+            version=int(d.get("version") or 0),
+            approved_version=int(d.get("approved_version") or 0),
+            authorization_version=int(d.get("authorization_version") or 0),
+            input_revision=int(d.get("input_revision") or 0),
+            scope_roots=_str_list(d.get("scope_roots"), limit=50),
+            authorized_scope_roots=_str_list(d.get("authorized_scope_roots"), limit=50),
+            session_workspace_root=str(d.get("session_workspace_root") or ""),
+            execution_cwd=str(d.get("execution_cwd") or ""),
+            execution_settings=ExecutionSettings.from_dict(d.get("execution_settings")),
+            questions=questions[-30:],
+            approvals=approvals[-50:],
+            usage=UsageTotals.from_dict(d.get("usage")),
+            continuity_state=dict(d.get("continuity_state") or {}),
+            progress_guard_state=dict(d.get("progress_guard_state") or {}),
+            started_at=str(d.get("started_at") or now_iso()),
+            created_at=str(d.get("created_at") or now_iso()),
+            updated_at=str(d.get("updated_at") or now_iso()),
+            ended_at=str(d.get("ended_at") or ""),
+        )
