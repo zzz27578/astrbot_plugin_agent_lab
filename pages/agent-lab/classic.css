@@ -11,6 +11,7 @@
   --danger: #b54242;
   --rail-width: 232px;
   --status-height: 52px;
+  --ease-out-expo: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 *,
@@ -187,7 +188,8 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 
-.bot-switcher-popover {
+.bot-switcher-popover,
+.bot-popover {
   position: absolute;
   top: calc(100% + 6px);
   left: 0;
@@ -199,6 +201,12 @@ textarea::placeholder {
   box-shadow: 0 6px 20px rgba(20, 24, 28, 0.08);
   padding: 5px;
   z-index: 120;
+  transform-origin: top left;
+}
+
+.bot-switcher-popover:not([hidden]),
+.bot-popover:not([hidden]) {
+  animation: cl-popover-in 150ms var(--ease-out-expo) both;
 }
 
 .bot-pop-item {
@@ -384,7 +392,7 @@ textarea::placeholder {
   font-size: 13px;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: background-color 180ms var(--ease-out-expo), color 180ms var(--ease-out-expo), box-shadow 180ms var(--ease-out-expo);
 }
 
 .nav button:hover {
@@ -669,6 +677,111 @@ textarea::placeholder {
   margin: 0 auto;
 }
 
+.cl-view-animate {
+  animation: cl-view-enter 200ms var(--ease-out-expo) both;
+}
+
+@keyframes cl-view-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes cl-popover-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes cl-panel-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ── Breadcrumb Back Bar ────────────────────────────────────────────────── */
+
+.cl-breadcrumb-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  padding-bottom: 10px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid #eceef0;
+}
+
+.cl-back-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 10px 0 6px;
+  margin-left: -6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background-color 180ms var(--ease-out-expo), color 180ms var(--ease-out-expo);
+}
+
+.cl-back-link:hover {
+  background: #f2f3f5;
+  color: var(--ink);
+}
+
+.cl-back-link svg {
+  flex-shrink: 0;
+  transition: transform 180ms var(--ease-out-expo);
+}
+
+.cl-back-link:hover svg {
+  transform: translateX(-2px);
+}
+
+.cl-breadcrumb-sep {
+  color: var(--line-strong);
+  font-size: 13px;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.cl-breadcrumb-current {
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cl-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .feedback {
   max-width: 1080px;
   margin: 0 auto 16px;
@@ -738,7 +851,7 @@ textarea::placeholder {
   font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  transition: background-color 180ms var(--ease-out-expo), border-color 180ms var(--ease-out-expo), color 180ms var(--ease-out-expo);
 }
 
 .cl-btn:hover:not(:disabled) {
@@ -919,7 +1032,7 @@ textarea::placeholder {
   font-weight: 500;
   white-space: nowrap;
   flex-shrink: 0;
-  transition: color 120ms ease, border-color 120ms ease;
+  transition: color 180ms var(--ease-out-expo), border-color 180ms var(--ease-out-expo);
 }
 
 .cl-tab:hover {
@@ -993,7 +1106,7 @@ textarea::placeholder {
   background: #ffffff;
   border: 1px solid var(--line);
   border-radius: 8px;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition: border-color 180ms var(--ease-out-expo), background-color 180ms var(--ease-out-expo);
 }
 
 .project-folder-card:hover {
@@ -1421,6 +1534,10 @@ textarea::placeholder {
   padding: 12px 14px;
 }
 
+.cl-details[open] > .cl-details-body {
+  animation: cl-panel-reveal 180ms ease-out both;
+}
+
 .task-message-scroll {
   max-height: 280px;
   overflow-y: auto;
@@ -1546,7 +1663,7 @@ textarea::placeholder {
   border: 1px solid #e7e7e9;
   border-radius: 10px;
   padding: 18px 22px;
-  transition: border-color 120ms ease, background-color 120ms ease;
+  transition: border-color 180ms var(--ease-out-expo), background-color 180ms var(--ease-out-expo);
 }
 
 .profile-list-card:hover {
@@ -1665,7 +1782,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: 8px;
   overflow: hidden;
-  transition: border-color 120ms ease;
+  transition: border-color 180ms var(--ease-out-expo);
 }
 
 .plugin-card[open] {
@@ -1762,17 +1879,23 @@ textarea::placeholder {
 
 .plugin-chevron {
   color: var(--muted);
-  transition: transform 120ms ease;
+  transition: transform 180ms var(--ease-out-expo);
 }
 
 .plugin-card[open] .plugin-chevron {
   transform: rotate(90deg);
 }
 
-.plugin-tools-list {
+.plugin-tools-list,
+.plugin-tools {
   border-top: 1px solid var(--line);
   background: #fafafb;
   padding: 6px 12px;
+}
+
+.plugin-card[open] > .plugin-tools,
+.plugin-card[open] > .plugin-tools-list {
+  animation: cl-panel-reveal 180ms ease-out both;
 }
 
 .plugin-tool-row {
@@ -1851,7 +1974,7 @@ textarea::placeholder {
   background: #cfd4dc;
   flex-shrink: 0;
   white-space: nowrap;
-  transition: background-color 120ms ease;
+  transition: background-color 180ms var(--ease-out-expo);
 }
 
 .cl-switch[aria-checked="true"] {
@@ -1868,7 +1991,7 @@ textarea::placeholder {
   height: 14px;
   border-radius: 50%;
   background: #ffffff;
-  transition: transform 120ms ease;
+  transition: transform 180ms var(--ease-out-expo);
 }
 
 .cl-switch[aria-checked="true"] .cl-switch-thumb {
@@ -2111,6 +2234,16 @@ textarea::placeholder {
   justify-content: center;
   padding: 20px;
   z-index: 200;
+  animation: cl-modal-fade 160ms ease-out both;
+}
+
+@keyframes cl-modal-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .al-modal {
@@ -2124,6 +2257,18 @@ textarea::placeholder {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  animation: cl-modal-pop 200ms var(--ease-out-expo) both;
+}
+
+@keyframes cl-modal-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 .al-modal.wide {
@@ -2197,11 +2342,23 @@ textarea::placeholder {
   color: #ffffff;
   font-size: 12.5px;
   opacity: 0;
-  transition: opacity 150ms ease;
+  transition: opacity 150ms ease, transform 180ms var(--ease-out-expo);
 }
 
 .al-toast.show {
   opacity: 1;
+  animation: cl-toast-in 200ms var(--ease-out-expo) both;
+}
+
+@keyframes cl-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .al-toast-success {
@@ -2287,5 +2444,16 @@ textarea::placeholder {
 
   .profile-list-actions {
     justify-content: flex-end;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }

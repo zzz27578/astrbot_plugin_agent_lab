@@ -199,17 +199,26 @@ class AgentLabStore:
 
     def delete_profile(self, profile_id: str) -> bool:
         with self._lock:
-            if profile_id == "default":
-                raise ValueError("默认方案不可删除。")
             profiles = self.list_profiles()
             kept = [p for p in profiles if p.profile_id != profile_id]
             if len(kept) == len(profiles):
                 return False
             if not kept:
-                kept = default_profiles()
+                raise ValueError("至少需要保留一个方案，无法删除最后一个方案。")
             if not any(p.is_default for p in kept):
                 kept[0].is_default = True
+            new_default_id = next((p.profile_id for p in kept if p.is_default), kept[0].profile_id)
             self._write_json(self.profiles_path, [p.to_dict() for p in kept])
+            # Rebind any projects referencing the deleted profile to the current default
+            idx = self._projects_index()
+            changed = False
+            for proj in idx["projects"]:
+                if proj.get("profile_id") == profile_id:
+                    proj["profile_id"] = new_default_id
+                    proj["updated_at"] = now_iso()
+                    changed = True
+            if changed:
+                self._write_json(self.projects_index_path, idx)
             return True
 
     # ── Fernet Encrypted Credential Vault ────────────────────────────────────

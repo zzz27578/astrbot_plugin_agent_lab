@@ -4,7 +4,7 @@
  * Supports BOTH:
  * 1. AstrBot Native Dashboard Plugin Page bridge (`window.AstrBotPluginView || window.AstrBotPluginPage`)
  *    - Awaits `bridge.ready()` with a 15s timeout
- *    - Strips `/api/` prefix to pass relative endpoints ("state", "workspace", "profiles", "credentials", "health")
+ *    - Strips `/api/` prefix to pass relative endpoints ("v1/state", "v1/workspace", "v1/profiles", "v1/credentials", "v1/health")
  *    - Calls `bridge.requestResize()` after layout updates
  * 2. Standalone Quart / Preview Server via `fetch`
  *    - Reads `<meta name="agent-lab-api-base">` (default `/api`)

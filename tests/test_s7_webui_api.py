@@ -5,6 +5,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from agent_lab.engine import TaskEngine
@@ -585,13 +586,45 @@ def test_profiles_api_save_empty_lists_duplicate_and_delete(tmp_path: Path):
         assert r_del.status_code == 200
         assert (await _json(r_del))["ok"] is True
 
-        # Cannot delete "default" -> 400 (or 409 Conflict)
+        # Bind a project to "default", then delete "default" while >= 2 profiles exist -> 200,
+        # auto-promoting a remaining profile as default and rebinding projects
+        bound_proj = store.save_project(
+            {"project_id": "proj_rebind_def", "title": "Rebind Test", "profile_id": "default"}
+        )
+        assert bound_proj.profile_id == "default"
+
         r_del_def = await client.post(
             "/api/profiles",
             json={"action": "delete", "profile_id": "default"},
         )
-        assert r_del_def.status_code in (400, 409)
-        assert (await _json(r_del_def))["ok"] is False
+        assert r_del_def.status_code == 200
+        assert (await _json(r_del_def))["ok"] is True
+
+        remaining_after_def = store.list_profiles()
+        assert all(p.profile_id != "default" for p in remaining_after_def)
+        promoted = [p for p in remaining_after_def if p.is_default]
+        assert len(promoted) == 1
+        assert store.get_project("proj_rebind_def").profile_id == promoted[0].profile_id
+
+        # Delete remaining profiles down to 1 -> all succeed
+        for p in remaining_after_def[:-1]:
+            r_del_extra = await client.post(
+                "/api/profiles",
+                json={"action": "delete", "profile_id": p.profile_id},
+            )
+            assert r_del_extra.status_code == 200
+            assert (await _json(r_del_extra))["ok"] is True
+
+        last_profile = store.list_profiles()
+        assert len(last_profile) == 1
+
+        # Deleting the last remaining profile MUST fail (400 / 409)
+        r_del_last = await client.post(
+            "/api/profiles",
+            json={"action": "delete", "profile_id": last_profile[0].profile_id},
+        )
+        assert r_del_last.status_code in (400, 409)
+        assert (await _json(r_del_last))["ok"] is False
 
     asyncio.run(_run())
 
@@ -772,11 +805,11 @@ def test_astrbot_native_route_registration_get_post_only(tmp_path: Path):
     assert len(registered) == 5
     by_path = {r["path"]: r for r in registered}
     expected_methods = {
-        "/astrbot_plugin_agent_lab/health": ["GET"],
-        "/astrbot_plugin_agent_lab/state": ["GET"],
-        "/astrbot_plugin_agent_lab/workspace": ["POST"],
-        "/astrbot_plugin_agent_lab/profiles": ["POST"],
-        "/astrbot_plugin_agent_lab/credentials": ["POST"],
+        "/astrbot_plugin_agent_lab/v1/health": ["GET"],
+        "/astrbot_plugin_agent_lab/v1/state": ["GET"],
+        "/astrbot_plugin_agent_lab/v1/workspace": ["POST"],
+        "/astrbot_plugin_agent_lab/v1/profiles": ["POST"],
+        "/astrbot_plugin_agent_lab/v1/credentials": ["POST"],
     }
     assert set(by_path.keys()) == set(expected_methods.keys())
     for route, req_methods in expected_methods.items():
@@ -786,6 +819,49 @@ def test_astrbot_native_route_registration_get_post_only(tmp_path: Path):
         assert "DELETE" not in actual_methods
         assert "PUT" not in actual_methods
         assert callable(by_path[route]["handler"])
+
+
+def test_discover_identities_excludes_unconfigured_webchat_and_keeps_enabled_aiocqhttp(tmp_path: Path):
+    """Regression: only platforms enabled in platform_manager.platforms_config appear; internal webchat is excluded."""
+    async def _run() -> None:
+        store = AgentLabStore(tmp_path / "data")
+        engine = TaskEngine(store, context=None, config={})
+
+        inst_aiocqhttp = SimpleNamespace(
+            meta=lambda: SimpleNamespace(
+                id="aiocqhttp",
+                name="aiocqhttp",
+                adapter_display_name="OneBot v11 (aiocqhttp)",
+            )
+        )
+        inst_webchat = SimpleNamespace(
+            meta=lambda: SimpleNamespace(
+                id="webchat",
+                name="webchat",
+                adapter_display_name="AstrBot WebChat",
+            )
+        )
+        mock_plat_mgr = SimpleNamespace(
+            platforms_config=[
+                {"id": "aiocqhttp", "type": "aiocqhttp", "name": "QQ 主号", "enable": True},
+                {"id": "webchat", "type": "webchat", "name": "WebChat", "enable": False},
+            ],
+            platform_insts=[inst_aiocqhttp, inst_webchat],
+        )
+        mock_ctx = SimpleNamespace(platform_manager=mock_plat_mgr)
+        controller = WebUIController(store, engine, context=mock_ctx, config={}, preview_mode=False)
+
+        identities = await controller._discover_identities(
+            projects=[],
+            tasks=[],
+            preferences={"default_bot": "", "progress": {}},
+        )
+        assert len(identities) == 1
+        assert identities[0]["platform_id"] == "aiocqhttp"
+        assert all(ident["platform_id"] != "webchat" for ident in identities)
+        assert all(not str(ident["umo"]).startswith("webchat:") for ident in identities)
+
+    asyncio.run(_run())
 
 
 # ── 4. Frontend Safety & Unified Classic UI Contract Check ───────────────────
@@ -844,3 +920,13 @@ def test_frontend_classic_ui_contract_dirty_form_bridge_and_no_native_dialogs():
     ):
         assert not re.search(r"\bwindow\.(prompt|confirm|alert)\b", src), f"Raw window dialog in {fname}"
         assert not re.search(r"(?<![.\w])(prompt|confirm|alert)\s*\(", src), f"Bare dialog call in {fname}"
+
+    # 5. Versioned v1 API endpoints, cache-bust query params, breadcrumb bar, and profile delete rule
+    for ep in ("/api/v1/health", "/api/v1/state", "/api/v1/workspace", "/api/v1/profiles", "/api/v1/credentials"):
+        assert ep in store_js, f"store.js missing versioned endpoint {ep}"
+    for asset in ("classic.css?v=1.0.0-r2", "store.js?v=1.0.0-r2", "classic-view.js?v=1.0.0-r2"):
+        assert asset in index_html, f"index.html missing cache-busted asset {asset}"
+    assert "cl-breadcrumb-bar" in classic_js and "cl-breadcrumb-bar" in classic_css
+    assert "cl-view-animate" in classic_js and "cl-view-animate" in classic_css
+    assert "prefers-reduced-motion" in classic_css
+    assert 'profile_id === "default"' not in classic_js

@@ -14,8 +14,8 @@ import {
   statusLabel,
   taskPendingInfo,
   waitReasonLabel,
-} from "./store.js?v=1.0.0";
-import { requestResize } from "./api.js?v=1.0.0";
+} from "./store.js?v=1.0.0-r2";
+import { requestResize } from "./api.js?v=1.0.0-r2";
 
 const NAV_ITEMS = [
   { id: "projects", label: "项目与任务" },
@@ -39,6 +39,7 @@ const CHEVRON_SVG = `<svg width="12" height="12" viewBox="0 0 16 16" fill="none"
 const SHIELD_SVG = `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#4c525a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.8 13 3.8v4.1c0 3.1-2.1 5.3-5 6.3-2.9-1-5-3.2-5-6.3V3.8L8 1.8Z"/></svg>`;
 const SLIDERS_SVG = `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#4c525a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/><circle cx="5.5" cy="4.5" r="1.3" fill="#f6f6f7"/><circle cx="10.5" cy="8" r="1.3" fill="#f6f6f7"/><circle cx="6.5" cy="11.5" r="1.3" fill="#f6f6f7"/></svg>`;
 const COMPASS_SVG = `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="#4c525a" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><polygon points="10.3,5.7 8.9,8.9 5.7,10.3 7.1,7.1" fill="none"/></svg>`;
+const BACK_ARROW_SVG = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5 5.5 8 10 12.5"/><path d="M6 8h7.5"/></svg>`;
 
 function profileModeIcon(mode) {
   if (mode === "readonly") return SHIELD_SVG;
@@ -72,6 +73,7 @@ export function mountClassicView(store) {
   let runtimeTicker = null;
   let profileDraft = null;
   let profileDraftId = "";
+  let lastViewKey = "";
 
   // ── Scroll, <details> & Cursor Preservation ───────────────────────────────
 
@@ -389,13 +391,21 @@ export function mountClassicView(store) {
     const tab = store.projectTab || "tasks";
     return `
       <div>
+        <div class="cl-breadcrumb-bar">
+          <button type="button" class="cl-back-link" data-action="back-projects">
+            ${BACK_ARROW_SVG}
+            <span>返回项目概览</span>
+          </button>
+          <span class="cl-breadcrumb-sep" aria-hidden="true">/</span>
+          <span class="cl-breadcrumb-current">${esc(project.title)}</span>
+        </div>
+
         <div class="cl-header">
           <div>
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;">
-              <button type="button" class="cl-btn cl-btn-sm" data-action="back-projects">← 返回</button>
+            <div class="cl-title-row">
+              <h1>${esc(project.title)}</h1>
               <span class="project-cat-tag">${esc(project.category || "通用")}</span>
             </div>
-            <h1>${esc(project.title)}</h1>
           </div>
           <div class="cl-actions">
             <button type="button" class="cl-btn cl-btn-primary" data-action="open-create-task" data-project-id="${esc(project.project_id)}">+ 新建任务</button>
@@ -1280,7 +1290,7 @@ export function mountClassicView(store) {
                           <button type="button" class="cl-btn cl-btn-sm cl-btn-primary" data-select-profile="${esc(p.profile_id)}">进入配置</button>
                           <button type="button" class="cl-btn cl-btn-sm" data-action="duplicate-profile" data-profile-id="${esc(p.profile_id)}">复制</button>
                           <button type="button" class="cl-btn cl-btn-sm" data-action="set-default-profile" data-profile-id="${esc(p.profile_id)}" ${p.is_default ? "disabled" : ""}>设为默认</button>
-                          <button type="button" class="cl-btn cl-btn-sm cl-btn-danger" data-action="delete-profile" data-profile-id="${esc(p.profile_id)}" ${p.profile_id === "default" ? "disabled" : ""}>删除</button>
+                          <button type="button" class="cl-btn cl-btn-sm cl-btn-danger" data-action="delete-profile" data-profile-id="${esc(p.profile_id)}" ${profiles.length <= 1 ? 'disabled title="至少需保留一个方案"' : ""}>删除</button>
                         </div>
                       </div>
                     `;
@@ -1295,6 +1305,7 @@ export function mountClassicView(store) {
   function renderProfileEditor(draft) {
     const plugins = store.state.plugins || [];
     const secrets = (store.state.credentials || []).filter((c) => c.kind !== "personal");
+    const canDeleteProfile = (store.state.profiles || []).length > 1;
 
     let totalTools = 0;
     let enabledTools = 0;
@@ -1311,20 +1322,28 @@ export function mountClassicView(store) {
 
     return `
       <div>
+        <div class="cl-breadcrumb-bar">
+          <button type="button" class="cl-back-link" data-action="back-profiles">
+            ${BACK_ARROW_SVG}
+            <span>返回方案列表</span>
+          </button>
+          <span class="cl-breadcrumb-sep" aria-hidden="true">/</span>
+          <span class="cl-breadcrumb-current">${esc(draft.name)}</span>
+        </div>
+
         <div class="cl-header">
           <div>
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:6px;">
-              <button type="button" class="cl-btn cl-btn-sm" data-action="back-profiles">← 返回方案列表</button>
+            <div class="cl-title-row">
+              <h1>${esc(draft.name)}</h1>
               ${draft.is_default ? `<span class="profile-tag is-default">默认</span>` : ""}
               <span class="profile-tag">${esc(profileModeBadgeLabel(draft.permission_mode))}</span>
             </div>
-            <h1>${esc(draft.name)}</h1>
             <p class="cl-subtitle">${esc((draft.description || "").trim() || "按任务场景预设权限模式、插件工具能力、上下文连续性与预算上限。")}</p>
           </div>
           <div class="cl-actions">
             <button type="button" class="cl-btn cl-btn-sm" data-action="duplicate-profile" data-profile-id="${esc(draft.profile_id)}">复制</button>
             <button type="button" class="cl-btn cl-btn-sm" data-action="set-default-profile" data-profile-id="${esc(draft.profile_id)}" ${draft.is_default ? "disabled" : ""}>设为默认</button>
-            <button type="button" class="cl-btn cl-btn-sm cl-btn-danger" data-action="delete-profile" data-profile-id="${esc(draft.profile_id)}" ${draft.profile_id === "default" ? "disabled" : ""}>删除</button>
+            <button type="button" class="cl-btn cl-btn-sm cl-btn-danger" data-action="delete-profile" data-profile-id="${esc(draft.profile_id)}" ${!canDeleteProfile ? 'disabled title="至少需保留一个方案"' : ""}>删除</button>
             <button type="submit" form="profile-editor-form" class="cl-btn cl-btn-sm cl-btn-primary">保存方案</button>
           </div>
         </div>
@@ -1491,13 +1510,17 @@ export function mountClassicView(store) {
         ${bots
           .map((b, idx) => {
             const botId = b.platform_id || b.umo || "";
+            const targetUmo = b.umo || b.platform_id || "";
             const isDef = (defBot && (b.platform_id === defBot || b.umo === defBot)) || (!defBot && idx === 0);
-            const progCfg = (b.umo && progress[b.umo]) || (b.platform_id && progress[b.platform_id]) || progress || {};
+            const progCfg =
+              (b.umo && progress[b.umo]) ||
+              (b.platform_id && progress[b.platform_id]) ||
+              (typeof progress.enabled === "boolean" || progress.min_interval_seconds !== undefined ? progress : {});
             const progOn = progCfg.enabled !== false;
             const progInterval = Number(progCfg.min_interval_seconds ?? progCfg.interval_seconds ?? 30);
 
             return `
-              <div class="bot-card" data-bot-card data-umo="${esc(b.umo || "")}" data-platform-id="${esc(b.platform_id || "")}">
+              <div class="bot-card" data-bot-card data-umo="${esc(targetUmo)}" data-platform-id="${esc(b.platform_id || "")}">
                 <div class="bot-card-head">
                   <span class="bot-avatar">${BOT_SVG}</span>
                   <div style="min-width:0;flex:1;">
@@ -1517,7 +1540,7 @@ export function mountClassicView(store) {
                       role="switch"
                       aria-checked="${progOn ? "true" : "false"}"
                       data-action="toggle-bot-progress"
-                      data-umo="${esc(b.umo || "")}"
+                      data-umo="${esc(targetUmo)}"
                       data-interval="${progInterval}"
                     >
                       <span class="cl-switch-thumb"></span>
@@ -1525,7 +1548,7 @@ export function mountClassicView(store) {
                   </div>
                   <div class="bot-notify-row">
                     <span>最小推送间隔</span>
-                    <select class="risk-select" data-bot-interval data-umo="${esc(b.umo || "")}" data-enabled="${progOn ? "1" : "0"}">
+                    <select class="risk-select" data-bot-interval data-umo="${esc(targetUmo)}" data-enabled="${progOn ? "1" : "0"}">
                       ${[0, 15, 30, 60, 120, 300]
                         .map(
                           (sec) =>
@@ -1692,8 +1715,20 @@ export function mountClassicView(store) {
     renderFeedback();
     if (reason === "chrome-only") return;
 
+    const viewKey = `${store.route}:${store.selectedProjectId}:${store.projectTab}:${store.selectedProfileId}:${store.settingsTab}`;
+    const isViewTransition = viewKey !== lastViewKey;
+    lastViewKey = viewKey;
+
     const snap = captureViewState();
     if (viewEl) {
+      if (isViewTransition) {
+        viewEl.classList.remove("cl-view-animate");
+        void viewEl.offsetWidth;
+        viewEl.classList.add("cl-view-animate");
+      } else {
+        viewEl.classList.remove("cl-view-animate");
+      }
+
       if (store.route === "projects") {
         const proj = store.selectedProjectId ? store.getProject(store.selectedProjectId) : null;
         viewEl.innerHTML = proj ? renderProjectDetail(proj) : renderProjectsOverview();
@@ -2581,7 +2616,7 @@ export function mountClassicView(store) {
       if (target.hasAttribute("data-bot-interval")) {
         const umo = target.getAttribute("data-umo") || "";
         const enabled = target.getAttribute("data-enabled") === "1";
-        const sec = Number(target.value || 30);
+        const sec = target.value === "" ? 30 : Number(target.value);
         try {
           await store.setProgress({ umo, enabled, min_interval_seconds: sec });
           store.toast("通知频率已保存", "success");
@@ -2811,7 +2846,10 @@ export function mountClassicView(store) {
       if (action === "toggle-bot-progress") {
         const umo = btn.dataset.umo || "";
         const wasOn = btn.getAttribute("aria-checked") === "true";
-        const interval = Number(btn.dataset.interval || 30);
+        const interval =
+          btn.dataset.interval !== undefined && btn.dataset.interval !== ""
+            ? Number(btn.dataset.interval)
+            : 30;
         try {
           await store.setProgress({ umo, enabled: !wasOn, min_interval_seconds: interval });
           store.toast(!wasOn ? "已开启进展通知" : "已关闭进展通知", "success");

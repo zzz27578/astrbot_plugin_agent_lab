@@ -9,7 +9,7 @@ import {
   isEmbeddedBridge,
   requestResize,
   setAuthToken,
-} from "./api.js?v=1.0.0";
+} from "./api.js?v=1.0.0-r2";
 
 const POLL_INTERVAL_MS = 10000;
 
@@ -174,6 +174,7 @@ class AgentLabUIStore {
     this.modalOpenCount = 0;
     this.pollTimer = null;
     this.pollInFlight = false;
+    this._mutationSeq = 0;
   }
 
   // ── Subscriptions ──────────────────────────────────────────────────────────
@@ -301,6 +302,63 @@ class AgentLabUIStore {
     }, POLL_INTERVAL_MS);
   }
 
+  _normalizePreferences(rawPrefs) {
+    if (!rawPrefs || typeof rawPrefs !== "object") {
+      return { default_bot: "", progress: {} };
+    }
+    return {
+      default_bot: String(rawPrefs.default_bot || ""),
+      progress:
+        rawPrefs.progress && typeof rawPrefs.progress === "object"
+          ? rawPrefs.progress
+          : {},
+    };
+  }
+
+  _upsertProject(proj) {
+    if (!proj || !proj.project_id) return;
+    const list = [...(this.state.projects || [])];
+    const idx = list.findIndex((p) => p.project_id === proj.project_id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...proj };
+    } else {
+      list.unshift(proj);
+    }
+    this.state.projects = list;
+  }
+
+  _upsertProfile(prof) {
+    if (!prof || !prof.profile_id) return;
+    let list = [...(this.state.profiles || [])];
+    if (prof.is_default) {
+      list = list.map((p) =>
+        p.profile_id === prof.profile_id ? p : { ...p, is_default: false }
+      );
+    }
+    const idx = list.findIndex((p) => p.profile_id === prof.profile_id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...prof };
+    } else {
+      list.push(prof);
+    }
+    if (list.length && !list.some((p) => p.is_default)) {
+      list[0] = { ...list[0], is_default: true };
+    }
+    this.state.profiles = list;
+  }
+
+  _upsertCredential(cred) {
+    if (!cred || !cred.credential_id) return;
+    const list = [...(this.state.credentials || [])];
+    const idx = list.findIndex((c) => c.credential_id === cred.credential_id);
+    if (idx >= 0) {
+      list[idx] = { ...list[idx], ...cred };
+    } else {
+      list.push(cred);
+    }
+    this.state.credentials = list;
+  }
+
   _normalizeState(raw) {
     const s = raw && typeof raw === "object" ? raw : {};
     const projects = Array.isArray(s.projects) ? s.projects : [];
@@ -312,16 +370,7 @@ class AgentLabUIStore {
       : Array.isArray(s.bots)
         ? s.bots
         : [];
-    const preferences =
-      s.preferences && typeof s.preferences === "object"
-        ? {
-            default_bot: String(s.preferences.default_bot || ""),
-            progress:
-              s.preferences.progress && typeof s.preferences.progress === "object"
-                ? s.preferences.progress
-                : {},
-          }
-        : { default_bot: "", progress: {} };
+    const preferences = this._normalizePreferences(s.preferences);
 
     const storage =
       s.storage && typeof s.storage === "object"
@@ -348,12 +397,17 @@ class AgentLabUIStore {
     if (silent) this.pollInFlight = true;
     else this.refreshing = true;
 
-    if (!silent) {
+    const reqSeq = this._mutationSeq;
+
+    if (!silent && this.loading) {
       this.notifyView("loading");
     }
 
     try {
-      const raw = await apiGet("/api/state");
+      const raw = await apiGet("/api/v1/state");
+      if (reqSeq !== this._mutationSeq) {
+        return;
+      }
       this.state = this._normalizeState(raw);
       this.error = "";
       this.authRequired = false;
@@ -375,6 +429,9 @@ class AgentLabUIStore {
         }
       }
 
+      this.refreshing = false;
+      this.pollInFlight = false;
+
       if (silent && this.shouldDeferViewRender()) {
         this.pendingSilentRender = true;
         this.notifyView("chrome-only");
@@ -384,6 +441,8 @@ class AgentLabUIStore {
       }
     } catch (err) {
       this.loading = false;
+      this.refreshing = false;
+      this.pollInFlight = false;
       this.error = err?.message || "无法连接 Agent Lab 后端";
       this.authRequired = err?.code === "AUTH_REQUIRED";
       this.notifyView(silent ? "chrome-only" : "error");
@@ -395,7 +454,7 @@ class AgentLabUIStore {
 
   async checkHealth() {
     try {
-      this.health = await apiGet("/api/health");
+      this.health = await apiGet("/api/v1/health");
       return this.health;
     } catch (err) {
       return { ok: false, error: err?.message || "健康检查失败" };
@@ -568,16 +627,17 @@ class AgentLabUIStore {
   // ── API Actions ────────────────────────────────────────────────────────────
 
   async workspaceAction(action, payload = {}, { refresh = true } = {}) {
-    const res = await apiPost("/api/workspace", { action, ...payload });
+    const res = await apiPost("/api/v1/workspace", { action, ...payload });
+    this._mutationSeq += 1;
     if (refresh) {
-      await this.refreshAll({ silent: false });
+      await this.refreshAll({ silent: true });
     }
     return res;
   }
 
   async loadTaskDetail(taskId, { notify = true } = {}) {
     if (!taskId) return null;
-    const res = await apiPost("/api/workspace", { action: "task_detail", task_id: taskId });
+    const res = await apiPost("/api/v1/workspace", { action: "task_detail", task_id: taskId });
     const detail = res?.detail && typeof res.detail === "object" ? res.detail : res;
     if (detail && detail.meta) {
       this.taskDetails.set(taskId, detail);
@@ -594,15 +654,20 @@ class AgentLabUIStore {
   }
 
   async createProject({ title, category = "通用", profile_id = "", source_umo = "", platform_id = "" }) {
-    const res = await this.workspaceAction("create_project", {
-      title,
-      category,
-      profile_id,
-      source_umo,
-      platform_id,
-    });
-    const proj = res.project || res;
+    const res = await this.workspaceAction(
+      "create_project",
+      {
+        title,
+        category,
+        profile_id,
+        source_umo,
+        platform_id,
+      },
+      { refresh: false }
+    );
+    const proj = res?.project || (res?.project_id ? res : null);
     if (proj?.project_id) {
+      this._upsertProject(proj);
       this.selectedProjectId = proj.project_id;
       this.expandedProjects.add(proj.project_id);
       this.selectedTaskId = "";
@@ -610,13 +675,25 @@ class AgentLabUIStore {
       this.projectTab = "tasks";
     }
     this.notifyView("navigate");
+    this.refreshAll({ silent: true }).catch(() => {});
     return res;
   }
 
   async updateProject(projectId, fields) {
     this.clearDirty("project-settings");
     this.clearDirty("summary");
-    return this.workspaceAction("update_project", { project_id: projectId, ...fields });
+    const res = await this.workspaceAction(
+      "update_project",
+      { project_id: projectId, ...fields },
+      { refresh: false }
+    );
+    const proj = res?.project || (res?.project_id ? res : null);
+    if (proj?.project_id) {
+      this._upsertProject(proj);
+    }
+    this.notifyView("state-patch");
+    this.refreshAll({ silent: true }).catch(() => {});
+    return res;
   }
 
   async draftSummary(projectId, taskId = "") {
@@ -743,78 +820,171 @@ class AgentLabUIStore {
   }
 
   async setDefaultBot(platformId) {
-    return this.workspaceAction("set_default_bot", { platform_id: platformId });
+    const prevPrefs = JSON.parse(
+      JSON.stringify(this.state.preferences || { default_bot: "", progress: {} })
+    );
+    this.state.preferences = {
+      ...prevPrefs,
+      default_bot: String(platformId || ""),
+    };
+    this.notifyView("state-patch");
+    try {
+      const res = await apiPost("/api/v1/workspace", {
+        action: "set_default_bot",
+        platform_id: platformId,
+      });
+      this._mutationSeq += 1;
+      if (res?.preferences && typeof res.preferences === "object") {
+        this.state.preferences = this._normalizePreferences(res.preferences);
+      }
+      this.notifyView("state-patch");
+      return res;
+    } catch (err) {
+      this.state.preferences = prevPrefs;
+      this.notifyView("state-patch");
+      throw err;
+    }
   }
 
   async setProgress({ umo = "", enabled = true, min_interval_seconds = 30 }) {
     this.clearDirty("settings");
-    return this.workspaceAction("set_progress", {
-      umo,
-      enabled,
-      min_interval_seconds,
-    });
+    const key = String(umo || "").trim();
+    const prevPrefs = JSON.parse(
+      JSON.stringify(this.state.preferences || { default_bot: "", progress: {} })
+    );
+    const nextProgress = { ...(prevPrefs.progress || {}) };
+    if (key) {
+      const existing =
+        nextProgress[key] && typeof nextProgress[key] === "object" ? nextProgress[key] : {};
+      nextProgress[key] = {
+        ...existing,
+        enabled: Boolean(enabled),
+        min_interval_seconds: Number(min_interval_seconds ?? 30),
+      };
+    } else {
+      nextProgress.enabled = Boolean(enabled);
+      nextProgress.min_interval_seconds = Number(min_interval_seconds ?? 30);
+    }
+    this.state.preferences = {
+      ...prevPrefs,
+      progress: nextProgress,
+    };
+    this.notifyView("state-patch");
+
+    try {
+      const res = await apiPost("/api/v1/workspace", {
+        action: "set_progress",
+        umo,
+        enabled,
+        min_interval_seconds,
+      });
+      this._mutationSeq += 1;
+      if (res?.preferences && typeof res.preferences === "object") {
+        this.state.preferences = this._normalizePreferences(res.preferences);
+      }
+      this.notifyView("state-patch");
+      return res;
+    } catch (err) {
+      this.state.preferences = prevPrefs;
+      this.notifyView("state-patch");
+      throw err;
+    }
   }
 
   async saveProfile(profileData, { select = true } = {}) {
     this.clearDirty("profile");
-    const res = await apiPost("/api/profiles", {
+    const res = await apiPost("/api/v1/profiles", {
       action: "save",
       ...profileData,
       profile: profileData,
     });
-    const saved = res.profile || res;
-    if (select && saved?.profile_id) {
-      this.selectedProfileId = saved.profile_id;
+    this._mutationSeq += 1;
+    const saved = res?.profile || (res?.profile_id ? res : null);
+    if (saved?.profile_id) {
+      this._upsertProfile(saved);
+      if (select) {
+        this.selectedProfileId = saved.profile_id;
+      }
     }
-    await this.refreshAll({ silent: false });
     this.notifyView("profile-saved");
+    this.refreshAll({ silent: true }).catch(() => {});
     return res;
   }
 
   async duplicateProfile(profileId, name = "", { select = true } = {}) {
     this.clearDirty("profile");
-    const res = await apiPost("/api/profiles", {
+    const res = await apiPost("/api/v1/profiles", {
       action: "duplicate",
       profile_id: profileId,
       name,
     });
-    const cloned = res.profile || res;
-    if (select && cloned?.profile_id) {
-      this.selectedProfileId = cloned.profile_id;
+    this._mutationSeq += 1;
+    const cloned = res?.profile || (res?.profile_id ? res : null);
+    if (cloned?.profile_id) {
+      this._upsertProfile(cloned);
+      if (select) {
+        this.selectedProfileId = cloned.profile_id;
+      }
     }
-    await this.refreshAll({ silent: false });
+    this.notifyView("profile-saved");
+    this.refreshAll({ silent: true }).catch(() => {});
     return res;
   }
 
   async deleteProfile(profileId) {
     this.clearDirty("profile");
-    const res = await apiPost("/api/profiles", {
+    const res = await apiPost("/api/v1/profiles", {
       action: "delete",
       profile_id: profileId,
     });
+    this._mutationSeq += 1;
+    const remaining = (this.state.profiles || []).filter((p) => p.profile_id !== profileId);
+    if (remaining.length && !remaining.some((p) => p.is_default)) {
+      remaining[0] = { ...remaining[0], is_default: true };
+    }
+    const newDefaultId =
+      remaining.find((p) => p.is_default)?.profile_id || remaining[0]?.profile_id || "";
+    this.state.profiles = remaining;
+    if (newDefaultId) {
+      this.state.projects = (this.state.projects || []).map((proj) =>
+        proj.profile_id === profileId ? { ...proj, profile_id: newDefaultId } : proj
+      );
+    }
     if (this.selectedProfileId === profileId) {
       this.selectedProfileId = "";
     }
-    await this.refreshAll({ silent: false });
+    this.notifyView("profile-deleted");
+    this.refreshAll({ silent: true }).catch(() => {});
     return res;
   }
 
   async saveCredential(credData) {
-    const res = await apiPost("/api/credentials", {
+    const res = await apiPost("/api/v1/credentials", {
       action: "save",
       ...credData,
       credential: credData,
     });
-    await this.refreshAll({ silent: false });
+    this._mutationSeq += 1;
+    const saved = res?.credential || (res?.credential_id ? res : null);
+    if (saved?.credential_id) {
+      this._upsertCredential(saved);
+    }
+    this.notifyView("state-patch");
+    this.refreshAll({ silent: true }).catch(() => {});
     return res;
   }
 
   async deleteCredential(credentialId) {
-    const res = await apiPost("/api/credentials", {
+    const res = await apiPost("/api/v1/credentials", {
       action: "delete",
       credential_id: credentialId,
     });
-    await this.refreshAll({ silent: false });
+    this._mutationSeq += 1;
+    this.state.credentials = (this.state.credentials || []).filter(
+      (c) => c.credential_id !== credentialId
+    );
+    this.notifyView("state-patch");
+    this.refreshAll({ silent: true }).catch(() => {});
     return res;
   }
 

@@ -9,7 +9,7 @@
       rel="icon"
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%2325272a'/><path d='M9 22V10h14v12H9zm3-9h8m-8 3h8m-8 3h5' stroke='%23ffffff' stroke-width='1.8' fill='none' stroke-linecap='round'/></svg>"
     />
-    <link rel="stylesheet" href="./classic.css?v=1.0.0" />
+    <link rel="stylesheet" href="./classic.css?v=1.0.0-r2" />
   </head>
   <body>
     <div class="shell" id="main-app">
@@ -110,8 +110,8 @@
     <div id="toast-root" aria-live="polite"></div>
 
     <script type="module">
-      import { store } from "./store.js?v=1.0.0";
-      import { mountClassicView } from "./classic-view.js?v=1.0.0";
+      import { store } from "./store.js?v=1.0.0-r2";
+      import { mountClassicView } from "./classic-view.js?v=1.0.0-r2";
 
       mountClassicView(store);
       store.init();

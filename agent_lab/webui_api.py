@@ -714,11 +714,11 @@ class WebUIController:
             body = await self._read_request_json()
             return _finalize_http_result(await self.handle_credentials(body))
 
-        reg(f"/{plugin_name}/health", _health, ["GET"], "Agent Lab WebUI health check")
-        reg(f"/{plugin_name}/state", _state, ["GET"], "Agent Lab WebUI state snapshot")
-        reg(f"/{plugin_name}/workspace", _workspace, ["POST"], "Agent Lab WebUI workspace actions")
-        reg(f"/{plugin_name}/profiles", _profiles, ["POST"], "Agent Lab WebUI profiles management")
-        reg(f"/{plugin_name}/credentials", _credentials, ["POST"], "Agent Lab WebUI credentials management")
+        reg(f"/{plugin_name}/v1/health", _health, ["GET"], "Agent Lab v1 WebUI health check")
+        reg(f"/{plugin_name}/v1/state", _state, ["GET"], "Agent Lab v1 WebUI state snapshot")
+        reg(f"/{plugin_name}/v1/workspace", _workspace, ["POST"], "Agent Lab v1 WebUI workspace actions")
+        reg(f"/{plugin_name}/v1/profiles", _profiles, ["POST"], "Agent Lab v1 WebUI profiles management")
+        reg(f"/{plugin_name}/v1/credentials", _credentials, ["POST"], "Agent Lab v1 WebUI credentials management")
 
     async def _read_request_json(self) -> dict[str, Any]:
         if request is None:
@@ -777,9 +777,25 @@ class WebUIController:
                 }
                 by_umo[umo] = entry
 
-        # 2. Discover loaded AstrBot platforms when context exists
+        # 2. Discover ONLY real configured & enabled AstrBot platforms (exclude unconfigured internal webchat)
+        configured_platforms: dict[str, dict[str, Any]] = {}
+        has_configured_filter = False
         if self.context is not None:
             plat_mgr = getattr(self.context, "platform_manager", None)
+            raw_cfg = getattr(plat_mgr, "platforms_config", None)
+            if raw_cfg is None and hasattr(self.context, "get_config"):
+                try:
+                    c = self.context.get_config()
+                    if isinstance(c, dict):
+                        raw_cfg = c.get("platform")
+                except Exception:
+                    raw_cfg = None
+            if isinstance(raw_cfg, list):
+                has_configured_filter = True
+                for item in raw_cfg:
+                    if isinstance(item, dict) and item.get("id") and item.get("enable", False):
+                        configured_platforms[str(item["id"]).strip()] = item
+
             insts = list(getattr(plat_mgr, "platform_insts", None) or [])
             for inst in insts:
                 try:
@@ -787,15 +803,55 @@ class WebUIController:
                     if callable(meta):
                         meta = meta()
                     pid = str(getattr(meta, "id", "") or "").strip()
-                    ptype = str(getattr(meta, "type", "") or pid).strip()
-                    pname = str(
-                        getattr(meta, "name", "") or ptype or pid
+                    if not pid:
+                        continue
+                    cfg_item = configured_platforms.get(pid)
+                    if has_configured_filter and cfg_item is None:
+                        # Skip unconfigured internal adapters (e.g. default webchat)
+                        continue
+                    ptype = str(
+                        (cfg_item or {}).get("type")
+                        or getattr(meta, "name", "")
+                        or getattr(meta, "type", "")
+                        or pid
                     ).strip()
-                    if pid:
-                        platform_names[pid] = pname or pid
-                        platform_types[pid] = ptype or pid
+                    pname = str(
+                        (cfg_item or {}).get("name")
+                        or (cfg_item or {}).get("display_name")
+                        or getattr(meta, "adapter_display_name", "")
+                        or getattr(meta, "name", "")
+                        or pid
+                    ).strip()
+                    platform_names[pid] = pname or pid
+                    platform_types[pid] = ptype or pid
                 except Exception:
                     continue
+
+        async def _resolve_persona_fields(umo_key: str) -> tuple[str, str, str]:
+            if self.context is None:
+                return "", "", ""
+            try:
+                cfg = self.context.get_config(umo=umo_key) if hasattr(self.context, "get_config") else {}
+                psettings = (cfg or {}).get("provider_settings", {}) if isinstance(cfg, dict) else {}
+                persona = await resolve_source_persona(self.context, umo_key, psettings)
+                if not isinstance(persona, dict):
+                    pmgr = getattr(self.context, "persona_manager", None)
+                    get_def = getattr(pmgr, "get_default_persona_v3", None)
+                    if callable(get_def):
+                        persona = await get_def(umo=umo_key)
+                if isinstance(persona, dict):
+                    p_id = str(persona.get("persona_id") or "")
+                    p_name = str(persona.get("name") or p_id)
+                    p_prev = str(
+                        persona.get("prompt")
+                        or persona.get("system_prompt")
+                        or persona.get("preview")
+                        or ""
+                    ).strip()[:200]
+                    return p_id, p_name, p_prev
+            except Exception:
+                pass
+            return "", "", ""
 
         # 3. Ensure every known UMO from projects, tasks, and preferences appears
         candidate_umos: list[str] = []
@@ -816,25 +872,12 @@ class WebUIController:
             if umo in by_umo:
                 continue
             pid = umo.split(":", 1)[0] if ":" in umo else "astrbot"
+            if has_configured_filter and pid not in platform_names:
+                continue
             pname = platform_names.get(pid, pid)
             ptype = platform_types.get(pid, pid)
             tail = umo.split(":")[-1] if ":" in umo else umo
-            persona_id = ""
-            persona_name = ""
-            persona_preview = ""
-            if self.context is not None:
-                try:
-                    cfg = self.context.get_config(umo=umo) if hasattr(self.context, "get_config") else {}
-                    psettings = (cfg or {}).get("provider_settings", {}) if isinstance(cfg, dict) else {}
-                    persona = await resolve_source_persona(self.context, umo, psettings)
-                    if isinstance(persona, dict):
-                        persona_id = str(persona.get("persona_id") or "")
-                        persona_name = str(persona.get("name") or persona_id)
-                        persona_preview = str(
-                            persona.get("system_prompt") or persona.get("preview") or ""
-                        ).strip()[:200]
-                except Exception:
-                    pass
+            persona_id, persona_name, persona_preview = await _resolve_persona_fields(umo)
             display_name = f"{persona_name} · {pname}" if persona_name else f"{pname} · {tail}"
             by_umo[umo] = {
                 "umo": umo,
@@ -849,24 +892,26 @@ class WebUIController:
                 "persona_preview": persona_preview,
             }
 
-        # 4. Also surface loaded platforms with no UMO history yet so user sees available bots
+        # 4. Also surface loaded & enabled configured platforms with no UMO history yet
         seen_pids = {v["platform_id"] for v in by_umo.values()}
         for pid, pname in platform_names.items():
             if pid not in seen_pids:
                 ptype = platform_types.get(pid, pid)
-                display_name = f"{pname} ({pid})"
+                synth_umo = f"{pid}:default"
+                persona_id, persona_name, persona_preview = await _resolve_persona_fields(synth_umo)
+                display_name = f"{pname} ({pid})" if pname != pid else pid
                 identities.append(
                     {
-                        "umo": f"{pid}:default",
+                        "umo": synth_umo,
                         "platform_id": pid,
                         "platform_name": pname,
                         "name": pname or pid,
                         "display_name": display_name,
                         "type": ptype,
                         "label": display_name,
-                        "persona_id": "",
-                        "persona_name": "",
-                        "persona_preview": "",
+                        "persona_id": persona_id,
+                        "persona_name": persona_name,
+                        "persona_preview": persona_preview,
                     }
                 )
 
@@ -1619,28 +1664,33 @@ class StandaloneWebUIServer:
                 g.agent_lab_preview_mode = self.preview_mode
 
         @app.get("/api/health")
+        @app.get("/api/v1/health")
         @admin_api
         async def _api_health() -> tuple[dict[str, Any], int]:
             return _finalize_http_result(await self.controller.get_health())
 
         @app.get("/api/state")
+        @app.get("/api/v1/state")
         @admin_api
         async def _api_state() -> tuple[dict[str, Any], int]:
             return _finalize_http_result(await self.controller.get_state())
 
         @app.post("/api/workspace")
+        @app.post("/api/v1/workspace")
         @admin_api
         async def _api_workspace() -> tuple[dict[str, Any], int]:
             body = await self.controller._read_request_json()
             return _finalize_http_result(await self.controller.handle_workspace(body))
 
         @app.post("/api/profiles")
+        @app.post("/api/v1/profiles")
         @admin_api
         async def _api_profiles() -> tuple[dict[str, Any], int]:
             body = await self.controller._read_request_json()
             return _finalize_http_result(await self.controller.handle_profiles(body))
 
         @app.post("/api/credentials")
+        @app.post("/api/v1/credentials")
         @admin_api
         async def _api_credentials() -> tuple[dict[str, Any], int]:
             body = await self.controller._read_request_json()
