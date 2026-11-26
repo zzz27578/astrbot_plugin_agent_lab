@@ -6,8 +6,8 @@ Design principles:
   dynamically exposes `agent_lab_control_task` and hides it immediately on completion.
 - Isolated task execution: Inside a task's independent conversation, opens the 5 compact
   control tools (`task_plan/progress/ask/approve/finish`) + profile-authorized host tools.
-- Dual WebUI: Serves both AstrBot Native Dashboard Plugin Page (`pages/agent-lab/`)
-  and optional Standalone Quart server with Classic <-> Modern UI switcher.
+- Classic WebUI: Serves both AstrBot Native Dashboard Plugin Page (`pages/agent-lab/`)
+  and optional Standalone Quart server.
 """
 from __future__ import annotations
 
@@ -21,11 +21,18 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star, register
 
-from agent_lab.engine import TaskEngine
-from agent_lab.guards import parse_admin_shortcut
-from agent_lab.permissions import CONTROL_TOOL_NAMES, DAILY_TOOL_NAMES
-from agent_lab.store import AgentLabStore
-from agent_lab.webui_api import StandaloneWebUIServer, WebUIController
+try:
+    from .agent_lab.engine import TaskEngine
+    from .agent_lab.guards import parse_admin_shortcut
+    from .agent_lab.permissions import CONTROL_TOOL_NAMES, DAILY_TOOL_NAMES
+    from .agent_lab.store import AgentLabStore
+    from .agent_lab.webui_api import StandaloneWebUIServer, WebUIController
+except ImportError:
+    from agent_lab.engine import TaskEngine
+    from agent_lab.guards import parse_admin_shortcut
+    from agent_lab.permissions import CONTROL_TOOL_NAMES, DAILY_TOOL_NAMES
+    from agent_lab.store import AgentLabStore
+    from agent_lab.webui_api import StandaloneWebUIServer, WebUIController
 
 logger = logging.getLogger("astrbot_plugin_agent_lab")
 PLUGIN_NAME = "astrbot_plugin_agent_lab"
