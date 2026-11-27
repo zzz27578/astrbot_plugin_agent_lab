@@ -1,4 +1,4 @@
-"""AstrBot Plugin: Agent Lab v1.0.0 — Hidden Isolated Long-Task Toolbox.
+"""AstrBot Plugin: Agent Lab v1.0.1 — Hidden Isolated Long-Task Toolbox.
 
 Design principles:
 - Daily chat zero-pollution: NO global skill injection; idle state exposes ONLY 1 tool
@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -66,7 +67,7 @@ def _data_dir() -> Path:
     PLUGIN_NAME,
     "zzz27578",
     "隐藏式隔离长任务工具箱：日常零污染、后台自主规划审批执行、方案与加密凭证库及双风格 WebUI。",
-    "1.0.0",
+    "1.0.1",
     "https://github.com/zzz27578/astrbot_plugin_agent_lab",
 )
 class AgentLabPlugin(Star):
@@ -89,7 +90,7 @@ class AgentLabPlugin(Star):
         if _bool_cfg(self.config, "cleanup_legacy_global_skill", True):
             self._deactivate_legacy_global_skill()
         await self._start_standalone_webui()
-        logger.info("[AgentLab] v1.0.0 initialized (hidden-toolbox mode)")
+        logger.info("[AgentLab] v1.0.1 initialized (hidden-toolbox mode)")
 
     async def terminate(self):
         stop_fn = getattr(self.engine, "stop_all", None) or getattr(self.engine, "close", None)
@@ -98,7 +99,7 @@ class AgentLabPlugin(Star):
         if self.webui_server:
             await self.webui_server.stop()
             self.webui_server = None
-        logger.info("[AgentLab] v1.0.0 terminated")
+        logger.info("[AgentLab] v1.0.1 terminated")
 
     def _deactivate_legacy_global_skill(self) -> None:
         """Stop v0.4.x auto-installed global `agent-mode` skill from polluting daily chat."""
@@ -242,7 +243,7 @@ class AgentLabPlugin(Star):
     async def _handle_command(self, event: AstrMessageEvent, tail: str) -> str:
         if not tail or tail in {"help", "帮助"}:
             return (
-                "Agent Lab v1.0.0（隐藏式隔离长任务工具箱）\n"
+                "Agent Lab v1.0.1（隐藏式隔离长任务工具箱）\n"
                 "/al start <目标> — 新建并启动隔离后台任务（先只读探索再出计划）\n"
                 "/al status — 查看当前活跃任务状态\n"
                 "/al approve / reject [理由] — 批准或拒绝待审批计划/高危操作\n"
@@ -337,25 +338,50 @@ class AgentLabPlugin(Star):
         project_id: str = "",
         profile_id: str = "",
         constraints: str = "",
+        scope_roots: str = "",
+        brief: str = "",
     ) -> str:
         """将复杂多步长任务转入独立隔离会话在后台规划与执行，不污染当前日常对话。
 
         Args:
             goal(string): 任务最终目标与交付要求。
             project_id(string): 可选项目 ID，留空归入当前默认项目。
-            profile_id(string): 可选方案 ID（如 default / readonly_research / full_autonomous）。
+            profile_id(string): 可选方案 ID，留空使用系统当前默认方案；传入不存在的 ID 将报错并列出可用方案（禁止静默切换权限）。
             constraints(string): 可选边界约束，多条用换行分隔。
+            scope_roots(string): 可选候选目标目录，用换行、分号或逗号分隔，审批后才授予写权限。
+            brief(string): 可选背景简报，供后台规划时参考。
         """
         self._require_access(event)
         c_list = [line.strip() for line in str(constraints or "").splitlines() if line.strip()]
-        task = await self.engine.start_task(
-            event.unified_msg_origin,
-            goal,
-            project_id=project_id,
-            profile_id=profile_id,
-            constraints=c_list,
-            event=event,
-        )
+        roots = [r.strip() for r in re.split(r"[\r\n;,]+", str(scope_roots or "")) if r.strip()]
+        try:
+            task = await self.engine.start_task(
+                event.unified_msg_origin,
+                goal,
+                project_id=project_id,
+                profile_id=profile_id,
+                constraints=c_list,
+                scope_roots=roots,
+                brief=brief,
+                event=event,
+            )
+        except ValueError as exc:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "available_profiles": [
+                        {
+                            "profile_id": p.profile_id,
+                            "name": p.name,
+                            "permission_mode": p.permission_mode,
+                            "is_default": p.is_default,
+                        }
+                        for p in self.store.list_profiles()
+                    ],
+                },
+                ensure_ascii=False,
+            )
         return json.dumps(
             {
                 "ok": True,

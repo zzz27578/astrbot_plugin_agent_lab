@@ -1,4 +1,4 @@
-"""Unified WebUI Backend & Standalone Quart Server for Agent Lab v1.0.0.
+"""Unified WebUI Backend & Standalone Quart Server for Agent Lab v1.0.1.
 
 Provides:
 - `@admin_api` auth guard supporting both AstrBot Dashboard mode (`g.username` /
@@ -659,7 +659,7 @@ def admin_api(func: Callable[..., Any]) -> Callable[..., Any]:
 class WebUIController:
     """Unified business logic controller for AstrBot Dashboard & Standalone Quart WebUI."""
 
-    VERSION = "1.0.0"
+    VERSION = "1.0.1"
 
     def __init__(
         self,
@@ -1294,17 +1294,22 @@ class WebUIController:
             conds = _str_or_lines(body.get("completion_conditions"))
             plan_steps = body.get("plan_steps") if isinstance(body.get("plan_steps"), list) else None
             brief = str(body.get("brief") or "").strip()
-            task = await self.engine.start_task(
-                umo,
-                goal,
-                project_id=project_id,
-                profile_id=profile_id,
-                brief=brief,
-                constraints=constraints,
-                completion_conditions=conds,
-                plan_steps=plan_steps,
-                event=self._event_for_umo(umo),
-            )
+            scope_roots = _str_or_lines(body.get("scope_roots"))
+            try:
+                task = await self.engine.start_task(
+                    umo,
+                    goal,
+                    project_id=project_id,
+                    profile_id=profile_id,
+                    brief=brief,
+                    scope_roots=scope_roots,
+                    constraints=constraints,
+                    completion_conditions=conds,
+                    plan_steps=plan_steps,
+                    event=self._event_for_umo(umo),
+                )
+            except ValueError as exc:
+                return _err(str(exc), 400)
             return {"ok": True, "task": task.to_dict()}
 
         if action == "activate_task":
@@ -1714,9 +1719,9 @@ class StandaloneWebUIServer:
             fallback = (
                 "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'>"
                 "<meta name='agent-lab-api-base' content='/api' />"
-                "<title>Agent Lab v1.0.0</title></head>"
+                "<title>Agent Lab v1.0.1</title></head>"
                 "<body style='font-family:sans-serif;padding:2rem;'>"
-                "<h2>Agent Lab v1.0.0 WebUI 后端已就绪</h2>"
+                "<h2>Agent Lab v1.0.1 WebUI 后端已就绪</h2>"
                 "<p>未找到前端静态文件 <code>pages/agent-lab/index.html</code>。</p>"
                 "<p>API 健康检查：<a href='/api/health'>/api/health</a> · "
                 "状态接口：<a href='/api/state'>/api/state</a></p>"

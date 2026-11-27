@@ -1,4 +1,4 @@
-"""AstrBot bridge for Agent Lab v1.0.0.
+"""AstrBot bridge for Agent Lab v1.0.1.
 
 Handles:
 - Isolated per-task toolset construction (never mutating global ToolManager tools)
@@ -10,9 +10,13 @@ Handles:
 from __future__ import annotations
 
 import asyncio
+import base64
 import copy
 import inspect
 import json
+import logging
+import os
+import re
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -42,11 +46,17 @@ from .permissions import (
     DAILY_TOOL_NAMES,
     READ_TOOLS,
     WRITE_TOOLS,
+    _check_search_resource_safety,
     assess_call,
     call_signature,
+    execution_roots,
+    is_sensitive_path,
     matches_approved_call,
     read_only_call,
 )
+
+
+logger = logging.getLogger("astrbot_plugin_agent_lab.bridge")
 
 
 class ExecutionStopped(RuntimeError):
@@ -517,6 +527,473 @@ class _TaskAgentHooks(_AstrBaseAgentRunHooks):  # type: ignore[misc]
 
 # ── AstrBotBridge ────────────────────────────────────────────────────────────
 
+def _grep_sensitive_path(path: Path) -> bool:
+    try:
+        return is_sensitive_path(str(path)) or is_sensitive_path(str(path.resolve()))
+    except (OSError, ValueError, RuntimeError):
+        return True
+
+
+def _python_local_grep(arguments: dict[str, Any], target: Path) -> tuple[str, bool]:
+    """Search local text incrementally with bounded traversal, output, and time."""
+    import fnmatch
+    import os
+    import re
+    from collections import deque
+
+    excluded = {"node_modules", ".git", "site-packages", "__pycache__", ".venv", "venv"}
+    max_bytes = 256 * 1024 - 100  # Reserve room for the truncation notice.
+    deadline = time.monotonic() + 15.0
+    try:
+        limit = max(1, min(int(arguments.get("result_limit") or 100), 200))
+        context = arguments.get("-C")
+        if context is not None:
+            before = after = max(0, int(context))
+        else:
+            before = max(0, int(arguments.get("-B") or 0))
+            after = max(0, int(arguments.get("-A") or 0))
+    except (TypeError, ValueError, OverflowError):
+        return "Invalid result_limit or context count for local grep.", True
+    # Context larger than the output budget cannot form a useful complete group.
+    if before > 2000 or after > 2000:
+        return "Local grep context is too large; use -A/-B/-C values at most 2000.", True
+    pattern = str(arguments.get("pattern") or "")
+    if not pattern or not pattern.strip():
+        return "Local grep requires a specific nonempty pattern.", True
+    # Python's regex engine cannot interrupt one match. Reject backreferences and
+    # repeated groups with internal repetition/alternation before entering it.
+    syntax = re.sub(r"\\.", "L", re.sub(r"\[(?:\\.|[^\]\\])*\]", "L", pattern))
+    repetitions = re.findall(r"[*+]|(?<!\()\?|\{\d", syntax)
+    if len(pattern) > 4096 or len(repetitions) > 1 or re.search(r"\\[1-9]|\(\?P=", pattern) or re.search(
+        r"\([^()]*(?:[*+]|\{\d|\|)[^()]*\)(?:[*+?]|\{)", syntax
+    ) or re.search(r"(?:[*+]\??){2}|\)(?:[*+?]|\{)", syntax):
+        return "Pattern is unsafe for the bounded Python grep fallback; simplify it or install rg.", True
+    try:
+        flags = re.IGNORECASE if arguments.get("case_insensitive") or arguments.get("ignore_case") else 0
+        regex = re.compile(pattern, flags)
+    except (re.error, OverflowError) as exc:
+        return f"Invalid grep pattern: {exc}", True
+
+    glob = str(arguments.get("glob") or "").strip().replace("\\", "/")
+    globs = [glob] if glob else []
+    # Expand common rg brace globs, keeping expansion bounded.
+    while any("{" in item and "}" in item for item in globs):
+        expanded: list[str] = []
+        changed = False
+        for item in globs:
+            match = re.search(r"\{([^{}]+)\}", item)
+            if match and "," in match.group(1):
+                expanded.extend(item[:match.start()] + option + item[match.end():] for option in match.group(1).split(","))
+                changed = True
+            else:
+                expanded.append(item)
+        globs = expanded
+        if len(globs) > 64:
+            return "Glob expansion is too large for local grep.", True
+        if not changed:
+            break
+
+    def matches_glob(path: Path) -> bool:
+        if not globs:
+            return True
+        try:
+            rel = path.relative_to(target).as_posix() if target.is_dir() else path.name
+        except ValueError:
+            rel = path.name
+        for item in globs:
+            negate = item.startswith("!")
+            candidate = item[1:] if negate else item
+            matched = fnmatch.fnmatchcase(rel, candidate) or (
+                "/" not in candidate and fnmatch.fnmatchcase(path.name, candidate)
+            ) or (candidate.startswith("**/") and fnmatch.fnmatchcase(rel, candidate[3:]))
+            if matched != negate:
+                return True
+        return False
+
+    output: list[str] = []
+    output_bytes = 0
+    groups = 0
+    scanned_files = 0
+    truncated = False
+    errors: list[str] = []
+    has_context = bool(before or after)
+
+    def commit_group(lines: list[str]) -> bool:
+        nonlocal output_bytes, groups, truncated
+        if not lines:
+            return True
+        text = "\n".join(lines)
+        separator = "\n--\n" if output and has_context else ("\n" if output else "")
+        size = len((separator + text).encode("utf-8"))
+        if output_bytes + size > max_bytes:
+            truncated = True
+            return False
+        output.append(separator + text)
+        output_bytes += size
+        groups += 1
+        if groups >= limit:
+            truncated = True
+            return False
+        return True
+
+    def search_file(path: Path) -> bool:
+        nonlocal scanned_files, truncated
+        if time.monotonic() >= deadline or scanned_files >= 2000:
+            truncated = True
+            return False
+        scanned_files += 1
+        if _grep_sensitive_path(path):
+            return True
+        if not matches_glob(path):
+            return True
+        try:
+            if path.stat().st_size > 2 * 1024 * 1024:
+                return True
+            with path.open("rb") as stream:
+                # Check the entire bounded file for NUL before publishing matches.
+                while True:
+                    if time.monotonic() >= deadline:
+                        truncated = True
+                        return False
+                    chunk = stream.read(64 * 1024)
+                    if not chunk:
+                        break
+                    if b"\x00" in chunk:
+                        return True
+                stream.seek(0)
+                history: deque[tuple[int, str]] = deque(maxlen=before)
+                pending: list[str] = []
+                pending_bytes = 0
+                pending_end = 0
+                last_added = 0
+                for number, raw in enumerate(stream, 1):
+                    if time.monotonic() >= deadline:
+                        truncated = True
+                        return False
+                    text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    matched = False
+                    # Bound one regex invocation; overlapping windows keep literal
+                    # matches near window edges visible without a multi-MiB match.
+                    for offset in range(0, max(1, len(text)), 1000):
+                        if time.monotonic() >= deadline:
+                            truncated = True
+                            return False
+                        start = max(0, offset - 1000)
+                        end = min(len(text), offset + 1000)
+                        prefix = text[start - 1:start] if start else ""
+                        suffix = text[end:end + 1]
+                        window = prefix + text[start:end] + suffix
+                        match = regex.search(window, len(prefix))
+                        # Preserve real line anchors and word boundaries at cuts.
+                        if match and match.end() <= len(prefix) + end - start:
+                            matched = True
+                            break
+                    shown = text[:1000]
+                    if not has_context:
+                        if matched and not commit_group([f"{path}:{number}:{shown}"]):
+                            return False
+                        continue
+                    # Seeing a line after the current group's tail confirms that
+                    # the previous group is complete before any result cutoff.
+                    if pending and number > pending_end + before + 1:
+                        if not commit_group(pending):
+                            return False
+                        pending = []
+                        pending_bytes = 0
+                        last_added = 0
+                    if matched:
+                        for old_number, old_text in history:
+                            if old_number > last_added:
+                                line = f"{path}-{old_number}-{old_text}"
+                                pending.append(line)
+                                pending_bytes += len(line.encode("utf-8")) + 1
+                                last_added = old_number
+                        pending_end = max(pending_end, number + after)
+                    if matched or (pending and number <= pending_end):
+                        line = f"{path}{':' if matched else '-'}{number}{':' if matched else '-'}{shown}"
+                        pending.append(line)
+                        pending_bytes += len(line.encode("utf-8")) + 1
+                        last_added = number
+                        if pending_bytes + output_bytes > max_bytes:
+                            truncated = True
+                            return False
+                    history.append((number, shown))
+                if pending and not commit_group(pending):
+                    return False
+        except (OSError, ValueError) as exc:
+            if len(errors) < 3:
+                errors.append(f"{path}: {exc}")
+        return True
+
+    try:
+        if target.is_file():
+            search_file(target)
+        elif target.is_dir():
+            stack = [target]
+            while stack and not truncated:
+                current = stack.pop()
+                if current.name.lower() in excluded or _grep_sensitive_path(current):
+                    continue
+                try:
+                    with os.scandir(current) as entries:
+                        for entry in entries:
+                            if time.monotonic() >= deadline:
+                                truncated = True
+                                break
+                            if entry.is_symlink():
+                                continue
+                            if entry.is_dir(follow_symlinks=False):
+                                if entry.name.lower() not in excluded:
+                                    stack.append(Path(entry.path))
+                                    if len(stack) > 2000:
+                                        truncated = True
+                                        break
+                            elif entry.is_file(follow_symlinks=False):
+                                if not search_file(Path(entry.path)):
+                                    break
+                except OSError as exc:
+                    if len(errors) < 3:
+                        errors.append(f"{current}: {exc}")
+        else:
+            return f"Grep target does not exist: {target}", True
+    except OSError as exc:
+        return f"Local grep failed: {exc}", True
+
+    result = "".join(output)
+    if truncated:
+        result += ("\n" if result else "") + f"[Truncated to first {groups} result groups.]"
+    elif not result:
+        if errors:
+            return "Local grep could not read the target: " + "; ".join(errors), True
+        result = "No matches found."
+    return result, False
+
+
+async def _rg_local_grep(
+    executable: str, arguments: dict[str, Any], target: Path
+) -> tuple[str, bool]:
+    """Run rg with bounded streaming output and confirmed subprocess cleanup."""
+    try:
+        limit = max(1, min(int(arguments.get("result_limit") or 100), 200))
+        if arguments.get("-C") is not None:
+            before = after = max(0, int(arguments["-C"]))
+        else:
+            before = max(0, int(arguments.get("-B") or 0))
+            after = max(0, int(arguments.get("-A") or 0))
+    except (TypeError, ValueError, OverflowError):
+        return "Invalid result_limit or context count for local grep.", True
+    if before > 2000 or after > 2000:
+        return "Local grep context is too large; use -A/-B/-C values at most 2000.", True
+    if _grep_sensitive_path(target):
+        return "No matches found.", False
+    command = [
+        executable, "--no-config", "--json", "--color=never", "-n", "--with-filename",
+        "--line-buffered", "--max-columns=1000", "--max-columns-preview", "--max-filesize=2M",
+    ]
+    glob = str(arguments.get("glob") or "").strip()
+    if glob:
+        command.extend(["-g", glob])
+    # Put exclusions last so an explicit inclusion cannot re-enable noisy trees.
+    if target.is_dir():
+        for name in ("node_modules", ".git", "site-packages", "__pycache__", ".venv", "venv"):
+            command.append(f"--glob=!**/{name}/**")
+    # Always append sensitive exclusions after caller globs. Result paths are
+    # checked again below, including explicit file arguments and resolved links.
+    for pattern in (
+        ".env*", ".ssh/**", ".aws/**", ".git-credentials", ".npmrc", ".pypirc",
+        "secrets.key", "*.key", "*.pem", "*.p12", "*.pfx",
+        "*credential*", "*secret*", "id_rsa*", "id_ecdsa*", "id_ed25519*",
+    ):
+        command.append(f"--glob=!**/{pattern}")
+    if arguments.get("-C") is not None:
+        command.extend(["-C", str(before)])
+    else:
+        if before:
+            command.extend(["-B", str(before)])
+        if after:
+            command.extend(["-A", str(after)])
+    if arguments.get("case_insensitive") or arguments.get("ignore_case"):
+        command.append("-i")
+    command.extend(["-e", str(arguments.get("pattern") or ""), "--", str(target)])
+    proc = await asyncio.create_subprocess_exec(
+        *command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+    )
+    assert proc.stdout is not None and proc.stderr is not None
+    stdout = proc.stdout
+    stderr = proc.stderr
+    max_output_bytes = 256 * 1024
+    data_budget = max_output_bytes - 100  # Reserve room for the truncation marker.
+    stderr_data = bytearray()
+    output: list[str] = []
+    pending: list[str] = []
+    pending_bytes = 0
+    output_bytes = 0
+    received_bytes = 0
+    groups = 0
+    pending_path = ""
+    pending_number = 0
+    killed_early = False
+    has_context = bool(before or after)
+
+    async def drain_stderr() -> None:
+        while True:
+            chunk = await stderr.read(4096)
+            if not chunk:
+                return
+            remaining = 16 * 1024 - len(stderr_data)
+            if remaining > 0:
+                stderr_data.extend(chunk[:remaining])
+
+    async def stop_process() -> None:
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        # Draining stdout also prevents Process.wait() deadlocks on full pipes.
+        async def drain_stdout() -> None:
+            while await stdout.read(8192):
+                pass
+        await asyncio.gather(proc.wait(), drain_stdout())
+
+    def commit_group(lines: list[str]) -> bool:
+        nonlocal output_bytes, groups
+        if not lines:
+            return True
+        separator = "\n--\n" if output and has_context else ("\n" if output else "")
+        text = separator + "\n".join(lines)
+        size = len(text.encode("utf-8"))
+        if output_bytes + size > data_budget:
+            return False
+        output.append(text)
+        output_bytes += size
+        groups += 1
+        return groups < limit
+
+    def consume_line(raw: bytes) -> bool:
+        nonlocal pending, pending_bytes, pending_path, pending_number
+        text = raw.decode("utf-8", errors="replace").rstrip("\r")
+        try:
+            record = json.loads(text)
+        except (ValueError, RecursionError):
+            record = None
+        if isinstance(record, dict):
+            kind = record.get("type")
+            if kind == "end":
+                complete = commit_group(pending)
+                pending = []
+                pending_bytes = 0
+                pending_path = ""
+                pending_number = 0
+                return complete
+            if kind not in {"match", "context"}:
+                return True
+            data = record.get("data") or {}
+            try:
+                path_data = data["path"]
+                raw_path = (path_data["text"] if "text" in path_data
+                            else os.fsdecode(base64.b64decode(path_data["bytes"], validate=True)))
+                lines = data["lines"]
+                content = (lines["text"] if "text" in lines else
+                           base64.b64decode(lines["bytes"], validate=True).decode("utf-8", errors="replace"))
+                number = int(data["line_number"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return True
+            if has_context and pending and (raw_path != pending_path or number > pending_number + 1):
+                if not commit_group(pending):
+                    return False
+                pending = []
+                pending_bytes = 0
+            separator = ":" if kind == "match" else "-"
+            text = f"{raw_path}{separator}{number}{separator}{content.rstrip(chr(10) + chr(13))[:1000]}"
+        elif text == "--" and has_context:
+            raw_path = ""
+            number = 0
+        else:
+            # Compatibility with line-oriented test/host producers. Real rg uses
+            # JSON so colons, hyphens and newlines in names cannot forge a path.
+            match = re.match(r"^(.*?)([:-])\d+\2", text)
+            if not match:
+                return True
+            raw_path = match.group(1)
+            number = 0
+        if raw_path:
+            reported = Path(raw_path)
+            if not reported.is_absolute():
+                reported = (target if target.is_dir() else target.parent) / reported
+            if _grep_sensitive_path(reported):
+                return True
+            pending_path, pending_number = raw_path, number
+        if not has_context:
+            return commit_group([text]) if text else True
+        if text == "--":
+            complete = commit_group(pending)
+            pending = []
+            pending_bytes = 0
+            return complete
+        pending.append(text)
+        pending_bytes += len(text.encode("utf-8")) + 1
+        return pending_bytes + output_bytes <= data_budget
+
+    async def read_output() -> None:
+        nonlocal received_bytes, killed_early, pending, pending_bytes
+        line_buffer = bytearray()
+        # Chunk reads avoid StreamReader.readline/readuntil LimitOverrunError
+        # entirely, including abnormal lines longer than the stream limit.
+        while True:
+            chunk = await stdout.read(8192)
+            if not chunk:
+                if line_buffer and not consume_line(bytes(line_buffer)):
+                    killed_early = True
+                if has_context and pending:
+                    if not commit_group(pending):
+                        killed_early = True
+                    pending = []
+                break
+            received_bytes += len(chunk)
+            for part_index, part in enumerate(chunk.split(b"\n")):
+                if part_index:
+                    if not consume_line(bytes(line_buffer)):
+                        killed_early = True
+                        await stop_process()
+                        return
+                    line_buffer.clear()
+                # Bound one malformed output line even without rg column limits.
+                if len(line_buffer) < 8192:
+                    line_buffer.extend(part[:8192 - len(line_buffer)])
+            if received_bytes >= data_budget:
+                killed_early = True
+                # Discard the incomplete context group rather than publish half.
+                pending = []
+                pending_bytes = 0
+                await stop_process()
+                return
+        await proc.wait()
+
+    stderr_task = asyncio.create_task(drain_stderr())
+    try:
+        await asyncio.wait_for(read_output(), timeout=15.0)
+    except asyncio.TimeoutError:
+        await stop_process()
+        await stderr_task
+        return "Local grep timed out after 15 seconds; the read-only subprocess was terminated.", True
+    except BaseException:
+        await stop_process()
+        await stderr_task
+        raise
+    else:
+        await stderr_task
+    if killed_early:
+        text = "".join(output)
+        return text + ("\n" if text else "") + f"[Truncated to first {groups} result groups.]", False
+    if proc.returncode == 1:
+        return "No matches found.", False
+    if proc.returncode != 0:
+        detail = stderr_data.decode("utf-8", errors="replace").strip()
+        return f"Local grep failed (exit {proc.returncode}): {detail or 'rg reported an error.'}", True
+    return "".join(output) or "No matches found.", False
+
+
 class AstrBotBridge:
     """Bridges Agent Lab TaskEngine with AstrBot providers, tools, workspaces, and messaging."""
 
@@ -581,8 +1058,17 @@ class AstrBotBridge:
                     chain = clean_text
                 sent = await ctx.send_message(umo, chain)
                 delivery = "sent" if sent else "unconfirmed"
-            except Exception:
+                if delivery == "unconfirmed":
+                    logger.warning(
+                        "[AgentLab] send_dm unconfirmed (returned=%r, umo=%s, task_id=%s, kind=%s)",
+                        sent, umo, task_id, kind,
+                    )
+            except Exception as exc:
                 delivery = "unconfirmed"
+                logger.warning(
+                    "[AgentLab] send_dm exception (umo=%s, task_id=%s, kind=%s): %r",
+                    umo, task_id, kind, exc,
+                )
 
         if kind == "progress" and delivery == "sent":
             self._last_progress_sent[umo] = time.monotonic()
@@ -708,6 +1194,7 @@ class AstrBotBridge:
         )
 
     def build_task_toolset(self, task: TaskMeta, profile: Profile, event: Any) -> Any:
+        profile = self.engine.require_task_profile(task)
         toolset: Any = _AstrToolSet() if _AstrToolSet is not None else _CompatToolSet()
 
         # 1. Add the 5 compact control tools bound to TASK_CONTROL_TOOL_SCHEMAS
@@ -973,6 +1460,47 @@ class AstrBotBridge:
             self.engine.store.save_task(task)
         return True
 
+    async def _safe_local_grep(
+        self, arguments: dict[str, Any], task: TaskMeta
+    ) -> tuple[str, bool] | None:
+        """Replace only the host local grep; other runtimes keep their tools."""
+        import shutil
+
+        if arguments.get("cwd"):
+            return "astrbot_grep_tool 不支持 cwd 参数，请直接传目标路径", True
+        ctx = self.engine.context
+        if ctx is None or not hasattr(ctx, "get_config"):
+            return None
+        config = ctx.get_config(umo=task.umo) or {}
+        settings = config.get("provider_settings") or {}
+        if str(settings.get("computer_use_runtime", "none")) != "local":
+            return None
+        base_raw = task.execution_cwd or task.session_workspace_root
+        if not base_raw:
+            return "Local grep has no task execution directory or session workspace.", True
+        try:
+            base = Path(base_raw).resolve()
+            target = Path(str(arguments.get("path") or base))
+            if not target.is_absolute():
+                target = base / target
+            target = target.resolve()
+            if settings.get("computer_use_local_permissions") == "workspace":
+                if not task.session_workspace_root:
+                    return "Local grep workspace restriction requires a session workspace.", True
+                workspace = Path(task.session_workspace_root).resolve()
+                try:
+                    target.relative_to(workspace)
+                except ValueError:
+                    return f"Local grep target is outside the host workspace: {target}", True
+            if not target.exists():
+                return f"Grep target does not exist: {target}", True
+        except (OSError, ValueError, RuntimeError) as exc:
+            return f"Invalid local grep path: {exc}", True
+        executable = shutil.which("rg")
+        if executable:
+            return await _rg_local_grep(executable, arguments, target)
+        return await asyncio.to_thread(_python_local_grep, arguments, target)
+
     async def _execute_raw_tool(
         self,
         tool: Any,
@@ -1056,6 +1584,17 @@ class AstrBotBridge:
         reason = str(getattr(assessment, "reason", None) or getattr(assessment, "message", None) or "")
         return decision, reason
 
+    async def _require_task_profile(self, task: TaskMeta) -> Profile:
+        try:
+            return self.engine.require_task_profile(task)
+        except OperationBlocked:
+            await self.send_dm(
+                task.umo,
+                "⏸️ 任务绑定方案已不存在，已暂停执行，请在 WebUI 为项目重新绑定有效方案后再恢复。",
+                kind="alert", task_id=task.task_id, force=True,
+            )
+            raise
+
     async def invoke_tool(
         self,
         event: Any,
@@ -1069,6 +1608,7 @@ class AstrBotBridge:
         task = self._check_fence(task_id)
         tool_name = str(getattr(tool, "name", "") or "")
         args = dict(arguments or {})
+        await self._require_task_profile(task)
 
         # 1. Dispatch 5 compact control tools directly via TaskEngine
         if tool_name in CONTROL_TOOL_NAMES:
@@ -1086,7 +1626,7 @@ class AstrBotBridge:
             )
 
         # 3. Resolve profile/project and authorized credential env map
-        profile = store.get_profile(task.profile_id)
+        profile = await self._require_task_profile(task)
         project = store.get_project(task.project_id)
         proj_creds = (
             project.execution_settings.authorized_credentials
@@ -1097,7 +1637,13 @@ class AstrBotBridge:
             task.project_id, profile.authorized_credentials, proj_creds
         )
 
-        # 4. One-shot approved call matching OR permission assessment
+        # 4. Hard guards run before consuming any one-shot authorization.
+        resource_reason = _check_search_resource_safety(tool_name, args, task)
+        if resource_reason:
+            raise OperationBlocked(
+                f"[DENY] 工具 `{tool_name}` 未获执行许可：{resource_reason}"
+            )
+
         if not approved_override and self._consume_approved_match(task, tool_name, args):
             approved_override = True
 
@@ -1116,14 +1662,39 @@ class AstrBotBridge:
                 storage_root=store.root,
             )
             decision, reason = self._parse_assessment(assessment)
-            if decision in {"deny", "review"}:
-                hint = (
-                    "操作被策略拒绝，请调整方案或参数，切勿反复重试相同操作。"
-                    if decision == "deny"
-                    else "该操作需要管理员审批；请调用 `task_approve` 提交清晰的审批申请，或改用低风险只读方案。"
-                )
+            outside_paths: list[str] = []
+            if isinstance(assessment, (tuple, list)) and len(assessment) >= 3:
+                reported_paths = assessment[2]
+                if isinstance(reported_paths, (list, tuple)):
+                    outside_paths = [str(path) for path in reported_paths]
+            if decision == "deny":
                 raise OperationBlocked(
-                    f"[{decision.upper()}] 工具 `{tool_name}` 未获直接执行许可：{reason or '超出当前权限范围'}。{hint}"
+                    f"[DENY] 工具 `{tool_name}` 未获直接执行许可：{reason or '超出当前权限范围'}。"
+                    "操作被策略拒绝，请调整方案或参数，切勿反复重试相同操作。"
+                )
+            if decision == "review":
+                sensitive_reason = any(
+                    token in reason.lower()
+                    for token in ("敏感", "凭证", "密钥", "credential", "secret")
+                )
+                readonly_boundary = (
+                    bool(outside_paths)
+                    and (tool_name in READ_TOOLS or read_only_call(tool_name, args))
+                    and not sensitive_reason
+                )
+                if readonly_boundary:
+                    raise OperationBlocked(
+                        f"[REVIEW] 工具 `{tool_name}` 触发目录边界拦截"
+                        f"（当前授权目录 authorized_roots：{execution_roots(task)}；"
+                        f"越界路径 outside_paths：{outside_paths}）。"
+                        "请一次性汇总所需目录与操作，调用 `task_approve` 批量申请审批，"
+                        "或在 `task_plan.scope_roots` 中声明扩展目录；"
+                        "严禁盲目扫描当前工作区或试探其他目录。"
+                    )
+                raise OperationBlocked(
+                    f"[REVIEW] 工具 `{tool_name}` 未获直接执行许可：{reason or '超出当前权限范围'}。"
+                    "请调用 `task_approve`，用非技术用户也能看懂的通俗人话向管理员说明"
+                    "要做什么、影响哪些文件或功能、以及如何回退。"
                 )
 
         # 5. Append "started" journal line with redacted args (NEVER log auth_env)
@@ -1174,8 +1745,15 @@ class AstrBotBridge:
         timeout = float(self.engine.config.get("tool_call_timeout_seconds", 180) or 180)
         is_err = False
         try:
-            raw_res = await self._execute_raw_tool(tool, event, exec_args, timeout)
-            raw_text, is_err = _extract_result_text(raw_res)
+            local_result = (
+                await self._safe_local_grep(exec_args, task)
+                if tool_name == "astrbot_grep_tool" else None
+            )
+            if local_result is not None:
+                raw_text, is_err = local_result
+            else:
+                raw_res = await self._execute_raw_tool(tool, event, exec_args, timeout)
+                raw_text, is_err = _extract_result_text(raw_res)
         except (asyncio.TimeoutError, TimeoutError) as exc:
             store.append_event(
                 task.umo,
@@ -1284,7 +1862,7 @@ class AstrBotBridge:
         if not pending_batches:
             return receipts
 
-        profile = store.get_profile(task.profile_id)
+        profile = await self._require_task_profile(task)
         toolset = self.build_task_toolset(task, profile, event)
         consumed_targets: list[tuple[str, int]] = []
 
@@ -1426,6 +2004,7 @@ class AstrBotBridge:
         ctx = self.engine.context
         if store.is_ended(task.task_id) or task.status != "running":
             return {"ok": False, "reason": "not_running"}
+        await self._require_task_profile(task)
 
         turn_event = copy.copy(event) if event is not None else SimpleNamespace(unified_msg_origin=task.umo)
         try:
@@ -1469,7 +2048,7 @@ class AstrBotBridge:
         conv_mgr = getattr(ctx, "conversation_manager", None)
         conv, contexts = await self._load_isolated_conversation(conv_mgr, task, cid)
 
-        profile = store.get_profile(task.profile_id)
+        profile = await self._require_task_profile(task)
         project = store.get_project(task.project_id)
         proj_creds = (
             project.execution_settings.authorized_credentials

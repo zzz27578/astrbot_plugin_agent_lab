@@ -924,7 +924,7 @@ def test_frontend_classic_ui_contract_dirty_form_bridge_and_no_native_dialogs():
     # 5. Versioned v1 API endpoints, cache-bust query params, breadcrumb bar, and profile delete rule
     for ep in ("/api/v1/health", "/api/v1/state", "/api/v1/workspace", "/api/v1/profiles", "/api/v1/credentials"):
         assert ep in store_js, f"store.js missing versioned endpoint {ep}"
-    for asset in ("classic.css?v=1.0.0-r2", "store.js?v=1.0.0-r2", "classic-view.js?v=1.0.0-r2"):
+    for asset in ("classic.css?v=1.0.1", "store.js?v=1.0.1", "classic-view.js?v=1.0.1"):
         assert asset in index_html, f"index.html missing cache-busted asset {asset}"
     assert "cl-breadcrumb-bar" in classic_js and "cl-breadcrumb-bar" in classic_css
     assert "cl-view-animate" in classic_js and "cl-view-animate" in classic_css

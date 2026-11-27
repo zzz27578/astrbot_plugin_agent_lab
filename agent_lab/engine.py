@@ -1,4 +1,4 @@
-"""Core TaskEngine orchestration for Agent Lab v1.0.0.
+"""Core TaskEngine orchestration for Agent Lab v1.0.1.
 
 Implements:
 - Two-Phase Lifecycle (planning with read-only tools -> grounded plan -> executing)
@@ -10,10 +10,12 @@ Implements:
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
 from typing import Any
 
-from .bridge import AstrBotBridge, BudgetExceeded, ExecutionStopped
+from .bridge import AstrBotBridge, BudgetExceeded, ExecutionStopped, OperationBlocked
 from .guards import DeliveryVerifier, ProgressGuard
 from .models import (
     ApprovalRequest,
@@ -29,6 +31,8 @@ from .models import (
 )
 from .permissions import call_signature
 from .store import AgentLabStore
+
+logger = logging.getLogger("astrbot_plugin_agent_lab.engine")
 
 
 def _parse_iso_ts(iso_str: str) -> float:
@@ -124,11 +128,37 @@ class TaskEngine:
         project_id: str = "",
         profile_id: str = "",
         brief: str = "",
+        scope_roots: list[str] | None = None,
         constraints: list[str] | None = None,
         completion_conditions: list[str] | None = None,
         plan_steps: list[Any] | None = None,
         event: Any = None,
     ) -> TaskMeta:
+        # Validate explicit profiles before changing the current task.
+        profile = self.store.get_profile(profile_id, strict=True) if profile_id else None
+        project = self.store.get_project(project_id) if project_id else None
+        if project is None:
+            project = self.store.ensure_default_project(umo)
+        if profile is None:
+            profile = self.store.get_profile(project.profile_id)
+        exec_settings = self._merge_execution_settings(profile, project.execution_settings)
+        if (
+            not profile_id
+            and project.profile_id
+            and project.profile_id != profile.profile_id
+            and profile.permission_mode == "full"
+        ):
+            logger.warning(
+                "[AgentLab] Project %s references missing profile %s; fallback profile %s "
+                "is full, retaining project permission mode %s",
+                project.project_id, project.profile_id, profile.profile_id,
+                project.execution_settings.mode,
+            )
+            exec_settings.mode = project.execution_settings.mode
+        passed_roots = list(dict.fromkeys(
+            os.path.normpath(str(r).strip()) for r in (scope_roots or []) if str(r).strip()
+        ))
+
         # Pause any currently running task in the same UMO
         prev = self.store.load_active_task(umo)
         if prev and not prev.is_terminal() and prev.status == "running":
@@ -139,14 +169,6 @@ class TaskEngine:
             prev_runner = self._runners.pop(prev.task_id, None)
             if prev_runner and not prev_runner.done():
                 prev_runner.cancel()
-
-        project = self.store.get_project(project_id) if project_id else None
-        if project is None:
-            project = self.store.ensure_default_project(umo)
-
-        profile = self.store.get_profile(profile_id or project.profile_id)
-        exec_settings = self._merge_execution_settings(profile, project.execution_settings)
-        scope_roots = list(exec_settings.roots)
 
         steps = _normalize_steps(plan_steps) if plan_steps else []
         approvals: list[ApprovalRequest] = []
@@ -162,6 +184,10 @@ class TaskEngine:
                     operation="初始执行计划审批",
                     reason="创建任务时已提供预设执行步骤，等待确认后开始执行。",
                     plan_version=1,
+                    calls=[{
+                        "scope_roots": list(dict.fromkeys(list(exec_settings.roots) + passed_roots)),
+                        "remove_constraints": [],
+                    }],
                 )
             )
         else:
@@ -188,8 +214,8 @@ class TaskEngine:
             ],
             steps=steps,
             version=version,
-            scope_roots=scope_roots,
-            authorized_scope_roots=list(scope_roots),
+            scope_roots=list(dict.fromkeys(list(exec_settings.roots) + passed_roots)),
+            authorized_scope_roots=list(exec_settings.roots),
             execution_settings=exec_settings,
             approvals=approvals,
         )
@@ -258,9 +284,11 @@ class TaskEngine:
             and [str(c).strip() for c in completion_conditions if str(c).strip()]
             != list(task.completion_conditions)
         )
-        auth_roots = set(task.authorized_scope_roots or task.scope_roots)
-        req_roots = [str(r).strip() for r in (scope_roots or []) if str(r).strip()]
-        new_roots = [r for r in req_roots if r not in auth_roots]
+        auth_roots = set(task.authorized_scope_roots)
+        req_roots = [os.path.normpath(str(r).strip()) for r in (scope_roots or []) if str(r).strip()]
+        new_roots = [
+            r for r in dict.fromkeys([*task.scope_roots, *req_roots]) if r not in auth_roots
+        ]
         rem_cons = [
             str(c).strip()
             for c in (remove_constraints or [])
@@ -273,6 +301,7 @@ class TaskEngine:
             or conds_changed
             or bool(new_roots)
             or bool(rem_cons)
+            or any(a.approval_type == "task_plan" for a in task.pending_approvals())
         )
 
         task.steps = parsed_steps
@@ -313,6 +342,11 @@ class TaskEngine:
             if rem_cons:
                 reasons.append(f"申请移除约束: {', '.join(rem_cons)}")
 
+            for previous in task.approvals:
+                if previous.approval_type == "task_plan" and previous.status == "pending":
+                    previous.status = "superseded"
+                    previous.decision_note = "已被新版计划替代"
+                    previous.resolved_at = now_iso()
             req = ApprovalRequest(
                 approval_id=new_id("apr"),
                 approval_type="task_plan",
@@ -321,7 +355,10 @@ class TaskEngine:
                 message=str(message or "").strip()[:2000],
                 plan_version=task.version,
                 workspace_root=task.session_workspace_root,
-                calls=[{"remove_constraints": rem_cons}] if rem_cons else [],
+                calls=[{
+                    "scope_roots": list(task.scope_roots),
+                    "remove_constraints": list(rem_cons),
+                }],
             )
             task.approvals.append(req)
             task.status = "paused"
@@ -483,10 +520,12 @@ class TaskEngine:
         pending = task.pending_approvals()
         target: ApprovalRequest | None = None
         if approval_id:
-            target = next((a for a in pending if a.approval_id == approval_id), None)
+            target = next((a for a in task.approvals if a.approval_id == approval_id), None)
         elif pending:
             target = pending[-1]
-        if target is None:
+        if target is not None and target.approval_type == "task_plan" and target.plan_version != task.version:
+            return {"ok": False, "error": "该计划审批已过期，请审批最新版本的任务计划。"}
+        if target is None or target.status != "pending":
             return {"ok": False, "error": "当前没有待处理的审批请求。"}
 
         norm = str(decision or "").strip().lower()
@@ -496,6 +535,11 @@ class TaskEngine:
             norm = "rejected"
         else:
             raise ValueError(f"不支持的审批决定: {decision!r}")
+
+        if norm == "approved" and target.approval_type == "task_plan" and not any(
+            isinstance(c.get("scope_roots"), list) for c in target.calls
+        ):
+            return {"ok": False, "error": "该计划审批缺少目录快照，请重新提交任务计划。"}
 
         target.decision = norm
         target.decision_note = str(note or "").strip()[:400]
@@ -512,8 +556,14 @@ class TaskEngine:
                 task.approved_version = task.version
                 task.authorization_version = task.version
                 task.authorized_scope_roots = list(
-                    dict.fromkeys(task.scope_roots or task.execution_settings.roots)
+                    dict.fromkeys([
+                        *task.authorized_scope_roots,
+                        *(root for call in target.calls for root in call.get("scope_roots", [])),
+                        *task.execution_settings.roots,
+                    ])
                 )
+                # Keep execution_roots() from including any unsnapshotted candidates.
+                task.scope_roots = list(task.authorized_scope_roots)
                 task.phase = "executing"
 
             if not task.pending_approvals() and not task.pending_questions() and not self._unknown_calls(task):
@@ -543,8 +593,10 @@ class TaskEngine:
                 "phase": task.phase,
             }
 
-        # Rejected
+        # Rejected: proposed roots never become an authorization source.
         target.status = "rejected"
+        if target.approval_type == "task_plan":
+            task.scope_roots = list(task.authorized_scope_roots)
         guidance_text = (
             f"管理员拒绝了审批 `{target.operation}`"
             + (f"（说明：{target.decision_note}）" if target.decision_note else "")
@@ -843,6 +895,10 @@ class TaskEngine:
         if not task or task.is_terminal():
             return {"ok": False, "error": "任务不存在或已结束。"}
 
+        try:
+            await self.bridge._require_task_profile(task)
+        except OperationBlocked as exc:
+            return {"ok": False, "error": str(exc), "wait_reason": "profile_missing"}
         if task.pending_approvals():
             return {"ok": False, "error": "存在待审批操作，请先完成审批。"}
         if task.pending_questions():
@@ -894,6 +950,7 @@ class TaskEngine:
         if runner and not runner.done():
             runner.cancel()
 
+        self._reconcile_usage_from_events(task)
         self.store.save_task(task, active=False, allow_terminal=True)
         self.store.append_event(
             task.umo,
@@ -949,6 +1006,7 @@ class TaskEngine:
         if runner and not runner.done():
             runner.cancel()
 
+        self._reconcile_usage_from_events(task)
         self.store.save_task(task, active=False, allow_terminal=True)
         try:
             self.store.save_project_summary(
@@ -1060,7 +1118,32 @@ class TaskEngine:
         )
         return {"ok": True, "ended": True, "status": "completed", "final_summary": clean_summary}
 
-    # ── Startup Recovery ─────────────────────────────────────────────────────
+    # ── Usage Reconciliation & Startup Recovery ──────────────────────────────
+
+    def _reconcile_usage_from_events(
+        self, task: TaskMeta, journal: list[dict[str, Any]] | None = None
+    ) -> bool:
+        """Recover cumulative usage without rewriting metadata on each LLM response."""
+        usage_events = self.store.read_events(task.umo, task.task_id, kind="usage", limit=0)
+        if journal is None:
+            journal = self.store.latest_journal_by_call(task.umo, task.task_id)
+        totals = {
+            field: sum(int(ev.get(field) or 0) for ev in usage_events)
+            for field in ("prompt_tokens", "completion_tokens", "total_tokens")
+        }
+        totals.update(
+            llm_calls=len(usage_events),
+            unreported_calls=sum(1 for ev in usage_events if ev.get("reported") is False),
+            tool_calls=sum(1 for entry in journal if entry.get("status") in {"completed", "failed"}),
+        )
+        changed = False
+        for field, event_value in totals.items():
+            current = getattr(task.usage, field)
+            reconciled = max(current, event_value)
+            if reconciled != current:
+                setattr(task.usage, field, reconciled)
+                changed = True
+        return changed
 
     def recover_on_startup(self) -> dict[str, int]:
         unknown_marked = 0
@@ -1085,17 +1168,34 @@ class TaskEngine:
                     )
                     unknown_marked += 1
                     changed = True
-            if task.status == "running":
+            usage_changed = self._reconcile_usage_from_events(task, journal)
+            was_running = task.status == "running"
+            if was_running:
                 task.status = "paused"
                 task.human_paused = True
                 task.wait_reason = "recovered_pause"
-                self.store.save_task(task)
                 paused_count += 1
             elif changed and not task.wait_reason:
                 task.status = "paused"
                 task.wait_reason = "unknown_call"
+            if was_running or changed or usage_changed:
                 self.store.save_task(task)
         return {"unknown_marked": unknown_marked, "paused": paused_count}
+
+    def require_task_profile(self, task: TaskMeta) -> Profile:
+        """Execution must never inherit a fallback profile or its credentials."""
+        try:
+            return self.store.get_profile(task.profile_id, strict=True)
+        except ValueError as exc:
+            fresh = self.store.find_task_by_id(task.task_id) or task
+            if not self.store.is_ended(task.task_id) and not fresh.is_terminal():
+                fresh.status = "paused"
+                fresh.wait_reason = "profile_missing"
+                fresh.input_revision += 1
+                self.store.save_task(fresh)
+            raise OperationBlocked(
+                "任务绑定方案已不存在，已暂停执行，请在 WebUI 为项目重新绑定有效方案后再恢复。"
+            ) from exc
 
     # ── Background Scheduling & Execution Loop ───────────────────────────────
 
@@ -1193,6 +1293,8 @@ class TaskEngine:
                     raise
                 except Exception as exc:
                     fresh = self.store.find_task_by_id(task_id) or task
+                    if fresh.wait_reason == "profile_missing":
+                        return
                     if not self.store.is_ended(task_id):
                         self.store.append_event(
                             fresh.umo,
@@ -1237,6 +1339,7 @@ class TaskEngine:
         if not task:
             raise ValueError(f"任务不存在: {task_id}")
         journal = self.store.latest_journal_by_call(task.umo, task.task_id)
+        self._reconcile_usage_from_events(task, journal)
         unknown_calls = [j for j in journal if j.get("status") in {"started", "unknown"}]
         messages = self.store.read_events(task.umo, task.task_id, kind="message", limit=200)
         usage_events = self.store.read_events(task.umo, task.task_id, kind="usage", limit=200)

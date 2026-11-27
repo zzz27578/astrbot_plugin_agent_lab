@@ -1,4 +1,4 @@
-"""Permission checks, path scope guards, and credential exfiltration protection for Agent Lab v1.0.0."""
+"""Permission checks, path scope guards, and credential exfiltration protection for Agent Lab v1.0.1."""
 from __future__ import annotations
 
 import ast
@@ -8,6 +8,9 @@ import json
 import os
 import re
 import shlex
+import shutil
+import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -329,13 +332,92 @@ def _is_safe_git_tokens(tokens: list[str]) -> bool:
     return True
 
 
+def _shell_command_name(token: str) -> str:
+    name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name[:-4] if name.endswith((".exe", ".cmd", ".bat")) else name
+
+
+def _unwrap_shell_tokens(tokens: list[str]) -> list[str] | None:
+    """Peel known launchers; fail closed on ambiguous options or directory changes."""
+    tokens = list(tokens)
+    wrappers = {"env", "command", "builtin", "exec", "nohup", "nice", "time",
+                "timeout", "stdbuf", "sudo"}
+    simple_options = {
+        "env": {"-i", "--ignore-environment", "-0", "--null", "-v", "--debug"},
+        "command": {"-p"}, "builtin": set(), "exec": {"-c", "-l"},
+        "nohup": set(), "nice": set(), "time": {"-p", "--portability"},
+        "timeout": {"--foreground", "--preserve-status", "-v", "--verbose"},
+        "stdbuf": set(), "sudo": {"-n", "--non-interactive", "-E", "-H", "-S", "-k"},
+    }
+    value_options = {
+        "env": {"-u", "--unset"}, "exec": {"-a"},
+        "nice": {"-n", "--adjustment"}, "time": {"-f", "--format"},
+        "timeout": {"-s", "--signal", "-k", "--kill-after"},
+        "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+        "sudo": {"-u", "--user", "-g", "--group", "-h", "--host",
+                 "-p", "--prompt", "-C", "--close-from", "-T", "--command-timeout",
+                 "-r", "--role", "-t", "--type"},
+    }
+    while tokens:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", tokens[0], re.DOTALL):
+            tokens.pop(0)
+            continue
+        wrapper = _shell_command_name(tokens[0])
+        if wrapper not in wrappers:
+            return tokens
+        index = 1
+        while index < len(tokens):
+            token = tokens[index]
+            if token == "--":
+                index += 1
+                break
+            if wrapper == "env" and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token, re.DOTALL):
+                index += 1
+                continue
+            if not token.startswith("-"):
+                break
+            if token in simple_options[wrapper]:
+                index += 1
+            elif token in value_options.get(wrapper, set()):
+                if index + 1 >= len(tokens):
+                    return None
+                index += 2
+            elif any(token.startswith(option + "=") for option in value_options.get(wrapper, set())):
+                index += 1
+            elif wrapper == "nice" and re.fullmatch(r"-\d+", token):
+                index += 1
+            elif wrapper == "stdbuf" and re.fullmatch(r"-[ioe].+", token):
+                index += 1
+            else:
+                # env -S, sudo -D/-R, and time -o can hide commands or change effects.
+                return None
+        if wrapper == "timeout":
+            if index >= len(tokens) or not re.fullmatch(r"\d+(?:\.\d+)?[smhd]?", tokens[index]):
+                return None
+            index += 1
+        tokens = tokens[index:]
+    return None
+
+
+def _rg_has_execution_options(tokens: list[str]) -> bool:
+    for token in tokens[1:]:
+        if token == "--":
+            break
+        if token.split("=", 1)[0] in {"--pre", "--pre-glob", "--search-zip"} or (
+            token.startswith("-") and not token.startswith("--") and "z" in token[1:]
+        ):
+            return True
+    return False
+
+
 def _is_safe_read_segment(segment: str) -> bool:
-    tokens = _shlex_tokens(segment)
+    parsed = _shlex_tokens(segment)
+    tokens = _unwrap_shell_tokens(parsed) if parsed else None
     if not tokens:
         return False
-    cmd = os.path.basename(tokens[0]).lower()
-    if cmd.endswith((".exe", ".cmd", ".bat")):
-        cmd = cmd[:-4]
+    cmd = _shell_command_name(tokens[0])
+    if cmd == "rg" and _rg_has_execution_options(tokens):
+        return False
 
     if cmd in _SAFE_SHELL_COMMANDS:
         return True
@@ -368,6 +450,415 @@ def read_only_call(tool_name: str, arguments: dict[str, Any]) -> bool:
         return False
 
     return all(_is_safe_read_segment(seg) for seg in segments)
+
+
+_NOISY_SEARCH_DIRS = frozenset(
+    {"node_modules", "site-packages", "backups", ".git", ".venv", "venv"}
+)
+_SEARCH_SAFETY_HINT = (
+    "禁止使用全匹配退化正则（如 '.' / '.*' / '^'），或对含 node_modules / "
+    "超过 2000 条目的大目录执行无过滤全量搜索；列目录请改用 astrbot_list_directory，"
+    "检索内容请限定具体子目录、具体关键词与 glob 过滤。"
+)
+_DEGENERATE_SEARCH_PATTERNS = frozenset(
+    {
+        ".", ".+", ".*", ".*?", "^", "$", "^$", "^.*", "^.+", ".*$", "^.*$", "^.+$",
+        r"\s", r"\s+", r"\s*", r"\S", r"\S+", r"\S*", r"\w", r"\w+", r"\d",
+        r"[\s\S]", r"[\s\S]*", r"[\s\S]+", r"\n", r"\r", "^|$",
+    }
+)
+
+
+def _has_empty_regex_branch(pattern: str) -> bool:
+    """Inspect alternatives at every group depth, ignoring flags and anchors."""
+    frames = [[False, False]]  # [branch has content, group has an alternative]
+    index = 0
+    while index < len(pattern):
+        char = pattern[index]
+        if char == "\\" and index + 1 < len(pattern):
+            if pattern[index + 1] not in "AbBZz":
+                frames[-1][0] = True
+            index += 2
+            continue
+        if char == "[":
+            frames[-1][0] = True
+            index += 1
+            while index < len(pattern):
+                if pattern[index] == "\\":
+                    index += 2
+                    continue
+                if pattern[index] == "]":
+                    break
+                index += 1
+        elif char == "(":
+            comment = re.match(r"\(\?#[^)]*\)", pattern[index:])
+            flag = re.match(r"\(\?[aiLmsux-]+\)", pattern[index:])
+            if comment or flag:
+                index += len((comment or flag).group())
+                continue
+            frames[-1][0] = True
+            frames.append([False, False])
+            prefix = re.match(r"\(\?(?:P<[^>]+>|<[=!]|[=!:>]|[aiLmsux-]+:)", pattern[index:])
+            if prefix:
+                index += len(prefix.group())
+                continue
+        elif char == "|":
+            if not frames[-1][0]:
+                return True
+            frames[-1] = [False, True]
+        elif char == ")" and len(frames) > 1:
+            content, alternative = frames.pop()
+            if alternative and not content:
+                return True
+        elif char not in "^$" and not char.isspace():
+            frames[-1][0] = True
+        index += 1
+    return any(alternative and not content for content, alternative in frames)
+
+
+def _is_degenerate_search_pattern(pattern: str) -> str:
+    """Reject wildcard-only regexes without mistaking escaped literals for wildcards."""
+    text = str(pattern or "").strip()
+    text = re.sub(r"\(\?[aiLmsux-]+\)", "", text).strip()
+    if not text or text in _DEGENERATE_SEARCH_PATTERNS:
+        return "退化全匹配正则。" + _SEARCH_SAFETY_HINT
+    if len(text) > 4096:
+        return "搜索正则超过安全长度上限。" + _SEARCH_SAFETY_HINT
+    if _has_empty_regex_branch(text):
+        return "含空分支的退化全匹配正则。" + _SEARCH_SAFETY_HINT
+    try:
+        # Testing the empty input is bounded and catches zero-count quantifiers.
+        if re.compile(text).search("") is not None:
+            return "可匹配空字符串的退化全匹配正则。" + _SEARCH_SAFETY_HINT
+    except (re.error, ValueError, OverflowError, RecursionError):
+        # Other runtimes may support additional regex syntax; keep static checks.
+        pass
+
+    # Group names, flags, and repetition counts are regex syntax, not search literals.
+    text = re.sub(r"\(\?#[^)]*\)", "", text)
+    text = re.sub(r"\(\?P=[^)]+\)", "", text)
+    text = re.sub(r"\(\?(?:P<[^>]+>|<[=!]|[=!:]|[aiLmsux-]+:)", "(", text)
+    in_class = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and index + 1 < len(text):
+            escaped = text[index + 1]
+            if escaped in "sSwWdDbBAZzGnrftv" or escaped.isdigit():
+                index += 2
+                continue
+            if escaped in "pP" and text[index + 2:index + 3] == "{":
+                end = text.find("}", index + 3)
+                if end >= 0:
+                    index = end + 1
+                    continue
+            # \. / \* / \\ and encoded literal characters carry concrete content.
+            return ""
+        if char == "[" and not in_class:
+            in_class = True
+        elif char == "]" and in_class:
+            in_class = False
+        elif in_class:
+            if char not in "^-" and not char.isspace():
+                return ""
+        elif char == "{":
+            quantifier = re.match(r"\{(?:\d+(?:,\d*)?|,\d+)\}", text[index:])
+            if quantifier:
+                index += len(quantifier.group())
+                continue
+        elif char not in ".^$*+?{}[]()|\\" and not char.isspace():
+            return ""
+        index += 1
+    return "正则缺少具体字面字符。" + _SEARCH_SAFETY_HINT
+
+
+def _scan_dir_exceeds_limit(
+    target: Path, *, max_entries: int = 2000, max_seconds: float = 0.25
+) -> tuple[bool, str]:
+    """Probe directory size with bounded BFS; never follow directory symlinks."""
+    started = time.monotonic()
+    budget = max(0.0, min(float(max_seconds), 0.25))
+    entry_limit = max(1, min(int(max_entries), 2000))
+    if target.name.lower() in _NOISY_SEARCH_DIRS:
+        return True, f"目标是高噪音目录 {target.name}"
+    try:
+        if not target.is_dir():
+            return False, ""
+    except OSError:
+        return True, "无法安全探测搜索目录"
+
+    pending: deque[Path] = deque([target])
+    count = 0
+    while pending:
+        if time.monotonic() - started >= budget:
+            return True, "目录探测达到 0.25 秒时间预算"
+        current = pending.popleft()
+        try:
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    if time.monotonic() - started >= budget:
+                        return True, "目录探测达到 0.25 秒时间预算"
+                    count += 1
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.name.lower() in _NOISY_SEARCH_DIRS:
+                            return True, f"目录包含高噪音子目录 {entry.name}"
+                        pending.append(Path(entry.path))
+                    if count >= entry_limit:
+                        return True, f"目录条目达到 {entry_limit} 扫描上限"
+        except OSError:
+            return True, f"无法安全探测子目录 {current.name}"
+    return False, ""
+
+
+def _has_narrow_search_glob(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().replace("\\", "/")
+    if not normalized or normalized.startswith("!"):
+        return False
+    # Character classes and wildcard punctuation alone do not narrow a tree.
+    variants = [normalized]
+    for _ in range(8):
+        expanded = []
+        for item in variants:
+            match = re.search(r"\{([^{}]+)\}", item)
+            if match:
+                expanded.extend(item[:match.start()] + part + item[match.end():]
+                                for part in match.group(1).split(","))
+            else:
+                expanded.append(item)
+        if len(expanded) > 64:
+            return False
+        if expanded == variants:
+            break
+        variants = expanded
+    return all(re.search(r"[^\W_]", re.sub(r"\[[^]]*\]", "", item)) is not None
+               for item in variants)
+
+
+def _is_system_search_root(raw_path: str) -> bool:
+    norm = str(raw_path or "").strip().replace("\\", "/")
+    if re.fullmatch(r"[A-Za-z]:/*", norm):
+        return True
+    if norm.startswith("/") and not norm.startswith("//"):
+        return len([part for part in norm.split("/") if part]) <= 1
+    return False
+
+
+def _search_base_dir(arguments: dict[str, Any], task: TaskMeta) -> Path | None:
+    base_raw = task.execution_cwd or task.session_workspace_root
+    if not base_raw:
+        roots = execution_roots(task)
+        base_raw = roots[0] if roots else ""
+    base = _resolve_path_safe(base_raw)
+    cwd = arguments.get("cwd")
+    if isinstance(cwd, str) and cwd.strip():
+        return _resolve_path_safe(cwd, base_dir=base)
+    return base
+
+
+def _search_target_safety_reason(
+    raw_path: str,
+    glob: str,
+    arguments: dict[str, Any],
+    task: TaskMeta,
+    *,
+    has_rg_binary: bool,
+) -> str:
+    narrow_glob = _has_narrow_search_glob(glob)
+    target = _resolve_path_safe(raw_path, base_dir=_search_base_dir(arguments, task))
+    if not narrow_glob and (
+        _is_system_search_root(raw_path)
+        or (target is not None and _is_system_search_root(str(target)))
+    ):
+        return "禁止无过滤搜索系统根目录或顶层目录。" + _SEARCH_SAFETY_HINT
+    name = raw_path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower()
+    if name in _NOISY_SEARCH_DIRS or (target is not None and target.name.lower() in _NOISY_SEARCH_DIRS):
+        return "禁止直接搜索 node_modules / site-packages / backups / .git 等高噪音目录。" + _SEARCH_SAFETY_HINT
+    if narrow_glob or target is None:
+        return ""
+
+    exceeded, detail = _scan_dir_exceeds_limit(target)
+    if not exceeded:
+        return ""
+    workspace_paths = (
+        _resolve_path_safe(task.session_workspace_root),
+        _resolve_path_safe(task.execution_cwd),
+    )
+    is_workspace = raw_path.strip() in {".", "./", ".\\"} or any(
+        path is not None and _normalize_path_key(path) == _normalize_path_key(target)
+        for path in workspace_paths
+    )
+    if not has_rg_binary or is_workspace:
+        return f"搜索目录资源超限（{detail}）。" + _SEARCH_SAFETY_HINT
+    return ""
+
+
+def _check_shell_search_safety(
+    command: str,
+    arguments: dict[str, Any],
+    task: TaskMeta,
+    *,
+    depth: int = 0,
+) -> str:
+    """Inspect each search segment, preserving quoted empty patterns and option values."""
+    segments = _split_shell_segments(command.replace("\n", ";")) or [command]
+    current_args = dict(arguments)
+    for segment in segments:
+        parsed = _shlex_tokens(segment)
+        tokens = _unwrap_shell_tokens(parsed) if parsed else None
+        if not tokens:
+            return "无法安全解析 Shell 搜索包装命令。" + _SEARCH_SAFETY_HINT
+        cmd = _shell_command_name(tokens[0])
+        if cmd == "rg" and _rg_has_execution_options(tokens):
+            return "rg 执行/解压参数（--pre / --pre-glob / -z / --search-zip）禁止用于安全搜索。"
+        if cmd in {"cd", "set-location"} and len(tokens) > 1:
+            cwd = _resolve_path_safe(tokens[1], base_dir=_search_base_dir(current_args, task))
+            if cwd is not None:
+                current_args["cwd"] = str(cwd)
+            continue
+        if cmd in {"cmd", "bash", "sh", "zsh", "dash", "powershell", "pwsh"}:
+            if depth >= 3:
+                return "Shell 搜索嵌套超过安全解析深度。" + _SEARCH_SAFETY_HINT
+            for index, token in enumerate(tokens[1:], 1):
+                if token.lower() in {"/c", "/k", "-c", "-command", "--command"} or (
+                    cmd in {"bash", "sh", "zsh", "dash"}
+                    and token.startswith("-") and not token.startswith("--") and "c" in token[1:]
+                ):
+                    rest = tokens[index + 1:]
+                    inner = rest[0] if len(rest) == 1 else " ".join(shlex.quote(t) for t in rest)
+                    reason = _check_shell_search_safety(
+                        inner, current_args, task, depth=depth + 1
+                    )
+                    if reason:
+                        return reason
+                    break
+            continue
+        if cmd == "find":
+            depths = [tokens[index + 1] if index + 1 < len(tokens) else ""
+                      for index, token in enumerate(tokens) if token.lower() == "-maxdepth"]
+            bounded = bool(depths) and all(
+                value.isascii() and value.isdigit() and len(value) <= 2 and int(value) <= 6
+                for value in depths
+            )
+            paths: list[str] = []
+            for token in tokens[1:]:
+                if token in {"-H", "-L", "-P"} and not paths:
+                    continue
+                if token.startswith("-") or token in {"(", "!"}:
+                    break
+                paths.append(token)
+            for path in paths or ["."]:
+                if bounded:
+                    continue
+                reason = _search_target_safety_reason(
+                    path, "", current_args, task, has_rg_binary=False
+                )
+                if reason:
+                    return "find 缺少有效 -maxdepth（必须为 0–6）的搜索资源风险。" + reason
+            continue
+        if cmd not in {"rg", "grep", "select-string"}:
+            continue
+
+        patterns: list[str] = []
+        paths = []
+        globs: list[str] = []
+        positional: list[str] = []
+        fixed = False
+        options_done = False
+        index = 1
+        value_options = {
+            "-A", "-B", "-C", "-m", "-j", "-t", "-T", "-f", "-d", "-D",
+            "--after-context", "--before-context", "--context", "--max-count", "--threads",
+            "--type", "--type-not", "--encoding", "--file", "--directories", "--devices",
+            "--max-depth", "--max-filesize", "--max-columns", "--sort", "--sortr",
+            "--ignore-file", "--replace", "--path-separator", "--context-separator",
+            "--field-match-separator", "--field-context-separator", "--label", "--binary-files",
+            "--exclude", "--exclude-dir", "-exclude", "-encoding", "-context",
+        }
+        while index < len(tokens):
+            token = tokens[index]
+            low = token.lower()
+            if options_done:
+                positional.append(token)
+            elif token == "--":
+                options_done = True
+            elif token in {"-e", "--regexp"} or low == "-pattern":
+                if index + 1 < len(tokens):
+                    patterns.append(tokens[index + 1])
+                    index += 1
+            elif token.startswith("--regexp="):
+                patterns.append(token.split("=", 1)[1])
+            elif token.startswith("-e") and len(token) > 2:
+                patterns.append(token[2:])
+            elif token in {"-g", "--glob", "--iglob", "--include"} or low == "-include":
+                if index + 1 < len(tokens):
+                    globs.append(tokens[index + 1])
+                    index += 1
+            elif token.startswith(("--glob=", "--iglob=", "--include=")):
+                globs.append(token.split("=", 1)[1])
+            elif token.startswith("-g") and len(token) > 2:
+                globs.append(token[2:])
+            elif low in {"-path", "-literalpath"}:
+                if index + 1 < len(tokens):
+                    paths.append(tokens[index + 1])
+                    index += 1
+            elif token == "--fixed-strings" or low == "-simplematch" or (
+                token.startswith("-") and not token.startswith("--") and "F" in token[1:]
+            ):
+                fixed = True
+            elif token in value_options or low in value_options:
+                index += 1
+            elif token.startswith("-"):
+                pass
+            else:
+                positional.append(token)
+            index += 1
+        if not patterns and positional:
+            patterns.append(positional.pop(0))
+        paths.extend(positional)
+        for pattern in patterns:
+            if not fixed or not pattern.strip():
+                reason = _is_degenerate_search_pattern(pattern)
+                if reason:
+                    return f"{cmd} 搜索：{reason}"
+        positive_globs = [g for g in globs if not g.startswith("!")]
+        glob = (positive_globs[0] if positive_globs and
+                all(_has_narrow_search_glob(g) for g in positive_globs) else "")
+        for path in paths or ["."]:
+            reason = _search_target_safety_reason(
+                path, glob, current_args, task, has_rg_binary=False
+            )
+            if reason:
+                return f"{cmd} 搜索：{reason}"
+    return ""
+
+
+def _check_search_resource_safety(
+    tool_name: str,
+    arguments: dict[str, Any],
+    task: TaskMeta,
+    *,
+    has_rg_binary: bool | None = None,
+) -> str:
+    """Return a hard-denial reason for unbounded grep and shell search requests."""
+    if tool_name != "astrbot_grep_tool" and tool_name not in _SHELL_TOOLS:
+        return ""
+    args = arguments or {}
+    if tool_name == "astrbot_grep_tool":
+        if args.get("cwd"):
+            return "astrbot_grep_tool 不支持 cwd 参数，请直接传目标路径"
+        reason = _is_degenerate_search_pattern(str(args.get("pattern") or ""))
+        if reason:
+            return reason
+    if tool_name in _SHELL_TOOLS:
+        return _check_shell_search_safety(_extract_shell_command(args), args, task)
+    if has_rg_binary is None:
+        has_rg_binary = shutil.which("rg") is not None
+    raw_path = str(args.get("path") or task.execution_cwd or task.session_workspace_root or ".")
+    return _search_target_safety_reason(
+        raw_path, str(args.get("glob") or ""), args, task, has_rg_binary=has_rg_binary
+    )
 
 
 def _var_shell_pattern(var: str) -> re.Pattern[str]:
@@ -550,6 +1041,13 @@ def _is_sensitive_path(path_str: str) -> bool:
         return False
     norm = s.replace("\\", "/")
     parts = [p for p in norm.split("/") if p and p != "."]
+    lowered_parts = [p.lower() for p in parts]
+    if lowered_parts[-2:] in (["etc", "shadow"], ["etc", "gshadow"]):
+        return True
+    if "proc" in lowered_parts and lowered_parts[-1:] == ["environ"]:
+        proc_index = lowered_parts.index("proc")
+        if len(lowered_parts) - proc_index >= 3:
+            return True
     for part in parts[:-1]:
         if part.lower() in _SENSITIVE_DIR_NAMES:
             return True
@@ -557,13 +1055,41 @@ def _is_sensitive_path(path_str: str) -> bool:
     low = name.lower()
     if low in _SENSITIVE_DIR_NAMES or low in _SENSITIVE_EXACT_NAMES:
         return True
-    if low.startswith(".env") or low.startswith("credentials"):
+    if low.startswith(".env") or "credential" in low or "secret" in low:
         return True
-    if _SENSITIVE_KEY_STEM_RE.match(name):
+    if low.startswith(("id_rsa", "id_ecdsa", "id_ed25519")):
         return True
     _, ext = os.path.splitext(low)
     if ext in _SENSITIVE_EXTS:
         return True
+    return False
+
+
+def is_sensitive_path(raw: str) -> bool:
+    """Shared sensitive-file policy for guards and search executors."""
+    return _is_sensitive_path(raw)
+
+
+def _is_sensitive_glob(raw: str) -> bool:
+    """Recognize explicit sensitive wildcard targets without treating * as one."""
+    pending = [str(raw or "").replace("\\", "/")]
+    for _ in range(64):
+        if not pending:
+            break
+        item = pending.pop()
+        match = re.search(r"\{([^{}]+)\}", item)
+        if match:
+            pending.extend(item[:match.start()] + part + item[match.end():]
+                           for part in match.group(1).split(","))
+            continue
+        simplified = re.sub(r"[*?\[\]]", "", item)
+        if is_sensitive_path(item) or is_sensitive_path(simplified):
+            return True
+        name = item.rsplit("/", 1)[-1].lower()
+        extension = name.rsplit(".", 1)[-1] if "." in name else ""
+        if re.search(r"[a-z0-9]", extension):
+            if any(fnmatch.fnmatchcase("file" + ext, name) for ext in _SENSITIVE_EXTS):
+                return True
     return False
 
 
@@ -620,7 +1146,7 @@ def _looks_like_path_token(tok: str) -> bool:
         return True
     if re.match(r"^[A-Za-z]:", tok):
         return True
-    if _is_sensitive_path(tok):
+    if is_sensitive_path(tok) or (any(ch in tok for ch in "*?[") and _is_sensitive_glob(tok)):
         return True
     return False
 
@@ -648,15 +1174,14 @@ def _extract_shell_paths_and_destructive(
         segments = [command]
 
     for seg in segments:
-        tokens = _shlex_tokens(seg)
+        parsed = _shlex_tokens(seg)
+        tokens = _unwrap_shell_tokens(parsed) if parsed else None
         if not tokens:
             continue
         if _looks_like_path_token(tokens[0]):
             raw_paths.append(tokens[0])
 
-        cmd = os.path.basename(tokens[0]).lower()
-        if cmd.endswith((".exe", ".cmd", ".bat")):
-            cmd = cmd[:-4]
+        cmd = _shell_command_name(tokens[0])
 
         flags: list[str] = []
         operands: list[str] = []
@@ -848,12 +1373,15 @@ def full_guard(
     profile: Profile | None = None,
     authorized_env_vars: list[str] | None = None,
     storage_root: Path | None = None,
+    allow_outside_readonly: bool = False,
 ) -> tuple[str, list[str]]:
     """Run full security & scope guard on a tool call. Returns (reason, outside_paths)."""
     if profile and tool_name in profile.disabled_tools:
         return (f"工具 {tool_name} 已被当前方案禁用", [])
 
     args = arguments or {}
+    if tool_name == "astrbot_grep_tool" and args.get("cwd"):
+        return ("astrbot_grep_tool 不支持 cwd 参数，请直接传目标路径", [])
     exfil = is_credential_exfiltration(tool_name, args, authorized_env_vars or [])
     if exfil:
         return (exfil, [])
@@ -901,16 +1429,20 @@ def full_guard(
         base_dir = roots[0]
 
     sensitive_hits: list[str] = []
+    if tool_name == "astrbot_grep_tool" and _is_sensitive_glob(str(args.get("glob") or "")):
+        sensitive_hits.append(str(args["glob"]))
+    resolved_paths: list[str] = []
     for rp in raw_paths:
-        if _is_sensitive_path(rp):
+        if is_sensitive_path(rp) or (any(ch in rp for ch in "*?[") and _is_sensitive_glob(rp)):
             sensitive_hits.append(rp)
         resolved = _resolve_path_safe(rp, base_dir=base_dir)
         if resolved is None:
             continue
+        resolved_paths.append(str(resolved))
         if _is_sensitive_path(str(resolved)):
             if rp not in sensitive_hits:
                 sensitive_hits.append(rp)
-        if roots:
+        if roots and not allow_outside_readonly:
             if any(_is_under_root(resolved, root) for root in roots):
                 continue
             if _is_allowed_tool_result_read(tool_name, resolved, storage_root):
@@ -933,7 +1465,7 @@ def full_guard(
             args_blob = json.dumps(args, ensure_ascii=False, sort_keys=True)
         except TypeError:
             args_blob = str(args)
-        candidates = [tool_name, args_blob, *raw_paths, *outside_paths]
+        candidates = [tool_name, args_blob, *raw_paths, *resolved_paths, *outside_paths]
         cmd_text = _extract_shell_command(args)
         if cmd_text:
             candidates.append(cmd_text)
@@ -988,19 +1520,24 @@ def assess_call(
     )
     mode = task.execution_settings.mode if task.execution_settings else "standard"
 
+    args = arguments or {}
+    is_safe_external = (
+        tool_name not in (WRITE_TOOLS | CODE_TOOLS)
+        and effective_risk == "safe"
+        and not _is_mutating_tool_name(tool_name)
+    )
+    safe_readonly = read_only_call(tool_name, args) or is_safe_external
     if task.phase == "planning" or mode == "readonly":
-        is_safe_external = (
-            tool_name not in (WRITE_TOOLS | CODE_TOOLS)
-            and effective_risk == "safe"
-            and not _is_mutating_tool_name(tool_name)
-        )
-        if not read_only_call(tool_name, arguments) and not is_safe_external:
+        if not safe_readonly:
             return ("deny", "当前处于规划/只读阶段，仅允许只读查询工具", [])
 
-    args = arguments or {}
     exfil = is_credential_exfiltration(tool_name, args, authorized_env_vars or [])
     if exfil:
         return ("deny", exfil, [])
+
+    resource_reason = _check_search_resource_safety(tool_name, args, task)
+    if resource_reason:
+        return ("deny", resource_reason, [])
 
     reason, outside = full_guard(
         tool_name,
@@ -1009,6 +1546,7 @@ def assess_call(
         profile=profile,
         authorized_env_vars=authorized_env_vars,
         storage_root=storage_root,
+        allow_outside_readonly=task.phase == "planning" and safe_readonly,
     )
     if reason:
         return ("review", reason, outside)

@@ -2,7 +2,7 @@ name: astrbot_plugin_agent_lab
 display_name: Agent Lab
 desc: 隐藏式隔离长任务工具箱：日常聊天零污染，后台独立会话规划、审批、执行与交付，配方案系统、加密凭证库及双风格 WebUI。
 help: 发送 /al 或 /agentlab 查看任务与项目命令；在日常私聊中提出复杂多步需求可由 Bot 自动立项转入隔离会话后台执行。
-version: "1.0.0"
+version: "1.0.1"
 author: zzz27578
 repo: https://github.com/zzz27578/astrbot_plugin_agent_lab
 astrbot_version: ">=4.29.4,<5"

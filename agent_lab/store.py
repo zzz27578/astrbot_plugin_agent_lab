@@ -99,7 +99,7 @@ class AgentLabStore:
 
     def _read_json(self, path: Path, default: Any) -> Any:
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8-sig"))
         except (FileNotFoundError, json.JSONDecodeError, OSError):
             return default
 
@@ -159,12 +159,16 @@ class AgentLabStore:
                 self._write_json(self.profiles_path, [p.to_dict() for p in profiles])
             return profiles
 
-    def get_profile(self, profile_id: str | None = None) -> Profile:
+    def get_profile(self, profile_id: str | None = None, *, strict: bool = False) -> Profile:
         profiles = self.list_profiles()
         if profile_id:
             for p in profiles:
                 if p.profile_id == profile_id:
                     return p
+            if strict:
+                raise ValueError(
+                    f"方案 `{profile_id}` 不存在；当前可用方案：{', '.join(p.profile_id for p in profiles)}"
+                )
         for p in profiles:
             if p.is_default:
                 return p
@@ -512,7 +516,7 @@ class AgentLabStore:
     def read_project_summary(self, project_id: str, limit: int = 4000) -> str:
         path = self.project_summary_path(project_id)
         try:
-            return path.read_text(encoding="utf-8")[:limit]
+            return path.read_text(encoding="utf-8-sig")[:limit]
         except FileNotFoundError:
             proj = self.get_project(project_id)
             return (proj.summary[:limit] if proj else "")
@@ -736,7 +740,7 @@ class AgentLabStore:
             return []
         rows: list[dict[str, Any]] = []
         try:
-            with path.open("r", encoding="utf-8") as fh:
+            with path.open("r", encoding="utf-8-sig") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -754,7 +758,7 @@ class AgentLabStore:
 
     def latest_journal_by_call(self, umo: str, task_id: str) -> list[dict[str, Any]]:
         """Fold append-only journal events by call_id into ordered call states."""
-        events = self.read_events(umo, task_id, kind="journal", limit=2000)
+        events = self.read_events(umo, task_id, kind="journal", limit=0)
         ordered_ids: list[str] = []
         by_id: dict[str, dict[str, Any]] = {}
         for ev in events:

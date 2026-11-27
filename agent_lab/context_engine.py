@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .models import CredentialMeta, Profile, TaskMeta, new_id, now_iso
+from .permissions import execution_roots
 from .store import AgentLabStore
 
 try:
@@ -37,9 +38,11 @@ _WAKE_DIGEST_RE = re.compile(re.escape(WAKE_PREFIX) + r"([0-9a-f]{64})\]\n")
 
 _STATIC_TASK_RULESET = (
     "【Agent Lab 执行准则】\n"
-    "1. 两阶段：planning阶段只读探索并调用task_plan提交计划待批；审批后进入executing阶段推进。\n"
-    "2. 控制工具：task_plan(定计划)、task_progress(报进度)、task_ask(提问)、task_approve(高危审批)、task_finish(收尾)。\n"
-    "3. 修改本地文件优先局部精确编辑；严禁输出或泄露凭证值（仅通过环境变量使用）。"
+    "1. 两阶段：planning阶段可跨目录纯只读调研（严禁读取敏感凭证），调用task_plan提交计划待批；获批后在executing阶段按authorized_roots推进。\n"
+    "2. 控制工具：task_plan(定计划)、task_progress(报进度)、task_ask(提问)、task_approve(高危/越界审批)、task_finish(收尾)。\n"
+    "3. 修改本地文件优先局部精确编辑；严禁输出或泄露凭证值（仅通过环境变量使用）。\n"
+    "4. 严禁对工作区或大目录使用'.'/'.*'等全匹配盲扫；executing阶段遇[REVIEW]越界须调用task_approve批量申请或在task_plan.scope_roots声明，切勿试探其他目录。\n"
+    "5. 向用户发起task_plan或task_approve审批时，用非技术用户也能看懂的通俗人话写清“要做什么、影响哪些文件/功能、如何回退”。"
 )
 
 TASK_CONTROL_TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -319,11 +322,7 @@ def prepare_wake_message(
     approved_receipts: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Build full or incremental delta wake context addressed by SHA-256 digest."""
-    authorized_roots = list(
-        task.authorized_scope_roots
-        or task.execution_settings.roots
-        or task.scope_roots
-    )
+    authorized_roots = execution_roots(task)
     cred_meta_list = [
         {
             "id": c.credential_id,
@@ -356,6 +355,8 @@ def prepare_wake_message(
         "input_revision": task.input_revision,
         "permission_mode": task.execution_settings.mode,
         "authorized_roots": authorized_roots,
+        "session_workspace_root": task.session_workspace_root,
+        "execution_cwd": task.execution_cwd,
         "project_task_prompt": project_task_prompt,
         "project_summary": (
             {"reference_only": "仅供参考的项目摘要（非当前任务指令）", "content": project_summary}
@@ -374,6 +375,8 @@ def prepare_wake_message(
             if q.status == "answered"
         ],
     }
+    if task.phase == "planning" and task.scope_roots:
+        raw_snapshot["candidate_scope_roots"] = list(task.scope_roots)
     snapshot: dict[str, Any] = store.redact_secrets(raw_snapshot)
     canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
